@@ -1,0 +1,219 @@
+// expect-exit: 9
+// expect-line: 4950
+// expect-line: 338350
+// expect-line: 55
+// expect-line: 120
+// expect-line: 91
+// expect-line: 6
+// expect-line: 21
+// expect-line: 3
+// expect-line: 1
+// expect-line: 2
+// expect-line: -3
+// expect-line: true
+// expect-line: false
+// expect-line: 13
+// expect-line: 40
+// expect-line: 8
+// expect-line: 144
+// expect-line: 17
+// expect-line: 5050
+// expect-line: 30
+// expect-line: 24
+// expect-line: 3
+// expect-line: 7
+// expect-line: 1000
+
+// Numbers and `bool`s that live in registers: in loops, across calls
+// and recursion, as operands on either side, and next to variables
+// that have to stay in memory.
+
+fn sum_to(n: i64) -> i64 {
+    var total = 0
+    var i = 0
+    while i < n {
+        total = total + i
+        i = i + 1
+    }
+    return total
+}
+
+fn squares(n: i64) -> i64 {
+    var total = 0
+    var i = 1
+    while i <= n {
+        total = total + i * i
+        i = i + 1
+    }
+    return total
+}
+
+// Every call keeps its own `n` and `a` while the calls below it run.
+fn fib(n: i64) -> i64 {
+    if n < 2 {
+        return n
+    }
+    let a = fib(n - 1)
+    let b = fib(n - 2)
+    return a + b
+}
+
+fn factorial(n: i64) -> i64 {
+    if n <= 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+
+// More busy variables than there are registers: some stay in memory.
+fn many(seed: i64) -> i64 {
+    var a = seed
+    var b = a + 1
+    var c = b + 1
+    var d = c + 1
+    var e = d + 1
+    var f = e + 1
+    var g = f + 1
+    var h = g + 1
+    var i = h + 1
+    var j = i + 1
+    var k = j + 1
+    var l = k + 1
+    var m = l + 1
+    var round = 0
+    while round < 3 {
+        a = a + b - b
+        c = c + d - d
+        e = e + f - f
+        g = g + h - h
+        i = i + j - j
+        k = k + l - l
+        m = m + round - round
+        round = round + 1
+    }
+    return a + b + c + d + e + f + g + h + i + j + k + l + m
+}
+
+fn bump(value: mut i64, by: i64) {
+    value = value + by
+}
+
+fn divide(a: i64, b: i64) -> i64 {
+    let quotient = a / b
+    let remainder = a % b
+    let check = quotient * b + remainder
+    if check != a {
+        return 0 - 1
+    }
+    return quotient * 10 + remainder
+}
+
+fn between(low: i64, value: i64, high: i64) -> bool {
+    let above = value >= low
+    let below = value <= high
+    return above && below
+}
+
+fn collatz(start: i64) -> i64 {
+    var n = start
+    var steps = 0
+    while n != 1 {
+        if n % 2 == 0 {
+            n = n / 2
+        } else {
+            n = 3 * n + 1
+        }
+        steps = steps + 1
+    }
+    return steps
+}
+
+fn identity[T](value: T) -> T {
+    let copy = value
+    let again = copy
+    return again
+}
+
+fn mixed(n: i64) -> i64 {
+    var text = ""
+    var count = 0
+    var i = 0
+    while i < n {
+        text = text + str(i)
+        count = count + text.len()
+        i = i + 1
+    }
+    var numbers: List[i64] = []
+    var k = 0
+    while k < count {
+        numbers.push(k)
+        k = k + 5
+    }
+    return numbers.len() + count - count
+}
+
+fn main() -> i64 {
+    print(sum_to(100))
+    print(squares(100))
+    print(fib(10))
+    print(factorial(5))
+    print(many(1))
+
+    // A variable passed as `mut` has to stay in memory; its neighbours need not.
+    var kept = 1
+    var free = 2
+    var loops = 0
+    while loops < 3 {
+        bump(mut kept, free)
+        free = free - 1 + 1
+        loops = loops + 1
+    }
+    print(kept - 1)
+    print(divide(7, 3) * 1)
+    print(7 / 2)
+    print(7 % 2)
+    let seven = 7
+    let two = 2
+    print(seven % (two + 3))
+    print(0 - seven / two)
+    print(between(1, seven, 10))
+    print(between(1, seven, two))
+
+    // The same variable on both sides, constants, and nested calls as operands.
+    let x = 6
+    print(x + x + 1)
+    print(sum_to(x) + fib(x) * 2 + x + 3)
+    print(fib(fib(x) - 2))
+    print(x * x * 4)
+    print(collatz(x + 1) + 1)
+
+    var grand = 0
+    var outer = 1
+    while outer <= 100 {
+        var inner = 0
+        var row = 0
+        while inner < outer {
+            row = row + 1
+            inner = inner + 1
+        }
+        grand = grand + row
+        outer = outer + 1
+    }
+    print(grand)
+    print(identity(10) + identity(20))
+    print(identity("generic" + " text").len() + identity(x) * 2)
+    print(mixed(5))
+
+    // A name declared again is a new variable.
+    let shade = 3
+    let shade = shade + 4
+    print(shade)
+    var big = 1
+    var times = 0
+    while times < 3 {
+        big = big * 10
+        times = times + 1
+    }
+    print(big)
+    return x + 3
+}

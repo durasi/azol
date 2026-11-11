@@ -153,9 +153,16 @@ That is roughly 210 times faster than the full Rust build, and 110 times faster 
 
 **Executable size.** A small program is 33 KB in azoL and 472 KB in Rust.
 
-**Run time.** This is where Rust is ahead, and it is the next thing to fix. Computing `fib(40)` takes 0.64 s in azoL, 0.44 s in unoptimized Rust and 0.16 s in optimized Rust. azoL generates simple code today; an optimizing release mode is planned.
+**Run time.** The same build that takes milliseconds also runs fast. There is no separate slow debug mode.
 
-**Keeping the comparison fair.** The benchmark program is generated and repetitive, and azoL does less work than Rust: it has no optimizer, no standard library and no generics or traits yet. Some of this lead will be spent as those arrive. The design goal is to stay at least 4 times faster than Rust with the language complete, and today's margin leaves a great deal of room.
+| | azoL | Rust, optimized (`-O`) | Rust, unoptimized |
+|---|---|---|---|
+| Loops and arithmetic (`bench/loops`, 25 million rounds) | 0.022 s | 0.024 s | 0.085 s |
+| Function calls (`bench/fib40`, `fib(40)`) | 0.39 s | 0.21 s | 0.56 s |
+
+In loops azoL is level with optimized Rust; in code dominated by small function calls it is faster than unoptimized Rust and about 1.9 times slower than optimized Rust, which inlines calls and azoL does not yet.
+
+**Keeping the comparison fair.** The compile-time benchmark is generated and repetitive, and azoL does less work than Rust: its optimizer is small, its standard library is small, and it has no traits. The run-time numbers come from two small programs, not from a benchmark suite. Some of this lead will be spent as those arrive. The design goal is to stay at least 4 times faster than Rust with the language complete, and today's margin leaves a great deal of room.
 
 ## What works today
 
@@ -223,7 +230,7 @@ The compiler is written in Rust with no dependencies, SHA-256 included. A small 
 
 ## Roadmap
 
-1. An optimizing release mode, to close the run-time gap
+1. Inlining small functions, to close the rest of the run-time gap
 2. Linux and x86-64
 3. **The azoL compiler written in azoL.** Rust is scaffolding; the goal is to remove it.
 

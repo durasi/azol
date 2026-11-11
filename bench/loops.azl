@@ -1,0 +1,22 @@
+// Run-time benchmark: the same computation as bench/loops.rs.
+// Nested counting loops with arithmetic and a branch.
+
+fn main() {
+    let size = 5000
+    var total = 0
+    var i = 0
+    while i < size {
+        var j = 0
+        while j < size {
+            let product = i * j
+            if product % 7 == 3 {
+                total = total + product % 11
+            } else {
+                total = total + 1
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    print(total)
+}

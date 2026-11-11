@@ -103,6 +103,13 @@ pub const MAX_SLOTS: u32 = 2000;
 /// one add instruction.
 pub const MAX_SIZE: u32 = 500;
 
+/// The registers variables can live in: x19 to x28, which every function
+/// hands back unchanged to its caller.
+pub const FIRST_REGISTER: u8 = 19;
+pub const REGISTERS: u8 = 10;
+/// How much a variable must be used to get a register.
+const MIN_REGISTER_USES: u32 = 3;
+
 /// Most variants an enum can have: a tag must fit in one compare.
 pub const MAX_VARIANTS: usize = 1000;
 
@@ -258,6 +265,10 @@ pub struct FnInfo {
     pub sret_slot: Option<u32>,
     /// A slot the code generator may use to park an address.
     pub scratch_slot: u32,
+    /// Variables that live in a register instead of the frame: their
+    /// slot and the register (x19 to x28). Only numbers and `bool`s whose
+    /// address is never needed are chosen, the most used first.
+    pub registers: Vec<(u32, u8)>,
     /// Slots that must hold zero on entry: the capacities of temporaries,
     /// which may be freed without ever having been filled.
     pub zero_slots: Vec<u32>,
@@ -445,6 +456,13 @@ struct Local<'a> {
     /// could have handed its buffers over instead of being copied. It
     /// stands only if the variable is never mentioned again.
     candidate: Option<ExprId>,
+    /// A number or `bool` declared with `let`/`var` or passed by value:
+    /// it may live in a register instead of the frame.
+    scalar: bool,
+    /// How much the variable is used; uses inside loops count for more.
+    uses: u32,
+    /// Passed as `mut` somewhere, so it needs an address in memory.
+    addressed: bool,
 }
 
 /// A variable or a part of one, as a range of slots.
@@ -572,6 +590,9 @@ struct Checker<'a> {
     /// evaluated after it: the list in `list[index]` while the index is
     /// checked, the target of an assignment while its value is.
     late: Vec<ExprId>,
+    /// Variables of the function being checked that could live in a
+    /// register: slot and how much each is used.
+    wishes: Vec<(u32, u32)>,
     zero_slots: Vec<u32>,
     ret: Ty,
     next_slot: u32,
@@ -639,6 +660,7 @@ pub fn check_with_prelude<'a>(ast: &'a Ast, src: &'a str, prelude_start: u32) ->
         borrows: Vec::new(),
         pending: Vec::new(),
         late: Vec::new(),
+        wishes: Vec::new(),
         zero_slots: Vec::new(),
         ret: Ty::Unit,
         next_slot: 0,
@@ -1341,6 +1363,7 @@ impl<'a> Checker<'a> {
                 slots: 0,
                 sret_slot: None,
                 scratch_slot: 0,
+                registers: Vec::new(),
                 zero_slots: Vec::new(),
             });
         }
@@ -1395,6 +1418,7 @@ impl<'a> Checker<'a> {
         self.borrows.clear();
         self.pending.clear();
         self.late.clear();
+        self.wishes.clear();
         self.zero_slots.clear();
         self.next_slot = 0;
         self.loop_depth = 0;
@@ -1414,6 +1438,9 @@ impl<'a> Checker<'a> {
                 owns: false,
                 depth: self.loop_depth,
                 candidate: None,
+                scalar: !info.by_ref,
+                uses: 0,
+                addressed: false,
             });
         }
         if self.ret.is_aggregate() {
@@ -1430,6 +1457,12 @@ impl<'a> Checker<'a> {
         }
         self.fns[index as usize].slots = self.next_slot;
         self.fns[index as usize].zero_slots = std::mem::take(&mut self.zero_slots);
+        // The most used variables get the registers. One that is hardly
+        // used is not worth saving and restoring a register for.
+        self.wishes.retain(|&(_, uses)| uses >= MIN_REGISTER_USES);
+        self.wishes.sort_by_key(|&(slot, uses)| (std::cmp::Reverse(uses), slot));
+        self.fns[index as usize].registers =
+            self.wishes.iter().take(REGISTERS as usize).enumerate().map(|(i, &(slot, _))| (slot, FIRST_REGISTER + i as u8)).collect();
         Ok(())
     }
 
@@ -1499,8 +1532,12 @@ impl<'a> Checker<'a> {
     /// that was the last mention of a variable takes its buffers over.
     fn close_scope(&mut self, scope: usize) {
         for at in scope..self.locals.len() {
-            if let Some(id) = self.locals[at].candidate {
+            let local = &self.locals[at];
+            if let Some(id) = local.candidate {
                 self.expr_moved[self.sh.e(id)] = true;
+            }
+            if local.scalar && !local.addressed {
+                self.wishes.push((local.slot, local.uses));
             }
         }
         self.locals.truncate(scope);
@@ -1619,7 +1656,21 @@ impl<'a> Checker<'a> {
                 self.store_from(value);
                 self.finish(id);
                 let slot = self.alloc(self.size_of(value_ty), name.start)?;
-                self.locals.push(Local { name: self.binding(name)?, slot, ty: value_ty, mutable, by_ref: false, is_param: false, is_view: false, owns: true, depth: self.loop_depth, candidate: None });
+                self.locals.push(Local {
+                    name: self.binding(name)?,
+                    slot,
+                    ty: value_ty,
+                    mutable,
+                    by_ref: false,
+                    is_param: false,
+                    is_view: false,
+                    owns: true,
+                    depth: self.loop_depth,
+                    candidate: None,
+                    scalar: matches!(value_ty, Ty::I64 | Ty::Bool),
+                    uses: 0,
+                    addressed: false,
+                });
                 self.stmt_slot[self.sh.s(id)] = slot;
             }
             Stmt::Assign { target, value } => {
@@ -1747,10 +1798,10 @@ impl<'a> Checker<'a> {
                 let scope = self.locals.len();
                 let item_slot = self.alloc(self.size_of(elem), item.start)?;
                 // The loop variable looks at the element; the list keeps owning it.
-                self.locals.push(Local { name: self.binding(item)?, slot: item_slot, ty: elem, mutable: false, by_ref: false, is_param: false, is_view: true, owns: false, depth: self.loop_depth, candidate: None });
+                self.locals.push(Local { name: self.binding(item)?, slot: item_slot, ty: elem, mutable: false, by_ref: false, is_param: false, is_view: true, owns: false, depth: self.loop_depth, candidate: None, scalar: false, uses: 0, addressed: false });
                 if let Some(index) = index {
                     let index_slot = self.alloc(1, index.start)?;
-                    self.locals.push(Local { name: self.binding(index)?, slot: index_slot, ty: Ty::I64, mutable: false, by_ref: false, is_param: false, is_view: true, owns: false, depth: self.loop_depth, candidate: None });
+                    self.locals.push(Local { name: self.binding(index)?, slot: index_slot, ty: Ty::I64, mutable: false, by_ref: false, is_param: false, is_view: true, owns: false, depth: self.loop_depth, candidate: None, scalar: false, uses: 0, addressed: false });
                 }
                 let borrows = self.borrows.len();
                 if self.stmt_flag[self.sh.s(id)] == IN_PLACE {
@@ -1858,6 +1909,9 @@ impl<'a> Checker<'a> {
                         owns: false,
                         depth: self.loop_depth,
                         candidate: None,
+                        scalar: false,
+                        uses: 0,
+                        addressed: false,
                     });
                     self.pats[self.sh.p(arm.pattern)] = PatInfo { kind: PAT_BIND, res: 0, slot };
                     catch_all = true;
@@ -1928,6 +1982,9 @@ impl<'a> Checker<'a> {
                                     owns: false,
                                     depth: self.loop_depth,
                                     candidate: None,
+                                    scalar: false,
+                                    uses: 0,
+                                    addressed: false,
                                 });
                                 self.pats[self.sh.p(sub)] = PatInfo { kind: PAT_BIND, res: offset, slot };
                             }
@@ -2209,9 +2266,11 @@ impl<'a> Checker<'a> {
                         err(pos, format!("unknown variable `{text}`"))
                     };
                 };
+                let weight = 1 << (3 * self.loop_depth.min(6));
                 let local = &mut self.locals[at];
                 // Mentioned again: an earlier store was not its last use.
                 local.candidate = None;
+                local.uses = local.uses.saturating_add(weight);
                 let (slot, ty, by_ref) = (local.slot, local.ty, local.by_ref);
                 self.expr_res[self.sh.e(id)] = slot | if by_ref { BY_REF } else { 0 };
                 Ok(ty)
@@ -2794,6 +2853,10 @@ impl<'a> Checker<'a> {
             if !place.mutable {
                 return err(arg_pos, format!("cannot pass `{}` as `mut`: {}", self.root_name(value), read_only(&place)));
             }
+            // The function gets its address, so it must stay in memory.
+            if let Some(local) = self.locals.iter_mut().rev().find(|local| local.slot == place.root) {
+                local.addressed = true;
+            }
             self.borrow(value, place, true)?;
         } else if ty.is_aggregate() {
             // Passed by reference: the place must not change meanwhile.
@@ -2942,6 +3005,7 @@ impl<'a> Checker<'a> {
             slots: 0,
             sret_slot: None,
             scratch_slot: 0,
+            registers: Vec::new(),
             zero_slots: Vec::new(),
         });
         Ok(index)

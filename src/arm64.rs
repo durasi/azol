@@ -11,8 +11,9 @@
 //! one) followed by that variant's fields.
 //!
 //! Registers: x0-x2 carry values, x8 the address for an aggregate
-//! result, x9-x11 are scratch within one step. Nothing is kept in a
-//! register across a call.
+//! result, x9-x11 are scratch within one step. The most used numbers
+//! and `bool`s of a function live in x19-x28, which survive calls: every
+//! function saves the ones it uses on entry and restores them on exit.
 
 use crate::ast::*;
 use crate::runtime::{self, RuntimeReloc, RUNTIME, RUNTIME_DATA, RUNTIME_DATA_OFFSETS, RUNTIME_RELOCS};
@@ -126,10 +127,16 @@ const MAX_OFFSET: u32 = 4095;
 /// Where the two operands of a binary operation are once both have been
 /// evaluated.
 enum Operands {
-    /// Left in x1, right in x0.
-    Registers,
-    /// Left in x0; the right one is this small constant.
-    Constant(u32),
+    /// The registers holding the left and the right one.
+    Registers(u32, u32),
+    /// The register holding the left one; the right one is this small
+    /// constant.
+    Constant(u32, u32),
+}
+
+/// `mov to, from`
+fn mov(to: u32, from: u32) -> u32 {
+    0xAA00_03E0 | from << 16 | to
 }
 
 /// A branch that is taken when a condition is false, to be completed
@@ -198,6 +205,12 @@ struct Gen<'a> {
     ret: Ty,
     sret_slot: Option<u32>,
     scratch_slot: u32,
+    /// The variables of the function being generated that live in
+    /// registers: slot and register.
+    registers: &'a [(u32, u8)],
+    /// First frame slot of the area where those registers' old values
+    /// are kept.
+    saved_slot: u32,
     /// Where the function being generated keeps its entries in the
     /// checker's tables.
     sh: Shift,
@@ -221,6 +234,8 @@ pub fn generate(ast: &Ast, prog: &Program) -> Code {
         ret: Ty::Unit,
         sret_slot: None,
         scratch_slot: 0,
+        registers: &[],
+        saved_slot: 0,
         sh: Shift::default(),
     };
     for index in 0..prog.fns.len() as u32 {
@@ -344,13 +359,17 @@ impl<'a> Gen<'a> {
     }
 
     fn function(&mut self, index: u32) {
-        let info = &self.prog.fns[index as usize];
+        let prog = self.prog;
+        let info = &prog.fns[index as usize];
         let Item::Fn { params, body, .. } = self.ast.items[info.item as usize] else {
             unreachable!("a function's item is a function");
         };
         self.sh = info.shift;
         self.fn_starts.push(self.words.len() as u32);
-        self.frame_bytes = (16 + 8 * info.slots).div_ceil(16) * 16;
+        self.registers = &info.registers;
+        // Above the slots, room for the caller's values of those registers.
+        self.saved_slot = info.slots;
+        self.frame_bytes = (16 + 8 * (info.slots + info.registers.len() as u32)).div_ceil(16) * 16;
         self.ret = info.ret;
         self.sret_slot = info.sret_slot;
         self.scratch_slot = info.scratch_slot;
@@ -369,9 +388,16 @@ impl<'a> Gen<'a> {
             self.emit(0xA900_7BFD); // stp x29, x30, [sp]
         }
         self.emit(0x9100_03FD); // mov x29, sp
-        // Each parameter arrives in a register as a value or a pointer.
+        for (i, &(_, reg)) in info.registers.iter().enumerate() {
+            self.emit(str(reg as u32, FP, frame(self.saved_slot + i as u32)));
+        }
+        // Each parameter arrives in a register as a value or a pointer,
+        // and moves to its slot or to the register it lives in.
         for slot in 0..self.ast.list(params).len() as u32 {
-            self.emit(str(slot, FP, frame(slot)));
+            match self.slot_register(slot) {
+                Some(reg) => self.emit(mov(reg, slot)),
+                None => self.emit(str(slot, FP, frame(slot))),
+            }
         }
         if let Some(slot) = self.sret_slot {
             self.emit(str(X8, FP, frame(slot)));
@@ -392,6 +418,9 @@ impl<'a> Gen<'a> {
     }
 
     fn epilogue(&mut self) {
+        for (i, &(_, reg)) in self.registers.iter().enumerate() {
+            self.emit(ldr(reg as u32, FP, frame(self.saved_slot + i as u32)));
+        }
         self.emit(0x9100_03BF); // mov sp, x29
         if self.frame_bytes <= SMALL_FRAME {
             self.emit(0xA8C0_7BFD | (self.frame_bytes / 8) << 15); // ldp x29, x30, [sp], #frame
@@ -712,6 +741,10 @@ impl<'a> Gen<'a> {
         let ty = self.ty(target);
         let place = self.place(target);
         if !ty.is_aggregate() {
+            if let Some(reg) = place.and_then(|place| self.register(place)) {
+                self.value_in(value, reg);
+                return;
+            }
             self.value(value);
             match place {
                 Some(place) if place.by_ref => {
@@ -1006,9 +1039,37 @@ impl<'a> Gen<'a> {
                 self.clone_frame(slot, ty);
             }
             self.moved_out(value);
+        } else if let Some(reg) = self.slot_register(slot) {
+            self.value_in(value, reg);
         } else {
             self.value(value);
             self.emit(str(X0, FP, frame(slot)));
+        }
+    }
+
+    /// The register the variable in frame slot `slot` lives in, if any.
+    fn slot_register(&self, slot: u32) -> Option<u32> {
+        self.registers.iter().find(|&&(taken, _)| taken == slot).map(|&(_, reg)| reg as u32)
+    }
+
+    /// The register a place lives in: only whole variables have one.
+    fn register(&self, place: Place) -> Option<u32> {
+        if place.by_ref || place.offset != 0 || self.registers.is_empty() {
+            return None;
+        }
+        self.slot_register(place.slot)
+    }
+
+    /// The register `id` lives in, when it is a variable that has one.
+    /// Such a variable cannot change while an expression is evaluated:
+    /// only a statement can assign to it, and nothing has its address.
+    fn in_register(&self, id: ExprId) -> Option<u32> {
+        if self.registers.is_empty() {
+            return None;
+        }
+        match self.ast.exprs[id as usize] {
+            Expr::Ident(_) => self.place(id).and_then(|place| self.register(place)),
+            _ => None,
         }
     }
 
@@ -1163,6 +1224,8 @@ impl<'a> Gen<'a> {
                 if place.by_ref {
                     self.emit(ldr(X9, FP, frame(place.slot)));
                     self.emit(ldr(reg, X9, place.offset));
+                } else if let Some(home) = self.register(place) {
+                    self.emit(mov(reg, home));
                 } else {
                     self.emit(ldr(reg, FP, frame(place.slot + place.offset)));
                 }
@@ -1170,36 +1233,55 @@ impl<'a> Gen<'a> {
         }
     }
 
-    /// Evaluates the operands of a binary operation on numbers, left one
-    /// first, and says where they ended up. `constants` allows the right
-    /// one to stay a constant inside the instruction.
+    /// Evaluates the operands of a binary operation on numbers and says
+    /// which registers they ended up in. A variable that lives in a
+    /// register is used where it is. `constants` allows a small constant
+    /// on the right to stay inside the instruction.
     fn operands(&mut self, lhs: ExprId, rhs: ExprId, constants: bool) -> Operands {
-        self.value(lhs);
+        let left = self.in_register(lhs);
         if constants {
             if let Expr::Int(_) = self.ast.exprs[rhs as usize] {
                 let value = self.prog.ints[self.prog.expr_res[self.sh.e(rhs)] as usize];
                 if (0..4096).contains(&value) {
-                    return Operands::Constant(value as u32);
+                    let left = left.unwrap_or_else(|| {
+                        self.value(lhs);
+                        X0
+                    });
+                    return Operands::Constant(left, value as u32);
                 }
             }
         }
-        if self.is_simple(rhs) {
-            // Nothing runs in between, so the left one can wait in x1.
-            self.emit(0xAA00_03E1); // mov x1, x0
-            self.load_simple(rhs, X0);
-        } else {
-            self.emit(PUSH_X0);
-            self.value(rhs);
-            self.emit(pop(X1));
+        match (left, self.in_register(rhs)) {
+            (Some(left), Some(right)) => Operands::Registers(left, right),
+            (Some(left), None) => {
+                self.value(rhs);
+                Operands::Registers(left, X0)
+            }
+            (None, Some(right)) => {
+                self.value(lhs);
+                Operands::Registers(X0, right)
+            }
+            (None, None) => {
+                self.value(lhs);
+                if self.is_simple(rhs) {
+                    // Nothing runs in between, so the left one can wait in x1.
+                    self.emit(mov(X1, X0));
+                    self.load_simple(rhs, X0);
+                } else {
+                    self.emit(PUSH_X0);
+                    self.value(rhs);
+                    self.emit(pop(X1));
+                }
+                Operands::Registers(X1, X0)
+            }
         }
-        Operands::Registers
     }
 
     /// Compares two numbers or `bool`s and leaves the result in the flags.
     fn compare_flags(&mut self, lhs: ExprId, rhs: ExprId) {
         match self.operands(lhs, rhs, true) {
-            Operands::Constant(value) => self.emit(0xF100_001F | value << 10), // cmp x0, #value
-            Operands::Registers => self.emit(0xEB00_003F),                     // cmp x1, x0
+            Operands::Constant(left, value) => self.emit(0xF100_001F | value << 10 | left << 5), // cmp left, #value
+            Operands::Registers(left, right) => self.emit(0xEB00_001F | right << 16 | left << 5), // cmp left, right
         }
     }
 
@@ -1413,7 +1495,10 @@ impl<'a> Gen<'a> {
                     self.emit(ldr(X9, FP, frame(place.slot)));
                     self.emit(ldr(X0, X9, place.offset));
                 }
-                Some(place) => self.emit(ldr(X0, FP, frame(place.slot + place.offset))),
+                Some(place) => match self.register(place) {
+                    Some(reg) => self.emit(mov(X0, reg)),
+                    None => self.emit(ldr(X0, FP, frame(place.slot + place.offset))),
+                },
                 None => {
                     // A list element, or a field of a computed value.
                     self.address(id);
@@ -1446,38 +1531,69 @@ impl<'a> Gen<'a> {
                     self.emit(0xD240_0000); // eor x0, x0, #1
                 }
             }
-            Expr::Binary { op, lhs, rhs } => {
-                if let Some(code) = comparison(op) {
-                    self.compare_flags(lhs, rhs);
-                    self.emit(cset_x0(code));
-                    return;
-                }
-                match self.operands(lhs, rhs, matches!(op, BinOp::Add | BinOp::Sub)) {
-                    Operands::Constant(value) => {
-                        // add x0, x0, #value / sub x0, x0, #value
-                        self.emit(if op == BinOp::Add { 0x9100_0000 } else { 0xD100_0000 } | value << 10);
-                    }
-                    // Here x1 holds the left operand and x0 the right one.
-                    Operands::Registers => match op {
-                        BinOp::Add => self.emit(0x8B00_0020), // add x0, x1, x0
-                        BinOp::Sub => self.emit(0xCB00_0020), // sub x0, x1, x0
-                        BinOp::Mul => self.emit(0x9B00_7C20), // mul x0, x1, x0
-                        BinOp::Div => {
-                            self.trap_if_zero();
-                            self.emit(0x9AC0_0C20); // sdiv x0, x1, x0
-                        }
-                        BinOp::Rem => {
-                            self.trap_if_zero();
-                            self.emit(0x9AC0_0C20 | X2); // sdiv x2, x1, x0
-                            self.emit(0x9B00_8440); // msub x0, x2, x0, x1
-                        }
-                        _ => unreachable!("comparisons and the logical operators are handled above"),
-                    },
-                }
-            }
+            Expr::Binary { op, lhs, rhs } => self.binary(op, lhs, rhs, X0),
             Expr::Call { args, .. } => self.call(id, args),
             Expr::MutArg(_) | Expr::Float(_) | Expr::Str(_) | Expr::StructLit { .. } | Expr::ArrayLit { .. } => {
                 unreachable!("rejected by the checker or not a scalar")
+            }
+        }
+    }
+
+    /// Generates an operation on two numbers or `bool`s, with the result
+    /// in register `dest`.
+    fn binary(&mut self, op: BinOp, lhs: ExprId, rhs: ExprId, dest: u32) {
+        if let Some(code) = comparison(op) {
+            self.compare_flags(lhs, rhs);
+            self.emit(cset_x0(code) | dest);
+            return;
+        }
+        match self.operands(lhs, rhs, matches!(op, BinOp::Add | BinOp::Sub)) {
+            Operands::Constant(left, value) => {
+                // add dest, left, #value / sub dest, left, #value
+                self.emit(if op == BinOp::Add { 0x9100_0000 } else { 0xD100_0000 } | value << 10 | left << 5 | dest);
+            }
+            Operands::Registers(left, right) => {
+                let both = right << 16 | left << 5;
+                // Dividing by a constant other than zero needs no check.
+                let safe = match self.ast.exprs[rhs as usize] {
+                    Expr::Int(_) => self.prog.ints[self.prog.expr_res[self.sh.e(rhs)] as usize] != 0,
+                    _ => false,
+                };
+                match op {
+                    BinOp::Add => self.emit(0x8B00_0000 | both | dest), // add dest, left, right
+                    BinOp::Sub => self.emit(0xCB00_0000 | both | dest), // sub dest, left, right
+                    BinOp::Mul => self.emit(0x9B00_7C00 | both | dest), // mul dest, left, right
+                    BinOp::Div => {
+                        if !safe {
+                            self.trap_if_zero(right);
+                        }
+                        self.emit(0x9AC0_0C00 | both | dest); // sdiv dest, left, right
+                    }
+                    BinOp::Rem => {
+                        if !safe {
+                            self.trap_if_zero(right);
+                        }
+                        self.emit(0x9AC0_0C00 | both | X2); // sdiv x2, left, right
+                        self.emit(0x9B00_8000 | right << 16 | left << 10 | X2 << 5 | dest); // msub dest, x2, right, left
+                    }
+                    _ => unreachable!("comparisons are handled above, `&&` and `||` by the caller"),
+                }
+            }
+        }
+    }
+
+    /// Generates code that leaves a number or `bool` in register `dest`,
+    /// one of the registers variables live in. Arithmetic and constants
+    /// are computed there directly.
+    fn value_in(&mut self, id: ExprId, dest: u32) {
+        match self.ast.exprs[id as usize] {
+            Expr::Int(_) | Expr::Bool(_) => self.load_simple(id, dest),
+            Expr::Binary { op, lhs, rhs } if !matches!(op, BinOp::And | BinOp::Or) && self.ty(lhs) != Ty::Str => {
+                self.binary(op, lhs, rhs, dest)
+            }
+            _ => {
+                self.value(id);
+                self.emit(mov(dest, X0));
             }
         }
     }
@@ -1528,7 +1644,7 @@ impl<'a> Gen<'a> {
                 // The last of them is still in x0: move it into place
                 // and bring the earlier ones back.
                 if i > 0 {
-                    self.emit(0xAA00_03E0 | i as u32); // mov x<i>, x0
+                    self.emit(mov(i as u32, X0));
                 }
                 for reg in (0..i as u32).rev() {
                     self.emit(pop(reg));
@@ -1636,8 +1752,8 @@ impl<'a> Gen<'a> {
 
     /// Division by zero stops the program with a message instead of
     /// producing garbage.
-    fn trap_if_zero(&mut self) {
-        self.emit(0xB500_0040); // cbnz x0, +2
+    fn trap_if_zero(&mut self, divisor: u32) {
+        self.emit(0xB500_0040 | divisor); // cbnz divisor, +2
         self.runtime(runtime::DIV_ZERO);
     }
 }
@@ -1685,6 +1801,20 @@ mod tests {
         assert_eq!(0xA980_7BFDu32 | ((496u32 / 8).wrapping_neg() & 0x7F) << 15, 0xA9A17BFD); // stp x29, x30, [sp, #-496]!
         assert_eq!(0xA8C0_7BFDu32 | (32 / 8) << 15, 0xA8C27BFD); // ldp x29, x30, [sp], #32
         assert_eq!(0xA8C0_7BFDu32 | (496 / 8) << 15, 0xA8DF7BFD); // ldp x29, x30, [sp], #496
+        assert_eq!(mov(X0, 19), 0xAA1303E0);
+        assert_eq!(mov(19, X0), 0xAA0003F3);
+        assert_eq!(mov(24, 3), 0xAA0303F8);
+        assert_eq!(mov(5, 28), 0xAA1C03E5);
+        assert_eq!(mov(X1, X0), 0xAA0003E1);
+        assert_eq!(0x9100_0000u32 | 7 << 10 | 19 << 5, 0x91001E60); // add x0, x19, #7
+        assert_eq!(0xD100_0000u32 | 7 << 10 | 20 << 5, 0xD1001E80); // sub x0, x20, #7
+        assert_eq!(0xF100_001Fu32 | 7 << 10 | 21 << 5, 0xF1001EBF); // cmp x21, #7
+        assert_eq!(0x8B00_0000u32 | 20 << 16 | 19 << 5, 0x8B140260); // add x0, x19, x20
+        assert_eq!(0x9B00_7C00u32 | 22 << 16, 0x9B167C00); // mul x0, x0, x22
+        assert_eq!(0xB500_0040u32 | 23, 0xB5000057); // cbnz x23, +2
+        assert_eq!(0x9AC0_0C00u32 | 23 << 16 | 19 << 5 | X2, 0x9AD70E62); // sdiv x2, x19, x23
+        assert_eq!(0x9B00_8000u32 | 23 << 16 | 19 << 10 | X2 << 5, 0x9B17CC40); // msub x0, x2, x23, x19
+        assert_eq!(0xEB00_001Fu32 | 20 << 16 | 19 << 5, 0xEB14027F); // cmp x19, x20
         assert_eq!(cmp_x9_imm(1), 0xF100053F);
         assert_eq!(cmp_x9_imm(1000), 0xF10FA13F);
         assert_eq!(cset_x0(EQ), 0x9A9F17E0);
