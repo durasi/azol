@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
 
 //! Compiles every program in `tests/programs` with the real `azol`
-//! binary. On an Apple Silicon Mac the result is also executed and its
-//! output and exit code are compared with the `expect-` comments at the
-//! top of each file. Elsewhere only the compilation is checked.
+//! binary. On an Apple Silicon Mac and on x86-64 Linux the result is also
+//! executed and its output and exit code are compared with the `expect-`
+//! comments at the top of each file. Elsewhere only the compilation is
+//! checked.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -80,7 +81,10 @@ fn programs_compile_and_run() {
             String::from_utf8_lossy(&build.stderr)
         );
 
-        if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        // The compiler builds for the machine it runs on when it can; on
+        // those machines the program can be run as well.
+        let native = cfg!(all(target_os = "macos", target_arch = "aarch64")) || cfg!(all(target_os = "linux", target_arch = "x86_64"));
+        if native {
             let run = Command::new(&exe).output().expect("compiled program can be started");
             assert_eq!(
                 String::from_utf8_lossy(&run.stdout),

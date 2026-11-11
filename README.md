@@ -110,7 +110,7 @@ Code that works for any type is written once. The compiler works out the types a
 
 **Safety without ceremony.** No `&`, no `&mut`, no `'a`, no borrow checker fights. You write values; the compiler works out who owns what.
 
-**Small enough to hold in your head.** No macros, no hidden control flow, one way to do things. The whole compiler is about 8,000 lines.
+**Small enough to hold in your head.** No macros, no hidden control flow, one way to do things. Each stage is a few thousand lines at most, and the whole compiler, with both machine targets, is about 12,000.
 
 **Nothing underneath.** azoL does not sit on top of another compiler. It generates machine code and writes the executable file itself, down to the code signature.
 
@@ -184,11 +184,11 @@ In loops azoL is level with optimized Rust; in code dominated by small function 
 - automatic memory management with no garbage collector
 - compile errors that point at the exact place and say what to do
 
-It is young. azoL targets Apple Silicon Macs only, has only a first, small standard library, and is missing interfaces (a generic function is simply checked for each set of types it is used with), patterns inside patterns, floating-point numbers and modules. Integer overflow currently wraps. Do not build anything you depend on with it yet.
+It is young. azoL targets Apple Silicon Macs and x86-64 Linux only, has only a first, small standard library, and is missing interfaces (a generic function is simply checked for each set of types it is used with), patterns inside patterns, floating-point numbers and modules. Integer overflow currently wraps. Do not build anything you depend on with it yet.
 
 ## Try it
 
-You need a Mac with Apple Silicon and a Rust toolchain to build the compiler.
+You need a Rust toolchain to build the compiler, on an Apple Silicon Mac or on x86-64 Linux. It builds for the machine it runs on.
 
     git clone https://github.com/durasi/azol
     cd azol
@@ -204,6 +204,8 @@ A real command-line tool, written in azoL:
 More to run: `examples/generics.azl`, `examples/bank.azl`, `examples/tree.azl`, `examples/lists.azl`, `examples/structs.azl`, `examples/fib.azl`.
 
     azol build <file.azl>    compile to an executable
+    azol build --target x86_64-linux <file.azl>
+                             compile for Linux from a Mac (or `aarch64-macos` the other way)
     azol parse <file.azl>    print the syntax tree
     azol lex <file.azl>      print the tokens
     cargo test               run the test suite
@@ -221,17 +223,17 @@ Five stages, each a plain pass over the previous one's output:
 1. **Lexer.** Bytes to tokens, about 20 million lines per second.
 2. **Parser.** Tokens to a flat syntax tree with no per-node allocation. It never backtracks.
 3. **Checker.** Names, types, and the ownership and exclusivity rules, one function at a time.
-4. **Code generator.** Syntax tree straight to ARM64 machine code in one pass.
-5. **Linker.** Lays out the Mach-O file, binds the system library imports, and computes the code signature macOS requires, hashing pages on several threads.
+4. **Code generator.** Syntax tree straight to machine code in one pass: ARM64 or x86-64.
+5. **Linker.** For macOS it lays out the Mach-O file, binds the system library imports, and computes the code signature macOS requires, hashing pages on several threads. For Linux it writes a static ELF file that needs nothing from the system but the kernel.
 
-The compiler is written in Rust with no dependencies, SHA-256 included. A small runtime for printing, files, growing lists and joining strings is written in assembly and embedded as machine code. The text and list methods of the standard library (`find`, `split`, `trim`, `reversed` and the rest) are written in azoL itself, in `src/prelude.azl`, and compiled with every program.
+The compiler is written in Rust with no dependencies, SHA-256 included. A small runtime for printing, files, growing lists and joining strings is embedded as machine code: hand-written assembly on macOS; on Linux, C without a C library, with its own memory allocator, talking to the kernel directly. The text and list methods of the standard library (`find`, `split`, `trim`, `reversed` and the rest) are written in azoL itself, in `src/prelude.azl`, and compiled with every program.
 
-**How it is tested.** Besides unit tests for every stage, each test program is executed on an emulated ARM64 CPU with a checking heap. The heap reports any buffer that is leaked, freed twice, used after being freed or overrun by a single byte, and it moves a buffer every time it grows so that stale pointers cannot hide. Every test program must come out clean. On a Mac the same programs also run natively against the real system allocator.
+**How it is tested.** Besides unit tests for every stage, each test program is executed on an emulated ARM64 CPU with a checking heap. The heap reports any buffer that is leaked, freed twice, used after being freed or overrun by a single byte, and it moves a buffer every time it grows so that stale pointers cannot hide. Every test program must come out clean. On a Mac the same programs also run natively against the real system allocator. The x86-64 output is run natively on Linux and, linked against a checking allocator, under valgrind.
 
 ## Roadmap
 
 1. Inlining small functions, to close the rest of the run-time gap
-2. Linux and x86-64
+2. Variables in registers on x86-64, as on ARM64, and Linux on ARM64
 3. **The azoL compiler written in azoL.** Rust is scaffolding; the goal is to remove it.
 
 ## Name

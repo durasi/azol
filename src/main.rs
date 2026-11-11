@@ -10,6 +10,9 @@ mod runtime;
 mod sema;
 mod sha256;
 mod token;
+mod elf;
+mod runtime_x64;
+mod x64;
 
 use std::env;
 use std::fs;
@@ -25,7 +28,61 @@ Usage:
     azol parse --time <file.azl>     Lex and parse the file and report the speed only
     azol build <file.azl>            Compile to an executable next to the source file
     azol build <file.azl> -o <out>   Compile to the given output path
+    azol build --target <target> ... Compile for `aarch64-macos` or `x86_64-linux`
+                                     instead of the machine the compiler runs on
     azol --version                   Print the version";
+
+/// What kind of machine an executable is for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Target {
+    /// Apple Silicon Macs: ARM64 code in a signed Mach-O file.
+    Aarch64Macos,
+    /// Linux on Intel and AMD processors: x86-64 code in a static ELF file.
+    X86_64Linux,
+}
+
+impl Target {
+    /// The machine the compiler itself runs on, when it can compile for
+    /// it; otherwise the first target it learned.
+    fn host() -> Target {
+        if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+            Target::X86_64Linux
+        } else {
+            Target::Aarch64Macos
+        }
+    }
+
+    fn parse(name: &str) -> Option<Target> {
+        match name {
+            "aarch64-macos" => Some(Target::Aarch64Macos),
+            "x86_64-linux" => Some(Target::X86_64Linux),
+            _ => None,
+        }
+    }
+}
+
+/// Reads the arguments of `azol build`: one source file, and `-o` and
+/// `--target` with their values, in any order.
+fn build_arguments<'a>(args: &[&'a str]) -> Option<(&'a str, Option<&'a str>, Target)> {
+    let (mut path, mut out, mut target) = (None, None, Target::host());
+    let mut rest = args.iter();
+    while let Some(&arg) = rest.next() {
+        match arg {
+            "-o" => out = Some(*rest.next()?),
+            "--target" => {
+                let name = rest.next()?;
+                let Some(known) = Target::parse(name) else {
+                    eprintln!("error: unknown target '{name}'; the targets are `aarch64-macos` and `x86_64-linux`");
+                    return None;
+                };
+                target = known;
+            }
+            _ if path.is_none() && !arg.starts_with('-') => path = Some(arg),
+            _ => return None,
+        }
+    }
+    Some((path?, out, target))
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -40,8 +97,13 @@ fn main() -> ExitCode {
         ["lex", "--time", path] => run_lex(path, true),
         ["parse", path] => run_parse(path, false),
         ["parse", "--time", path] => run_parse(path, true),
-        ["build", path] => run_build(path, None),
-        ["build", path, "-o", out] | ["build", "-o", out, path] => run_build(path, Some(out)),
+        ["build", rest @ ..] => match build_arguments(rest) {
+            Some((path, out, target)) => run_build(path, out, target),
+            None => {
+                eprintln!("{USAGE}");
+                ExitCode::from(2)
+            }
+        },
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -183,7 +245,7 @@ fn run_parse(path: &str, time_only: bool) -> ExitCode {
 /// The part of the standard library that is written in azoL.
 const PRELUDE: &str = include_str!("prelude.azl");
 
-fn run_build(path: &str, out: Option<&str>) -> ExitCode {
+fn run_build(path: &str, out: Option<&str>, target: Target) -> ExitCode {
     let started = Instant::now();
     let Some(mut src) = read_source(path) else {
         return ExitCode::FAILURE;
@@ -232,9 +294,6 @@ fn run_build(path: &str, out: Option<&str>) -> ExitCode {
     };
     let checked = started.elapsed().as_secs_f64();
 
-    let code = arm64::generate(&ast, &program);
-    let generated = started.elapsed().as_secs_f64();
-
     let source_path = std::path::Path::new(path);
     let out_path = match out {
         Some(out) => std::path::PathBuf::from(out),
@@ -244,8 +303,21 @@ fn run_build(path: &str, out: Option<&str>) -> ExitCode {
         eprintln!("error: the output would overwrite the source file; pass `-o <out>`");
         return ExitCode::FAILURE;
     }
-    let ident = out_path.file_name().and_then(|name| name.to_str()).unwrap_or("azol-program");
-    let image = macho::build_executable(&code, &runtime::IMPORTS, ident);
+    // From here on the two targets differ: machine code, then the file
+    // format the system loads.
+    let (image, code_bytes, generated) = match target {
+        Target::Aarch64Macos => {
+            let code = arm64::generate(&ast, &program);
+            let generated = started.elapsed().as_secs_f64();
+            let ident = out_path.file_name().and_then(|name| name.to_str()).unwrap_or("azol-program");
+            (macho::build_executable(&code, &runtime::IMPORTS, ident), code.words.len() * 4, generated)
+        }
+        Target::X86_64Linux => {
+            let code = x64::generate(&ast, &program);
+            let generated = started.elapsed().as_secs_f64();
+            (elf::build_executable(&code), code.bytes.len(), generated)
+        }
+    };
     let linked = started.elapsed().as_secs_f64();
 
     if let Err(err) = write_executable(&out_path, &image) {
@@ -256,9 +328,9 @@ fn run_build(path: &str, out: Option<&str>) -> ExitCode {
 
     let ms = |from: f64, to: f64| (to - from) * 1000.0;
     eprintln!(
-        "built {} ({} bytes of code) in {:.3} ms (read {:.3}, parse {:.3}, check {:.3}, codegen {:.3}, link+sign {:.3}, write {:.3})",
+        "built {} ({} bytes of code) in {:.3} ms (read {:.3}, parse {:.3}, check {:.3}, codegen {:.3}, link {:.3}, write {:.3})",
         out_path.display(),
-        code.words.len() * 4,
+        code_bytes,
         total * 1000.0,
         read * 1000.0,
         ms(read, parsed),
