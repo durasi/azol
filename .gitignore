@@ -4,3 +4,4 @@
 /bench/*
 !/bench/*.rs
 !/bench/*.azl
+!/bench/*.py

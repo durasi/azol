@@ -93,24 +93,29 @@ Other commands:
 
 This prints 67 and 107: `grace` is a copy with its own list, so adding to it leaves `ada` alone.
 
-## First measurements
+## Measurements
 
-Building `examples/fib.azl` and the same program in Rust (`bench/fib.rs`, plain `rustc`), ten times each on an Apple Silicon Mac:
+All numbers are from one Apple Silicon Mac. Rust is plain `rustc` with no optimization flags.
 
-| | Per build | Executable size |
-|---|---|---|
-| azoL | about 0.01 s | 33 KB |
-| Rust | about 0.23 s | 472 KB |
+### Compile time, large program
 
-Read this with care:
+`bench/gen.py 3000` writes the same program in both languages: 3,000 structs that each own a list, and 12,000 functions that build, read, change and copy them. About 132,000 lines each. Both executables print the same result.
 
-- The program is tiny. At this size most of Rust's time is fixed cost, such as starting the compiler and linking the standard library. Larger programs have not been measured yet.
-- azoL does far less work: no optimization, no standard library, a small subset of the language.
-- The code azoL generates is deliberately simple and runs slower than optimized Rust.
+| | Time |
+|---|---|
+| azoL, source to signed executable | 0.016 s |
+| Rust, type checking only (`--emit=metadata`) | 2.05 s |
+| Rust, full build | 3.82 s |
 
-On the front end alone, the lexer and parser handle about 13 million lines per second on the same machine.
+That is about 8 million lines per second for the whole azoL pipeline, and roughly 230 times faster than the full Rust build of this program.
 
-Run time, computing `fib(40)` (`bench/fib40.azl` and `bench/fib40.rs`):
+### Compile time, small program
+
+Building `examples/fib.azl` and `bench/fib.rs`, ten times each: about 0.01 s per build for azoL and 0.23 s for Rust. At this size both are dominated by fixed costs such as starting the process. The azoL executable is 33 KB, the Rust one 472 KB.
+
+### Run time
+
+Computing `fib(40)` (`bench/fib40.azl` and `bench/fib40.rs`):
 
 | | Run time |
 |---|---|
@@ -118,11 +123,15 @@ Run time, computing `fib(40)` (`bench/fib40.azl` and `bench/fib40.rs`):
 | Rust, no optimization | 0.44 s |
 | Rust, optimized (`-O`) | 0.16 s |
 
-azoL's code is about 1.5 times slower than unoptimized Rust and about 4 times slower than optimized Rust. Closing that gap is the job of the planned release mode.
+### How to read these numbers
+
+- The large program is generated and repetitive. Real code is more varied.
+- azoL does far less work than Rust: no optimization, no standard library, no generics or traits yet. Those are where a Rust build spends much of its time, and azoL will slow down as it gains them. The goal is to keep the design choices that make this speed possible, not to keep this exact ratio.
+- The code azoL generates is deliberately simple: about 1.5 times slower than unoptimized Rust and 4 times slower than optimized Rust. Closing that gap is the job of the planned release mode.
 
 ## Goals
 
-- Compile at least 4x faster than Rust on equivalent programs
+- Compile at least 4x faster than Rust on equivalent programs, also once the language is complete
 - Memory safety without lifetime annotations
 - A small language that is easy to learn
 

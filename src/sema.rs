@@ -216,6 +216,15 @@ struct Place {
     is_param: bool,
 }
 
+/// What an expression is being checked for, for error messages.
+#[derive(Clone, Copy)]
+enum What<'a> {
+    Text(&'static str),
+    Operator(BinOp),
+    Argument(usize, &'a str),
+    Field(&'a str),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Holder {
     /// An argument of a call that has not finished yet.
@@ -925,9 +934,17 @@ impl<'a> Checker<'a> {
 
     // ---- expressions ---------------------------------------------------
 
-    fn expect(&mut self, expr: ExprId, want: Ty, what: &str) -> SResult<()> {
+    /// Checks that `expr` has type `want`. The description of what needs
+    /// that type is only put into words when the check fails.
+    fn expect(&mut self, expr: ExprId, want: Ty, what: What) -> SResult<()> {
         let ty = self.expr_hint(expr, Some(want))?;
         if ty != want {
+            let what = match what {
+                What::Text(text) => text.to_string(),
+                What::Operator(op) => format!("`{}`", op.symbol()),
+                What::Argument(number, function) => format!("argument {number} of `{function}`"),
+                What::Field(name) => format!("field `{name}`"),
+            };
             return err(
                 self.ast.expr_pos[expr as usize],
                 format!("{what} needs `{}` but this is `{}`", self.ty_name(want), self.ty_name(ty)),
@@ -952,10 +969,14 @@ impl<'a> Checker<'a> {
         let pos = self.ast.expr_pos[id as usize];
         match self.ast.exprs[id as usize] {
             Expr::Int(span) => {
-                let digits: String = span.text(self.src).chars().filter(|&c| c != '_').collect();
-                let Ok(value) = digits.parse::<i64>() else {
-                    return err(pos, "this number does not fit in `i64`");
-                };
+                let mut value: i64 = 0;
+                for byte in span.text(self.src).bytes().filter(|&b| b != b'_') {
+                    let digit = (byte - b'0') as i64;
+                    let Some(next) = value.checked_mul(10).and_then(|v| v.checked_add(digit)) else {
+                        return err(pos, "this number does not fit in `i64`");
+                    };
+                    value = next;
+                }
                 self.expr_res[id as usize] = self.ints.len() as u32;
                 self.ints.push(value);
                 Ok(Ty::I64)
@@ -1002,42 +1023,42 @@ impl<'a> Checker<'a> {
             }
             Expr::Unary { op, operand } => match op {
                 UnOp::Neg => {
-                    self.expect(operand, Ty::I64, "`-`")?;
+                    self.expect(operand, Ty::I64, What::Text("`-`"))?;
                     Ok(Ty::I64)
                 }
                 UnOp::Not => {
-                    self.expect(operand, Ty::Bool, "`!`")?;
+                    self.expect(operand, Ty::Bool, What::Text("`!`"))?;
                     Ok(Ty::Bool)
                 }
             },
             Expr::Binary { op, lhs, rhs } => {
-                let what = format!("`{}`", op.symbol());
+                let what = What::Operator(op);
                 match op {
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
-                        self.expect(lhs, Ty::I64, &what)?;
-                        self.expect(rhs, Ty::I64, &what)?;
+                        self.expect(lhs, Ty::I64, what)?;
+                        self.expect(rhs, Ty::I64, what)?;
                         Ok(Ty::I64)
                     }
                     BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
-                        self.expect(lhs, Ty::I64, &what)?;
-                        self.expect(rhs, Ty::I64, &what)?;
+                        self.expect(lhs, Ty::I64, what)?;
+                        self.expect(rhs, Ty::I64, what)?;
                         Ok(Ty::Bool)
                     }
                     BinOp::And | BinOp::Or => {
-                        self.expect(lhs, Ty::Bool, &what)?;
-                        self.expect(rhs, Ty::Bool, &what)?;
+                        self.expect(lhs, Ty::Bool, what)?;
+                        self.expect(rhs, Ty::Bool, what)?;
                         Ok(Ty::Bool)
                     }
                     BinOp::Eq | BinOp::NotEq => {
                         let left = self.expr(lhs)?;
                         match left {
                             Ty::Unit => return err(self.ast.expr_pos[lhs as usize], "this expression has no value to compare"),
-                            Ty::Struct(_) => return err(pos, format!("structs cannot be compared with {what} yet; compare their fields")),
-                            Ty::Str => return err(pos, format!("strings cannot be compared with {what} yet")),
-                            Ty::List(_) => return err(pos, format!("lists cannot be compared with {what} yet")),
+                            Ty::Struct(_) => return err(pos, format!("structs cannot be compared with `{}` yet; compare their fields", op.symbol())),
+                            Ty::Str => return err(pos, format!("strings cannot be compared with `{}` yet", op.symbol())),
+                            Ty::List(_) => return err(pos, format!("lists cannot be compared with `{}` yet", op.symbol())),
                             Ty::I64 | Ty::Bool => {}
                         }
-                        self.expect(rhs, left, &what)?;
+                        self.expect(rhs, left, what)?;
                         Ok(Ty::Bool)
                     }
                 }
@@ -1067,7 +1088,7 @@ impl<'a> Checker<'a> {
                 let Ty::List(list) = base_ty else {
                     return err(pos, format!("only a list can be indexed but this is `{}`", self.ty_name(base_ty)));
                 };
-                self.expect(index, Ty::I64, "an index")?;
+                self.expect(index, Ty::I64, What::Text("an index"))?;
                 Ok(self.lists[list as usize])
             }
             Expr::ArrayLit { items } => {
@@ -1088,7 +1109,7 @@ impl<'a> Checker<'a> {
                 }
                 self.check_element(elem, pos)?;
                 for &item in item_ids {
-                    self.expect(item, elem, "this list's element")?;
+                    self.expect(item, elem, What::Text("this list's element"))?;
                 }
                 let ty = self.list_of(elem);
                 self.expr_tmp[id as usize] = self.temp(id, ty)?;
@@ -1115,7 +1136,7 @@ impl<'a> Checker<'a> {
                         let field = &self.structs[index as usize].fields[at];
                         (field.ty, field.offset)
                     };
-                    self.expect(init.value, want, &format!("field `{field_name}`"))?;
+                    self.expect(init.value, want, What::Field(field_name))?;
                     // The new struct takes a temporary's buffers over.
                     self.take(init.value);
                     self.init_offset[init_id as usize] = offset;
@@ -1185,10 +1206,11 @@ impl<'a> Checker<'a> {
         for (i, &arg) in arg_ids.iter().enumerate() {
             let param = self.fns[index as usize].params[i];
             let arg_pos = self.ast.expr_pos[arg as usize];
-            let what = format!("argument {} of `{text}`", i + 1);
+            let what = What::Argument(i + 1, text);
+            let describe = || format!("argument {} of `{text}`", i + 1);
             match (param.mutable, self.ast.exprs[arg as usize]) {
                 (true, Expr::MutArg(inner)) => {
-                    self.expect(inner, param.ty, &what)?;
+                    self.expect(inner, param.ty, what)?;
                     self.expr_ty[arg as usize] = param.ty;
                     let Some(place) = self.place(inner) else {
                         return err(arg_pos, "`mut` needs a variable or a part of a variable");
@@ -1207,13 +1229,13 @@ impl<'a> Checker<'a> {
                     self.borrow(inner, place, true)?;
                 }
                 (true, _) => {
-                    return err(arg_pos, format!("{what} can be changed by the function, so it must be written `mut <variable>`"));
+                    return err(arg_pos, format!("{} can be changed by the function, so it must be written `mut <variable>`", describe()));
                 }
                 (false, Expr::MutArg(_)) => {
-                    return err(arg_pos, format!("{what} is not a `mut` parameter; remove `mut`"));
+                    return err(arg_pos, format!("{} is not a `mut` parameter; remove `mut`", describe()));
                 }
                 (false, _) => {
-                    self.expect(arg, param.ty, &what)?;
+                    self.expect(arg, param.ty, what)?;
                     if param.by_ref {
                         if let Some(place) = self.place(arg) {
                             self.borrow(arg, place, false)?;
@@ -1271,7 +1293,7 @@ impl<'a> Checker<'a> {
                     );
                 }
                 if text == "push" {
-                    self.expect(args[0], elem, "`push`")?;
+                    self.expect(args[0], elem, What::Text("`push`"))?;
                     self.check_change(base, &place)?;
                     // The element waits here while the list makes room.
                     self.expr_tmp[id as usize] = self.alloc(self.size_of(elem), pos)?;

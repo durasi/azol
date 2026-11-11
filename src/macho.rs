@@ -83,6 +83,28 @@ fn signature_size(code_limit: u64, ident: &str) -> usize {
     20 + 88 + ident.len() + 1 + pages * 32
 }
 
+/// Writes the SHA-256 of every `page_size` chunk of `data` into `out`,
+/// 32 bytes each. Pages are independent, so a large file is hashed on
+/// several threads.
+fn hash_pages(data: &[u8], page_size: usize, out: &mut [u8]) {
+    let pages = data.len().div_ceil(page_size);
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(8).min(pages / 64).max(1);
+    let per_thread = pages.div_ceil(threads).max(1);
+    let hash = |data: &[u8], out: &mut [u8]| {
+        for (page, slot) in data.chunks(page_size).zip(out.chunks_mut(32)) {
+            slot.copy_from_slice(&sha256(page));
+        }
+    };
+    if threads == 1 {
+        return hash(data, out);
+    }
+    std::thread::scope(|scope| {
+        for (data, out) in data.chunks(per_thread * page_size).zip(out.chunks_mut(per_thread * 32)) {
+            scope.spawn(move || hash(data, out));
+        }
+    });
+}
+
 /// Builds the embedded signature: a SuperBlob holding one CodeDirectory
 /// with a SHA-256 hash of every page of the file. All fields big-endian.
 pub fn code_signature(signed: &[u8], ident: &str, text_file_size: u64, page_shift: u8) -> Vec<u8> {
@@ -122,10 +144,9 @@ pub fn code_signature(signed: &[u8], ident: &str, text_file_size: u64, page_shif
     out.extend_from_slice(&1u64.to_be_bytes()); // exec segment flags: main binary
     out.extend_from_slice(ident.as_bytes());
     out.push(0);
-    for page in signed.chunks(page_size) {
-        out.extend_from_slice(&sha256(page));
-    }
-    debug_assert_eq!(out.len(), total as usize);
+    let hashes_at = out.len();
+    out.resize(total as usize, 0);
+    hash_pages(signed, page_size, &mut out[hashes_at..]);
     out
 }
 
@@ -397,6 +418,16 @@ mod tests {
         assert_eq!(adrp(16, 0x1_0000_1588, 0x1_0000_8000), 0xF000_0030);
         assert_eq!(adrp(1, 0x1_0000_1590, 0x1_0000_160C), 0x9000_0001);
         assert_eq!(adrp(0, 0x1_0000_5000, 0x1_0000_1000), 0x90FF_FFE0);
+    }
+
+    #[test]
+    fn large_files_hash_the_same_on_many_threads() {
+        // 1000 pages and a partial one: enough to use every thread.
+        let data: Vec<u8> = (0..4096 * 1000 + 123).map(|i| (i * 31 % 251) as u8).collect();
+        let mut threaded = vec![0u8; 1001 * 32];
+        hash_pages(&data, 4096, &mut threaded);
+        let serial: Vec<u8> = data.chunks(4096).flat_map(|page| sha256(page)).collect();
+        assert_eq!(threaded, serial);
     }
 
     #[test]
