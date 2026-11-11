@@ -1,4 +1,4 @@
-// Run-time comparison with bench/fib40.azl.
+// Run-time benchmark: the same computation as bench/fib40.azl.
 
 fn fib(n: i64) -> i64 {
     if n < 2 {

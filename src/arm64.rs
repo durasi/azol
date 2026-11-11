@@ -117,8 +117,43 @@ fn cset_x0(cond: u32) -> u32 {
     0x9A9F_07E0 | (cond ^ 1) << 12
 }
 
+/// Largest frame, in bytes, that one `stp`/`ldp` can set up and tear down.
+const SMALL_FRAME: u32 = 496;
+
 /// Largest slot offset a single load or store can carry.
 const MAX_OFFSET: u32 = 4095;
+
+/// Where the two operands of a binary operation are once both have been
+/// evaluated.
+enum Operands {
+    /// Left in x1, right in x0.
+    Registers,
+    /// Left in x0; the right one is this small constant.
+    Constant(u32),
+}
+
+/// A branch that is taken when a condition is false, to be completed
+/// once its destination is known.
+#[derive(Clone, Copy)]
+enum FalseJump {
+    /// `cbz x0`: the condition was computed as 0 or 1.
+    Zero(usize),
+    /// A branch on the flags of a compare, with the condition to jump on.
+    Flags(usize, u32),
+}
+
+/// The condition code of a comparison operator.
+fn comparison(op: BinOp) -> Option<u32> {
+    Some(match op {
+        BinOp::Eq => EQ,
+        BinOp::NotEq => NE,
+        BinOp::Lt => LT,
+        BinOp::LtEq => LE,
+        BinOp::Gt => GT,
+        BinOp::GtEq => GE,
+        _ => return None,
+    })
+}
 
 struct LoopFixups {
     start: usize,
@@ -321,13 +356,18 @@ impl<'a> Gen<'a> {
         self.scratch_slot = info.scratch_slot;
         self.live.clear();
 
-        // A large frame takes two steps: the amount is split into what
-        // fits one instruction shifted by 12 bits and what fits one plain.
-        if self.frame_bytes >> 12 > 0 {
-            self.emit(0xD140_03FF | (self.frame_bytes >> 12) << 10); // sub sp, sp, #high, lsl #12
+        if self.frame_bytes <= SMALL_FRAME {
+            // One instruction makes room and saves the two registers.
+            self.emit(0xA980_7BFD | ((self.frame_bytes / 8).wrapping_neg() & 0x7F) << 15); // stp x29, x30, [sp, #-frame]!
+        } else {
+            // A large frame takes two steps: the amount is split into what
+            // fits one instruction shifted by 12 bits and what fits one plain.
+            if self.frame_bytes >> 12 > 0 {
+                self.emit(0xD140_03FF | (self.frame_bytes >> 12) << 10); // sub sp, sp, #high, lsl #12
+            }
+            self.emit(0xD100_03FF | (self.frame_bytes & 0xFFF) << 10); // sub sp, sp, #low
+            self.emit(0xA900_7BFD); // stp x29, x30, [sp]
         }
-        self.emit(0xD100_03FF | (self.frame_bytes & 0xFFF) << 10); // sub sp, sp, #low
-        self.emit(0xA900_7BFD); // stp x29, x30, [sp]
         self.emit(0x9100_03FD); // mov x29, sp
         // Each parameter arrives in a register as a value or a pointer.
         for slot in 0..self.ast.list(params).len() as u32 {
@@ -353,10 +393,14 @@ impl<'a> Gen<'a> {
 
     fn epilogue(&mut self) {
         self.emit(0x9100_03BF); // mov sp, x29
-        self.emit(0xA940_7BFD); // ldp x29, x30, [sp]
-        self.emit(0x9100_03FF | (self.frame_bytes & 0xFFF) << 10); // add sp, sp, #low
-        if self.frame_bytes >> 12 > 0 {
-            self.emit(0x9140_03FF | (self.frame_bytes >> 12) << 10); // add sp, sp, #high, lsl #12
+        if self.frame_bytes <= SMALL_FRAME {
+            self.emit(0xA8C0_7BFD | (self.frame_bytes / 8) << 15); // ldp x29, x30, [sp], #frame
+        } else {
+            self.emit(0xA940_7BFD); // ldp x29, x30, [sp]
+            self.emit(0x9100_03FF | (self.frame_bytes & 0xFFF) << 10); // add sp, sp, #low
+            if self.frame_bytes >> 12 > 0 {
+                self.emit(0x9140_03FF | (self.frame_bytes >> 12) << 10); // add sp, sp, #high, lsl #12
+            }
         }
         self.emit(RET);
     }
@@ -598,21 +642,19 @@ impl<'a> Gen<'a> {
             }
             Stmt::Return(value) => self.return_stmt(id, value),
             Stmt::If { cond, then_block, else_branch } => {
-                self.value(cond);
-                self.drop_temps(id, true);
-                let skip_then = self.placeholder();
+                let skip_then = self.branch_if_false(id, cond);
                 self.block(then_block);
                 match else_branch {
-                    Else::None => self.patch_cbz(skip_then, false),
+                    Else::None => self.patch_false(skip_then),
                     Else::Block(body) => {
                         let skip_else = self.placeholder();
-                        self.patch_cbz(skip_then, false);
+                        self.patch_false(skip_then);
                         self.block(body);
                         self.patch_jump(skip_else);
                     }
                     Else::If(next) => {
                         let skip_else = self.placeholder();
-                        self.patch_cbz(skip_then, false);
+                        self.patch_false(skip_then);
                         self.stmt(next);
                         self.patch_jump(skip_else);
                     }
@@ -620,13 +662,11 @@ impl<'a> Gen<'a> {
             }
             Stmt::While { cond, body } => {
                 let start = self.words.len();
-                self.value(cond);
-                self.drop_temps(id, true);
-                let exit = self.placeholder();
+                let exit = self.branch_if_false(id, cond);
                 self.loops.push(LoopFixups { start, breaks: Vec::new(), continues: None, live: self.live.len() });
                 self.block(body);
                 self.jump_back(start);
-                self.patch_cbz(exit, false);
+                self.patch_false(exit);
                 let fixups = self.loops.pop().expect("loop stack is balanced");
                 for at in fixups.breaks {
                     self.patch_jump(at);
@@ -1080,13 +1120,144 @@ impl<'a> Gen<'a> {
 
     /// Leaves the address of a place in x0.
     fn place_address(&mut self, place: Place) {
+        self.place_address_in(place, X0);
+    }
+
+    /// Leaves the address of a place in `reg`, using no other register.
+    fn place_address_in(&mut self, place: Place, reg: u32) {
         if place.by_ref {
-            self.emit(ldr(X0, FP, frame(place.slot)));
+            self.emit(ldr(reg, FP, frame(place.slot)));
             if place.offset > 0 {
-                self.emit(add_slots(X0, X0, place.offset));
+                self.emit(add_slots(reg, reg, place.offset));
             }
         } else {
-            self.frame_address(X0, place.slot + place.offset);
+            self.frame_address(reg, place.slot + place.offset);
+        }
+    }
+
+    // ---- shortcuts -----------------------------------------------------
+    //
+    // The general scheme computes every value in x0 and parks earlier
+    // ones on the stack. A value that is a constant or sits in a variable
+    // can instead be loaded straight into the register where it is
+    // needed, after everything written before it has been evaluated.
+
+    /// True for a number or `bool` that one or two instructions can load
+    /// into any register without disturbing the others: a constant, a
+    /// variable, a field of a variable.
+    fn is_simple(&self, id: ExprId) -> bool {
+        match self.ast.exprs[id as usize] {
+            Expr::Int(_) | Expr::Bool(_) => true,
+            Expr::Ident(_) | Expr::Field { .. } => !self.is_aggregate(id) && self.place(id).is_some(),
+            _ => false,
+        }
+    }
+
+    /// Loads a simple value into `reg`. Uses x9 for a value behind a pointer.
+    fn load_simple(&mut self, id: ExprId, reg: u32) {
+        match self.ast.exprs[id as usize] {
+            Expr::Int(_) => self.mov_imm(reg, self.prog.ints[self.prog.expr_res[self.sh.e(id)] as usize]),
+            Expr::Bool(value) => self.mov_imm(reg, value as i64),
+            _ => {
+                let place = self.place(id).expect("a simple value that is not a constant is a place");
+                if place.by_ref {
+                    self.emit(ldr(X9, FP, frame(place.slot)));
+                    self.emit(ldr(reg, X9, place.offset));
+                } else {
+                    self.emit(ldr(reg, FP, frame(place.slot + place.offset)));
+                }
+            }
+        }
+    }
+
+    /// Evaluates the operands of a binary operation on numbers, left one
+    /// first, and says where they ended up. `constants` allows the right
+    /// one to stay a constant inside the instruction.
+    fn operands(&mut self, lhs: ExprId, rhs: ExprId, constants: bool) -> Operands {
+        self.value(lhs);
+        if constants {
+            if let Expr::Int(_) = self.ast.exprs[rhs as usize] {
+                let value = self.prog.ints[self.prog.expr_res[self.sh.e(rhs)] as usize];
+                if (0..4096).contains(&value) {
+                    return Operands::Constant(value as u32);
+                }
+            }
+        }
+        if self.is_simple(rhs) {
+            // Nothing runs in between, so the left one can wait in x1.
+            self.emit(0xAA00_03E1); // mov x1, x0
+            self.load_simple(rhs, X0);
+        } else {
+            self.emit(PUSH_X0);
+            self.value(rhs);
+            self.emit(pop(X1));
+        }
+        Operands::Registers
+    }
+
+    /// Compares two numbers or `bool`s and leaves the result in the flags.
+    fn compare_flags(&mut self, lhs: ExprId, rhs: ExprId) {
+        match self.operands(lhs, rhs, true) {
+            Operands::Constant(value) => self.emit(0xF100_001F | value << 10), // cmp x0, #value
+            Operands::Registers => self.emit(0xEB00_003F),                     // cmp x1, x0
+        }
+    }
+
+    /// Generates the test of an `if` or `while` and returns the branch
+    /// taken when it fails. A comparison branches on its flags directly
+    /// instead of first becoming a 0 or 1.
+    fn branch_if_false(&mut self, id: StmtId, cond: ExprId) -> FalseJump {
+        if self.prog.stmt_drops[self.sh.s(id)].1 == 0 {
+            if let Expr::Binary { op, lhs, rhs } = self.ast.exprs[cond as usize] {
+                if let (Some(code), false) = (comparison(op), self.ty(lhs) == Ty::Str) {
+                    self.compare_flags(lhs, rhs);
+                    // Jump on the opposite condition.
+                    return FalseJump::Flags(self.placeholder(), code ^ 1);
+                }
+            }
+        }
+        self.value(cond);
+        self.drop_temps(id, true);
+        FalseJump::Zero(self.placeholder())
+    }
+
+    fn patch_false(&mut self, jump: FalseJump) {
+        match jump {
+            FalseJump::Zero(at) => self.patch_cbz(at, false),
+            FalseJump::Flags(at, code) => self.patch_branch_if(at, code),
+        }
+    }
+
+    /// Whether argument `i` of the call target travels as an address.
+    fn arg_by_ref(&self, target: u32, i: usize) -> bool {
+        if target >= FIRST_BUILTIN {
+            matches!(target, BUILTIN_PRINT_STR | BUILTIN_EPRINT | BUILTIN_READ_FILE | BUILTIN_WRITE_FILE)
+        } else {
+            self.prog.fns[target as usize].params[i].by_ref
+        }
+    }
+
+    /// True when an argument can be put in its register directly: a
+    /// simple value, or the address of a variable or a part of one.
+    fn is_simple_arg(&self, arg: ExprId, by_ref: bool) -> bool {
+        match self.ast.exprs[arg as usize] {
+            Expr::MutArg(inner) => self.place(inner).is_some(),
+            _ if by_ref => self.place(arg).is_some(),
+            _ => self.is_simple(arg),
+        }
+    }
+
+    fn load_simple_arg(&mut self, arg: ExprId, by_ref: bool, reg: u32) {
+        match self.ast.exprs[arg as usize] {
+            Expr::MutArg(inner) => {
+                let place = self.place(inner).expect("checked by `is_simple_arg`");
+                self.place_address_in(place, reg);
+            }
+            _ if by_ref => {
+                let place = self.place(arg).expect("checked by `is_simple_arg`");
+                self.place_address_in(place, reg);
+            }
+            _ => self.load_simple(arg, reg),
         }
     }
 
@@ -1276,31 +1447,32 @@ impl<'a> Gen<'a> {
                 }
             }
             Expr::Binary { op, lhs, rhs } => {
-                self.value(lhs);
-                self.emit(PUSH_X0);
-                self.value(rhs);
-                self.emit(pop(X1));
-                // Here x1 holds the left operand and x0 the right one.
-                match op {
-                    BinOp::Add => self.emit(0x8B00_0020), // add x0, x1, x0
-                    BinOp::Sub => self.emit(0xCB00_0020), // sub x0, x1, x0
-                    BinOp::Mul => self.emit(0x9B00_7C20), // mul x0, x1, x0
-                    BinOp::Div => {
-                        self.trap_if_zero();
-                        self.emit(0x9AC0_0C20); // sdiv x0, x1, x0
+                if let Some(code) = comparison(op) {
+                    self.compare_flags(lhs, rhs);
+                    self.emit(cset_x0(code));
+                    return;
+                }
+                match self.operands(lhs, rhs, matches!(op, BinOp::Add | BinOp::Sub)) {
+                    Operands::Constant(value) => {
+                        // add x0, x0, #value / sub x0, x0, #value
+                        self.emit(if op == BinOp::Add { 0x9100_0000 } else { 0xD100_0000 } | value << 10);
                     }
-                    BinOp::Rem => {
-                        self.trap_if_zero();
-                        self.emit(0x9AC0_0C20 | X2); // sdiv x2, x1, x0
-                        self.emit(0x9B00_8440); // msub x0, x2, x0, x1
-                    }
-                    BinOp::Eq => self.compare(EQ),
-                    BinOp::NotEq => self.compare(NE),
-                    BinOp::Lt => self.compare(LT),
-                    BinOp::LtEq => self.compare(LE),
-                    BinOp::Gt => self.compare(GT),
-                    BinOp::GtEq => self.compare(GE),
-                    BinOp::And | BinOp::Or => unreachable!("handled above"),
+                    // Here x1 holds the left operand and x0 the right one.
+                    Operands::Registers => match op {
+                        BinOp::Add => self.emit(0x8B00_0020), // add x0, x1, x0
+                        BinOp::Sub => self.emit(0xCB00_0020), // sub x0, x1, x0
+                        BinOp::Mul => self.emit(0x9B00_7C20), // mul x0, x1, x0
+                        BinOp::Div => {
+                            self.trap_if_zero();
+                            self.emit(0x9AC0_0C20); // sdiv x0, x1, x0
+                        }
+                        BinOp::Rem => {
+                            self.trap_if_zero();
+                            self.emit(0x9AC0_0C20 | X2); // sdiv x2, x1, x0
+                            self.emit(0x9B00_8440); // msub x0, x2, x0, x1
+                        }
+                        _ => unreachable!("comparisons and the logical operators are handled above"),
+                    },
                 }
             }
             Expr::Call { args, .. } => self.call(id, args),
@@ -1329,23 +1501,39 @@ impl<'a> Gen<'a> {
         }
         // A method the standard library writes in azoL is a function
         // whose first argument is the receiver.
-        let mut count = 0;
-        for (i, arg) in receiver.into_iter().chain(arg_ids.iter().copied()).enumerate() {
-            let by_ref = if target >= FIRST_BUILTIN {
-                matches!(target, BUILTIN_PRINT_STR | BUILTIN_EPRINT | BUILTIN_READ_FILE | BUILTIN_WRITE_FILE)
-            } else {
-                self.prog.fns[target as usize].params[i].by_ref
-            };
+        let all = || receiver.into_iter().chain(arg_ids.iter().copied()).enumerate();
+        // Arguments are evaluated in the order written. Those up to the
+        // last one that needs real work wait on the stack; the simple
+        // ones after it go straight into their registers.
+        let mut worked = 0;
+        for (i, arg) in all() {
+            if !self.is_simple_arg(arg, self.arg_by_ref(target, i)) {
+                worked = i + 1;
+            }
+        }
+        for (i, arg) in all() {
+            let by_ref = self.arg_by_ref(target, i);
+            if i >= worked {
+                self.load_simple_arg(arg, by_ref, i as u32);
+                continue;
+            }
             match self.ast.exprs[arg as usize] {
                 Expr::MutArg(inner) => self.address(inner),
                 _ if by_ref => self.address(arg),
                 _ => self.value(arg),
             }
-            self.emit(PUSH_X0);
-            count += 1;
-        }
-        for reg in (0..count).rev() {
-            self.emit(pop(reg));
+            if i + 1 < worked {
+                self.emit(PUSH_X0);
+            } else {
+                // The last of them is still in x0: move it into place
+                // and bring the earlier ones back.
+                if i > 0 {
+                    self.emit(0xAA00_03E0 | i as u32); // mov x<i>, x0
+                }
+                for reg in (0..i as u32).rev() {
+                    self.emit(pop(reg));
+                }
+            }
         }
         match target {
             BUILTIN_PRINT_I64 => self.runtime(runtime::PRINT_I64),
@@ -1446,11 +1634,6 @@ impl<'a> Gen<'a> {
         }
     }
 
-    fn compare(&mut self, cond: u32) {
-        self.emit(0xEB00_003F); // cmp x1, x0
-        self.emit(cset_x0(cond));
-    }
-
     /// Division by zero stops the program with a message instead of
     /// producing garbage.
     fn trap_if_zero(&mut self) {
@@ -1498,6 +1681,10 @@ mod tests {
         assert_eq!(ldr(X0, X19, 0), 0xF9400260);
         assert_eq!(0x9100_0294u32 | 24 << 10, 0x91006294);
         assert_eq!(add_reg(X20, X20, X10), 0x8B0A0294);
+        assert_eq!(0xA980_7BFDu32 | ((32u32 / 8).wrapping_neg() & 0x7F) << 15, 0xA9BE7BFD); // stp x29, x30, [sp, #-32]!
+        assert_eq!(0xA980_7BFDu32 | ((496u32 / 8).wrapping_neg() & 0x7F) << 15, 0xA9A17BFD); // stp x29, x30, [sp, #-496]!
+        assert_eq!(0xA8C0_7BFDu32 | (32 / 8) << 15, 0xA8C27BFD); // ldp x29, x30, [sp], #32
+        assert_eq!(0xA8C0_7BFDu32 | (496 / 8) << 15, 0xA8DF7BFD); // ldp x29, x30, [sp], #496
         assert_eq!(cmp_x9_imm(1), 0xF100053F);
         assert_eq!(cmp_x9_imm(1000), 0xF10FA13F);
         assert_eq!(cset_x0(EQ), 0x9A9F17E0);
