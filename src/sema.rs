@@ -28,13 +28,13 @@ pub struct SemaError {
 
 type SResult<T> = Result<T, SemaError>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Ty {
     I64,
     Bool,
     Unit,
-    /// Text: a pointer and a length in bytes. So far only literals exist,
-    /// so the bytes always live in the executable itself.
+    /// Text: pointer, length in bytes, capacity. Capacity 0 means the
+    /// bytes live in the executable (a literal) and are not owned.
     Str,
     /// Index into `Program::structs`.
     Struct(u32),
@@ -56,9 +56,12 @@ pub const BUILTIN_PRINT_BOOL: u32 = u32::MAX - 1;
 pub const BUILTIN_PRINT_STR: u32 = u32::MAX - 2;
 pub const BUILTIN_LIST_PUSH: u32 = u32::MAX - 3;
 pub const BUILTIN_LIST_POP: u32 = u32::MAX - 4;
-pub const BUILTIN_LIST_LEN: u32 = u32::MAX - 5;
+/// `len()` of a list or of a string.
+pub const BUILTIN_LEN: u32 = u32::MAX - 5;
+pub const BUILTIN_STR_FROM_I64: u32 = u32::MAX - 6;
+pub const BUILTIN_STR_FROM_BOOL: u32 = u32::MAX - 7;
 /// Resolutions at or above this value are built-ins.
-pub const FIRST_BUILTIN: u32 = u32::MAX - 5;
+pub const FIRST_BUILTIN: u32 = u32::MAX - 7;
 /// Set in the resolution of a name whose stack slot holds a pointer.
 pub const BY_REF: u32 = 1 << 31;
 
@@ -80,8 +83,9 @@ pub struct StructInfo<'a> {
     /// Size in 8-byte slots.
     pub size: u32,
     pub fields: Vec<FieldInfo<'a>>,
-    /// Lists inside the struct: slot offset and element size in bytes.
-    pub heap: Vec<(u32, u32)>,
+    /// The lists and strings directly inside the struct: slot offset and
+    /// type. What their elements own is not listed here.
+    pub heap: Vec<(u32, Ty)>,
 }
 
 #[derive(Debug)]
@@ -110,8 +114,8 @@ pub struct FnInfo {
     pub sret_slot: Option<u32>,
     /// A slot the code generator may use to park an address.
     pub scratch_slot: u32,
-    /// Slots that must hold null on entry: the buffer pointers of
-    /// temporaries, which may be freed without ever having been filled.
+    /// Slots that must hold zero on entry: the capacities of temporaries,
+    /// which may be freed without ever having been filled.
     pub zero_slots: Vec<u32>,
 }
 
@@ -160,10 +164,10 @@ impl Program<'_> {
         size_of(&self.structs, ty)
     }
 
-    /// The lists a value of this type owns: slot offset and element size
-    /// in bytes. Empty for plain data.
-    pub fn heap_fields(&self, ty: Ty) -> Vec<(u32, u32)> {
-        heap_fields(&self.structs, &self.lists, ty)
+    /// The lists and strings directly inside a value of this type: slot
+    /// offset and type. Empty for plain data.
+    pub fn owned(&self, ty: Ty) -> Vec<(u32, Ty)> {
+        owned(&self.structs, ty)
     }
 
     pub fn needs_drop(&self, ty: Ty) -> bool {
@@ -174,16 +178,15 @@ impl Program<'_> {
 fn size_of(structs: &[StructInfo], ty: Ty) -> u32 {
     match ty {
         Ty::I64 | Ty::Bool => 1,
-        Ty::Str => 2,
-        Ty::List(_) => 3,
+        Ty::Str | Ty::List(_) => 3,
         Ty::Unit => 0,
         Ty::Struct(index) => structs[index as usize].size,
     }
 }
 
-fn heap_fields(structs: &[StructInfo], lists: &[Ty], ty: Ty) -> Vec<(u32, u32)> {
+fn owned(structs: &[StructInfo], ty: Ty) -> Vec<(u32, Ty)> {
     match ty {
-        Ty::List(index) => vec![(0, size_of(structs, lists[index as usize]) * 8)],
+        Ty::Str | Ty::List(_) => vec![(0, ty)],
         Ty::Struct(index) => structs[index as usize].heap.clone(),
         _ => Vec::new(),
     }
@@ -191,7 +194,7 @@ fn heap_fields(structs: &[StructInfo], lists: &[Ty], ty: Ty) -> Vec<(u32, u32)> 
 
 fn needs_drop(structs: &[StructInfo], ty: Ty) -> bool {
     match ty {
-        Ty::List(_) => true,
+        Ty::Str | Ty::List(_) => true,
         Ty::Struct(index) => !structs[index as usize].heap.is_empty(),
         _ => false,
     }
@@ -204,6 +207,9 @@ struct Local<'a> {
     mutable: bool,
     by_ref: bool,
     is_param: bool,
+    /// False for a view of data another value owns: a parameter, or the
+    /// variable of a `for` loop, which looks at an element in the list.
+    owns: bool,
 }
 
 /// A variable or a part of one, as a range of slots.
@@ -229,6 +235,8 @@ enum What<'a> {
 enum Holder {
     /// An argument of a call that has not finished yet.
     Call,
+    /// The left side of an operator whose right side is being evaluated.
+    Operator,
     /// A `for` loop that is iterating over the place.
     Loop,
 }
@@ -245,11 +253,7 @@ struct Checker<'a> {
     src: &'a str,
     structs: Vec<StructInfo<'a>>,
     struct_names: HashMap<&'a str, u32>,
-    /// True once struct sizes are known.
-    laid_out: bool,
     lists: Vec<Ty>,
-    /// List types written before struct layout: index and source offset.
-    early_lists: Vec<(u32, u32)>,
     fns: Vec<FnInfo>,
     fn_names: HashMap<&'a str, u32>,
     expr_res: Vec<u32>,
@@ -281,9 +285,7 @@ pub fn check<'a>(ast: &'a Ast, src: &'a str) -> Result<Program<'a>, SemaError> {
         src,
         structs: Vec::new(),
         struct_names: HashMap::new(),
-        laid_out: false,
         lists: Vec::new(),
-        early_lists: Vec::new(),
         fns: Vec::new(),
         fn_names: HashMap::new(),
         expr_res: vec![0; ast.exprs.len()],
@@ -377,19 +379,6 @@ impl<'a> Checker<'a> {
         Ty::List(index as u32)
     }
 
-    /// For now a list's elements must be plain data, so that copying and
-    /// freeing a list never has to visit its elements.
-    fn check_element(&self, elem: Ty, at: u32) -> SResult<()> {
-        match elem {
-            Ty::List(_) => err(at, "lists of lists are not supported by `azol build` yet"),
-            Ty::Struct(_) if self.needs_drop(elem) => err(
-                at,
-                format!("a list of `{}` is not supported yet, because `{}` contains a list", self.ty_name(elem), self.ty_name(elem)),
-            ),
-            _ => Ok(()),
-        }
-    }
-
     fn ty(&mut self, id: TypeId) -> SResult<Ty> {
         let ty = self.ast.types[id as usize];
         let name = ty.name.text(self.src);
@@ -399,13 +388,7 @@ impl<'a> Checker<'a> {
                 return err(ty.name.start, "`List` takes one element type, as in `List[i64]`");
             }
             let elem = self.ty(args[0])?;
-            let list = self.list_of(elem);
-            if self.laid_out {
-                self.check_element(elem, ty.name.start)?;
-            } else if let Ty::List(index) = list {
-                self.early_lists.push((index, ty.name.start));
-            }
-            return Ok(list);
+            return Ok(self.list_of(elem));
         }
         if ty.args.len > 0 {
             return err(ty.name.start, "generic types other than `List` are not supported by `azol build` yet");
@@ -468,25 +451,22 @@ impl<'a> Checker<'a> {
         for index in 0..self.structs.len() {
             self.layout(index, &mut state, &decls)?;
         }
-        // With every size known, find the lists each struct owns.
+        // With every size known, find the lists and strings each struct
+        // holds, including those inside nested structs.
         for index in 0..self.structs.len() {
             self.structs[index].heap = self.collect_heap(Ty::Struct(index as u32));
-        }
-        self.laid_out = true;
-        for &(list, at) in &self.early_lists {
-            self.check_element(self.lists[list as usize], at)?;
         }
         Ok(())
     }
 
-    fn collect_heap(&self, ty: Ty) -> Vec<(u32, u32)> {
+    fn collect_heap(&self, ty: Ty) -> Vec<(u32, Ty)> {
         match ty {
-            Ty::List(index) => vec![(0, self.size_of(self.lists[index as usize]) * 8)],
+            Ty::Str | Ty::List(_) => vec![(0, ty)],
             Ty::Struct(index) => {
                 let mut out = Vec::new();
                 for field in &self.structs[index as usize].fields {
-                    for (offset, bytes) in self.collect_heap(field.ty) {
-                        out.push((field.offset + offset, bytes));
+                    for (offset, owned) in self.collect_heap(field.ty) {
+                        out.push((field.offset + offset, owned));
                     }
                 }
                 out
@@ -533,8 +513,8 @@ impl<'a> Checker<'a> {
             if generics.len > 0 {
                 return err(name.start, "generic functions are not supported by `azol build` yet");
             }
-            if text == "print" {
-                return err(name.start, "`print` is built in and cannot be redefined");
+            if text == "print" || text == "str" {
+                return err(name.start, format!("`{text}` is built in and cannot be redefined"));
             }
             let param_ids = self.ast.list(params);
             if param_ids.len() > MAX_PARAMS {
@@ -588,6 +568,7 @@ impl<'a> Checker<'a> {
                 mutable: info.mutable,
                 by_ref: info.by_ref,
                 is_param: true,
+                owns: false,
             });
         }
         if self.ret.is_aggregate() {
@@ -662,6 +643,11 @@ impl<'a> Checker<'a> {
     /// Called where the value of `id` is stored somewhere that will own
     /// it. A temporary hands its buffers over; anything else is copied.
     fn take(&mut self, id: ExprId) -> bool {
+        if let Expr::Str(_) = self.ast.exprs[id as usize] {
+            // A literal owns nothing, so there is nothing to copy either.
+            self.expr_moved[id as usize] = true;
+            return true;
+        }
         match self.pending.iter().position(|&(expr, ..)| expr == id) {
             Some(at) => {
                 self.pending.remove(at);
@@ -677,8 +663,8 @@ impl<'a> Checker<'a> {
     fn finish(&mut self, id: StmtId) {
         let start = self.drops.len() as u32;
         for (_, slot, ty) in std::mem::take(&mut self.pending) {
-            for (offset, _) in heap_fields(&self.structs, &self.lists, ty) {
-                self.zero_slots.push(slot + offset);
+            for (offset, _) in owned(&self.structs, ty) {
+                self.zero_slots.push(slot + offset + 2);
             }
             self.drops.push((slot, ty));
         }
@@ -708,7 +694,7 @@ impl<'a> Checker<'a> {
                 self.take(value);
                 self.finish(id);
                 let slot = self.alloc(self.size_of(value_ty), name.start)?;
-                self.locals.push(Local { name: name.text(self.src), slot, ty: value_ty, mutable, by_ref: false, is_param: false });
+                self.locals.push(Local { name: name.text(self.src), slot, ty: value_ty, mutable, by_ref: false, is_param: false, owns: true });
                 self.stmt_slot[id as usize] = slot;
             }
             Stmt::Assign { target, value } => {
@@ -771,7 +757,7 @@ impl<'a> Checker<'a> {
                         // buffers to the caller instead of copying them.
                         if let Expr::Ident(name) = self.ast.exprs[value as usize] {
                             let local = self.lookup(name.text(self.src)).expect("checked: the name resolves");
-                            if !local.is_param && !local.by_ref {
+                            if local.owns {
                                 self.expr_moved[value as usize] = true;
                             }
                         }
@@ -820,10 +806,11 @@ impl<'a> Checker<'a> {
                 self.stmt_slot[id as usize] = base;
                 let scope = self.locals.len();
                 let item_slot = self.alloc(self.size_of(elem), item.start)?;
-                self.locals.push(Local { name: item.text(self.src), slot: item_slot, ty: elem, mutable: false, by_ref: false, is_param: false });
+                // The loop variable looks at the element; the list keeps owning it.
+                self.locals.push(Local { name: item.text(self.src), slot: item_slot, ty: elem, mutable: false, by_ref: false, is_param: false, owns: false });
                 if let Some(index) = index {
                     let index_slot = self.alloc(1, index.start)?;
-                    self.locals.push(Local { name: index.text(self.src), slot: index_slot, ty: Ty::I64, mutable: false, by_ref: false, is_param: false });
+                    self.locals.push(Local { name: index.text(self.src), slot: index_slot, ty: Ty::I64, mutable: false, by_ref: false, is_param: false, owns: false });
                 }
                 let borrows = self.borrows.len();
                 if self.stmt_flag[id as usize] == FOR_IN_PLACE {
@@ -906,6 +893,7 @@ impl<'a> Checker<'a> {
                     match other.holder {
                         Holder::Loop => format!("cannot change `{name}` while a loop is going through it"),
                         Holder::Call => format!("cannot change `{name}` here: it is also passed to a function in the same expression"),
+                        Holder::Operator => format!("cannot change `{name}` here: it is still being read earlier in the same expression"),
                     },
                 );
             }
@@ -924,6 +912,7 @@ impl<'a> Checker<'a> {
                     match other.holder {
                         Holder::Loop => format!("cannot pass `{name}` as `mut` while a loop is going through it"),
                         Holder::Call => format!("`{name}` is passed twice in one call and one of the uses is `mut`; copy it into a variable first"),
+                        Holder::Operator => format!("cannot pass `{name}` as `mut` here: it is still being read earlier in the same expression"),
                     },
                 );
             }
@@ -1003,7 +992,7 @@ impl<'a> Checker<'a> {
                 }
                 self.expr_res[id as usize] = self.strings.len() as u32;
                 self.strings.push((offset, self.data.len() as u32 - offset));
-                self.expr_tmp[id as usize] = self.alloc(2, pos)?;
+                self.expr_tmp[id as usize] = self.alloc(3, pos)?;
                 Ok(Ty::Str)
             }
             Expr::Ident(name) => {
@@ -1034,7 +1023,24 @@ impl<'a> Checker<'a> {
             Expr::Binary { op, lhs, rhs } => {
                 let what = What::Operator(op);
                 match op {
-                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
+                    BinOp::Add => {
+                        let left = self.expr(lhs)?;
+                        if left != Ty::Str {
+                            if left != Ty::I64 {
+                                return err(
+                                    self.ast.expr_pos[lhs as usize],
+                                    format!("`+` needs `i64` or `str` but this is `{}`", self.ty_name(left)),
+                                );
+                            }
+                            self.expect(rhs, Ty::I64, what)?;
+                            return Ok(Ty::I64);
+                        }
+                        self.string_operands(lhs, rhs, what)?;
+                        // Joining makes a new string, which this temporary owns.
+                        self.expr_tmp[id as usize] = self.temp(id, Ty::Str)?;
+                        Ok(Ty::Str)
+                    }
+                    BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
                         self.expect(lhs, Ty::I64, what)?;
                         self.expect(rhs, Ty::I64, what)?;
                         Ok(Ty::I64)
@@ -1054,7 +1060,10 @@ impl<'a> Checker<'a> {
                         match left {
                             Ty::Unit => return err(self.ast.expr_pos[lhs as usize], "this expression has no value to compare"),
                             Ty::Struct(_) => return err(pos, format!("structs cannot be compared with `{}` yet; compare their fields", op.symbol())),
-                            Ty::Str => return err(pos, format!("strings cannot be compared with `{}` yet", op.symbol())),
+                            Ty::Str => {
+                                self.string_operands(lhs, rhs, what)?;
+                                return Ok(Ty::Bool);
+                            }
                             Ty::List(_) => return err(pos, format!("lists cannot be compared with `{}` yet", op.symbol())),
                             Ty::I64 | Ty::Bool => {}
                         }
@@ -1107,9 +1116,12 @@ impl<'a> Checker<'a> {
                 if elem == Ty::Unit {
                     return err(pos, "this expression has no value to put in a list");
                 }
-                self.check_element(elem, pos)?;
-                for &item in item_ids {
-                    self.expect(item, elem, What::Text("this list's element"))?;
+                for (i, &item) in item_ids.iter().enumerate() {
+                    if i > 0 || hinted.is_some() {
+                        self.expect(item, elem, What::Text("this list's element"))?;
+                    }
+                    // The list takes a temporary's buffers over.
+                    self.take(item);
                 }
                 let ty = self.list_of(elem);
                 self.expr_tmp[id as usize] = self.temp(id, ty)?;
@@ -1155,6 +1167,19 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Checks the right operand of a string `+`, `==` or `!=` whose left
+    /// operand is already checked. The left string is read after the
+    /// right side has run, so it must not change in between.
+    fn string_operands(&mut self, lhs: ExprId, rhs: ExprId, what: What) -> SResult<()> {
+        let outer = self.borrows.len();
+        if let Some(place) = self.place(lhs) {
+            self.borrows.push(Borrow { place, mutable: false, holder: Holder::Operator });
+        }
+        self.expect(rhs, Ty::Str, what)?;
+        self.borrows.truncate(outer);
+        Ok(())
+    }
+
     fn call(&mut self, id: ExprId, callee: ExprId, args: List) -> SResult<Ty> {
         let pos = self.ast.expr_pos[id as usize];
         let arg_ids = self.ast.list(args);
@@ -1184,6 +1209,24 @@ impl<'a> Checker<'a> {
                 }
             };
             return Ok(Ty::Unit);
+        }
+        if text == "str" {
+            if arg_ids.len() != 1 {
+                return err(pos, format!("`str` takes 1 argument but {} were given", arg_ids.len()));
+            }
+            let arg = arg_ids[0];
+            self.expr_res[id as usize] = match self.expr(arg)? {
+                Ty::I64 => BUILTIN_STR_FROM_I64,
+                Ty::Bool => BUILTIN_STR_FROM_BOOL,
+                other => {
+                    return err(
+                        self.ast.expr_pos[arg as usize],
+                        format!("`str` turns an `i64` or a `bool` into text but this is `{}`", self.ty_name(other)),
+                    );
+                }
+            };
+            self.expr_tmp[id as usize] = self.temp(id, Ty::Str)?;
+            return Ok(Ty::Str);
         }
         let Some(&index) = self.fn_names.get(text) else {
             return if self.struct_names.contains_key(text) {
@@ -1259,6 +1302,16 @@ impl<'a> Checker<'a> {
         let pos = self.ast.expr_pos[id as usize];
         let base_ty = self.expr(base)?;
         let text = name.text(self.src);
+        if base_ty == Ty::Str {
+            if text != "len" {
+                return err(name.start, format!("`str` has no method `{text}`; its only method so far is `len()`"));
+            }
+            if !args.is_empty() {
+                return err(pos, format!("`len` takes 0 arguments but {} were given", args.len()));
+            }
+            self.expr_res[id as usize] = BUILTIN_LEN;
+            return Ok(Ty::I64);
+        }
         let Ty::List(list) = base_ty else {
             return err(name.start, format!("`{}` has no method `{text}`", self.ty_name(base_ty)));
         };
@@ -1273,7 +1326,7 @@ impl<'a> Checker<'a> {
         match text {
             "len" => {
                 arity(0)?;
-                self.expr_res[id as usize] = BUILTIN_LIST_LEN;
+                self.expr_res[id as usize] = BUILTIN_LEN;
                 Ok(Ty::I64)
             }
             "push" | "pop" => {
@@ -1294,6 +1347,8 @@ impl<'a> Checker<'a> {
                 }
                 if text == "push" {
                     self.expect(args[0], elem, What::Text("`push`"))?;
+                    // The list takes a temporary's buffers over.
+                    self.take(args[0]);
                     self.check_change(base, &place)?;
                     // The element waits here while the list makes room.
                     self.expr_tmp[id as usize] = self.alloc(self.size_of(elem), pos)?;
@@ -1302,7 +1357,8 @@ impl<'a> Checker<'a> {
                 } else {
                     self.check_change(base, &place)?;
                     if elem.is_aggregate() {
-                        self.expr_tmp[id as usize] = self.alloc(self.size_of(elem), pos)?;
+                        // The element leaves the list; this temporary owns it now.
+                        self.expr_tmp[id as usize] = self.temp(id, elem)?;
                     }
                     self.expr_res[id as usize] = BUILTIN_LIST_POP;
                     Ok(elem)
@@ -1362,8 +1418,8 @@ mod tests {
         let program = check(&ast, src).unwrap();
         assert_eq!(program.data, b"hi\nq\"\\\t");
         assert_eq!(program.strings, vec![(0, 3), (3, 4)]);
-        assert_eq!(program.structs[0].size, 3);
-        assert_eq!(program.structs[0].fields[1].offset, 2);
+        assert_eq!(program.structs[0].size, 4);
+        assert_eq!(program.structs[0].fields[1].offset, 3);
     }
 
     #[test]
@@ -1392,8 +1448,12 @@ mod tests {
         assert_eq!(error(&in_main("let a = 1 < 2 < 3")), "`<` needs `i64` but this is `bool`");
         assert_eq!(error(&with_point(&in_main("print(Point { x: 1, y: 2 })"))), "`print` takes an `i64`, a `bool` or a `str` but this is `Point`");
         assert_eq!(error(&in_main("print(print(1))")), "`print` takes an `i64`, a `bool` or a `str` but this is `no value`");
-        assert_eq!(error(&in_main("let a = \"x\" == \"y\"")), "strings cannot be compared with `==` yet");
-        assert_eq!(error(&in_main("let a = \"x\" + 1")), "`+` needs `i64` but this is `str`");
+        assert_eq!(error(&in_main("let a = \"x\" + 1")), "`+` needs `str` but this is `i64`");
+        assert_eq!(error(&in_main("let a = 1 + \"x\"")), "`+` needs `i64` but this is `str`");
+        assert_eq!(error(&in_main("let a = true + 1")), "`+` needs `i64` or `str` but this is `bool`");
+        assert_eq!(error(&in_main("let a = \"x\" == 1")), "`==` needs `str` but this is `i64`");
+        assert_eq!(error(&in_main("let a = \"x\" - \"y\"")), "`-` needs `i64` but this is `str`");
+        assert_eq!(error(&in_main("let a = \"x\" < \"y\"")), "`<` needs `i64` but this is `str`");
         assert_eq!(error(&in_main("let a: str = 1")), "expected `str` but this is `i64`");
         assert_eq!(error(&in_main("let a = print(1)")), "this expression has no value to store");
     }
@@ -1552,9 +1612,8 @@ mod tests {
         assert_eq!(error(&list_main("let n = 1\nn.push(2)")), "`i64` has no method `push`");
         assert_eq!(error(&list_main("let xs = [1]\nif xs == xs {\n}")), "lists cannot be compared with `==` yet");
         assert_eq!(error(&list_main("for x in 5 {\n}")), "`for` needs a list to go through but this is `i64`");
-        assert_eq!(error(&list_main("let xs = [[1]]")), "lists of lists are not supported by `azol build` yet");
-        assert_eq!(error(&list_main("let bs = [Bag { items: [1], name: \"a\" }]")), "a list of `Bag` is not supported yet, because `Bag` contains a list");
-        assert_eq!(error("struct A {\n xs: List[B]\n}\nstruct B {\n ys: List[i64]\n}\nfn main() {\n}"), "a list of `B` is not supported yet, because `B` contains a list");
+        assert_eq!(error(&list_main("let xs = [[1], [true]]")), "this list's element needs `i64` but this is `bool`");
+        assert_eq!(error(&list_main("var xs = [[1]]\nxs.push(2)")), "`push` needs `List[i64]` but this is `i64`");
         assert_eq!(error("fn f(xs: List) {\n}\nfn main() {\n}"), "`List` takes one element type, as in `List[i64]`");
         assert_eq!(error("fn f(xs: Map[i64]) {\n}\nfn main() {\n}"), "generic types other than `List` are not supported by `azol build` yet");
     }
@@ -1603,13 +1662,56 @@ mod tests {
         let ast = parse(&src, &tokens).unwrap();
         let program = check(&ast, &src).unwrap();
         // One move per temporary that is stored: make() twice, [1], [7],
-        // the two struct literals, and `[1, 2]` returned inside `make`.
-        // Copies of `a` are not moves.
-        assert_eq!(program.expr_moved.iter().filter(|&&moved| moved).count(), 7);
+        // the two struct literals, `[1, 2]` returned inside `make`, and
+        // the two string literals, which own nothing and are never
+        // copied. Copies of `a` are not moves.
+        assert_eq!(program.expr_moved.iter().filter(|&&moved| moved).count(), 9);
         // Only `total(make())` leaves a temporary for its statement to free.
         assert_eq!(program.drops.len(), 1);
         let main = &program.fns[program.main as usize];
         assert_eq!(main.zero_slots.len(), 1);
+    }
+
+    #[test]
+    fn strings_and_nested_lists_are_accepted() {
+        assert!(check_src(&in_main("let a = \"x\" + \"y\"\nlet b = a + str(1) + str(true)\nif a == b || a != \"xy\" {\nprint(a.len())\n}")).is_ok());
+        assert!(check_src(&list_main("var grid = [[1, 2], [3]]\ngrid.push([4])\ngrid[0].push(5)\ngrid[1][0] = 6\nlet row = grid.pop()\nfor line in grid {\nfor x in line {\nprint(x + row.len())\n}\n}")).is_ok());
+        assert!(check_src(&list_main("var bags = [Bag { items: [1], name: \"a\" }]\nbags[0].items.push(2)\nbags.push(bags[0])\nvar names: List[str] = []\nfor b in bags {\nnames.push(b.name + \"!\")\n}")).is_ok());
+        assert!(check_src("struct Node {\n value: i64\n children: List[Node]\n}\nfn size(n: Node) -> i64 {\n var total = 1\n for child in n.children {\n total = total + size(child)\n }\n return total\n}\nfn main() {\n let leaf = Node { value: 1, children: [] }\n let root = Node { value: 0, children: [leaf, leaf] }\n print(size(root))\n}").is_ok());
+    }
+
+    #[test]
+    fn string_errors() {
+        assert_eq!(error(&in_main("let a = str(\"x\")")), "`str` turns an `i64` or a `bool` into text but this is `str`");
+        assert_eq!(error(&in_main("let a = str()")), "`str` takes 1 argument but 0 were given");
+        assert_eq!(error(&in_main("let a = \"x\"\nprint(a.size())")), "`str` has no method `size`; its only method so far is `len()`");
+        assert_eq!(error("fn str(a: i64) {\n}\nfn main() {\n}"), "`str` is built in and cannot be redefined");
+        assert_eq!(error(&in_main("var a = \"x\"\na = 1")), "expected `str` but this is `i64`");
+    }
+
+    #[test]
+    fn a_string_cannot_change_while_an_operator_still_reads_it() {
+        let fns = "fn grow(xs: mut List[str]) -> str {\n xs.push(\"more\")\n return \"x\"\n}\nfn set(s: mut str) -> str {\n s = \"new\"\n return s\n}\n";
+        let main = |body: &str| format!("{fns}{}", in_main(body));
+        let reading = "it is still being read earlier in the same expression";
+        assert_eq!(error(&main("var xs = [\"a\"]\nlet s = xs[0] + grow(mut xs)")), format!("cannot pass `xs` as `mut` here: {reading}"));
+        assert_eq!(error(&main("var s = \"a\"\nif s == set(mut s) {\n}")), format!("cannot pass `s` as `mut` here: {reading}"));
+        assert_eq!(error(&main("var xs = [\"a\"]\nlet s = xs[0] + xs.pop()")), format!("cannot change `xs` here: {reading}"));
+        // The other order is fine: the call has finished before the read.
+        assert!(check_src(&main("var xs = [\"a\"]\nlet s = grow(mut xs) + xs[0]")).is_ok());
+        // So is this: `s + s` is finished and stored before `set` runs.
+        assert!(check_src(&main("var s = \"a\"\nlet t = s + s + set(mut s)")).is_ok());
+        assert_eq!(error(&main("var s = \"a\"\nlet t = s + (s + set(mut s))")), format!("cannot pass `s` as `mut` here: {reading}"));
+    }
+
+    #[test]
+    fn a_loop_variable_is_a_view_and_is_never_moved_out() {
+        let src = "fn pick(rows: List[List[i64]]) -> List[i64] {\n for row in rows {\n return row\n }\n return []\n}\nfn main() {\n}";
+        let tokens = lex(src).unwrap();
+        let ast = parse(src, &tokens).unwrap();
+        let program = check(&ast, src).unwrap();
+        // `return row` must copy: only the `[]` is moved.
+        assert_eq!(program.expr_moved.iter().filter(|&&moved| moved).count(), 1);
     }
 
     #[test]

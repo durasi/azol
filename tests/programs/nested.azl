@@ -1,0 +1,180 @@
+// expect-exit: 0
+// expect-output: 3 5 21 85 85 199 2 3 4 1 185 10 4 1 1 1 1 4 bb 15 120 15 4 1011 red red! 15 114 cd 3 115 15 3 5 4 0 7
+// Values that own values that own values: lists of lists, lists of
+// structs that hold lists, and a tree. The test harness checks that
+// every buffer, at every depth, is freed exactly once.
+struct Node {
+    value: i64
+    children: List[Node]
+}
+
+struct Team {
+    name: str
+    members: List[str]
+    scores: List[List[i64]]
+}
+
+fn leaf(value: i64) -> Node {
+    return Node { value: value, children: [] }
+}
+
+fn tree(depth: i64, value: i64) -> Node {
+    var node = leaf(value)
+    if depth > 0 {
+        node.children.push(tree(depth - 1, value * 2))
+        node.children.push(tree(depth - 1, value * 2 + 1))
+    }
+    return node
+}
+
+fn size(n: Node) -> i64 {
+    var total = 1
+    for child in n.children {
+        total = total + size(child)
+    }
+    return total
+}
+
+fn sum(n: Node) -> i64 {
+    var total = n.value
+    for child in n.children {
+        total = total + sum(child)
+    }
+    return total
+}
+
+// Cuts off the last child at every level along the leftmost path.
+fn prune(n: mut Node) {
+    if n.children.len() > 0 {
+        let dropped = n.children.pop()
+        prune(mut n.children[0])
+    }
+}
+
+fn first_row(grid: List[List[i64]]) -> List[i64] {
+    for row in grid {
+        return row
+    }
+    return []
+}
+
+fn total(grid: List[List[i64]]) -> i64 {
+    var t = 0
+    for row in grid {
+        for x in row {
+            t = t + x
+        }
+    }
+    return t
+}
+
+fn identity(n: i64) -> List[List[i64]] {
+    var grid: List[List[i64]] = []
+    var i = 0
+    while i < n {
+        var row: List[i64] = []
+        var j = 0
+        while j < n {
+            if i == j {
+                row.push(1)
+            } else {
+                row.push(0)
+            }
+            j = j + 1
+        }
+        grid.push(row)
+        i = i + 1
+    }
+    return grid
+}
+
+fn main() {
+    var grid = [[1, 2, 3], [4, 5], [6]]
+    print(grid.len())
+    print(grid[1][1])
+    print(total(grid))
+    grid[0].push(10)
+    grid[2][0] = 60
+    print(total(grid))
+
+    // A copy is deep: changing it leaves the original alone.
+    var copy = grid
+    copy[1].push(100)
+    copy.push([7, 7])
+    print(total(grid))
+    print(total(copy))
+    let row = copy.pop()
+    print(row.len())
+    print(copy.len())
+    grid[1] = grid[0]
+    print(grid[1].len())
+    grid[0][0] = 99
+    print(grid[1][0])
+    grid = copy
+    print(total(grid))
+    print(first_row(grid)[3])
+    print(total(identity(4)))
+    print(identity(3)[2][2])
+    for i, r in identity(3) {
+        print(r[i])
+    }
+
+    var words: List[str] = []
+    for w in ["a", "b"] {
+        words.push(w + w)
+        words.push(w)
+    }
+    print(words.len())
+    print(words[2])
+
+    let t = tree(3, 1)
+    print(size(t))
+    print(sum(t))
+    var t2 = t
+    prune(mut t2)
+    print(size(t))
+    print(size(t2))
+    t2.children[0].children[0].value = 1000
+    print(sum(t2))
+
+    var team = Team { name: "red", members: ["a", "b"], scores: [[1, 2], [3]] }
+    team.members.push("c" + "d")
+    team.scores[1].push(4)
+    team.scores.push([5])
+    let team2 = team
+    team.name = team.name + "!"
+    team.scores[0][0] = 100
+    print(team2.name)
+    print(team.name)
+    print(total(team2.scores))
+    print(total(team.scores))
+    print(team2.members[2])
+
+    var teams = [team, team2]
+    teams[0].scores[0].push(1)
+    teams.push(teams[1])
+    print(teams.len())
+    print(total(teams[0].scores))
+    print(total(teams[2].scores))
+    let popped = teams.pop()
+    print(popped.members.len())
+
+    var forest: List[Node] = []
+    forest.push(tree(1, 1))
+    forest.push(leaf(9))
+    forest[0].children[1].children.push(leaf(5))
+    var nodes = 0
+    for n in forest {
+        nodes = nodes + size(n)
+    }
+    print(nodes)
+    forest[1] = forest[0]
+    print(size(forest[1]))
+    forest = []
+    print(forest.len())
+
+    if total(identity(2)) == 3 && total(identity(50)) == 0 {
+        print(0)
+    }
+    print(size(tree(2, 1)))
+}

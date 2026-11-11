@@ -1,0 +1,138 @@
+// expect-exit: 0
+// expect-line: ab
+// expect-line: Hello, World
+// expect-line: 12
+// expect-line: Hello
+// expect-line: Hello, Ada! You are 36.
+// expect-line: ababab
+// expect-line: 0
+// expect-line: a, b, c
+// expect-line: 0
+// expect-line: wow!!
+// expect-line: wow!!
+// expect-line: wow!!?
+// expect-line: 42-70
+// expect-line: true/false
+// expect-line: 19
+// expect-line: true
+// expect-line: false
+// expect-line: true
+// expect-line: true
+// expect-line: true
+// expect-line: picked
+// expect-line: Grace H
+// expect-line: Ada
+// expect-line: Alan T
+// expect-line: Alan T.
+// expect-line: 2
+// expect-line: Linus T
+// expect-line: changed
+// expect-line: 0x1y2z
+// expect-line: ünïçödé
+// expect-line: true
+// expect-line: line
+// expect-line: break
+// expect-line: -9223372036854775808
+struct Person {
+    name: str
+    age: i64
+}
+
+fn greet(p: Person) -> str {
+    return "Hello, " + p.name + "! You are " + str(p.age) + "."
+}
+
+fn repeat(s: str, n: i64) -> str {
+    var out = ""
+    var i = 0
+    while i < n {
+        out = out + s
+        i = i + 1
+    }
+    return out
+}
+
+fn join(parts: List[str], sep: str) -> str {
+    var out = ""
+    for i, part in parts {
+        if i > 0 {
+            out = out + sep
+        }
+        out = out + part
+    }
+    return out
+}
+
+fn shout(s: mut str) {
+    s = s + "!"
+}
+
+fn pick(flag: bool) -> str {
+    if flag {
+        return "yes"
+    }
+    return "no" + "pe"
+}
+
+fn main() {
+    print("a" + "b")
+    let hello = "Hello"
+    let world = "World"
+    let both = hello + ", " + world
+    print(both)
+    print(both.len())
+    print(hello)
+    print(greet(Person { name: "Ada", age: 36 }))
+    print(repeat("ab", 3))
+    print(repeat("x", 0).len())
+    print(join(["a", "b", "c"], ", "))
+    print(join([], "-").len())
+
+    var s = "wow"
+    shout(mut s)
+    shout(mut s)
+    print(s)
+    var t = s
+    t = t + "?"
+    print(s)
+    print(t)
+
+    print(str(42) + str(-7) + str(0))
+    print(str(true) + "/" + str(false))
+    print(str(9223372036854775807).len())
+    print("abc" == "abc")
+    print("abc" == "abd")
+    print("abc" != "ab")
+    print(both == "Hello, " + "World")
+    print("" == "")
+    if pick(true) == "yes" && pick(false) == "nope" {
+        print("picked")
+    }
+
+    var names = ["Grace", "Ada"]
+    names.push("Alan" + " " + "T")
+    names[0] = names[0] + " H"
+    for name in names {
+        print(name)
+    }
+    let last = names.pop()
+    print(last + ".")
+    print(names.len())
+
+    var p = Person { name: "Li" + "nus", age: 1 }
+    p.name = p.name + " T"
+    let q = p
+    p.name = "changed"
+    print(q.name)
+    print(p.name)
+
+    var acc = ""
+    for i, letter in ["x", "y", "z"] {
+        acc = acc + str(i) + letter
+    }
+    print(acc)
+    print("ünï" + "çödé")
+    print(("a" + "b") == ("ab" + ""))
+    print("line" + "\n" + "break")
+    print(str(-9223372036854775807 - 1))
+}

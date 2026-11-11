@@ -1,0 +1,36 @@
+// Text, lists and structs together. Every value here is freed
+// automatically, and copies never share memory.
+//
+//     azol build examples/players.azl
+//     ./examples/players
+
+struct Player {
+    name: str
+    scores: List[i64]
+}
+
+fn total(scores: List[i64]) -> i64 {
+    var sum = 0
+    for score in scores {
+        sum = sum + score
+    }
+    return sum
+}
+
+fn describe(p: Player) -> str {
+    return p.name + ": " + str(total(p.scores)) + " points in " + str(p.scores.len()) + " rounds"
+}
+
+fn main() {
+    var ada = Player { name: "Ada", scores: [12, 30] }
+    ada.scores.push(25)
+
+    // A copy: Grace starts with Ada's scores but owns her own list.
+    var grace = ada
+    grace.name = "Grace"
+    grace.scores.push(40)
+
+    for player in [ada, grace] {
+        print(describe(player))
+    }
+}

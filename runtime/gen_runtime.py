@@ -8,7 +8,7 @@ import os, struct, subprocess, sys, tempfile
 import capstone, lief
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-IMPORTS = ["_write", "_exit", "_malloc", "_realloc", "_free", "_memcpy"]
+IMPORTS = ["_write", "_exit", "_malloc", "_realloc", "_free", "_memcpy", "_memcmp"]
 TEXT = [
     (None, b"\n"),
     (None, b"true"),
@@ -18,7 +18,10 @@ TEXT = [
     ("LEN_POP", b"azol: pop from an empty list\n"),
     ("LEN_MEMORY", b"azol: out of memory\n"),
 ]
-ENTRIES = ["print_i64", "print_bool", "print_str", "div_zero", "index_fail", "pop_empty", "alloc", "free", "list_push", "list_clone"]
+ENTRIES = [
+    "print_i64", "print_bool", "print_str", "div_zero", "index_fail", "pop_empty", "alloc", "free", "list_push",
+    "list_clone", "drop", "str_concat", "str_eq", "str_from_i64", "str_from_bool",
+]
 
 source = open(os.path.join(HERE, "runtime.s")).read()
 for name, text in TEXT:

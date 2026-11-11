@@ -14,9 +14,10 @@
 use crate::ast::*;
 use crate::runtime::{self, RuntimeReloc, RUNTIME, RUNTIME_DATA, RUNTIME_DATA_OFFSETS, RUNTIME_RELOCS};
 use crate::sema::{
-    Program, Ty, BUILTIN_LIST_LEN, BUILTIN_LIST_POP, BUILTIN_LIST_PUSH, BUILTIN_PRINT_BOOL, BUILTIN_PRINT_I64,
-    BUILTIN_PRINT_STR, BY_REF, FIRST_BUILTIN, FOR_COPIED, FOR_IN_PLACE,
+    Program, Ty, BUILTIN_LEN, BUILTIN_LIST_POP, BUILTIN_LIST_PUSH, BUILTIN_PRINT_BOOL, BUILTIN_PRINT_I64,
+    BUILTIN_PRINT_STR, BUILTIN_STR_FROM_BOOL, BUILTIN_STR_FROM_I64, BY_REF, FIRST_BUILTIN, FOR_COPIED, FOR_IN_PLACE,
 };
+use std::collections::HashMap;
 
 pub struct Code {
     pub words: Vec<u32>,
@@ -43,6 +44,9 @@ const X8: u32 = 8;
 const X9: u32 = 9;
 const X10: u32 = 10;
 const X11: u32 = 11;
+const X19: u32 = 19;
+const X20: u32 = 20;
+const X21: u32 = 21;
 const FP: u32 = 29;
 const XZR: u32 = 31;
 
@@ -134,6 +138,12 @@ struct Gen<'a> {
     calls: Vec<(usize, u32)>,
     /// (instruction index, runtime entry) of every `bl` into the runtime.
     runtime_calls: Vec<(usize, u32)>,
+    /// Helper functions the compiler writes itself: one to free and one to
+    /// copy each type whose values own other values. `true` means copy.
+    glue: Vec<(Ty, bool)>,
+    glue_ids: HashMap<(Ty, bool), usize>,
+    /// (instruction index, index into `glue`) of every `bl` to a helper.
+    glue_calls: Vec<(usize, usize)>,
     relocs: Vec<Reloc>,
     loops: Vec<LoopFixups>,
     /// Local variables that own buffers and are in scope: slot and type.
@@ -152,6 +162,9 @@ pub fn generate(ast: &Ast, prog: &Program) -> Code {
         fn_starts: Vec::with_capacity(prog.fns.len()),
         calls: Vec::new(),
         runtime_calls: Vec::new(),
+        glue: Vec::new(),
+        glue_ids: HashMap::new(),
+        glue_calls: Vec::new(),
         relocs: Vec::new(),
         loops: Vec::new(),
         live: Vec::new(),
@@ -167,7 +180,17 @@ pub fn generate(ast: &Ast, prog: &Program) -> Code {
             index += 1;
         }
     }
-    // The runtime follows the program's functions.
+    // Then the helpers that free and copy nested values. Writing one can
+    // ask for another, so the list grows while it is walked.
+    let mut glue_starts = Vec::new();
+    let mut next = 0;
+    while next < g.glue.len() {
+        glue_starts.push(g.words.len() as u32);
+        let (ty, copy) = g.glue[next];
+        g.glue_function(ty, copy);
+        next += 1;
+    }
+    // The runtime follows.
     let runtime_start = g.words.len() as u32;
     g.words.extend_from_slice(&RUNTIME);
     for reloc in &RUNTIME_RELOCS {
@@ -184,6 +207,9 @@ pub fn generate(ast: &Ast, prog: &Program) -> Code {
     }
     for &(at, entry) in &g.runtime_calls {
         g.words[at] = bl(at, runtime_start + entry);
+    }
+    for &(at, id) in &g.glue_calls {
+        g.words[at] = bl(at, glue_starts[id]);
     }
     let mut data = Vec::with_capacity(RUNTIME_DATA.len() + prog.data.len());
     data.extend_from_slice(RUNTIME_DATA);
@@ -204,9 +230,14 @@ impl<'a> Gen<'a> {
     }
 
     fn patch_cbz(&mut self, at: usize, nonzero: bool) {
+        self.patch_cbz_reg(at, nonzero, X0);
+    }
+
+    /// Completes a `cbz reg` (or `cbnz reg`) at `at` to jump here.
+    fn patch_cbz_reg(&mut self, at: usize, nonzero: bool, reg: u32) {
         let delta = (self.words.len() - at) as u32;
         let op = if nonzero { 0xB500_0000 } else { 0xB400_0000 };
-        self.words[at] = op | (delta & 0x7_FFFF) << 5 | X0;
+        self.words[at] = op | (delta & 0x7_FFFF) << 5 | reg;
     }
 
     /// Completes a conditional branch at `at` to jump here.
@@ -307,22 +338,124 @@ impl<'a> Gen<'a> {
 
     // ---- ownership -----------------------------------------------------
 
-    /// Frees the buffers owned by the value in frame slot `slot`.
-    fn drop_frame(&mut self, slot: u32, ty: Ty) {
-        for (offset, _) in self.prog.heap_fields(ty) {
-            self.emit(ldr(X0, FP, frame(slot + offset)));
-            self.runtime(runtime::FREE);
+    /// Frees everything owned by the value whose address is in x0.
+    fn drop_value(&mut self, ty: Ty) {
+        match ty {
+            Ty::Str => self.runtime(runtime::DROP),
+            Ty::List(list) if !self.prog.needs_drop(self.prog.lists[list as usize]) => self.runtime(runtime::DROP),
+            _ => self.glue_call(ty, false),
         }
     }
 
-    /// Frees the buffers owned by the value whose address is parked in
+    /// The value whose address is in x0 was copied bit by bit from another
+    /// owner. Gives it buffers of its own, all the way down.
+    fn clone_value(&mut self, ty: Ty) {
+        match ty {
+            Ty::Str => {
+                self.mov_imm(X1, 1);
+                self.runtime(runtime::LIST_CLONE);
+            }
+            Ty::List(list) if !self.prog.needs_drop(self.prog.lists[list as usize]) => {
+                self.mov_imm(X1, self.prog.size_of(self.prog.lists[list as usize]) as i64 * 8);
+                self.runtime(runtime::LIST_CLONE);
+            }
+            _ => self.glue_call(ty, true),
+        }
+    }
+
+    /// Calls the helper that frees (or copies) a `ty`, asking for it to
+    /// be written if this is its first use.
+    fn glue_call(&mut self, ty: Ty, copy: bool) {
+        let next = self.glue.len();
+        let id = *self.glue_ids.entry((ty, copy)).or_insert(next);
+        if id == next {
+            self.glue.push((ty, copy));
+        }
+        let at = self.placeholder();
+        self.glue_calls.push((at, id));
+    }
+
+    /// Writes the helper for one type. It takes the value's address in x0.
+    fn glue_function(&mut self, ty: Ty, copy: bool) {
+        match ty {
+            Ty::Struct(_) => {
+                // Handle each list and string directly inside the struct.
+                self.emit(0xA9BE_7BFD); // stp x29, x30, [sp, #-32]!
+                self.emit(0x9100_03FD); // mov x29, sp
+                self.emit(0xF900_0BF3); // str x19, [sp, #16]
+                self.emit(0xAA00_03F3); // mov x19, x0
+                for (offset, field) in self.prog.owned(ty) {
+                    self.emit(add_slots(X0, X19, offset));
+                    if copy {
+                        self.clone_value(field);
+                    } else {
+                        self.drop_value(field);
+                    }
+                }
+                self.emit(0xF940_0BF3); // ldr x19, [sp, #16]
+                self.emit(0xA8C2_7BFD); // ldp x29, x30, [sp], #32
+                self.emit(RET);
+            }
+            Ty::List(list) => {
+                // A list whose elements own something: visit every element.
+                let elem = self.prog.lists[list as usize];
+                let elem_bytes = self.prog.size_of(elem) * 8;
+                self.emit(0xA9BD_7BFD); // stp x29, x30, [sp, #-48]!
+                self.emit(0x9100_03FD); // mov x29, sp
+                self.emit(0xA901_53F3); // stp x19, x20, [sp, #16]
+                self.emit(0xF900_13F5); // str x21, [sp, #32]
+                self.emit(0xAA00_03F3); // mov x19, x0
+                if copy {
+                    // First a private buffer holding the same bits.
+                    self.mov_imm(X1, elem_bytes as i64);
+                    self.runtime(runtime::LIST_CLONE);
+                }
+                self.emit(ldr(X9, X19, 2)); // capacity
+                let nothing_owned = self.placeholder();
+                self.emit(ldr(X20, X19, 0)); // x20 walks the elements
+                self.emit(ldr(X21, X19, 1)); // x21 counts down the length
+                let top = self.words.len();
+                let finished = self.placeholder();
+                self.emit(0xAA14_03E0); // mov x0, x20
+                if copy {
+                    self.clone_value(elem);
+                } else {
+                    self.drop_value(elem);
+                }
+                if elem_bytes < 4096 {
+                    self.emit(0x9100_0294 | elem_bytes << 10); // add x20, x20, #bytes
+                } else {
+                    self.mov_imm(X10, elem_bytes as i64);
+                    self.emit(add_reg(X20, X20, X10));
+                }
+                self.emit(0xD100_06B5); // sub x21, x21, #1
+                self.jump_back(top);
+                self.patch_cbz_reg(finished, false, X21);
+                if !copy {
+                    self.emit(ldr(X0, X19, 0));
+                    self.runtime(runtime::FREE);
+                }
+                self.patch_cbz_reg(nothing_owned, false, X9);
+                self.emit(0xF940_13F5); // ldr x21, [sp, #32]
+                self.emit(0xA941_53F3); // ldp x19, x20, [sp, #16]
+                self.emit(0xA8C3_7BFD); // ldp x29, x30, [sp], #48
+                self.emit(RET);
+            }
+            _ => unreachable!("only structs and lists of owning elements need a helper"),
+        }
+    }
+
+    /// Frees everything owned by the value in frame slot `slot`.
+    fn drop_frame(&mut self, slot: u32, ty: Ty) {
+        self.emit(add_slots(X0, FP, frame(slot)));
+        self.drop_value(ty);
+    }
+
+    /// Frees everything owned by the value whose address is parked in
     /// frame slot `pointer_slot`.
     fn drop_pointer(&mut self, pointer_slot: u32, ty: Ty) {
-        for (offset, _) in self.prog.heap_fields(ty) {
-            self.emit(ldr(X9, FP, frame(pointer_slot)));
-            self.emit(ldr(X0, X9, offset));
-            self.runtime(runtime::FREE);
-        }
+        self.emit(ldr(X0, FP, frame(pointer_slot)));
+        self.drop_value(ty);
     }
 
     /// Frees the owning locals declared since `from`, newest first,
@@ -346,11 +479,11 @@ impl<'a> Gen<'a> {
         }
         for i in start..start + len {
             let (slot, ty) = self.prog.drops[i as usize];
-            for (offset, _) in self.prog.heap_fields(ty) {
-                self.emit(ldr(X0, FP, frame(slot + offset)));
-                self.runtime(runtime::FREE);
-                // Inside a loop the same temporary is freed again.
-                self.emit(str(XZR, FP, frame(slot + offset)));
+            self.drop_frame(slot, ty);
+            // Inside a loop the same temporary is freed again, and it may
+            // not have been refilled: zero capacity marks it as empty.
+            for (offset, _) in self.prog.owned(ty) {
+                self.emit(str(XZR, FP, frame(slot + offset + 2)));
             }
         }
         if keep_x0 {
@@ -359,26 +492,17 @@ impl<'a> Gen<'a> {
     }
 
     /// The value in frame slot `slot` was copied bit by bit from another
-    /// owner. Gives each of its lists a buffer of its own.
+    /// owner. Gives it buffers of its own.
     fn clone_frame(&mut self, slot: u32, ty: Ty) {
-        for (offset, bytes) in self.prog.heap_fields(ty) {
-            self.emit(add_slots(X0, FP, frame(slot + offset)));
-            self.mov_imm(X1, bytes as i64);
-            self.runtime(runtime::LIST_CLONE);
-        }
+        self.emit(add_slots(X0, FP, frame(slot)));
+        self.clone_value(ty);
     }
 
     /// Like `clone_frame`, for the value whose address is parked in frame
     /// slot `pointer_slot`.
     fn clone_pointer(&mut self, pointer_slot: u32, ty: Ty) {
-        for (offset, bytes) in self.prog.heap_fields(ty) {
-            self.emit(ldr(X0, FP, frame(pointer_slot)));
-            if offset > 0 {
-                self.emit(add_slots(X0, X0, offset));
-            }
-            self.mov_imm(X1, bytes as i64);
-            self.runtime(runtime::LIST_CLONE);
-        }
+        self.emit(ldr(X0, FP, frame(pointer_slot)));
+        self.clone_value(ty);
     }
 
     // ---- statements ----------------------------------------------------
@@ -516,13 +640,17 @@ impl<'a> Gen<'a> {
         } else {
             let scratch = self.prog.stmt_slot[id as usize];
             self.copy_to_frame(scratch, size);
-            self.clone_frame(scratch, ty);
+            if owning {
+                self.clone_frame(scratch, ty);
+            }
             scratch
         };
         // Then find the target, free what it holds and move the value in.
         self.address(target);
         self.emit(str(X0, FP, frame(self.scratch_slot)));
-        self.drop_pointer(self.scratch_slot, ty);
+        if owning {
+            self.drop_pointer(self.scratch_slot, ty);
+        }
         self.emit(add_slots(X0, FP, frame(source)));
         self.emit(ldr(X9, FP, frame(self.scratch_slot)));
         self.copy_to_pointer(0, size);
@@ -729,6 +857,19 @@ impl<'a> Gen<'a> {
                 self.emit(str(X0, FP, frame(tmp)));
                 self.mov_imm(X0, len as i64);
                 self.emit(str(X0, FP, frame(tmp + 1)));
+                self.emit(str(XZR, FP, frame(tmp + 2))); // capacity 0: not owned
+                self.emit(add_slots(X0, FP, frame(tmp)));
+            }
+            Expr::Binary { lhs, rhs, .. } => {
+                // `a + b` on strings: a new string in this expression's temporary.
+                let tmp = self.prog.expr_tmp[id as usize];
+                self.address(lhs);
+                self.emit(PUSH_X0);
+                self.address(rhs);
+                self.emit(0xAA00_03E1); // mov x1, x0
+                self.emit(pop(X0));
+                self.emit(add_slots(X8, FP, frame(tmp)));
+                self.runtime(runtime::STR_CONCAT);
                 self.emit(add_slots(X0, FP, frame(tmp)));
             }
             Expr::StructLit { fields, .. } => {
@@ -810,6 +951,15 @@ impl<'a> Gen<'a> {
             }
             if self.is_aggregate(item) {
                 self.copy_to_pointer(offset, elem_size);
+                let elem = self.ty(item);
+                if self.prog.needs_drop(elem) && !self.prog.expr_moved[item as usize] {
+                    // The element was copied from a variable: give the
+                    // copy in the list buffers of its own.
+                    self.emit(ldr(X0, FP, frame(tmp)));
+                    self.mov_imm(X11, i as i64 * elem_size as i64 * 8);
+                    self.emit(add_reg(X0, X0, X11));
+                    self.clone_value(elem);
+                }
             } else {
                 self.emit(str(X0, X9, offset));
             }
@@ -850,6 +1000,18 @@ impl<'a> Gen<'a> {
                 let skip = self.placeholder();
                 self.value(rhs);
                 self.patch_cbz(skip, op == BinOp::Or);
+            }
+            Expr::Binary { op, lhs, rhs } if self.ty(lhs) == Ty::Str => {
+                // `==` and `!=` on strings compare the bytes.
+                self.address(lhs);
+                self.emit(PUSH_X0);
+                self.address(rhs);
+                self.emit(0xAA00_03E1); // mov x1, x0
+                self.emit(pop(X0));
+                self.runtime(runtime::STR_EQ);
+                if op == BinOp::NotEq {
+                    self.emit(0xD240_0000); // eor x0, x0, #1
+                }
             }
             Expr::Binary { op, lhs, rhs } => {
                 self.value(lhs);
@@ -892,7 +1054,7 @@ impl<'a> Gen<'a> {
         let target = self.prog.expr_res[id as usize];
         let arg_ids = self.ast.list(args);
         match target {
-            BUILTIN_LIST_LEN | BUILTIN_LIST_PUSH | BUILTIN_LIST_POP => {
+            BUILTIN_LEN | BUILTIN_LIST_PUSH | BUILTIN_LIST_POP => {
                 let Expr::Call { callee, .. } = self.ast.exprs[id as usize] else {
                     unreachable!("a call is a call");
                 };
@@ -923,6 +1085,10 @@ impl<'a> Gen<'a> {
             BUILTIN_PRINT_I64 => self.runtime(runtime::PRINT_I64),
             BUILTIN_PRINT_BOOL => self.runtime(runtime::PRINT_BOOL),
             BUILTIN_PRINT_STR => self.runtime(runtime::PRINT_STR),
+            BUILTIN_STR_FROM_I64 | BUILTIN_STR_FROM_BOOL => {
+                self.emit(add_slots(X8, FP, frame(self.prog.expr_tmp[id as usize])));
+                self.runtime(if target == BUILTIN_STR_FROM_I64 { runtime::STR_FROM_I64 } else { runtime::STR_FROM_BOOL });
+            }
             _ => {
                 if self.is_aggregate(id) {
                     // The callee writes its result where x8 points.
@@ -935,16 +1101,18 @@ impl<'a> Gen<'a> {
     }
 
     fn list_method(&mut self, id: ExprId, method: u32, base: ExprId, args: &[u32]) {
+        if method == BUILTIN_LEN {
+            // Lists and strings keep their length in the same place.
+            self.address(base);
+            self.emit(ldr(X0, X0, 1));
+            return;
+        }
         let Ty::List(list) = self.ty(base) else {
             unreachable!("checked: the receiver is a list");
         };
         let elem = self.prog.lists[list as usize];
         let elem_size = self.prog.size_of(elem);
         match method {
-            BUILTIN_LIST_LEN => {
-                self.address(base);
-                self.emit(ldr(X0, X0, 1));
-            }
             BUILTIN_LIST_PUSH => {
                 // The element is copied aside first: it may live in this
                 // very list, whose buffer can move while it grows.
@@ -952,6 +1120,9 @@ impl<'a> Gen<'a> {
                 if elem.is_aggregate() {
                     self.address(args[0]);
                     self.copy_to_frame(tmp, elem_size);
+                    if self.prog.needs_drop(elem) && !self.prog.expr_moved[args[0] as usize] {
+                        self.clone_frame(tmp, elem);
+                    }
                 } else {
                     self.value(args[0]);
                     self.emit(str(X0, FP, frame(tmp)));
@@ -1024,6 +1195,13 @@ mod tests {
         assert_eq!(madd(X0, X9, X11, X10), 0x9B0B2920);
         assert_eq!(add_reg(X9, X9, X10), 0x8B0A0129);
         assert_eq!(str(XZR, FP, 6), 0xF9001BBF);
+        assert_eq!(add_slots(X0, X19, 5), 0x9100A260);
+        assert_eq!(ldr(X9, X19, 2), 0xF9400A69);
+        assert_eq!(ldr(X20, X19, 0), 0xF9400274);
+        assert_eq!(ldr(X21, X19, 1), 0xF9400675);
+        assert_eq!(ldr(X0, X19, 0), 0xF9400260);
+        assert_eq!(0x9100_0294u32 | 24 << 10, 0x91006294);
+        assert_eq!(add_reg(X20, X20, X10), 0x8B0A0294);
         assert_eq!(cset_x0(EQ), 0x9A9F17E0);
         assert_eq!(cset_x0(NE), 0x9A9F07E0);
         assert_eq!(cset_x0(LT), 0x9A9FA7E0);

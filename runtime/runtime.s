@@ -4,12 +4,13 @@
 // src/runtime.rs. Two markers are rewritten by the compiler's linker:
 //   brk #(0x1000 + import); nop; nop        call an imported function
 //   brk #(0x2000 + 32 * data + reg); nop    load the address of runtime text
-// Imports: 0 write, 1 exit, 2 malloc, 3 realloc, 4 free, 5 memcpy.
+// Imports: 0 write, 1 exit, 2 malloc, 3 realloc, 4 free, 5 memcpy, 6 memcmp.
 // Text:    0 newline, 1 "true", 2 "false", 3.. the panic messages.
 .text
 .p2align 2
 .globl _rt_print_i64, _rt_print_bool, _rt_print_str, _rt_div_zero
 .globl _rt_index_fail, _rt_pop_empty, _rt_alloc, _rt_free, _rt_list_push, _rt_list_clone
+.globl _rt_drop, _rt_str_concat, _rt_str_eq, _rt_str_from_i64, _rt_str_from_bool
 
 // x0 = number. Prints it and a newline.
 _rt_print_i64:
@@ -175,9 +176,14 @@ _rt_list_push:
     ldp x29, x30, [sp], #48
     ret
 
-// x0 = address of a list that currently shares its buffer with another
-// list, x1 = element size in bytes. Gives it a private copy of the buffer.
+// x0 = address of a list or string (pointer, length, capacity) that
+// currently shares its buffer with another value, x1 = element size in
+// bytes. Gives it a private copy of the buffer. Capacity 0 means the value
+// owns nothing (an empty list, or text stored in the executable), so there
+// is nothing to copy.
 _rt_list_clone:
+    ldr x9, [x0, #16]
+    cbz x9, 7f
     stp x29, x30, [sp, #-48]!
     mov x29, sp
     stp x19, x20, [sp, #16]
@@ -206,4 +212,141 @@ _rt_list_clone:
     ldr x21, [sp, #32]
     ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #48
+    ret
+7:
+    ret
+
+// x0 = address of a list or string. Frees its buffer if it owns one.
+_rt_drop:
+    ldr x9, [x0, #16]
+    cbz x9, 8f
+    ldr x0, [x0]
+    b _rt_free
+8:
+    ret
+
+// x0 = address of string a, x1 = address of string b, x8 = address for the
+// result, a new string holding a followed by b.
+_rt_str_concat:
+    stp x29, x30, [sp, #-48]!
+    mov x29, sp
+    stp x19, x20, [sp, #16]
+    stp x21, x22, [sp, #32]
+    mov x19, x0
+    mov x20, x1
+    mov x21, x8
+    ldr x9, [x19, #8]
+    ldr x10, [x20, #8]
+    add x22, x9, x10
+    str x22, [x21, #8]
+    str x22, [x21, #16]
+    str xzr, [x21]
+    cbz x22, 9f
+    mov x0, x22
+    brk #0x1002
+    nop
+    nop
+    cbz x0, _rt_out_of_memory
+    str x0, [x21]
+    ldr x1, [x19]
+    ldr x2, [x19, #8]
+    brk #0x1005
+    nop
+    nop
+    ldr x0, [x21]
+    ldr x9, [x19, #8]
+    add x0, x0, x9
+    ldr x1, [x20]
+    ldr x2, [x20, #8]
+    brk #0x1005
+    nop
+    nop
+9:
+    ldp x21, x22, [sp, #32]
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #48
+    ret
+
+// x0 = address of string a, x1 = address of string b. Returns 1 in x0 when
+// they hold the same bytes, otherwise 0.
+_rt_str_eq:
+    ldr x2, [x0, #8]
+    ldr x9, [x1, #8]
+    cmp x2, x9
+    b.ne 10f
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    ldr x0, [x0]
+    ldr x1, [x1]
+    brk #0x1006
+    nop
+    nop
+    cmp w0, #0
+    cset x0, eq
+    ldp x29, x30, [sp], #16
+    ret
+10:
+    mov x0, #0
+    ret
+
+// x0 = number, x8 = address for the result, a new string with its digits.
+_rt_str_from_i64:
+    stp x29, x30, [sp, #-80]!
+    mov x29, sp
+    stp x19, x20, [sp, #16]
+    str x21, [sp, #32]
+    mov x21, x8
+    add x9, sp, #80
+    cmp x0, #0
+    cneg x11, x0, lt
+    mov x13, #10
+11:
+    udiv x14, x11, x13
+    msub x15, x14, x13, x11
+    add w15, w15, #48
+    strb w15, [x9, #-1]!
+    mov x11, x14
+    cbnz x11, 11b
+    tbz x0, #63, 12f
+    mov w15, #45
+    strb w15, [x9, #-1]!
+12:
+    mov x19, x9
+    add x20, sp, #80
+    sub x20, x20, x9
+    mov x0, x20
+    brk #0x1002
+    nop
+    nop
+    cbz x0, _rt_out_of_memory
+    str x0, [x21]
+    str x20, [x21, #8]
+    str x20, [x21, #16]
+    mov x1, x19
+    mov x2, x20
+    brk #0x1005
+    nop
+    nop
+    ldr x21, [sp, #32]
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #80
+    ret
+
+// x0 = 0 or 1, x8 = address for the result: "false" or "true". The text
+// lives in the executable, so the result owns nothing (capacity 0).
+_rt_str_from_bool:
+    str xzr, [x8, #16]
+    cbz x0, 13f
+    brk #0x2029
+    nop
+    str x9, [x8]
+    mov x9, #4
+    str x9, [x8, #8]
+    ret
+13:
+    brk #0x2049
+    nop
+    str x9, [x8]
+    mov x9, #5
+    str x9, [x8, #8]
     ret

@@ -1,0 +1,47 @@
+// A tree: each node owns a list of nodes. Copying a tree copies all of
+// it, and dropping a tree frees all of it, with nothing written by hand.
+//
+//     azol build examples/tree.azl
+//     ./examples/tree
+
+struct Node {
+    name: str
+    children: List[Node]
+}
+
+fn node(name: str) -> Node {
+    return Node { name: name, children: [] }
+}
+
+fn count(n: Node) -> i64 {
+    var total = 1
+    for child in n.children {
+        total = total + count(child)
+    }
+    return total
+}
+
+fn show(n: Node, indent: str) {
+    print(indent + n.name)
+    for child in n.children {
+        show(child, indent + "  ")
+    }
+}
+
+fn main() {
+    var src = node("src")
+    src.children.push(node("lexer"))
+    src.children.push(node("parser"))
+
+    var project = node("azol")
+    project.children.push(src)
+    project.children.push(node("README"))
+
+    // `backup` is a full copy, so changing `project` does not touch it.
+    let backup = project
+    project.children[0].children.push(node("codegen"))
+
+    show(project, "")
+    print(count(project))
+    print(count(backup))
+}

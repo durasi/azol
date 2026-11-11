@@ -2,65 +2,20 @@
 
 *The rust remover.*
 
-azoL is an experimental, memory-safe systems programming language designed for very fast compilation.
+**A memory-safe systems language that compiles 132,000 lines of code in 18 milliseconds.**
 
-**Status:** early stage. A small part of the language compiles to native executables on Apple Silicon Macs. It is not ready for real use.
+azoL gives you what Rust is known for (no garbage collector, no dangling pointers, no double frees, no data left unfreed) without a single lifetime annotation, and with a compiler so fast that waiting for a build stops being part of programming.
 
-## What works today
+| | azoL | Rust |
+|---|---|---|
+| Build a 132,000-line program | **0.018 s** | 3.82 s |
+| Lifetime annotations | never | wherever the compiler cannot infer them |
+| Garbage collector | none | none |
+| Needed to produce an executable | `azol` alone | `rustc`, LLVM and the system linker |
 
-The compiler is written in Rust with no dependencies. It reads an `.azl` file and writes a signed macOS executable directly: no LLVM, no assembler, no system linker and no `codesign` run. The small runtime (printing, growing lists, error exits) is written in assembly; its machine code is embedded in the compiler.
+The compiler reads your source and writes a signed, ready-to-run executable by itself. No LLVM, no assembler, no linker, no `codesign`, no dependencies.
 
-Supported so far:
-
-- `i64`, `bool` and `str` values (text literals)
-- structs, including structs inside structs
-- `List[T]`: growable arrays with `push`, `pop`, `len` and indexing
-- functions, including recursion
-- read-only parameters and `mut` parameters
-- `let` (fixed) and `var` (changeable) variables
-- `if` / `else`, `while`, `for ... in`, `break`, `continue`
-- `print` for integers, booleans and text
-- memory is freed automatically, with no garbage collector
-- division by zero, a bad index or `pop` on an empty list stop the program with a message instead of continuing
-
-### Memory safety so far
-
-Values have value semantics. Assigning a struct or a list copies it, and a function can only change an argument the caller passes as `mut`. Large values are still passed by reference for speed, so the compiler makes sure a reference can never be told apart from a private copy: nothing can be changed while something else still refers to it.
-
-Two rules do that, both checked inside one function at a time and without any annotations:
-
-- One call cannot receive the same data twice when one of the uses is `mut`.
-- A list cannot be changed while a loop is going through it.
-
-      error: cannot change `xs` while a loop is going through it
-       --> loop.azl:4:9
-        |
-      4 |         xs.push(x)
-        |         ^
-
-Every list buffer has exactly one owner, a variable or a temporary. A temporary hands its buffer over when it is stored (a move); a variable is duplicated when it is stored again (a copy); and the compiler frees each buffer when its owner goes out of scope. The test suite runs every test program on an emulated CPU with a checking heap, which confirms that each buffer is freed exactly once and never used afterwards.
-
-Not covered yet: lists whose elements own memory (a list of lists), growable text, and integer overflow, which currently wraps.
-
-The parser already accepts more of the planned language (enums, `match`, generics). The compiler reports these as not supported yet.
-
-## Try it
-
-Requires a Mac with Apple Silicon and a Rust toolchain.
-
-    git clone https://github.com/durasi/azol
-    cd azol
-    cargo build --release
-    ./target/release/azol build examples/lists.azl
-    ./examples/lists
-
-Other commands:
-
-    azol lex <file.azl>      print the tokens
-    azol parse <file.azl>    print the syntax tree
-    cargo test               run the test suite
-
-## Example
+## A taste
 
     struct Player {
         name: str
@@ -75,81 +30,140 @@ Other commands:
         return sum
     }
 
-    fn add_round(player: mut Player, score: i64) {
-        player.scores.push(score)
+    fn describe(p: Player) -> str {
+        return p.name + ": " + str(total(p.scores)) + " points in " + str(p.scores.len()) + " rounds"
     }
 
     fn main() {
         var ada = Player { name: "Ada", scores: [12, 30] }
-        add_round(mut ada, 25)
+        ada.scores.push(25)
 
         var grace = ada
         grace.name = "Grace"
-        add_round(mut grace, 40)
+        grace.scores.push(40)
 
-        print(total(ada.scores))
-        print(total(grace.scores))
+        for player in [ada, grace] {
+            print(describe(player))
+        }
     }
 
-This prints 67 and 107: `grace` is a copy with its own list, so adding to it leaves `ada` alone.
+    Ada: 67 points in 3 rounds
+    Grace: 107 points in 4 rounds
 
-## Measurements
+`grace` is a copy with her own list, so adding to it leaves `ada` alone. The strings and lists built along the way are freed the moment nothing owns them. Nothing in this program says how.
 
-All numbers are from one Apple Silicon Mac. Rust is plain `rustc` with no optimization flags.
+## Why azoL
 
-### Compile time, large program
+**Builds that feel instant.** About 7 million lines per second, from source text to signed executable. A change is running before your finger leaves the key.
 
-`bench/gen.py 3000` writes the same program in both languages: 3,000 structs that each own a list, and 12,000 functions that build, read, change and copy them. About 132,000 lines each. Both executables print the same result.
+**Safety without ceremony.** No `&`, no `&mut`, no `'a`, no borrow checker fights. You write values; the compiler works out who owns what.
+
+**Small enough to hold in your head.** No macros, no hidden control flow, one way to do things. The whole compiler is about 6,000 lines.
+
+**Nothing underneath.** azoL does not sit on top of another compiler. It generates machine code and writes the executable file itself, down to the code signature.
+
+## How the safety works
+
+Values have value semantics: assigning a struct, a string or a list gives you an independent copy, and a function can change an argument only when the caller writes `mut`. That is the entire mental model.
+
+Underneath, large values are passed by reference for speed, and the compiler guarantees you can never notice. A reference behaves exactly like a private copy because nothing can be changed while something else still refers to it. Three rules enforce that, each checked inside one function at a time, which is what keeps checking fast:
+
+- One call cannot receive the same data twice when one of the uses is `mut`.
+- A list cannot be changed while a loop is going through it.
+- A string cannot be changed while an operator is still reading it.
+
+When a rule is broken you get a plain sentence, not a puzzle:
+
+    error: cannot change `xs` while a loop is going through it
+     --> loop.azl:4:9
+      |
+    4 |         xs.push(x)
+      |         ^
+
+Memory is managed by ownership. Every buffer has exactly one owner, a variable or a temporary. A temporary hands its buffer over when it is stored; a variable is duplicated when it is stored again; and each buffer is freed when its owner goes out of scope. This works at any depth: a tree of nodes that each own a list of nodes is copied and freed correctly with nothing written by hand.
+
+Out-of-range indexes, `pop` on an empty list and division by zero stop the program with a message. They never read or write memory they should not.
+
+## Numbers
+
+Measured on one Apple Silicon Mac. Rust is plain `rustc` with no optimization flags.
+
+**Compile time.** `bench/gen.py 3000` writes the same program in both languages: 3,000 structs that each own a list, and 12,000 functions that build, read, change and copy them, about 132,000 lines each. Both executables print the same result.
 
 | | Time |
 |---|---|
-| azoL, source to signed executable | 0.016 s |
+| azoL, source to signed executable | 0.018 s |
 | Rust, type checking only (`--emit=metadata`) | 2.05 s |
 | Rust, full build | 3.82 s |
 
-That is about 8 million lines per second for the whole azoL pipeline, and roughly 230 times faster than the full Rust build of this program.
+That is roughly 210 times faster than the full Rust build, and 110 times faster than Rust's type checking alone.
 
-### Compile time, small program
+**Executable size.** A small program is 33 KB in azoL and 472 KB in Rust.
 
-Building `examples/fib.azl` and `bench/fib.rs`, ten times each: about 0.01 s per build for azoL and 0.23 s for Rust. At this size both are dominated by fixed costs such as starting the process. The azoL executable is 33 KB, the Rust one 472 KB.
+**Run time.** This is where Rust is ahead, and it is the next thing to fix. Computing `fib(40)` takes 0.64 s in azoL, 0.44 s in unoptimized Rust and 0.16 s in optimized Rust. azoL generates simple code today; an optimizing release mode is planned.
 
-### Run time
+**Keeping the comparison fair.** The benchmark program is generated and repetitive, and azoL does less work than Rust: it has no optimizer, no standard library and no generics or traits yet. Some of this lead will be spent as those arrive. The design goal is to stay at least 4 times faster than Rust with the language complete, and today's margin leaves a great deal of room.
 
-Computing `fib(40)` (`bench/fib40.azl` and `bench/fib40.rs`):
+## What works today
 
-| | Run time |
-|---|---|
-| azoL | 0.64 s |
-| Rust, no optimization | 0.44 s |
-| Rust, optimized (`-O`) | 0.16 s |
+- `i64`, `bool` and `str`, with `+`, `==`, `!=`, `len()` and `str(...)` for text
+- structs, including structs inside structs
+- `List[T]` for any `T`, including lists of lists and lists of structs: `push`, `pop`, `len`, indexing
+- functions and recursion, read-only parameters and `mut` parameters
+- `let` (fixed) and `var` (changeable) variables
+- `if` / `else`, `while`, `for ... in`, `break`, `continue`
+- `print` for integers, booleans and text
+- automatic memory management with no garbage collector
+- compile errors that point at the exact place and say what to do
 
-### How to read these numbers
+It is young. azoL targets Apple Silicon Macs only, has no standard library yet, and is missing `match`, enums, generics, floating-point numbers, files and modules. Integer overflow currently wraps. Do not build anything you depend on with it yet.
 
-- The large program is generated and repetitive. Real code is more varied.
-- azoL does far less work than Rust: no optimization, no standard library, no generics or traits yet. Those are where a Rust build spends much of its time, and azoL will slow down as it gains them. The goal is to keep the design choices that make this speed possible, not to keep this exact ratio.
-- The code azoL generates is deliberately simple: about 1.5 times slower than unoptimized Rust and 4 times slower than optimized Rust. Closing that gap is the job of the planned release mode.
+## Try it
 
-## Goals
+You need a Mac with Apple Silicon and a Rust toolchain to build the compiler.
 
-- Compile at least 4x faster than Rust on equivalent programs, also once the language is complete
-- Memory safety without lifetime annotations
-- A small language that is easy to learn
+    git clone https://github.com/durasi/azol
+    cd azol
+    cargo build --release
+    ./target/release/azol build examples/players.azl
+    ./examples/players
 
-## Design
+More to run: `examples/tree.azl`, `examples/lists.azl`, `examples/structs.azl`, `examples/fib.azl`.
 
-- Value semantics by default; references are only passed down as parameters
-- Automatic reference counting only where static analysis cannot prove safety
-- Custom fast backend for development builds, LLVM planned for release builds
-- No macros, context-free grammar, function-local type checking
+    azol build <file.azl>    compile to an executable
+    azol parse <file.azl>    print the syntax tree
+    azol lex <file.azl>      print the tokens
+    cargo test               run the test suite
+
+To repeat the benchmark:
+
+    python3 bench/gen.py 3000
+    ./target/release/azol build bench/generated/big.azl
+    time rustc bench/generated/big.rs
+
+## How it is built
+
+Five stages, each a plain pass over the previous one's output:
+
+1. **Lexer.** Bytes to tokens, about 20 million lines per second.
+2. **Parser.** Tokens to a flat syntax tree with no per-node allocation. It never backtracks.
+3. **Checker.** Names, types, and the ownership and exclusivity rules, one function at a time.
+4. **Code generator.** Syntax tree straight to ARM64 machine code in one pass.
+5. **Linker.** Lays out the Mach-O file, binds the system library imports, and computes the code signature macOS requires, hashing pages on several threads.
+
+The compiler is written in Rust with no dependencies, SHA-256 included. A small runtime for printing, growing lists and joining strings is written in assembly and embedded as machine code.
+
+**How it is tested.** Besides unit tests for every stage, each test program is executed on an emulated ARM64 CPU with a checking heap. The heap reports any buffer that is leaked, freed twice, used after being freed or overrun by a single byte, and it moves a buffer every time it grows so that stale pointers cannot hide. Every test program must come out clean. On a Mac the same programs also run natively against the real system allocator.
 
 ## Roadmap
 
-1. Lists of lists, growable text and `match`
-2. Enums and generics
-3. Avoiding copies the compiler can prove unnecessary
-4. An optimizing release mode
-5. Linux and x86-64 targets
-6. A compiler written in azoL itself, so that building azoL no longer needs Rust
+1. `match`, enums and `Option`, so that "no value" and errors are checked by the compiler
+2. Files, command-line arguments and a first standard library
+3. Generics
+4. Skipping copies the compiler can prove unnecessary
+5. An optimizing release mode, to close the run-time gap
+6. Linux and x86-64
+7. **The azoL compiler written in azoL.** Rust is scaffolding; the goal is to remove it.
 
 ## Name
 
