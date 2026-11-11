@@ -17,7 +17,7 @@
 use crate::ast::*;
 use crate::runtime::{self, RuntimeReloc, RUNTIME, RUNTIME_DATA, RUNTIME_DATA_OFFSETS, RUNTIME_RELOCS};
 use crate::sema::{
-    idle_slot, Program, Shift, Ty, BUILTIN_ARGS, BUILTIN_CHR, BUILTIN_EPRINT, BUILTIN_EXIT, BUILTIN_LEN, BUILTIN_LIST_POP,
+    idle_slot, Program, Shift, Ty, APPEND, BUILTIN_ARGS, BUILTIN_CHR, BUILTIN_EPRINT, BUILTIN_EXIT, BUILTIN_LEN, BUILTIN_LIST_POP,
     BUILTIN_LIST_PUSH, BUILTIN_PRINT_BOOL, BUILTIN_PRINT_I64, BUILTIN_PRINT_STR, BUILTIN_READ_FILE,
     BUILTIN_STR_FROM_BOOL, BUILTIN_STR_FROM_I64, BUILTIN_STR_SLICE, BUILTIN_VARIANT, BUILTIN_WRITE_FILE, BY_REF,
     COPIED, FIRST_BUILTIN, IN_PLACE, PAT_BIND, PAT_LITERAL, PAT_VARIANT, VARIANT,
@@ -656,6 +656,19 @@ impl<'a> Gen<'a> {
     }
 
     fn assign(&mut self, id: StmtId, target: ExprId, value: ExprId) {
+        if self.prog.stmt_flag[self.sh.s(id)] == APPEND {
+            // `s = s + more`: the new text is added to `s` in place. It
+            // is computed first; only then is `s` looked at.
+            let Expr::Binary { rhs, .. } = self.ast.exprs[value as usize] else {
+                unreachable!("checked: an append adds something");
+            };
+            self.address(rhs);
+            self.emit(PUSH_X0);
+            self.address(target);
+            self.emit(pop(X1));
+            self.runtime(runtime::STR_APPEND);
+            return;
+        }
         let ty = self.ty(target);
         let place = self.place(target);
         if !ty.is_aggregate() {
@@ -697,7 +710,12 @@ impl<'a> Gen<'a> {
         // the temporary that computed it, or a fresh copy of a variable.
         self.address(value);
         let source = if self.prog.expr_moved[self.sh.e(value)] {
-            self.prog.expr_tmp[self.sh.e(value)]
+            match self.variable_slot(value) {
+                // A variable that is not used again: its value moves
+                // straight out of its own slots.
+                Some(slot) => slot,
+                None => self.prog.expr_tmp[self.sh.e(value)],
+            }
         } else {
             let scratch = self.prog.stmt_slot[self.sh.s(id)];
             self.copy_to_frame(scratch, size);
@@ -715,6 +733,7 @@ impl<'a> Gen<'a> {
         self.frame_address(X0, source);
         self.emit(ldr(X9, FP, frame(self.scratch_slot)));
         self.copy_to_pointer(0, size);
+        self.moved_out(value);
     }
 
     fn return_stmt(&mut self, id: StmtId, value: Option<ExprId>) {
@@ -946,9 +965,32 @@ impl<'a> Gen<'a> {
             if self.prog.needs_drop(ty) && !self.prog.expr_moved[self.sh.e(value)] {
                 self.clone_frame(slot, ty);
             }
+            self.moved_out(value);
         } else {
             self.value(value);
             self.emit(str(X0, FP, frame(slot)));
+        }
+    }
+
+    /// The frame slot of `id` when it is a whole local variable.
+    fn variable_slot(&self, id: ExprId) -> Option<u32> {
+        match self.ast.exprs[id as usize] {
+            Expr::Ident(_) => self.place(id).filter(|place| !place.by_ref).map(|place| place.slot),
+            _ => None,
+        }
+    }
+
+    /// Called after the value of `id` has been stored somewhere. When
+    /// `id` is a variable whose buffers the store took over, the variable
+    /// is left owning nothing, so that the end of its scope frees nothing.
+    fn moved_out(&mut self, id: ExprId) {
+        if !self.prog.expr_moved[self.sh.e(id)] {
+            return;
+        }
+        if let Some(slot) = self.variable_slot(id) {
+            for (offset, leaf) in self.prog.owned(self.ty(id)) {
+                self.emit(str(XZR, FP, frame(slot + offset + idle_slot(leaf))));
+            }
         }
     }
 
@@ -1166,6 +1208,7 @@ impl<'a> Gen<'a> {
                     self.emit(add_reg(X0, X0, X11));
                     self.clone_value(elem);
                 }
+                self.moved_out(item);
             } else {
                 self.emit(str(X0, X9, offset));
             }
@@ -1375,6 +1418,7 @@ impl<'a> Gen<'a> {
                     if self.prog.needs_drop(elem) && !self.prog.expr_moved[self.sh.e(args[0])] {
                         self.clone_frame(tmp, elem);
                     }
+                    self.moved_out(args[0]);
                 } else {
                     self.value(args[0]);
                     self.emit(str(X0, FP, frame(tmp)));

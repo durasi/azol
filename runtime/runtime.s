@@ -15,6 +15,7 @@
 .globl _rt_index_fail, _rt_pop_empty, _rt_alloc, _rt_free, _rt_list_push, _rt_list_clone
 .globl _rt_drop, _rt_str_concat, _rt_str_eq, _rt_str_from_i64, _rt_str_from_bool
 .globl _rt_eprint_str, _rt_exit, _rt_str_slice, _rt_chr, _rt_args, _rt_read_file, _rt_write_file
+.globl _rt_str_append
 
 // x0 = number. Prints it and a newline.
 _rt_print_i64:
@@ -732,4 +733,85 @@ _rt_write_file:
     ldp x21, x22, [sp, #32]
     ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #64
+    ret
+
+// x0 = address of a string, x1 = address of the string to add at its end.
+// The first string grows in place when it has room, and gets a buffer
+// about twice as large when it does not, so that adding in a loop stays
+// cheap. It may hold text that lives in the executable (capacity 0), which
+// is then copied into a buffer of its own. Both may be the same string.
+_rt_str_append:
+    ldr x9, [x1, #8]
+    cbz x9, 34f
+    stp x29, x30, [sp, #-64]!
+    mov x29, sp
+    stp x19, x20, [sp, #16]
+    stp x21, x22, [sp, #32]
+    stp x23, x24, [sp, #48]
+    mov x19, x0
+    ldr x20, [x1]
+    mov x21, x9
+    // x23 = 1 when the text to add starts where this string's does. That
+    // matters only for a buffer the string owns, which can move; two
+    // texts in the executable may start at the same place when one of
+    // them is empty.
+    ldr x10, [x19]
+    cmp x20, x10
+    cset x23, eq
+    ldr x9, [x19, #8]
+    add x22, x9, x21
+    ldr x10, [x19, #16]
+    cmp x22, x10
+    b.ls 33f
+    // New capacity: twice the old one, at least what is needed, at least 16.
+    lsl x24, x10, #1
+    cmp x24, x22
+    csel x24, x22, x24, lo
+    mov x11, #16
+    cmp x24, x11
+    csel x24, x11, x24, lo
+    cbz x10, 31f
+    ldr x0, [x19]
+    mov x1, x24
+    brk #0x1003
+    nop
+    nop
+    cbz x0, _rt_out_of_memory
+    str x0, [x19]
+    // The old buffer is gone. If the text to add was in it, it is now
+    // at the start of the new one.
+    cbz x23, 32f
+    mov x20, x0
+    b 32f
+31:
+    // The string does not own its bytes: copy them into a new buffer.
+    mov x0, x24
+    brk #0x1002
+    nop
+    nop
+    cbz x0, _rt_out_of_memory
+    ldr x1, [x19]
+    str x0, [x19]
+    ldr x2, [x19, #8]
+    cbz x2, 32f
+    brk #0x1005
+    nop
+    nop
+32:
+    str x24, [x19, #16]
+33:
+    ldr x0, [x19]
+    ldr x9, [x19, #8]
+    add x0, x0, x9
+    mov x1, x20
+    mov x2, x21
+    brk #0x1005
+    nop
+    nop
+    str x22, [x19, #8]
+    ldp x23, x24, [sp, #48]
+    ldp x21, x22, [sp, #32]
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #64
+34:
     ret

@@ -114,6 +114,10 @@ pub const MOVED: u8 = 1;
 /// The value is part of a temporary; the statement works on its own copy.
 pub const COPIED: u8 = 2;
 
+/// In `stmt_flag` of an assignment `s = s + more` on strings: the new
+/// text is added to `s` where it is instead of building a third string.
+pub const APPEND: u8 = 1;
+
 /// A pattern that matches anything and binds nothing.
 pub const PAT_ANY: u8 = 0;
 /// A pattern that matches anything and gives it a name.
@@ -282,13 +286,16 @@ pub struct Program<'a> {
     /// temporary that holds it. For `push`, the slot the element waits in.
     pub expr_tmp: Vec<u32>,
     /// Per expression used as the source of a store: true when its
-    /// buffers are handed over instead of copied.
+    /// buffers are handed over instead of copied. That is a temporary,
+    /// or a variable that is not used again; the variable is then left
+    /// owning nothing.
     pub expr_moved: Vec<bool>,
     /// Per `let`/`var`: its first slot. Per assignment that copies an
     /// owning value: a scratch area. Per `for` and `match`: the
     /// statement's hidden slots.
     pub stmt_slot: Vec<u32>,
-    /// Per `for` and `match`: `IN_PLACE`, `MOVED` or `COPIED`.
+    /// Per `for` and `match`: `IN_PLACE`, `MOVED` or `COPIED`. Per
+    /// assignment: `APPEND` or 0.
     pub stmt_flag: Vec<u8>,
     /// Parallel to `Ast::patterns`.
     pub pats: Vec<PatInfo>,
@@ -432,6 +439,12 @@ struct Local<'a> {
     /// False for a view of data another value owns: a parameter, a loop
     /// variable or a pattern binding.
     owns: bool,
+    /// How many loops enclosed the declaration.
+    depth: u32,
+    /// The latest place where the variable was stored somewhere whole and
+    /// could have handed its buffers over instead of being copied. It
+    /// stands only if the variable is never mentioned again.
+    candidate: Option<ExprId>,
 }
 
 /// A variable or a part of one, as a range of slots.
@@ -555,6 +568,10 @@ struct Checker<'a> {
     /// Owning temporaries of the statement being checked that nothing
     /// has taken over yet: expression, first slot, type.
     pending: Vec<(ExprId, u32, Ty)>,
+    /// Expressions that are written before the one being checked but
+    /// evaluated after it: the list in `list[index]` while the index is
+    /// checked, the target of an assignment while its value is.
+    late: Vec<ExprId>,
     zero_slots: Vec<u32>,
     ret: Ty,
     next_slot: u32,
@@ -621,6 +638,7 @@ pub fn check_with_prelude<'a>(ast: &'a Ast, src: &'a str, prelude_start: u32) ->
         locals: Vec::new(),
         borrows: Vec::new(),
         pending: Vec::new(),
+        late: Vec::new(),
         zero_slots: Vec::new(),
         ret: Ty::Unit,
         next_slot: 0,
@@ -1376,6 +1394,7 @@ impl<'a> Checker<'a> {
         self.locals.clear();
         self.borrows.clear();
         self.pending.clear();
+        self.late.clear();
         self.zero_slots.clear();
         self.next_slot = 0;
         self.loop_depth = 0;
@@ -1393,6 +1412,8 @@ impl<'a> Checker<'a> {
                 is_param: true,
                 is_view: false,
                 owns: false,
+                depth: self.loop_depth,
+                candidate: None,
             });
         }
         if self.ret.is_aggregate() {
@@ -1400,6 +1421,7 @@ impl<'a> Checker<'a> {
         }
         self.fns[index as usize].scratch_slot = self.alloc(1, name.start)?;
         self.block(body)?;
+        self.close_scope(0);
         if self.ret != Ty::Unit && !self.always_returns(body) {
             return err(
                 name.start,
@@ -1469,8 +1491,69 @@ impl<'a> Checker<'a> {
         for &id in self.ast.list(body) {
             self.stmt(id)?;
         }
-        self.locals.truncate(scope);
+        self.close_scope(scope);
         Ok(())
+    }
+
+    /// Ends the scope of the variables declared since `scope`. A store
+    /// that was the last mention of a variable takes its buffers over.
+    fn close_scope(&mut self, scope: usize) {
+        for at in scope..self.locals.len() {
+            if let Some(id) = self.locals[at].candidate {
+                self.expr_moved[self.sh.e(id)] = true;
+            }
+        }
+        self.locals.truncate(scope);
+    }
+
+    /// True when `name` is written anywhere inside expression `id`.
+    fn mentions(&self, id: ExprId, name: &str) -> bool {
+        match self.ast.exprs[id as usize] {
+            Expr::Ident(span) => span.text(self.src) == name,
+            Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => false,
+            Expr::Unary { operand, .. } => self.mentions(operand, name),
+            Expr::Binary { lhs, rhs, .. } => self.mentions(lhs, name) || self.mentions(rhs, name),
+            Expr::Call { callee, args } => {
+                self.mentions(callee, name) || self.ast.list(args).iter().any(|&arg| self.mentions(arg, name))
+            }
+            Expr::MutArg(inner) => self.mentions(inner, name),
+            Expr::Field { base, .. } => self.mentions(base, name),
+            Expr::Index { base, index } => self.mentions(base, name) || self.mentions(index, name),
+            Expr::StructLit { fields, .. } => {
+                self.ast.list(fields).iter().any(|&init| self.mentions(self.ast.field_inits[init as usize].value, name))
+            }
+            Expr::ArrayLit { items } => self.ast.list(items).iter().any(|&item| self.mentions(item, name)),
+        }
+    }
+
+    /// Called where the value of `id` is stored in a new owner. Like
+    /// `take`, and in addition: a whole variable that owns its value may
+    /// hand its buffers over instead of being copied, if it turns out
+    /// that it is never mentioned again. That is safe only when nothing
+    /// can run the store twice (a loop that started after the variable
+    /// was declared), nothing is looking into the variable, and nothing
+    /// written earlier reads it later.
+    fn store_from(&mut self, id: ExprId) -> bool {
+        if self.take(id) {
+            return true;
+        }
+        let Expr::Ident(name) = self.ast.exprs[id as usize] else {
+            return false;
+        };
+        let text = name.text(self.src);
+        let Some(at) = self.locals.iter().rposition(|local| local.name == text) else {
+            return false;
+        };
+        let local = &self.locals[at];
+        if !local.owns || local.by_ref || local.depth != self.loop_depth || !self.needs_drop(local.ty) {
+            return false;
+        }
+        let place = Place { root: local.slot, start: 0, len: self.size_of(local.ty), mutable: false, is_param: false, is_view: false };
+        let watched = self.borrows.iter().any(|other| overlaps(&place, &other.place));
+        if !watched && !self.late.iter().any(|&late| self.mentions(late, text)) {
+            self.locals[at].candidate = Some(id);
+        }
+        false
     }
 
     /// Registers an owning temporary created by `id`.
@@ -1533,10 +1616,10 @@ impl<'a> Checker<'a> {
                         );
                     }
                 }
-                self.take(value);
+                self.store_from(value);
                 self.finish(id);
                 let slot = self.alloc(self.size_of(value_ty), name.start)?;
-                self.locals.push(Local { name: self.binding(name)?, slot, ty: value_ty, mutable, by_ref: false, is_param: false, is_view: false, owns: true });
+                self.locals.push(Local { name: self.binding(name)?, slot, ty: value_ty, mutable, by_ref: false, is_param: false, is_view: false, owns: true, depth: self.loop_depth, candidate: None });
                 self.stmt_slot[self.sh.s(id)] = slot;
             }
             Stmt::Assign { target, value } => {
@@ -1553,6 +1636,8 @@ impl<'a> Checker<'a> {
                     return err(pos, format!("cannot change `{}`: {}", self.root_name(target), read_only(&place)));
                 }
                 self.check_change(target, &place)?;
+                // The target is found after the value has been computed.
+                self.late.push(target);
                 let value_ty = self.expr_hint(value, Some(target_ty))?;
                 if value_ty != target_ty {
                     return err(
@@ -1560,8 +1645,24 @@ impl<'a> Checker<'a> {
                         format!("expected `{}` but this is `{}`", self.ty_name(target_ty), self.ty_name(value_ty)),
                     );
                 }
+                if let (Ty::Str, Expr::Binary { op: BinOp::Add, lhs, .. }) = (target_ty, self.ast.exprs[value as usize]) {
+                    // `s = s + more`: add to `s` where it is. The right
+                    // side cannot change `s`, so the result is the same.
+                    let same = match self.place(lhs) {
+                        Some(left) => left.root == place.root && left.start == place.start,
+                        None => false,
+                    };
+                    if same && !self.contains_index(target) && !self.contains_index(lhs) {
+                        self.late.pop();
+                        self.pending.retain(|&(expr, ..)| expr != value);
+                        self.stmt_flag[self.sh.s(id)] = APPEND;
+                        self.finish(id);
+                        return Ok(());
+                    }
+                }
                 let owning = self.needs_drop(target_ty);
-                let moved = owning && self.take(value);
+                let moved = owning && self.store_from(value);
+                self.late.pop();
                 if target_ty.is_aggregate() && !moved && (owning || self.contains_index(target)) {
                     // The value is copied aside first. That lets `a = a`
                     // read the old value before it is freed, and keeps the
@@ -1614,9 +1715,10 @@ impl<'a> Checker<'a> {
                 }
             }
             Stmt::While { cond, body } => {
+                // The condition runs on every round, like the body.
+                self.loop_depth += 1;
                 self.condition(cond)?;
                 self.finish(id);
-                self.loop_depth += 1;
                 self.block(body)?;
                 self.loop_depth -= 1;
             }
@@ -1645,10 +1747,10 @@ impl<'a> Checker<'a> {
                 let scope = self.locals.len();
                 let item_slot = self.alloc(self.size_of(elem), item.start)?;
                 // The loop variable looks at the element; the list keeps owning it.
-                self.locals.push(Local { name: self.binding(item)?, slot: item_slot, ty: elem, mutable: false, by_ref: false, is_param: false, is_view: true, owns: false });
+                self.locals.push(Local { name: self.binding(item)?, slot: item_slot, ty: elem, mutable: false, by_ref: false, is_param: false, is_view: true, owns: false, depth: self.loop_depth, candidate: None });
                 if let Some(index) = index {
                     let index_slot = self.alloc(1, index.start)?;
-                    self.locals.push(Local { name: self.binding(index)?, slot: index_slot, ty: Ty::I64, mutable: false, by_ref: false, is_param: false, is_view: true, owns: false });
+                    self.locals.push(Local { name: self.binding(index)?, slot: index_slot, ty: Ty::I64, mutable: false, by_ref: false, is_param: false, is_view: true, owns: false, depth: self.loop_depth, candidate: None });
                 }
                 let borrows = self.borrows.len();
                 if self.stmt_flag[self.sh.s(id)] == IN_PLACE {
@@ -1659,7 +1761,7 @@ impl<'a> Checker<'a> {
                 self.block(body)?;
                 self.loop_depth -= 1;
                 self.borrows.truncate(borrows);
-                self.locals.truncate(scope);
+                self.close_scope(scope);
             }
             Stmt::Break | Stmt::Continue => {
                 if self.loop_depth == 0 {
@@ -1754,6 +1856,8 @@ impl<'a> Checker<'a> {
                         is_param: false,
                         is_view: true,
                         owns: false,
+                        depth: self.loop_depth,
+                        candidate: None,
                     });
                     self.pats[self.sh.p(arm.pattern)] = PatInfo { kind: PAT_BIND, res: 0, slot };
                     catch_all = true;
@@ -1822,6 +1926,8 @@ impl<'a> Checker<'a> {
                                     is_param: false,
                                     is_view: true,
                                     owns: false,
+                                    depth: self.loop_depth,
+                                    candidate: None,
                                 });
                                 self.pats[self.sh.p(sub)] = PatInfo { kind: PAT_BIND, res: offset, slot };
                             }
@@ -1896,7 +2002,7 @@ impl<'a> Checker<'a> {
                 }
             }
             self.block(arm.body)?;
-            self.locals.truncate(scope);
+            self.close_scope(scope);
         }
         self.borrows.truncate(outer_borrows);
 
@@ -2089,7 +2195,7 @@ impl<'a> Checker<'a> {
             }
             Expr::Ident(name) => {
                 let text = name.text(self.src);
-                let Some(local) = self.lookup(text) else {
+                let Some(at) = self.locals.iter().rposition(|local| local.name == text) else {
                     if let Some((template, variant)) = self.variant(text) {
                         return self.construct(id, template, variant, None, hint);
                     }
@@ -2103,6 +2209,9 @@ impl<'a> Checker<'a> {
                         err(pos, format!("unknown variable `{text}`"))
                     };
                 };
+                let local = &mut self.locals[at];
+                // Mentioned again: an earlier store was not its last use.
+                local.candidate = None;
                 let (slot, ty, by_ref) = (local.slot, local.ty, local.by_ref);
                 self.expr_res[self.sh.e(id)] = slot | if by_ref { BY_REF } else { 0 };
                 Ok(ty)
@@ -2200,7 +2309,10 @@ impl<'a> Checker<'a> {
                     Ty::Str => Ty::I64,
                     _ => return err(pos, format!("only a list or a string can be indexed but this is `{}`", self.ty_name(base_ty))),
                 };
+                // The index is computed before the list is looked at.
+                self.late.push(base);
                 self.expect(index, Ty::I64, What::Text("an index"))?;
+                self.late.pop();
                 Ok(elem)
             }
             Expr::ArrayLit { items } => {
@@ -2224,7 +2336,7 @@ impl<'a> Checker<'a> {
                         self.expect(item, elem, What::Text("this list's element"))?;
                     }
                     // The list takes a temporary's buffers over.
-                    self.take(item);
+                    self.store_from(item);
                 }
                 let ty = self.list_of(elem);
                 self.expr_tmp[self.sh.e(id)] = self.temp(id, ty)?;
@@ -2279,7 +2391,7 @@ impl<'a> Checker<'a> {
                 };
                 self.expect(init.value, want, What::Field(field_name))?;
                 // The new struct takes a temporary's buffers over.
-                self.take(init.value);
+                self.store_from(init.value);
                 self.init_offset[self.sh.i(init_id)] = offset;
             }
             if let Some(missing) = seen.iter().position(|&given| !given) {
@@ -2331,7 +2443,7 @@ impl<'a> Checker<'a> {
                 }
             }
             // The new struct takes a temporary's buffers over.
-            self.take(init.value);
+            self.store_from(init.value);
             filled.push((init_id, at));
         }
         if let Some(missing) = seen.iter().position(|&given| !given) {
@@ -2426,7 +2538,7 @@ impl<'a> Checker<'a> {
                     let field = self.enums[index as usize].variants[variant as usize].fields[i].0;
                     self.expect(arg, field, What::Argument(i + 1, name))?;
                     // The new value takes a temporary's buffers over.
-                    self.take(arg);
+                    self.store_from(arg);
                 }
                 ty
             }
@@ -2458,7 +2570,7 @@ impl<'a> Checker<'a> {
                             );
                         }
                     }
-                    self.take(arg);
+                    self.store_from(arg);
                 }
                 if bound.iter().any(Option::is_none) {
                     return err(
@@ -2879,8 +2991,11 @@ impl<'a> Checker<'a> {
                 }
                 "slice" => {
                     arity(2)?;
+                    // The bounds are computed before the string is looked at.
+                    self.late.push(base);
                     self.expect(args[0], Ty::I64, What::Argument(1, "slice"))?;
                     self.expect(args[1], Ty::I64, What::Argument(2, "slice"))?;
+                    self.late.pop();
                     // The bytes are copied into a string of their own.
                     self.expr_tmp[self.sh.e(id)] = self.temp(id, Ty::Str)?;
                     self.expr_res[self.sh.e(id)] = BUILTIN_STR_SLICE;
@@ -2908,9 +3023,12 @@ impl<'a> Checker<'a> {
                     return err(pos, format!("cannot change `{}`: {}", self.root_name(base), read_only(&place)));
                 }
                 if text == "push" {
+                    // The element is computed before the list is looked at.
+                    self.late.push(base);
                     self.expect(args[0], elem, What::Text("`push`"))?;
                     // The list takes a temporary's buffers over.
-                    self.take(args[0]);
+                    self.store_from(args[0]);
+                    self.late.pop();
                     self.check_change(base, &place)?;
                     // The element waits here while the list makes room.
                     self.expr_tmp[self.sh.e(id)] = self.alloc(self.size_of(elem), pos)?;
@@ -3226,8 +3344,9 @@ mod tests {
         // One move per temporary that is stored: make() twice, [1], [7],
         // the two struct literals, `[1, 2]` returned inside `make`, and
         // the two string literals, which own nothing and are never
-        // copied. Copies of `a` are not moves.
-        assert_eq!(program.expr_moved.iter().filter(|&&moved| moved).count(), 9);
+        // copied. The first two copies of `a` are real copies; its last
+        // use, in the struct literal, takes its buffer over.
+        assert_eq!(program.expr_moved.iter().filter(|&&moved| moved).count(), 10);
         // Only `total(make())` leaves a temporary for its statement to free.
         assert_eq!(program.drops.len(), 1);
         let main = &program.fns[program.main as usize];
@@ -3546,6 +3665,83 @@ mod tests {
         let shapes: Vec<(String, u32, usize)> = prog.structs.iter().map(|s| (s.name.clone(), s.size, s.heap.len())).collect();
         assert_eq!(shapes, vec![("Pair[i64, str]".to_string(), 4, 1), ("Pair[str, List[i64]]".to_string(), 6, 2)]);
         assert_eq!(prog.structs[1].fields[1].offset, 3);
+    }
+
+    /// The variables whose value is handed over, not copied, somewhere in `body`.
+    fn moved_variables(body: &str) -> Vec<String> {
+        let src = format!("struct Bag {{\n items: List[i64]\n name: str\n}}\nfn make() -> List[i64] {{\n return [1]\n}}\nfn size(o: Option[List[i64]]) -> i64 {{\n return 0\n}}\nfn change(xs: mut List[i64]) {{\n}}\n{}", in_main(body));
+        let tokens = lex(&src).unwrap();
+        let ast = parse(&src, &tokens).unwrap();
+        let program = check(&ast, &src).unwrap_or_else(|e| panic!("{}", e.message));
+        let mut names = Vec::new();
+        for (id, expr) in ast.exprs.iter().enumerate() {
+            if let Expr::Ident(name) = expr {
+                if program.expr_moved[id] {
+                    names.push(name.text(&src).to_string());
+                }
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn last_use_of_a_variable_moves() {
+        let none: Vec<String> = Vec::new();
+        // Stored and never mentioned again: handed over.
+        assert_eq!(moved_variables("let a = make()\nlet b = a"), ["a"]);
+        assert_eq!(moved_variables("let a = make()\nvar xs = [make()]\nxs.push(a)"), ["a"]);
+        assert_eq!(moved_variables("let a = make()\nlet b = Bag { items: a, name: \"n\" }"), ["a"]);
+        assert_eq!(moved_variables("let a = make()\nlet b = Some(a)"), ["a"]);
+        assert_eq!(moved_variables("let a = make()\nlet b = [a]"), ["a"]);
+        assert_eq!(moved_variables("let a = make()\nvar b = make()\nb = a"), ["a"]);
+        assert_eq!(moved_variables("let a = make()\nlet b = a\nlet c = b"), ["a", "b"]);
+        // Mentioned again afterwards, in any way: copied. Only the last store counts.
+        assert_eq!(moved_variables("let a = make()\nlet b = a\nprint(a.len())"), none);
+        assert_eq!(moved_variables("let a = make()\nlet b = a\nlet c = a"), ["a"]);
+        assert_eq!(moved_variables("let a = make()\nlet b = [a, a]").len(), 1);
+        assert_eq!(moved_variables("var a = make()\nlet b = a\na = make()"), none);
+        assert_eq!(moved_variables("let a = make()\nif a.len() > 0 {\n let b = a\n} else {\n let c = a\n}").len(), 1);
+        // A store that may run again must copy.
+        assert_eq!(moved_variables("let a = make()\nvar i = 0\nwhile i < 2 {\n let b = a\n i = i + 1\n}"), none);
+        assert_eq!(moved_variables("let a = make()\nfor x in [1, 2] {\n let b = a\n}"), none);
+        assert_eq!(moved_variables("let a = make()\nwhile size(Some(a)) > 0 {\n}"), none);
+        assert_eq!(moved_variables("for x in [1, 2] {\n let a = make()\n let b = a\n}"), ["a"]);
+        assert_eq!(moved_variables("var i = 0\nwhile i < 2 {\n let a = make()\n var xs = [make()]\n xs.push(a)\n i = i + 1\n}"), ["a"]);
+        // Something still looks into the variable: copied.
+        assert_eq!(moved_variables("let a = Some(make())\nmatch a {\n Some(inner) => {\n  let b = a\n  print(inner.len())\n }\n None => {}\n}"), none);
+        assert_eq!(moved_variables("let a = [make()]\nfor inner in a {\n let b = a\n}"), none);
+        // Written earlier but read later: copied.
+        assert_eq!(moved_variables("var a = [make()]\na[size(Some(a[0]))] = make()"), none);
+        assert_eq!(moved_variables("var a = make()\nlet n = a[size(Some(a))]"), none);
+        assert_eq!(moved_variables("var a = [make()]\nlet b = make()\na[0] = b"), ["b"]);
+        assert_eq!(moved_variables("var a = make()\nvar b = [make()]\nb[a[0]] = a"), none);
+        assert_eq!(moved_variables("var a = [make()]\na.push(a[0])"), none);
+        // Parts of variables, parameters and views are never moved from.
+        assert_eq!(moved_variables("let a = Bag { items: make(), name: \"n\" }\nlet b = a.items"), none);
+        assert_eq!(moved_variables("let a = [make()]\nlet b = a[0]"), none);
+        assert_eq!(moved_variables("let a = 1\nlet b = a"), none);
+        // A variable with the same name declared later is a different one.
+        assert_eq!(moved_variables("let a = make()\nlet a = a\nprint(a.len())"), ["a"]);
+    }
+
+    #[test]
+    fn appending_to_a_string_in_place() {
+        let flags = |body: &str| -> Vec<u8> {
+            let src = format!("struct Named {{\n name: str\n}}\nfn grow(s: mut str) {{\n s = s + \"!\"\n}}\n{}", in_main(body));
+            let tokens = lex(&src).unwrap();
+            let ast = parse(&src, &tokens).unwrap();
+            let program = check(&ast, &src).unwrap_or_else(|e| panic!("{}", e.message));
+            ast.stmts.iter().enumerate().filter(|(_, s)| matches!(s, Stmt::Assign { .. })).map(|(id, _)| program.stmt_flag[id]).collect()
+        };
+        // The first assignment is the one inside `grow`.
+        assert_eq!(flags("var s = \"a\"\ns = s + \"b\"\ns = s + s\ns = s + s.slice(0, 1)"), [APPEND, APPEND, APPEND, APPEND]);
+        // Only the simple form: `s + a + b` adds to `s + a`, a new string.
+        assert_eq!(flags("var s = \"a\"\ns = s + \"b\" + \"c\""), [APPEND, 0]);
+        assert_eq!(flags("var n = Named { name: \"a\" }\nn.name = n.name + \"b\""), [APPEND, APPEND]);
+        // Anything else builds a new string.
+        assert_eq!(flags("var s = \"a\"\nvar t = \"b\"\ns = t + s\ns = \"x\" + s\nt = s"), [APPEND, 0, 0, 0]);
+        assert_eq!(flags("var xs = [\"a\"]\nxs[0] = xs[0] + \"b\""), [APPEND, 0]);
+        assert_eq!(flags("var n = 1\nn = n + 1"), [APPEND, 0]);
     }
 
     #[test]

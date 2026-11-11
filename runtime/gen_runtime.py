@@ -27,7 +27,7 @@ TEXT = [
 ENTRIES = [
     "print_i64", "print_bool", "print_str", "div_zero", "index_fail", "pop_empty", "alloc", "free", "list_push",
     "list_clone", "drop", "str_concat", "str_eq", "str_from_i64", "str_from_bool", "eprint_str", "exit", "str_slice",
-    "chr", "args", "read_file", "write_file",
+    "chr", "args", "read_file", "write_file", "str_append",
 ]
 
 source = open(os.path.join(HERE, "runtime.s")).read()

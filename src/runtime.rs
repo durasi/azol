@@ -37,6 +37,7 @@ pub const CHR: u32 = 323;
 pub const ARGS: u32 = 333;
 pub const READ_FILE: u32 = 436;
 pub const WRITE_FILE: u32 = 523;
+pub const STR_APPEND: u32 = 583;
 
 pub enum RuntimeReloc {
     /// Three words: load the import's address and call it.
@@ -45,7 +46,7 @@ pub enum RuntimeReloc {
     Data { at: u32, data: u32, reg: u32 },
 }
 
-pub const RUNTIME_RELOCS: [RuntimeReloc; 53] = [
+pub const RUNTIME_RELOCS: [RuntimeReloc; 57] = [
     RuntimeReloc::Import { at: 21, import: 0 },
     RuntimeReloc::Data { at: 27, data: 1, reg: 0 },
     RuntimeReloc::Data { at: 31, data: 2, reg: 0 },
@@ -99,9 +100,13 @@ pub const RUNTIME_RELOCS: [RuntimeReloc; 53] = [
     RuntimeReloc::Import { at: 557, import: 0 },
     RuntimeReloc::Import { at: 567, import: 9 },
     RuntimeReloc::Import { at: 573, import: 9 },
+    RuntimeReloc::Import { at: 610, import: 3 },
+    RuntimeReloc::Import { at: 619, import: 2 },
+    RuntimeReloc::Import { at: 627, import: 5 },
+    RuntimeReloc::Import { at: 636, import: 5 },
 ];
 
-pub const RUNTIME: [u32; 583] = [
+pub const RUNTIME: [u32; 645] = [
     0xA9BC7BFD, //   0: stp x29, x30, [sp, #-0x40]!
     0x910003FD, //   1: mov x29, sp
     0x9100FFE9, //   2: add x9, sp, #0x3f
@@ -685,4 +690,66 @@ pub const RUNTIME: [u32; 583] = [
     0xA94153F3, // 580: ldp x19, x20, [sp, #0x10]
     0xA8C47BFD, // 581: ldp x29, x30, [sp], #0x40
     0xD65F03C0, // 582: ret 
+    0xF9400429, // 583: ldr x9, [x1, #8]
+    0xB4000789, // 584: cbz x9, #0xa10
+    0xA9BC7BFD, // 585: stp x29, x30, [sp, #-0x40]!
+    0x910003FD, // 586: mov x29, sp
+    0xA90153F3, // 587: stp x19, x20, [sp, #0x10]
+    0xA9025BF5, // 588: stp x21, x22, [sp, #0x20]
+    0xA90363F7, // 589: stp x23, x24, [sp, #0x30]
+    0xAA0003F3, // 590: mov x19, x0
+    0xF9400034, // 591: ldr x20, [x1]
+    0xAA0903F5, // 592: mov x21, x9
+    0xF940026A, // 593: ldr x10, [x19]
+    0xEB0A029F, // 594: cmp x20, x10
+    0x9A9F17F7, // 595: cset x23, eq
+    0xF9400669, // 596: ldr x9, [x19, #8]
+    0x8B150136, // 597: add x22, x9, x21
+    0xF9400A6A, // 598: ldr x10, [x19, #0x10]
+    0xEB0A02DF, // 599: cmp x22, x10
+    0x540003E9, // 600: b.ls #0x9dc
+    0xD37FF958, // 601: lsl x24, x10, #1
+    0xEB16031F, // 602: cmp x24, x22
+    0x9A9832D8, // 603: csel x24, x22, x24, lo
+    0xD280020B, // 604: mov x11, #0x10
+    0xEB0B031F, // 605: cmp x24, x11
+    0x9A983178, // 606: csel x24, x11, x24, lo
+    0xB400016A, // 607: cbz x10, #0x9a8
+    0xF9400260, // 608: ldr x0, [x19]
+    0xAA1803E1, // 609: mov x1, x24
+    0xD4220060, // 610: brk #0x1003
+    0xD503201F, // 611: nop 
+    0xD503201F, // 612: nop 
+    0xB4FFBE20, // 613: cbz x0, #0x158
+    0xF9000260, // 614: str x0, [x19]
+    0xB40001F7, // 615: cbz x23, #0x9d8
+    0xAA0003F4, // 616: mov x20, x0
+    0x1400000D, // 617: b #0x9d8
+    0xAA1803E0, // 618: mov x0, x24
+    0xD4220040, // 619: brk #0x1002
+    0xD503201F, // 620: nop 
+    0xD503201F, // 621: nop 
+    0xB4FFBD00, // 622: cbz x0, #0x158
+    0xF9400261, // 623: ldr x1, [x19]
+    0xF9000260, // 624: str x0, [x19]
+    0xF9400662, // 625: ldr x2, [x19, #8]
+    0xB4000082, // 626: cbz x2, #0x9d8
+    0xD42200A0, // 627: brk #0x1005
+    0xD503201F, // 628: nop 
+    0xD503201F, // 629: nop 
+    0xF9000A78, // 630: str x24, [x19, #0x10]
+    0xF9400260, // 631: ldr x0, [x19]
+    0xF9400669, // 632: ldr x9, [x19, #8]
+    0x8B090000, // 633: add x0, x0, x9
+    0xAA1403E1, // 634: mov x1, x20
+    0xAA1503E2, // 635: mov x2, x21
+    0xD42200A0, // 636: brk #0x1005
+    0xD503201F, // 637: nop 
+    0xD503201F, // 638: nop 
+    0xF9000676, // 639: str x22, [x19, #8]
+    0xA94363F7, // 640: ldp x23, x24, [sp, #0x30]
+    0xA9425BF5, // 641: ldp x21, x22, [sp, #0x20]
+    0xA94153F3, // 642: ldp x19, x20, [sp, #0x10]
+    0xA8C47BFD, // 643: ldp x29, x30, [sp], #0x40
+    0xD65F03C0, // 644: ret 
 ];

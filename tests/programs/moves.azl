@@ -1,0 +1,206 @@
+// expect-exit: 0
+// expect-line: 3
+// expect-line: 4
+// expect-line: 2
+// expect-line: kept
+// expect-line: taken
+// expect-line: 1
+// expect-line: 7
+// expect-line: 6
+// expect-line: left
+// expect-line: right
+// expect-line: 12
+// expect-line: 3
+// expect-line: 2
+// expect-line: abc
+// expect-line: abcabc
+// expect-line: abcabcabcabc!
+// expect-line: 13
+// expect-line: start-0-1-2-3
+// expect-line: ada lovelace
+// expect-line: x!?
+// expect-line: 
+// expect-line: only
+// expect-line: 5000
+// expect-line: 4950
+// expect-line: unchanged
+// expect-line: unchanged and more
+// expect-line: 26
+// expect-line: az
+
+// Copies the compiler skips: a variable's last use hands its buffers
+// over, and `s = s + more` adds to `s` where it is. The results must be
+// the same as with copies, and every buffer must still be freed once.
+
+struct Person {
+    name: str
+    tags: List[str]
+}
+
+enum Side {
+    Left(str)
+    Right(List[i64])
+    Neither
+}
+
+fn make(n: i64) -> List[i64] {
+    var out: List[i64] = []
+    var i = 0
+    while i < n {
+        out.push(i)
+        i = i + 1
+    }
+    return out
+}
+
+fn total(xs: List[i64]) -> i64 {
+    var sum = 0
+    for x in xs {
+        sum = sum + x
+    }
+    return sum
+}
+
+fn describe(side: Side) -> str {
+    match side {
+        Left(text) => return text
+        Right(numbers) => return str(numbers.len())
+        Neither => return "neither"
+    }
+}
+
+fn grow(text: mut str, times: i64) {
+    var i = 0
+    while i < times {
+        text = text + "-" + str(i)
+        i = i + 1
+    }
+}
+
+fn pick(first: bool) -> Side {
+    let left = Left("le" + "ft")
+    let right = Left("ri" + "ght")
+    if first {
+        return left
+    }
+    return right
+}
+
+fn main() {
+    // The last use of a variable, stored in every kind of place.
+    let a = make(3)
+    let b = a
+    print(b.len())
+    var lists = [make(1)]
+    let c = make(4)
+    lists.push(c)
+    print(lists[1].len())
+    let d = make(2)
+    let wrapped = Some(d)
+    match wrapped {
+        Some(inner) => print(inner.len())
+        None => print(0)
+    }
+    let name = "ke" + "pt"
+    let person = Person { name: name, tags: ["x" + "y"] }
+    print(person.name)
+    var slot = "old" + "!"
+    let fresh = "tak" + "en"
+    slot = fresh
+    print(slot)
+    let single = [person]
+    print(single.len())
+
+    // Only one branch runs; the other path still frees the variable.
+    var round = 0
+    while round < 2 {
+        let e = make(7 - round)
+        if round == 0 {
+            let f = e
+            print(f.len())
+        } else {
+            let g = e
+            print(g.len())
+        }
+        round = round + 1
+    }
+    print(describe(pick(true)))
+    print(describe(pick(false)))
+
+    // A variable declared in a loop is moved on every round.
+    var all: List[List[i64]] = []
+    for n in [3, 4, 5] {
+        let item = make(n)
+        all.push(item)
+    }
+    print(all[0].len() + all[1].len() + all[2].len())
+
+    // An enum is handed over whole, whatever variant it is in.
+    let side = Right(make(3))
+    let moved = side
+    print(describe(moved))
+    let nothing = Neither
+    let still = nothing
+    var sides = [still]
+    let one_more = Left("z")
+    sides.push(one_more)
+    print(sides.len())
+
+    // Adding to a string in place.
+    var s = "abc"
+    let before = s
+    s = s + s
+    print(before)
+    print(s)
+    s = s + s
+    s = s + "!"
+    print(s)
+    print(s.len())
+    var text = "start"
+    grow(mut text, 4)
+    print(text)
+    var ada = Person { name: "ada", tags: [] }
+    ada.name = ada.name + " " + "lovelace"
+    print(ada.name)
+    var short = "x"
+    short = short + ""
+    short = short + "!" 
+    short = short + short.slice(short.len(), short.len())
+    short = short + "?"
+    print(short)
+    var empty = ""
+    empty = empty + ""
+    print(empty)
+    empty = empty + "only"
+    print(empty)
+
+    // Many small additions, and the copies taken along the way stay as they were.
+    var long = ""
+    var snapshot = ""
+    var i = 0
+    while i < 5000 {
+        long = long + "x"
+        if i == 99 {
+            snapshot = long
+        }
+        i = i + 1
+    }
+    print(long.len())
+    print(total(make(100)))
+    var original = "unchanged"
+    var copy = original
+    copy = copy + " and more"
+    print(original)
+    print(copy)
+    var letters = ""
+    var code = 97
+    while code < 123 {
+        letters = letters + chr(code)
+        code = code + 1
+    }
+    print(letters.len())
+    print(letters.slice(0, 1) + letters.slice(25, 26))
+    if snapshot.len() != 100 {
+        print("snapshot is wrong")
+    }
+}

@@ -133,7 +133,7 @@ When a rule is broken you get a plain sentence, not a puzzle:
     4 |         xs.push(x)
       |         ^
 
-Memory is managed by ownership. Every buffer has exactly one owner, a variable or a temporary. A temporary hands its buffer over when it is stored; a variable is duplicated when it is stored again; and each buffer is freed when its owner goes out of scope. This works at any depth: a tree of nodes that each own a list of nodes is copied and freed correctly with nothing written by hand. An enum owns whatever its current variant holds, and only that.
+Memory is managed by ownership. Every buffer has exactly one owner, a variable or a temporary. A temporary hands its buffer over when it is stored; a variable is duplicated when it is stored again, unless that is the last time it is used, in which case it hands its buffer over too; and each buffer is freed when its owner goes out of scope. Copies exist in the meaning of the program, not necessarily in the machine: `text = text + more` adds to `text` in place. This works at any depth: a tree of nodes that each own a list of nodes is copied and freed correctly with nothing written by hand. An enum owns whatever its current variant holds, and only that.
 
 Out-of-range indexes and slices, `pop` on an empty list and division by zero stop the program with a message. They never read or write memory they should not.
 
@@ -223,10 +223,9 @@ The compiler is written in Rust with no dependencies, SHA-256 included. A small 
 
 ## Roadmap
 
-1. Skipping copies the compiler can prove unnecessary
-2. An optimizing release mode, to close the run-time gap
-3. Linux and x86-64
-4. **The azoL compiler written in azoL.** Rust is scaffolding; the goal is to remove it.
+1. An optimizing release mode, to close the run-time gap
+2. Linux and x86-64
+3. **The azoL compiler written in azoL.** Rust is scaffolding; the goal is to remove it.
 
 ## Name
 
