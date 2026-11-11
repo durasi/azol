@@ -2,13 +2,15 @@
 
 //! Name resolution, type checking and the memory safety analysis, for
 //! the part of the language `azol build` compiles: `i64`, `bool`, `str`,
-//! struct and `List` values, functions with read-only and `mut`
-//! parameters, `let`/`var`, assignment, `if`, `while`, `for`, `return`.
+//! struct, enum and `List` values, functions with read-only and `mut`
+//! parameters, `let`/`var`, assignment, `if`, `while`, `for`, `match`,
+//! `return`.
 //!
 //! Values have value semantics. Aggregates are passed by reference for
 //! speed, but the callee cannot change one unless the parameter is `mut`,
 //! and a place can never be changed while something else still refers to
-//! it: another argument of the same call, or a loop iterating over it.
+//! it: another argument of the same call, a loop iterating over it, or
+//! a `match` looking inside it.
 //! Together these make a reference indistinguishable from a private copy.
 //!
 //! A list owns a heap buffer. Every buffer has exactly one owner: a
@@ -41,12 +43,15 @@ pub enum Ty {
     /// A growable array: pointer, length, capacity. The index selects the
     /// element type in `Program::lists`.
     List(u32),
+    /// Index into `Program::enums`: a tag, then room for the largest
+    /// variant. `Option[i64]` and `Option[str]` are different entries.
+    Enum(u32),
 }
 
 impl Ty {
     /// Values that live in memory and are handed around by address.
     pub fn is_aggregate(self) -> bool {
-        matches!(self, Ty::Str | Ty::Struct(_) | Ty::List(_))
+        matches!(self, Ty::Str | Ty::Struct(_) | Ty::List(_) | Ty::Enum(_))
     }
 }
 
@@ -60,22 +65,59 @@ pub const BUILTIN_LIST_POP: u32 = u32::MAX - 4;
 pub const BUILTIN_LEN: u32 = u32::MAX - 5;
 pub const BUILTIN_STR_FROM_I64: u32 = u32::MAX - 6;
 pub const BUILTIN_STR_FROM_BOOL: u32 = u32::MAX - 7;
+/// A call that builds an enum value; `expr_aux` holds the variant.
+pub const BUILTIN_VARIANT: u32 = u32::MAX - 8;
 /// Resolutions at or above this value are built-ins.
-pub const FIRST_BUILTIN: u32 = u32::MAX - 7;
+pub const FIRST_BUILTIN: u32 = u32::MAX - 8;
 /// Set in the resolution of a name whose stack slot holds a pointer.
 pub const BY_REF: u32 = 1 << 31;
+/// The resolution of a name that is a variant without fields, such as
+/// `None`; `expr_aux` holds the variant.
+pub const VARIANT: u32 = 1 << 30;
 
 /// Most parameters a function can take: they travel in registers x0-x7.
 pub const MAX_PARAMS: usize = 8;
-/// Keeps every local reachable with one load/store instruction.
-pub const MAX_SLOTS: u32 = 500;
+/// Most stack slots a function can use. A frame of this size is still
+/// smaller than the 16 KB guard page below the stack, so running out of
+/// stack always stops the program instead of overwriting memory.
+pub const MAX_SLOTS: u32 = 2000;
+/// Largest struct or enum, in slots: keeps every field reachable with
+/// one add instruction.
+pub const MAX_SIZE: u32 = 500;
 
-/// How a `for` loop reaches the list it iterates over.
-pub const FOR_IN_PLACE: u8 = 0;
-/// The list is a temporary; the loop takes it over and frees it.
-pub const FOR_MOVED: u8 = 1;
-/// The list is part of a temporary; the loop works on its own copy.
-pub const FOR_COPIED: u8 = 2;
+/// Most variants an enum can have: a tag must fit in one compare.
+pub const MAX_VARIANTS: usize = 1000;
+
+/// How a `for` loop or a `match` reaches the value it works on: where
+/// it lives, in a variable that cannot change meanwhile.
+pub const IN_PLACE: u8 = 0;
+/// The value is a temporary; the statement takes it over and frees it.
+pub const MOVED: u8 = 1;
+/// The value is part of a temporary; the statement works on its own copy.
+pub const COPIED: u8 = 2;
+
+/// A pattern that matches anything and binds nothing.
+pub const PAT_ANY: u8 = 0;
+/// A pattern that matches anything and gives it a name.
+pub const PAT_BIND: u8 = 1;
+/// A pattern that matches one variant of an enum.
+pub const PAT_VARIANT: u8 = 2;
+/// A pattern that matches one number, `bool` or string.
+pub const PAT_LITERAL: u8 = 3;
+
+/// What the checker found out about a pattern.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PatInfo {
+    /// One of the `PAT_` constants.
+    pub kind: u8,
+    /// For a variant its index. For a literal the index in `ints` or
+    /// `strings`, or 0/1 for a `bool`. For a name inside a variant
+    /// pattern, the offset of the field it names.
+    pub res: u32,
+    /// For a name, the slot that holds what it is bound to. For a string
+    /// literal, three slots where the string is built to be compared.
+    pub slot: u32,
+}
 
 #[derive(Debug)]
 pub struct StructInfo<'a> {
@@ -83,8 +125,34 @@ pub struct StructInfo<'a> {
     /// Size in 8-byte slots.
     pub size: u32,
     pub fields: Vec<FieldInfo<'a>>,
-    /// The lists and strings directly inside the struct: slot offset and
-    /// type. What their elements own is not listed here.
+    /// The lists, strings and owning enums directly inside the struct:
+    /// slot offset and type. What those own in turn is not listed here.
+    pub heap: Vec<(u32, Ty)>,
+}
+
+/// One enum type. A generic enum has one entry per combination of type
+/// arguments that the program uses.
+#[derive(Debug)]
+pub struct EnumInfo {
+    /// As written in messages: `Shape`, `Option[i64]`.
+    pub name: String,
+    /// The declaration this type was made from.
+    pub template: u32,
+    pub args: Vec<Ty>,
+    /// Size in 8-byte slots: the tag plus the largest variant.
+    pub size: u32,
+    pub variants: Vec<VariantInfo>,
+    /// True when some variant holds a list, a string or an owning enum.
+    pub owning: bool,
+}
+
+/// A value of variant number `n` has tag `n + 1`; tag 0 marks a
+/// temporary that was never filled.
+#[derive(Debug)]
+pub struct VariantInfo {
+    /// Type and slot offset (from the start of the enum) of each field.
+    pub fields: Vec<(Ty, u32)>,
+    /// What the fields own, like `StructInfo::heap`.
     pub heap: Vec<(u32, Ty)>,
 }
 
@@ -122,6 +190,7 @@ pub struct FnInfo {
 #[derive(Debug)]
 pub struct Program<'a> {
     pub structs: Vec<StructInfo<'a>>,
+    pub enums: Vec<EnumInfo>,
     /// Element type of each list type.
     pub lists: Vec<Ty>,
     /// Parallel to the functions in `Ast::items`.
@@ -134,6 +203,8 @@ pub struct Program<'a> {
     pub expr_res: Vec<u32>,
     /// Per expression: its type.
     pub expr_ty: Vec<Ty>,
+    /// Per expression that builds an enum value: the variant's index.
+    pub expr_aux: Vec<u32>,
     /// Per expression that computes an aggregate: the first slot of the
     /// temporary that holds it. For `push`, the slot the element waits in.
     pub expr_tmp: Vec<u32>,
@@ -141,10 +212,13 @@ pub struct Program<'a> {
     /// buffers are handed over instead of copied.
     pub expr_moved: Vec<bool>,
     /// Per `let`/`var`: its first slot. Per assignment that copies an
-    /// owning value: a scratch area. Per `for`: the loop's hidden slots.
+    /// owning value: a scratch area. Per `for` and `match`: the
+    /// statement's hidden slots.
     pub stmt_slot: Vec<u32>,
-    /// Per `for` statement: one of the `FOR_` constants.
+    /// Per `for` and `match`: `IN_PLACE`, `MOVED` or `COPIED`.
     pub stmt_flag: Vec<u8>,
+    /// Parallel to `Ast::patterns`.
+    pub pats: Vec<PatInfo>,
     /// Per statement: range in `drops` of the temporaries to free once
     /// its expression has been evaluated.
     pub stmt_drops: Vec<(u32, u32)>,
@@ -161,43 +235,79 @@ pub struct Program<'a> {
 
 impl Program<'_> {
     pub fn size_of(&self, ty: Ty) -> u32 {
-        size_of(&self.structs, ty)
+        size_of(&self.structs, &self.enums, ty)
     }
 
-    /// The lists and strings directly inside a value of this type: slot
-    /// offset and type. Empty for plain data.
+    /// The lists, strings and owning enums directly inside a value of
+    /// this type: slot offset and type. Empty for plain data.
     pub fn owned(&self, ty: Ty) -> Vec<(u32, Ty)> {
-        owned(&self.structs, ty)
+        owned(&self.structs, &self.enums, ty)
     }
 
     pub fn needs_drop(&self, ty: Ty) -> bool {
-        needs_drop(&self.structs, ty)
+        needs_drop(&self.structs, &self.enums, ty)
     }
 }
 
-fn size_of(structs: &[StructInfo], ty: Ty) -> u32 {
+/// Inside a list, a string or an owning enum, the slot that says "this
+/// owns nothing" when it is zero: the capacity, or the enum's tag.
+pub fn idle_slot(ty: Ty) -> u32 {
+    match ty {
+        Ty::Enum(_) => 0,
+        _ => 2,
+    }
+}
+
+fn size_of(structs: &[StructInfo], enums: &[EnumInfo], ty: Ty) -> u32 {
     match ty {
         Ty::I64 | Ty::Bool => 1,
         Ty::Str | Ty::List(_) => 3,
         Ty::Unit => 0,
         Ty::Struct(index) => structs[index as usize].size,
+        Ty::Enum(index) => enums[index as usize].size,
     }
 }
 
-fn owned(structs: &[StructInfo], ty: Ty) -> Vec<(u32, Ty)> {
+fn owned(structs: &[StructInfo], enums: &[EnumInfo], ty: Ty) -> Vec<(u32, Ty)> {
     match ty {
         Ty::Str | Ty::List(_) => vec![(0, ty)],
         Ty::Struct(index) => structs[index as usize].heap.clone(),
+        Ty::Enum(index) if enums[index as usize].owning => vec![(0, ty)],
         _ => Vec::new(),
     }
 }
 
-fn needs_drop(structs: &[StructInfo], ty: Ty) -> bool {
+fn needs_drop(structs: &[StructInfo], enums: &[EnumInfo], ty: Ty) -> bool {
     match ty {
         Ty::Str | Ty::List(_) => true,
         Ty::Struct(index) => !structs[index as usize].heap.is_empty(),
+        Ty::Enum(index) => enums[index as usize].owning,
         _ => false,
     }
+}
+
+/// A type as written in an enum declaration, where it may mention the
+/// enum's type parameters.
+#[derive(Clone)]
+enum Shape {
+    /// The enum's own type parameter with this number.
+    Param(u32),
+    /// `i64`, `bool`, `str` or a struct.
+    Known(Ty),
+    List(Box<Shape>),
+    /// An enum declaration and its type arguments.
+    Enum(u32, Vec<Shape>),
+}
+
+/// An enum declaration. Each use with concrete type arguments becomes
+/// an `EnumInfo`.
+struct Template<'a> {
+    name: &'a str,
+    /// Where it is declared; 0 for the built-in ones.
+    pos: u32,
+    params: Vec<&'a str>,
+    variants: Vec<(&'a str, Vec<Shape>)>,
+    builtin: bool,
 }
 
 struct Local<'a> {
@@ -207,8 +317,11 @@ struct Local<'a> {
     mutable: bool,
     by_ref: bool,
     is_param: bool,
-    /// False for a view of data another value owns: a parameter, or the
-    /// variable of a `for` loop, which looks at an element in the list.
+    /// The variable of a `for` loop or a name bound by a pattern: it
+    /// looks at a value that lives somewhere else.
+    is_view: bool,
+    /// False for a view of data another value owns: a parameter, a loop
+    /// variable or a pattern binding.
     owns: bool,
 }
 
@@ -220,6 +333,18 @@ struct Place {
     len: u32,
     mutable: bool,
     is_param: bool,
+    is_view: bool,
+}
+
+/// Why a place that is not mutable cannot be changed, as the end of a message.
+fn read_only(place: &Place) -> &'static str {
+    if place.is_param {
+        "a parameter is read-only unless it is declared `mut`"
+    } else if place.is_view {
+        "a loop variable or pattern binding is read-only"
+    } else {
+        "declare it with `var` to make it changeable"
+    }
 }
 
 /// What an expression is being checked for, for error messages.
@@ -239,6 +364,8 @@ enum Holder {
     Operator,
     /// A `for` loop that is iterating over the place.
     Loop,
+    /// A `match` whose arms look inside the place.
+    Match,
 }
 
 /// A place something else currently refers to.
@@ -253,15 +380,38 @@ struct Checker<'a> {
     src: &'a str,
     structs: Vec<StructInfo<'a>>,
     struct_names: HashMap<&'a str, u32>,
+    /// Where each struct is declared, and how far its layout has got:
+    /// 0 not started, 1 in progress, 2 done.
+    struct_pos: Vec<u32>,
+    struct_state: Vec<u8>,
+    templates: Vec<Template<'a>>,
+    template_names: HashMap<&'a str, u32>,
+    /// Variant name to its enum declaration and its index there.
+    variant_names: HashMap<&'a str, (u32, u32)>,
+    /// Which bytes some variant name starts with. Most names in a
+    /// program are not variants, and this tells so without hashing.
+    variant_starts: [bool; 256],
+    enums: Vec<EnumInfo>,
+    enum_ids: HashMap<(u32, Vec<Ty>), u32>,
+    enum_state: Vec<u8>,
+    /// Number of enum types whose layout is finished.
+    settled: usize,
+    /// True once every declaration is laid out; enum types made later
+    /// are laid out as soon as they appear.
+    declared: bool,
+    /// How many enum types are being made inside one another.
+    nesting: u32,
     lists: Vec<Ty>,
     fns: Vec<FnInfo>,
     fn_names: HashMap<&'a str, u32>,
     expr_res: Vec<u32>,
     expr_ty: Vec<Ty>,
+    expr_aux: Vec<u32>,
     expr_tmp: Vec<u32>,
     expr_moved: Vec<bool>,
     stmt_slot: Vec<u32>,
     stmt_flag: Vec<u8>,
+    pats: Vec<PatInfo>,
     stmt_drops: Vec<(u32, u32)>,
     drops: Vec<(u32, Ty)>,
     init_offset: Vec<u32>,
@@ -285,15 +435,29 @@ pub fn check<'a>(ast: &'a Ast, src: &'a str) -> Result<Program<'a>, SemaError> {
         src,
         structs: Vec::new(),
         struct_names: HashMap::new(),
+        struct_pos: Vec::new(),
+        struct_state: Vec::new(),
+        templates: Vec::new(),
+        template_names: HashMap::new(),
+        variant_names: HashMap::new(),
+        variant_starts: [false; 256],
+        enums: Vec::new(),
+        enum_ids: HashMap::new(),
+        enum_state: Vec::new(),
+        settled: 0,
+        declared: false,
+        nesting: 0,
         lists: Vec::new(),
         fns: Vec::new(),
         fn_names: HashMap::new(),
         expr_res: vec![0; ast.exprs.len()],
         expr_ty: vec![Ty::Unit; ast.exprs.len()],
+        expr_aux: vec![0; ast.exprs.len()],
         expr_tmp: vec![0; ast.exprs.len()],
         expr_moved: vec![false; ast.exprs.len()],
         stmt_slot: vec![0; ast.stmts.len()],
         stmt_flag: vec![0; ast.stmts.len()],
+        pats: vec![PatInfo::default(); ast.patterns.len()],
         stmt_drops: vec![(0, 0); ast.stmts.len()],
         drops: Vec::new(),
         init_offset: vec![0; ast.field_inits.len()],
@@ -308,7 +472,7 @@ pub fn check<'a>(ast: &'a Ast, src: &'a str) -> Result<Program<'a>, SemaError> {
         next_slot: 0,
         loop_depth: 0,
     };
-    c.declare_structs()?;
+    c.declare_types()?;
     c.signatures()?;
     let mut index = 0;
     for item in &ast.items {
@@ -322,15 +486,18 @@ pub fn check<'a>(ast: &'a Ast, src: &'a str) -> Result<Program<'a>, SemaError> {
     };
     Ok(Program {
         structs: c.structs,
+        enums: c.enums,
         lists: c.lists,
         fns: c.fns,
         main,
         expr_res: c.expr_res,
         expr_ty: c.expr_ty,
+        expr_aux: c.expr_aux,
         expr_tmp: c.expr_tmp,
         expr_moved: c.expr_moved,
         stmt_slot: c.stmt_slot,
         stmt_flag: c.stmt_flag,
+        pats: c.pats,
         stmt_drops: c.stmt_drops,
         drops: c.drops,
         init_offset: c.init_offset,
@@ -357,15 +524,20 @@ impl<'a> Checker<'a> {
             Ty::Unit => "no value".to_string(),
             Ty::Struct(index) => self.structs[index as usize].name.to_string(),
             Ty::List(index) => format!("List[{}]", self.ty_name(self.lists[index as usize])),
+            Ty::Enum(index) => self.enums[index as usize].name.clone(),
         }
     }
 
     fn size_of(&self, ty: Ty) -> u32 {
-        size_of(&self.structs, ty)
+        size_of(&self.structs, &self.enums, ty)
     }
 
     fn needs_drop(&self, ty: Ty) -> bool {
-        needs_drop(&self.structs, ty)
+        needs_drop(&self.structs, &self.enums, ty)
+    }
+
+    fn owned(&self, ty: Ty) -> Vec<(u32, Ty)> {
+        owned(&self.structs, &self.enums, ty)
     }
 
     fn list_of(&mut self, elem: Ty) -> Ty {
@@ -379,61 +551,338 @@ impl<'a> Checker<'a> {
         Ty::List(index as u32)
     }
 
+    /// Resolves a type written outside an enum declaration.
     fn ty(&mut self, id: TypeId) -> SResult<Ty> {
+        let at = self.ast.types[id as usize].name.start;
+        let shape = self.shape(id, &[])?;
+        let ty = self.realize(&shape, &[], at)?;
+        self.settle()?;
+        Ok(ty)
+    }
+
+    /// Reads a type as written. `params` are the type parameters of the
+    /// enum declaration it appears in, if any.
+    fn shape(&mut self, id: TypeId, params: &[&'a str]) -> SResult<Shape> {
         let ty = self.ast.types[id as usize];
         let name = ty.name.text(self.src);
+        let args = self.ast.list(ty.args);
+        if let Some(index) = params.iter().position(|&param| param == name) {
+            if !args.is_empty() {
+                return err(ty.name.start, format!("`{name}` is a type parameter and takes no type arguments"));
+            }
+            return Ok(Shape::Param(index as u32));
+        }
+        // The common case first: it needs no lookup.
+        let scalar = match name {
+            "i64" => Some(Ty::I64),
+            "bool" => Some(Ty::Bool),
+            "str" => Some(Ty::Str),
+            _ => None,
+        };
+        if let Some(known) = scalar {
+            if !args.is_empty() {
+                return err(ty.name.start, format!("`{name}` takes no type arguments"));
+            }
+            return Ok(Shape::Known(known));
+        }
         if name == "List" {
-            let args = self.ast.list(ty.args);
             if args.len() != 1 {
                 return err(ty.name.start, "`List` takes one element type, as in `List[i64]`");
             }
-            let elem = self.ty(args[0])?;
-            return Ok(self.list_of(elem));
+            return Ok(Shape::List(Box::new(self.shape(args[0], params)?)));
         }
-        if ty.args.len > 0 {
-            return err(ty.name.start, "generic types other than `List` are not supported by `azol build` yet");
+        if let Some(&template) = self.template_names.get(name) {
+            let want = self.templates[template as usize].params.len();
+            if args.len() != want {
+                return err(
+                    ty.name.start,
+                    if want == 0 {
+                        format!("`{name}` takes no type arguments")
+                    } else {
+                        format!(
+                            "`{name}` takes {want} type argument{}, as in `{name}[{}]`",
+                            if want == 1 { "" } else { "s" },
+                            vec!["i64"; want].join(", ")
+                        )
+                    },
+                );
+            }
+            let mut shapes = Vec::with_capacity(want);
+            for &arg in args {
+                shapes.push(self.shape(arg, params)?);
+            }
+            return Ok(Shape::Enum(template, shapes));
         }
-        match name {
-            "i64" => Ok(Ty::I64),
-            "bool" => Ok(Ty::Bool),
-            "str" => Ok(Ty::Str),
-            _ => match self.struct_names.get(name) {
-                Some(&index) => Ok(Ty::Struct(index)),
-                None => err(ty.name.start, format!("unknown type `{name}`; the built-in types so far are `i64`, `bool`, `str` and `List`")),
+        let Some(&index) = self.struct_names.get(name) else {
+            return err(
+                ty.name.start,
+                format!("unknown type `{name}`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`"),
+            );
+        };
+        if !args.is_empty() {
+            return err(ty.name.start, format!("`{name}` takes no type arguments"));
+        }
+        Ok(Shape::Known(Ty::Struct(index)))
+    }
+
+    /// True when `shape` mentions no type parameter that is still unknown.
+    fn ready(shape: &Shape, bound: &[Option<Ty>]) -> bool {
+        match shape {
+            Shape::Param(index) => bound[*index as usize].is_some(),
+            Shape::Known(_) => true,
+            Shape::List(elem) => Self::ready(elem, bound),
+            Shape::Enum(_, args) => args.iter().all(|arg| Self::ready(arg, bound)),
+        }
+    }
+
+    /// Turns a shape into a type, given what its type parameters stand
+    /// for. Every parameter it mentions must be known.
+    fn realize(&mut self, shape: &Shape, bound: &[Option<Ty>], at: u32) -> SResult<Ty> {
+        match shape {
+            Shape::Param(index) => Ok(bound[*index as usize].expect("the caller checked that the parameter is known")),
+            Shape::Known(ty) => Ok(*ty),
+            Shape::List(elem) => {
+                let elem = self.realize(elem, bound, at)?;
+                Ok(self.list_of(elem))
+            }
+            Shape::Enum(template, shapes) => {
+                let mut args = Vec::with_capacity(shapes.len());
+                for shape in shapes {
+                    args.push(self.realize(shape, bound, at)?);
+                }
+                self.instance(*template, args, at)
+            }
+        }
+    }
+
+    /// The enum type made from a declaration and type arguments. It is
+    /// created the first time it is asked for; its layout follows in
+    /// `settle`, once the types it mentions exist too.
+    fn instance(&mut self, template: u32, args: Vec<Ty>, at: u32) -> SResult<Ty> {
+        let key = (template, args);
+        if let Some(&index) = self.enum_ids.get(&key) {
+            return Ok(Ty::Enum(index));
+        }
+        let (template, args) = key;
+        // `enum E[T] { A(E[List[T]]) }` would ask for ever larger types.
+        if self.nesting >= 200 {
+            return err(at, "this type nests enums too deeply");
+        }
+        let info = &self.templates[template as usize];
+        let mut name = info.name.to_string();
+        if !args.is_empty() {
+            let parts: Vec<String> = args.iter().map(|&arg| self.ty_name(arg)).collect();
+            name = format!("{name}[{}]", parts.join(", "));
+        }
+        let shapes: Vec<Vec<Shape>> = info.variants.iter().map(|(_, fields)| fields.clone()).collect();
+        let index = self.enums.len() as u32;
+        // Registered before its fields are resolved: they may mention it.
+        self.enum_ids.insert((template, args.clone()), index);
+        let bound: Vec<Option<Ty>> = args.iter().map(|&arg| Some(arg)).collect();
+        self.enums.push(EnumInfo { name, template, args, size: 0, variants: Vec::new(), owning: false });
+        self.enum_state.push(0);
+        self.nesting += 1;
+        let mut variants = Vec::with_capacity(shapes.len());
+        for fields in &shapes {
+            let mut resolved = Vec::with_capacity(fields.len());
+            for field in fields {
+                resolved.push((self.realize(field, &bound, at)?, 0));
+            }
+            variants.push(VariantInfo { fields: resolved, heap: Vec::new() });
+        }
+        self.nesting -= 1;
+        self.enums[index as usize].variants = variants;
+        Ok(Ty::Enum(index))
+    }
+
+    /// Lays out the enum types made since the last call.
+    fn settle(&mut self) -> SResult<()> {
+        if !self.declared {
+            return Ok(());
+        }
+        while self.settled < self.enums.len() {
+            self.layout_enum(self.settled)?;
+            self.settled += 1;
+        }
+        Ok(())
+    }
+
+    /// How a shape is written, for messages.
+    fn shape_name(&self, shape: &Shape, params: &[&str]) -> String {
+        match shape {
+            Shape::Param(index) => params[*index as usize].to_string(),
+            Shape::Known(ty) => self.ty_name(*ty),
+            Shape::List(elem) => format!("List[{}]", self.shape_name(elem, params)),
+            Shape::Enum(template, args) => {
+                let name = self.templates[*template as usize].name;
+                if args.is_empty() {
+                    name.to_string()
+                } else {
+                    let parts: Vec<String> = args.iter().map(|arg| self.shape_name(arg, params)).collect();
+                    format!("{name}[{}]", parts.join(", "))
+                }
+            }
+        }
+    }
+
+    /// Matches a shape against a type, learning what unknown type
+    /// parameters stand for. False when they cannot be the same type.
+    fn unify(&self, shape: &Shape, ty: Ty, bound: &mut [Option<Ty>]) -> bool {
+        match shape {
+            Shape::Param(index) => match bound[*index as usize] {
+                Some(known) => known == ty,
+                None => {
+                    bound[*index as usize] = Some(ty);
+                    true
+                }
+            },
+            Shape::Known(known) => *known == ty,
+            Shape::List(elem) => match ty {
+                Ty::List(list) => self.unify(elem, self.lists[list as usize], bound),
+                _ => false,
+            },
+            Shape::Enum(template, shapes) => match ty {
+                Ty::Enum(index) if self.enums[index as usize].template == *template => {
+                    let args = &self.enums[index as usize].args;
+                    shapes.iter().zip(args).all(|(shape, &arg)| self.unify(shape, arg, bound))
+                }
+                _ => false,
             },
         }
     }
 
     // ---- declarations --------------------------------------------------
 
-    fn declare_structs(&mut self) -> SResult<()> {
-        let mut decls = Vec::new();
+    fn add_variant(&mut self, name: &'a str, template: u32, index: u32) {
+        self.variant_names.insert(name, (template, index));
+        self.variant_starts[name.as_bytes()[0] as usize] = true;
+    }
+
+    /// The enum declaration and index of the variant called `name`.
+    fn variant(&self, name: &str) -> Option<(u32, u32)> {
+        if !self.variant_starts[name.as_bytes()[0] as usize] {
+            return None;
+        }
+        self.variant_names.get(name).copied()
+    }
+
+    fn builtin_enum(&mut self, name: &'static str, params: &[&'static str], variants: Vec<(&'static str, Vec<Shape>)>) {
+        let index = self.templates.len() as u32;
+        self.template_names.insert(name, index);
+        for (at, &(variant, _)) in variants.iter().enumerate() {
+            self.add_variant(variant, index, at as u32);
+        }
+        self.templates.push(Template { name, pos: 0, params: params.to_vec(), variants, builtin: true });
+    }
+
+    fn declare_types(&mut self) -> SResult<()> {
+        self.builtin_enum("Option", &["T"], vec![("Some", vec![Shape::Param(0)]), ("None", Vec::new())]);
+        self.builtin_enum("Result", &["T", "E"], vec![("Ok", vec![Shape::Param(0)]), ("Err", vec![Shape::Param(1)])]);
+
+        // First every type name, so that declarations can mention each
+        // other in any order.
+        let mut struct_decls = Vec::new();
+        let mut enum_decls = Vec::new();
         for item in &self.ast.items {
+            let (name, is_struct) = match *item {
+                Item::Struct { name, .. } => (name, true),
+                Item::Enum { name, .. } => (name, false),
+                Item::Fn { .. } => continue,
+            };
+            let text = name.text(self.src);
+            if matches!(text, "i64" | "bool" | "str" | "List") {
+                return err(name.start, format!("`{text}` is a built-in type and cannot be redefined"));
+            }
+            if let Some(&template) = self.template_names.get(text) {
+                return err(
+                    name.start,
+                    if self.templates[template as usize].builtin {
+                        format!("`{text}` is built in and cannot be redefined")
+                    } else if is_struct {
+                        format!("`{text}` is already defined as an enum")
+                    } else {
+                        format!("enum `{text}` is defined more than once")
+                    },
+                );
+            }
+            if self.struct_names.contains_key(text) {
+                return err(
+                    name.start,
+                    if is_struct {
+                        format!("struct `{text}` is defined more than once")
+                    } else {
+                        format!("`{text}` is already defined as a struct")
+                    },
+                );
+            }
             match *item {
-                Item::Struct { name, generics, fields } => {
-                    let text = name.text(self.src);
+                Item::Struct { generics, fields, .. } => {
                     if generics.len > 0 {
                         return err(name.start, "generic structs are not supported by `azol build` yet");
                     }
-                    if matches!(text, "i64" | "bool" | "str" | "List") {
-                        return err(name.start, format!("`{text}` is a built-in type and cannot be redefined"));
-                    }
-                    let index = self.structs.len() as u32;
-                    if self.struct_names.insert(text, index).is_some() {
-                        return err(name.start, format!("struct `{text}` is defined more than once"));
-                    }
+                    self.struct_names.insert(text, self.structs.len() as u32);
                     self.structs.push(StructInfo { name: text, size: 0, fields: Vec::new(), heap: Vec::new() });
-                    decls.push((name, fields));
+                    self.struct_pos.push(name.start);
+                    self.struct_state.push(0);
+                    struct_decls.push(fields);
                 }
-                Item::Enum { name, .. } => {
-                    return err(name.start, "enums are not supported by `azol build` yet");
+                Item::Enum { generics, variants, .. } => {
+                    let mut params: Vec<&'a str> = Vec::with_capacity(generics.len as usize);
+                    for &id in self.ast.list(generics) {
+                        let param = self.ast.names[id as usize];
+                        let param_text = param.text(self.src);
+                        if params.contains(&param_text) {
+                            return err(param.start, format!("type parameter `{param_text}` is declared more than once"));
+                        }
+                        params.push(param_text);
+                    }
+                    let index = self.templates.len() as u32;
+                    self.template_names.insert(text, index);
+                    self.templates.push(Template { name: text, pos: name.start, params, variants: Vec::new(), builtin: false });
+                    enum_decls.push((index, variants));
                 }
                 Item::Fn { .. } => {}
             }
         }
-        // Field types may name structs declared later, so resolve them
-        // only after every struct name is known.
-        for (index, &(_, fields)) in decls.iter().enumerate() {
+
+        // Then what each enum's variants hold.
+        for &(index, variants) in &enum_decls {
+            let info = &self.templates[index as usize];
+            let (enum_name, pos, params) = (info.name, info.pos, info.params.clone());
+            let variant_ids = self.ast.list(variants);
+            if variant_ids.is_empty() {
+                return err(pos, format!("enum `{enum_name}` has no variants"));
+            }
+            if variant_ids.len() > MAX_VARIANTS {
+                return err(pos, format!("enum `{enum_name}` has more than {MAX_VARIANTS} variants, which is not supported yet"));
+            }
+            for (at, &id) in variant_ids.iter().enumerate() {
+                let variant = self.ast.variants[id as usize];
+                let text = variant.name.text(self.src);
+                if let Some(&(other, _)) = self.variant_names.get(text) {
+                    return err(
+                        variant.name.start,
+                        if other == index {
+                            format!("variant `{text}` is declared more than once")
+                        } else {
+                            format!(
+                                "variant `{text}` already belongs to `{}`; variant names must differ across enums",
+                                self.templates[other as usize].name
+                            )
+                        },
+                    );
+                }
+                self.add_variant(text, index, at as u32);
+                let mut shapes = Vec::with_capacity(variant.fields.len as usize);
+                for &field in self.ast.list(variant.fields) {
+                    shapes.push(self.shape(field, &params)?);
+                }
+                self.templates[index as usize].variants.push((text, shapes));
+            }
+        }
+
+        // Then the fields of each struct.
+        for (index, &fields) in struct_decls.iter().enumerate() {
             let mut infos: Vec<FieldInfo<'a>> = Vec::new();
             for &id in self.ast.list(fields) {
                 let field = self.ast.fields[id as usize];
@@ -445,63 +894,109 @@ impl<'a> Checker<'a> {
             }
             self.structs[index].fields = infos;
         }
-        // Sizes and offsets, depth first. A struct that contains itself
-        // would have no finite size.
-        let mut state = vec![0u8; self.structs.len()];
-        for index in 0..self.structs.len() {
-            self.layout(index, &mut state, &decls)?;
-        }
-        // With every size known, find the lists and strings each struct
-        // holds, including those inside nested structs.
-        for index in 0..self.structs.len() {
-            self.structs[index].heap = self.collect_heap(Ty::Struct(index as u32));
-        }
-        Ok(())
-    }
 
-    fn collect_heap(&self, ty: Ty) -> Vec<(u32, Ty)> {
-        match ty {
-            Ty::Str | Ty::List(_) => vec![(0, ty)],
-            Ty::Struct(index) => {
-                let mut out = Vec::new();
-                for field in &self.structs[index as usize].fields {
-                    for (offset, owned) in self.collect_heap(field.ty) {
-                        out.push((field.offset + offset, owned));
-                    }
-                }
-                out
+        // An enum without type parameters is one type; make it now so
+        // that it is checked even if nothing uses it.
+        for &(index, _) in &enum_decls {
+            let info = &self.templates[index as usize];
+            if info.params.is_empty() {
+                let pos = info.pos;
+                self.instance(index, Vec::new(), pos)?;
             }
-            _ => Vec::new(),
+        }
+
+        // Sizes and offsets, depth first. A type that contains itself
+        // would have no finite size.
+        for index in 0..self.structs.len() {
+            self.layout_struct(index)?;
+        }
+        self.declared = true;
+        self.settle()
+    }
+
+    /// The size of a type in slots, laying it out first if needed.
+    fn layout(&mut self, ty: Ty) -> SResult<u32> {
+        match ty {
+            Ty::Struct(index) => self.layout_struct(index as usize),
+            Ty::Enum(index) => self.layout_enum(index as usize),
+            other => Ok(self.size_of(other)),
         }
     }
 
-    fn layout(&mut self, index: usize, state: &mut [u8], decls: &[(Span, List)]) -> SResult<u32> {
-        match state[index] {
+    fn layout_struct(&mut self, index: usize) -> SResult<u32> {
+        match self.struct_state[index] {
             2 => return Ok(self.structs[index].size),
             1 => {
                 return err(
-                    decls[index].0.start,
+                    self.struct_pos[index],
                     format!("struct `{}` contains itself, so it would have no finite size", self.structs[index].name),
                 );
             }
             _ => {}
         }
-        state[index] = 1;
+        self.struct_state[index] = 1;
         let mut offset = 0;
+        let mut heap = Vec::new();
         for field in 0..self.structs[index].fields.len() {
-            let size = match self.structs[index].fields[field].ty {
-                Ty::Struct(inner) => self.layout(inner as usize, state, decls)?,
-                other => self.size_of(other),
-            };
+            let ty = self.structs[index].fields[field].ty;
+            let size = self.layout(ty)?;
             self.structs[index].fields[field].offset = offset;
+            for (inner, leaf) in self.owned(ty) {
+                heap.push((offset + inner, leaf));
+            }
             offset += size;
         }
-        if offset > MAX_SLOTS {
-            return err(decls[index].0.start, format!("struct `{}` is too large for now", self.structs[index].name));
+        if offset > MAX_SIZE {
+            return err(self.struct_pos[index], format!("struct `{}` is too large for now", self.structs[index].name));
         }
         self.structs[index].size = offset;
-        state[index] = 2;
+        self.structs[index].heap = heap;
+        self.struct_state[index] = 2;
         Ok(offset)
+    }
+
+    fn layout_enum(&mut self, index: usize) -> SResult<u32> {
+        let pos = self.templates[self.enums[index].template as usize].pos;
+        match self.enum_state[index] {
+            2 => return Ok(self.enums[index].size),
+            1 => {
+                return err(
+                    pos,
+                    format!(
+                        "enum `{}` contains itself, so it would have no finite size; put the inner value in a `List`",
+                        self.enums[index].name
+                    ),
+                );
+            }
+            _ => {}
+        }
+        self.enum_state[index] = 1;
+        // Slot 0 is the tag; every variant's fields start right after it.
+        let mut size = 1;
+        let mut owning = false;
+        for variant in 0..self.enums[index].variants.len() {
+            let mut offset = 1;
+            let mut heap = Vec::new();
+            for field in 0..self.enums[index].variants[variant].fields.len() {
+                let ty = self.enums[index].variants[variant].fields[field].0;
+                let field_size = self.layout(ty)?;
+                self.enums[index].variants[variant].fields[field].1 = offset;
+                for (inner, leaf) in self.owned(ty) {
+                    heap.push((offset + inner, leaf));
+                }
+                offset += field_size;
+            }
+            owning |= !heap.is_empty();
+            self.enums[index].variants[variant].heap = heap;
+            size = size.max(offset);
+        }
+        if size > MAX_SIZE {
+            return err(pos, format!("enum `{}` is too large for now", self.enums[index].name));
+        }
+        self.enums[index].size = size;
+        self.enums[index].owning = owning;
+        self.enum_state[index] = 2;
+        Ok(size)
     }
 
     fn signatures(&mut self) -> SResult<()> {
@@ -515,6 +1010,9 @@ impl<'a> Checker<'a> {
             }
             if text == "print" || text == "str" {
                 return err(name.start, format!("`{text}` is built in and cannot be redefined"));
+            }
+            if let Some(&(template, _)) = self.variant_names.get(text) {
+                return err(name.start, format!("`{text}` is already a variant of `{}`", self.templates[template as usize].name));
             }
             let param_ids = self.ast.list(params);
             if param_ids.len() > MAX_PARAMS {
@@ -562,12 +1060,13 @@ impl<'a> Checker<'a> {
             let info = self.fns[index as usize].params[i];
             let slot = self.alloc(1, param.name.start)?;
             self.locals.push(Local {
-                name: param.name.text(self.src),
+                name: self.binding(param.name)?,
                 slot,
                 ty: info.ty,
                 mutable: info.mutable,
                 by_ref: info.by_ref,
                 is_param: true,
+                is_view: false,
                 owns: false,
             });
         }
@@ -605,6 +1104,11 @@ impl<'a> Checker<'a> {
                         Else::If(next) => self.stmt_returns(next),
                     }
             }
+            // The checker makes sure the arms cover every case.
+            Stmt::Match { arms, .. } => {
+                let arms = self.ast.list(arms);
+                !arms.is_empty() && arms.iter().all(|&arm| self.always_returns(self.ast.arms[arm as usize].body))
+            }
             _ => false,
         }
     }
@@ -620,6 +1124,19 @@ impl<'a> Checker<'a> {
 
     fn lookup(&self, name: &str) -> Option<&Local<'a>> {
         self.locals.iter().rev().find(|local| local.name == name)
+    }
+
+    /// The text of a name that is about to become a variable. A variant
+    /// name cannot be one: `None` must always mean the variant.
+    fn binding(&self, name: Span) -> SResult<&'a str> {
+        let text = name.text(self.src);
+        match self.variant(text) {
+            Some((template, _)) => err(
+                name.start,
+                format!("`{text}` is a variant of `{}` and cannot be used as a variable name", self.templates[template as usize].name),
+            ),
+            None => Ok(text),
+        }
     }
 
     fn block(&mut self, body: List) -> SResult<()> {
@@ -663,8 +1180,8 @@ impl<'a> Checker<'a> {
     fn finish(&mut self, id: StmtId) {
         let start = self.drops.len() as u32;
         for (_, slot, ty) in std::mem::take(&mut self.pending) {
-            for (offset, _) in owned(&self.structs, ty) {
-                self.zero_slots.push(slot + offset + 2);
+            for (offset, leaf) in self.owned(ty) {
+                self.zero_slots.push(slot + offset + idle_slot(leaf));
             }
             self.drops.push((slot, ty));
         }
@@ -694,7 +1211,7 @@ impl<'a> Checker<'a> {
                 self.take(value);
                 self.finish(id);
                 let slot = self.alloc(self.size_of(value_ty), name.start)?;
-                self.locals.push(Local { name: name.text(self.src), slot, ty: value_ty, mutable, by_ref: false, is_param: false, owns: true });
+                self.locals.push(Local { name: self.binding(name)?, slot, ty: value_ty, mutable, by_ref: false, is_param: false, is_view: false, owns: true });
                 self.stmt_slot[id as usize] = slot;
             }
             Stmt::Assign { target, value } => {
@@ -703,15 +1220,7 @@ impl<'a> Checker<'a> {
                     return err(pos, "only a variable or a part of a variable can be assigned");
                 };
                 if !place.mutable {
-                    let root = self.root_name(target);
-                    return err(
-                        pos,
-                        if place.is_param {
-                            format!("cannot change `{root}`: a parameter is read-only unless it is declared `mut`")
-                        } else {
-                            format!("cannot change `{root}`: declare it with `var` to make it changeable")
-                        },
-                    );
+                    return err(pos, format!("cannot change `{}`: {}", self.root_name(target), read_only(&place)));
                 }
                 self.check_change(target, &place)?;
                 let value_ty = self.expr_hint(value, Some(target_ty))?;
@@ -756,8 +1265,7 @@ impl<'a> Checker<'a> {
                         // Returning a whole local variable hands its
                         // buffers to the caller instead of copying them.
                         if let Expr::Ident(name) = self.ast.exprs[value as usize] {
-                            let local = self.lookup(name.text(self.src)).expect("checked: the name resolves");
-                            if local.owns {
+                            if self.lookup(name.text(self.src)).is_some_and(|local| local.owns) {
                                 self.expr_moved[value as usize] = true;
                             }
                         }
@@ -793,11 +1301,11 @@ impl<'a> Checker<'a> {
                 let elem = self.lists[list as usize];
                 let place = self.place(iter);
                 self.stmt_flag[id as usize] = if self.take(iter) {
-                    FOR_MOVED
+                    MOVED
                 } else if place.is_some() {
-                    FOR_IN_PLACE
+                    IN_PLACE
                 } else {
-                    FOR_COPIED
+                    COPIED
                 };
                 self.finish(id);
                 // Hidden slots: the position, then room for a list the
@@ -807,13 +1315,13 @@ impl<'a> Checker<'a> {
                 let scope = self.locals.len();
                 let item_slot = self.alloc(self.size_of(elem), item.start)?;
                 // The loop variable looks at the element; the list keeps owning it.
-                self.locals.push(Local { name: item.text(self.src), slot: item_slot, ty: elem, mutable: false, by_ref: false, is_param: false, owns: false });
+                self.locals.push(Local { name: self.binding(item)?, slot: item_slot, ty: elem, mutable: false, by_ref: false, is_param: false, is_view: true, owns: false });
                 if let Some(index) = index {
                     let index_slot = self.alloc(1, index.start)?;
-                    self.locals.push(Local { name: index.text(self.src), slot: index_slot, ty: Ty::I64, mutable: false, by_ref: false, is_param: false, owns: false });
+                    self.locals.push(Local { name: self.binding(index)?, slot: index_slot, ty: Ty::I64, mutable: false, by_ref: false, is_param: false, is_view: true, owns: false });
                 }
                 let borrows = self.borrows.len();
-                if self.stmt_flag[id as usize] == FOR_IN_PLACE {
+                if self.stmt_flag[id as usize] == IN_PLACE {
                     let place = place.expect("in-place iteration has a place");
                     self.borrows.push(Borrow { place, mutable: false, holder: Holder::Loop });
                 }
@@ -828,9 +1336,271 @@ impl<'a> Checker<'a> {
                     return err(pos, "`break` and `continue` can only be used inside a loop");
                 }
             }
-            Stmt::Match { .. } => return err(pos, "`match` is not supported by `azol build` yet"),
+            Stmt::Match { scrutinee, arms } => self.match_stmt(id, scrutinee, arms)?,
         }
         Ok(())
+    }
+
+    /// Checks a `match`. The value is looked at where it lives when it is
+    /// a variable (which then cannot change inside the arms), and is
+    /// owned by the statement when it was computed. Names bound by a
+    /// pattern are read-only views into it.
+    fn match_stmt(&mut self, id: StmtId, scrutinee: ExprId, arms: List) -> SResult<()> {
+        let pos = self.ast.stmt_pos[id as usize];
+        let at = self.ast.expr_pos[scrutinee as usize];
+        let ty = self.expr(scrutinee)?;
+        match ty {
+            Ty::Unit => return err(at, "this expression has no value to match on"),
+            Ty::Struct(_) | Ty::List(_) => {
+                return err(at, format!("`match` works on enums, `i64`, `bool` and `str` but this is `{}`", self.ty_name(ty)));
+            }
+            Ty::I64 | Ty::Bool | Ty::Str | Ty::Enum(_) => {}
+        }
+        let aggregate = ty.is_aggregate();
+        let place = if aggregate { self.place(scrutinee) } else { None };
+        let mode = if !aggregate {
+            COPIED
+        } else if self.take(scrutinee) {
+            MOVED
+        } else if place.is_some() {
+            IN_PLACE
+        } else {
+            COPIED
+        };
+        self.stmt_flag[id as usize] = mode;
+        self.finish(id);
+        // Hidden slots: the value itself (a number or `bool`) or its
+        // address, then room for a value the statement owns.
+        let base = self.alloc(1, pos)?;
+        if aggregate && mode != IN_PLACE {
+            self.alloc(self.size_of(ty), pos)?;
+        }
+        self.stmt_slot[id as usize] = base;
+        let outer_borrows = self.borrows.len();
+        if let (IN_PLACE, Some(place)) = (mode, place) {
+            self.borrows.push(Borrow { place, mutable: false, holder: Holder::Match });
+        }
+
+        let variant_count = match ty {
+            Ty::Enum(index) => self.enums[index as usize].variants.len(),
+            _ => 0,
+        };
+        // What the arms so far cover.
+        let mut seen_variants = vec![false; variant_count];
+        let mut seen_bools = [false; 2];
+        let mut seen_ints: Vec<i64> = Vec::new();
+        let mut seen_strings: Vec<u32> = Vec::new();
+        let mut catch_all = false;
+        let mut literal_slot = None;
+
+        for &arm_id in self.ast.list(arms) {
+            let arm = self.ast.arms[arm_id as usize];
+            let pat = arm.pattern as usize;
+            let pat_pos = self.ast.pat_pos[pat];
+            let complete = catch_all
+                || match ty {
+                    Ty::Enum(_) => seen_variants.iter().all(|&seen| seen),
+                    Ty::Bool => seen_bools == [true, true],
+                    _ => false,
+                };
+            if complete {
+                return err(pat_pos, "this arm can never run: the arms above already cover every case");
+            }
+            let scope = self.locals.len();
+            match self.ast.patterns[pat] {
+                Pattern::Wildcard => {
+                    self.pats[pat] = PatInfo { kind: PAT_ANY, res: 0, slot: 0 };
+                    catch_all = true;
+                }
+                Pattern::Name(name) if !self.variant_names.contains_key(name.text(self.src)) => {
+                    // A plain name matches anything and stands for the whole value.
+                    let slot = self.alloc(1, name.start)?;
+                    self.locals.push(Local {
+                        name: name.text(self.src),
+                        slot,
+                        ty,
+                        mutable: false,
+                        by_ref: aggregate,
+                        is_param: false,
+                        is_view: true,
+                        owns: false,
+                    });
+                    self.pats[pat] = PatInfo { kind: PAT_BIND, res: 0, slot };
+                    catch_all = true;
+                }
+                Pattern::Name(name) | Pattern::Variant { name, .. } => {
+                    let text = name.text(self.src);
+                    let Some(&(template, variant)) = self.variant_names.get(text) else {
+                        return err(pat_pos, format!("unknown variant `{text}`"));
+                    };
+                    let index = match ty {
+                        Ty::Enum(index) if self.enums[index as usize].template == template => index as usize,
+                        _ => {
+                            return err(
+                                pat_pos,
+                                format!(
+                                    "`{text}` is a variant of `{}` but this `match` is on `{}`",
+                                    self.templates[template as usize].name,
+                                    self.ty_name(ty)
+                                ),
+                            );
+                        }
+                    };
+                    let want = self.enums[index].variants[variant as usize].fields.len();
+                    let plural = if want == 1 { "" } else { "s" };
+                    let sub_patterns = match self.ast.patterns[pat] {
+                        Pattern::Variant { args, .. } => {
+                            if want == 0 {
+                                return err(pat_pos, format!("`{text}` holds no value; write it without `()`"));
+                            }
+                            self.ast.list(args)
+                        }
+                        _ => {
+                            if want > 0 {
+                                return err(
+                                    pat_pos,
+                                    format!("`{text}` holds {want} value{plural}; write `{text}({})` to match it", vec!["_"; want].join(", ")),
+                                );
+                            }
+                            &[]
+                        }
+                    };
+                    if sub_patterns.len() != want {
+                        return err(pat_pos, format!("`{text}` holds {want} value{plural} but this pattern lists {}", sub_patterns.len()));
+                    }
+                    if seen_variants[variant as usize] {
+                        return err(pat_pos, format!("this arm can never run: `{text}` is already handled above"));
+                    }
+                    seen_variants[variant as usize] = true;
+                    for (i, &sub) in sub_patterns.iter().enumerate() {
+                        match self.ast.patterns[sub as usize] {
+                            Pattern::Wildcard => {}
+                            Pattern::Name(binding) if !self.variant_names.contains_key(binding.text(self.src)) => {
+                                let binding_text = binding.text(self.src);
+                                if self.locals[scope..].iter().any(|local| local.name == binding_text) {
+                                    return err(binding.start, format!("`{binding_text}` is used twice in this pattern"));
+                                }
+                                let (field, offset) = self.enums[index].variants[variant as usize].fields[i];
+                                // The name refers to the field where it is.
+                                let slot = self.alloc(1, binding.start)?;
+                                self.locals.push(Local {
+                                    name: binding_text,
+                                    slot,
+                                    ty: field,
+                                    mutable: false,
+                                    by_ref: true,
+                                    is_param: false,
+                                    is_view: true,
+                                    owns: false,
+                                });
+                                self.pats[sub as usize] = PatInfo { kind: PAT_BIND, res: offset, slot };
+                            }
+                            _ => {
+                                return err(
+                                    self.ast.pat_pos[sub as usize],
+                                    "a pattern inside a pattern is not supported yet; give the value a name and `match` on it inside the arm",
+                                );
+                            }
+                        }
+                    }
+                    self.pats[pat] = PatInfo { kind: PAT_VARIANT, res: variant, slot: 0 };
+                }
+                Pattern::Int { negative, digits } => {
+                    if ty != Ty::I64 {
+                        return err(pat_pos, format!("this pattern is a number but the `match` is on `{}`", self.ty_name(ty)));
+                    }
+                    let mut value: i128 = 0;
+                    for byte in digits.text(self.src).bytes().filter(|&b| b != b'_') {
+                        value = value * 10 + (byte - b'0') as i128;
+                        if value > 1 << 63 {
+                            break;
+                        }
+                    }
+                    if negative {
+                        value = -value;
+                    }
+                    let Ok(value) = i64::try_from(value) else {
+                        return err(pat_pos, "this number does not fit in `i64`");
+                    };
+                    if seen_ints.contains(&value) {
+                        return err(pat_pos, format!("this arm can never run: `{value}` is already handled above"));
+                    }
+                    seen_ints.push(value);
+                    self.pats[pat] = PatInfo { kind: PAT_LITERAL, res: self.ints.len() as u32, slot: 0 };
+                    self.ints.push(value);
+                }
+                Pattern::Bool(value) => {
+                    if ty != Ty::Bool {
+                        return err(pat_pos, format!("this pattern is a `bool` but the `match` is on `{}`", self.ty_name(ty)));
+                    }
+                    if seen_bools[value as usize] {
+                        return err(pat_pos, format!("this arm can never run: `{value}` is already handled above"));
+                    }
+                    seen_bools[value as usize] = true;
+                    self.pats[pat] = PatInfo { kind: PAT_LITERAL, res: value as u32, slot: 0 };
+                }
+                Pattern::Str(span) => {
+                    if ty != Ty::Str {
+                        return err(pat_pos, format!("this pattern is a string but the `match` is on `{}`", self.ty_name(ty)));
+                    }
+                    let index = self.string_literal(span);
+                    let bytes = |c: &Self, index: u32| {
+                        let (offset, len) = c.strings[index as usize];
+                        c.data[offset as usize..(offset + len) as usize].to_vec()
+                    };
+                    let text = bytes(self, index);
+                    if seen_strings.iter().any(|&earlier| bytes(self, earlier) == text) {
+                        return err(pat_pos, format!("this arm can never run: {} is already handled above", span.text(self.src)));
+                    }
+                    seen_strings.push(index);
+                    // One area is enough: the strings are compared one at a time.
+                    let slot = match literal_slot {
+                        Some(slot) => slot,
+                        None => {
+                            let slot = self.alloc(3, pat_pos)?;
+                            literal_slot = Some(slot);
+                            slot
+                        }
+                    };
+                    self.pats[pat] = PatInfo { kind: PAT_LITERAL, res: index, slot };
+                }
+            }
+            self.block(arm.body)?;
+            self.locals.truncate(scope);
+        }
+        self.borrows.truncate(outer_borrows);
+
+        if catch_all {
+            return Ok(());
+        }
+        match ty {
+            Ty::Enum(index) => {
+                let template = &self.templates[self.enums[index as usize].template as usize];
+                let missing: Vec<String> = seen_variants
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &seen)| !seen)
+                    .map(|(variant, _)| format!("`{}`", template.variants[variant].0))
+                    .collect();
+                match missing.split_last() {
+                    None => Ok(()),
+                    Some((only, [])) => err(pos, format!("this `match` does not handle {only}; add an arm for it or a final `_ =>` arm")),
+                    Some((last, rest)) => err(
+                        pos,
+                        format!("this `match` does not handle {} and {last}; add arms for them or a final `_ =>` arm", rest.join(", ")),
+                    ),
+                }
+            }
+            Ty::Bool if seen_bools == [true, true] => Ok(()),
+            Ty::Bool => err(
+                pos,
+                format!("this `match` does not handle `{}`; add an arm for it or a final `_ =>` arm", !seen_bools[1]),
+            ),
+            _ => err(
+                pos,
+                format!("a `match` on `{}` needs a final `_ =>` arm: the arms cannot list every value", self.ty_name(ty)),
+            ),
+        }
     }
 
     fn condition(&mut self, cond: ExprId) -> SResult<()> {
@@ -850,7 +1620,14 @@ impl<'a> Checker<'a> {
         match self.ast.exprs[id as usize] {
             Expr::Ident(name) => {
                 let local = self.lookup(name.text(self.src))?;
-                Some(Place { root: local.slot, start: 0, len: self.size_of(local.ty), mutable: local.mutable, is_param: local.is_param })
+                Some(Place {
+                    root: local.slot,
+                    start: 0,
+                    len: self.size_of(local.ty),
+                    mutable: local.mutable,
+                    is_param: local.is_param,
+                    is_view: local.is_view,
+                })
             }
             Expr::Field { base, .. } => {
                 let mut place = self.place(base)?;
@@ -892,6 +1669,7 @@ impl<'a> Checker<'a> {
                     self.ast.expr_pos[id as usize],
                     match other.holder {
                         Holder::Loop => format!("cannot change `{name}` while a loop is going through it"),
+                        Holder::Match => format!("cannot change `{name}` while a `match` is looking inside it"),
                         Holder::Call => format!("cannot change `{name}` here: it is also passed to a function in the same expression"),
                         Holder::Operator => format!("cannot change `{name}` here: it is still being read earlier in the same expression"),
                     },
@@ -911,6 +1689,7 @@ impl<'a> Checker<'a> {
                     self.ast.expr_pos[id as usize],
                     match other.holder {
                         Holder::Loop => format!("cannot pass `{name}` as `mut` while a loop is going through it"),
+                        Holder::Match => format!("cannot pass `{name}` as `mut` while a `match` is looking inside it"),
                         Holder::Call => format!("`{name}` is passed twice in one call and one of the uses is `mut`; copy it into a variable first"),
                         Holder::Operator => format!("cannot pass `{name}` as `mut` here: it is still being read earlier in the same expression"),
                     },
@@ -972,36 +1751,22 @@ impl<'a> Checker<'a> {
             }
             Expr::Bool(_) => Ok(Ty::Bool),
             Expr::Str(span) => {
-                let offset = self.data.len() as u32;
-                let text = span.text(self.src);
-                let mut bytes = text.as_bytes()[1..text.len() - 1].iter();
-                while let Some(&byte) = bytes.next() {
-                    // The lexer accepted only these escapes.
-                    self.data.push(if byte != b'\\' {
-                        byte
-                    } else {
-                        match bytes.next() {
-                            Some(b'n') => b'\n',
-                            Some(b't') => b'\t',
-                            Some(b'r') => b'\r',
-                            Some(b'0') => 0,
-                            Some(&other) => other,
-                            None => b'\\',
-                        }
-                    });
-                }
-                self.expr_res[id as usize] = self.strings.len() as u32;
-                self.strings.push((offset, self.data.len() as u32 - offset));
+                self.expr_res[id as usize] = self.string_literal(span);
                 self.expr_tmp[id as usize] = self.alloc(3, pos)?;
                 Ok(Ty::Str)
             }
             Expr::Ident(name) => {
                 let text = name.text(self.src);
                 let Some(local) = self.lookup(text) else {
+                    if let Some((template, variant)) = self.variant(text) {
+                        return self.construct(id, template, variant, None, hint);
+                    }
                     return if self.fn_names.contains_key(text) || text == "print" {
                         err(pos, format!("`{text}` is a function; call it with `{text}(...)`"))
                     } else if self.struct_names.contains_key(text) {
                         err(pos, format!("`{text}` is a struct; create a value with `{text} {{ ... }}`"))
+                    } else if self.template_names.contains_key(text) {
+                        err(pos, format!("`{text}` is an enum; create a value with one of its variants"))
                     } else {
                         err(pos, format!("unknown variable `{text}`"))
                     };
@@ -1065,6 +1830,7 @@ impl<'a> Checker<'a> {
                                 return Ok(Ty::Bool);
                             }
                             Ty::List(_) => return err(pos, format!("lists cannot be compared with `{}` yet", op.symbol())),
+                            Ty::Enum(_) => return err(pos, format!("enums cannot be compared with `{}` yet; use `match`", op.symbol())),
                             Ty::I64 | Ty::Bool => {}
                         }
                         self.expect(rhs, left, what)?;
@@ -1080,6 +1846,8 @@ impl<'a> Checker<'a> {
                         name.start,
                         if matches!(base_ty, Ty::List(_)) {
                             format!("`{}` has no field `{field_name}`; its methods are `len()`, `push(...)` and `pop()`", self.ty_name(base_ty))
+                        } else if matches!(base_ty, Ty::Enum(_)) {
+                            format!("`{}` has no fields; use `match` to look inside it", self.ty_name(base_ty))
                         } else {
                             format!("`{}` has no fields", self.ty_name(base_ty))
                         },
@@ -1161,7 +1929,7 @@ impl<'a> Checker<'a> {
                 self.expr_tmp[id as usize] = self.temp(id, ty)?;
                 Ok(ty)
             }
-            Expr::Call { callee, args } => self.call(id, callee, args),
+            Expr::Call { callee, args } => self.call(id, callee, args, hint),
             Expr::MutArg(_) => err(pos, "`mut` can only be used on a function argument"),
             Expr::Float(_) => err(pos, "floating-point numbers are not supported by `azol build` yet"),
         }
@@ -1180,7 +1948,128 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    fn call(&mut self, id: ExprId, callee: ExprId, args: List) -> SResult<Ty> {
+    /// Stores the bytes of a string literal, escapes decoded, and
+    /// returns its index in `strings`.
+    fn string_literal(&mut self, span: Span) -> u32 {
+        let offset = self.data.len() as u32;
+        let text = span.text(self.src);
+        let mut bytes = text.as_bytes()[1..text.len() - 1].iter();
+        while let Some(&byte) = bytes.next() {
+            // The lexer accepted only these escapes.
+            self.data.push(if byte != b'\\' {
+                byte
+            } else {
+                match bytes.next() {
+                    Some(b'n') => b'\n',
+                    Some(b't') => b'\t',
+                    Some(b'r') => b'\r',
+                    Some(b'0') => 0,
+                    Some(&other) => other,
+                    None => b'\\',
+                }
+            });
+        }
+        self.strings.push((offset, self.data.len() as u32 - offset));
+        self.strings.len() as u32 - 1
+    }
+
+    /// Checks an expression that builds an enum value: `Some(x)`, or just
+    /// `None` when `args` is absent. The type arguments of a generic enum
+    /// come from the type the surroundings expect, or else from the
+    /// values given.
+    fn construct(&mut self, id: ExprId, template: u32, variant: u32, args: Option<&[u32]>, hint: Option<Ty>) -> SResult<Ty> {
+        let pos = self.ast.expr_pos[id as usize];
+        let info = &self.templates[template as usize];
+        let (name, shapes) = (info.variants[variant as usize].0, info.variants[variant as usize].1.clone());
+        let (enum_name, params) = (info.name, info.params.clone());
+        let want = shapes.len();
+        let plural = |count: usize| if count == 1 { "" } else { "s" };
+        let arg_ids = match args {
+            None if want > 0 => {
+                return err(
+                    pos,
+                    format!("`{name}` holds {want} value{}; write `{name}({})`", plural(want), vec!["..."; want].join(", ")),
+                );
+            }
+            None => &[][..],
+            Some(_) if want == 0 => return err(pos, format!("`{name}` holds no value; write it without `()`")),
+            Some(ids) => ids,
+        };
+        if arg_ids.len() != want {
+            return err(pos, format!("`{name}` holds {want} value{} but {} were given", plural(want), arg_ids.len()));
+        }
+
+        let expected = if params.is_empty() {
+            Some(self.instance(template, Vec::new(), pos)?)
+        } else {
+            match hint {
+                Some(Ty::Enum(index)) if self.enums[index as usize].template == template => hint,
+                _ => None,
+            }
+        };
+        let ty = match expected {
+            Some(ty) => {
+                let Ty::Enum(index) = ty else {
+                    unreachable!("an enum type was selected just above");
+                };
+                for (i, &arg) in arg_ids.iter().enumerate() {
+                    let field = self.enums[index as usize].variants[variant as usize].fields[i].0;
+                    self.expect(arg, field, What::Argument(i + 1, name))?;
+                    // The new value takes a temporary's buffers over.
+                    self.take(arg);
+                }
+                ty
+            }
+            None => {
+                // Nothing says which `Option` or `Result` is meant, so
+                // the values decide what the type parameters stand for.
+                let mut bound: Vec<Option<Ty>> = vec![None; params.len()];
+                for (i, &arg) in arg_ids.iter().enumerate() {
+                    let shape = &shapes[i];
+                    if Self::ready(shape, &bound) {
+                        let field = self.realize(shape, &bound, pos)?;
+                        self.settle()?;
+                        self.expect(arg, field, What::Argument(i + 1, name))?;
+                    } else {
+                        let arg_pos = self.ast.expr_pos[arg as usize];
+                        let got = self.expr(arg)?;
+                        if got == Ty::Unit {
+                            return err(arg_pos, "this expression has no value to store");
+                        }
+                        if !self.unify(shape, got, &mut bound) {
+                            return err(
+                                arg_pos,
+                                format!(
+                                    "argument {} of `{name}` needs `{}` but this is `{}`",
+                                    i + 1,
+                                    self.shape_name(shape, &params),
+                                    self.ty_name(got)
+                                ),
+                            );
+                        }
+                    }
+                    self.take(arg);
+                }
+                if bound.iter().any(Option::is_none) {
+                    return err(
+                        pos,
+                        format!(
+                            "cannot tell which `{enum_name}` this is; give the variable a type, as in `let x: {enum_name}[{}] = ...`",
+                            vec!["i64"; params.len()].join(", ")
+                        ),
+                    );
+                }
+                self.instance(template, bound.into_iter().flatten().collect(), pos)?
+            }
+        };
+        self.settle()?;
+        self.expr_res[id as usize] = if args.is_some() { BUILTIN_VARIANT } else { VARIANT };
+        self.expr_aux[id as usize] = variant;
+        self.expr_tmp[id as usize] = self.temp(id, ty)?;
+        Ok(ty)
+    }
+
+    fn call(&mut self, id: ExprId, callee: ExprId, args: List, hint: Option<Ty>) -> SResult<Ty> {
         let pos = self.ast.expr_pos[id as usize];
         let arg_ids = self.ast.list(args);
         let name = match self.ast.exprs[callee as usize] {
@@ -1191,6 +2080,9 @@ impl<'a> Checker<'a> {
         let text = name.text(self.src);
         if self.lookup(text).is_some() {
             return err(pos, format!("`{text}` is a variable, not a function"));
+        }
+        if let Some((template, variant)) = self.variant(text) {
+            return self.construct(id, template, variant, Some(arg_ids), hint);
         }
         if text == "print" {
             if arg_ids.len() != 1 {
@@ -1259,15 +2151,7 @@ impl<'a> Checker<'a> {
                         return err(arg_pos, "`mut` needs a variable or a part of a variable");
                     };
                     if !place.mutable {
-                        let root = self.root_name(inner);
-                        return err(
-                            arg_pos,
-                            if place.is_param {
-                                format!("cannot pass `{root}` as `mut`: a parameter is read-only unless it is declared `mut`")
-                            } else {
-                                format!("cannot pass `{root}` as `mut`: declare it with `var` to make it changeable")
-                            },
-                        );
+                        return err(arg_pos, format!("cannot pass `{}` as `mut`: {}", self.root_name(inner), read_only(&place)));
                     }
                     self.borrow(inner, place, true)?;
                 }
@@ -1335,15 +2219,7 @@ impl<'a> Checker<'a> {
                     return err(pos, format!("`{text}` changes the list, so it needs a variable or a part of a variable"));
                 };
                 if !place.mutable {
-                    let root = self.root_name(base);
-                    return err(
-                        pos,
-                        if place.is_param {
-                            format!("cannot change `{root}`: a parameter is read-only unless it is declared `mut`")
-                        } else {
-                            format!("cannot change `{root}`: declare it with `var` to make it changeable")
-                        },
-                    );
+                    return err(pos, format!("cannot change `{}`: {}", self.root_name(base), read_only(&place)));
                 }
                 if text == "push" {
                     self.expect(args[0], elem, What::Text("`push`"))?;
@@ -1501,7 +2377,7 @@ mod tests {
         assert_eq!(error("struct A {\n b: B\n}\nstruct B {\n a: A\n}\nfn main() {\n}"), "struct `A` contains itself, so it would have no finite size");
         assert_eq!(error("struct A {\n x: i64\n x: bool\n}\nfn main() {\n}"), "field `x` is declared more than once");
         assert_eq!(error("struct A {\n}\nstruct A {\n}\nfn main() {\n}"), "struct `A` is defined more than once");
-        assert_eq!(error("struct A {\n x: Missing\n}\nfn main() {\n}"), "unknown type `Missing`; the built-in types so far are `i64`, `bool`, `str` and `List`");
+        assert_eq!(error("struct A {\n x: Missing\n}\nfn main() {\n}"), "unknown type `Missing`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`");
         assert_eq!(error("struct i64 {\n}\nfn main() {\n}"), "`i64` is a built-in type and cannot be redefined");
     }
 
@@ -1615,7 +2491,7 @@ mod tests {
         assert_eq!(error(&list_main("let xs = [[1], [true]]")), "this list's element needs `i64` but this is `bool`");
         assert_eq!(error(&list_main("var xs = [[1]]\nxs.push(2)")), "`push` needs `List[i64]` but this is `i64`");
         assert_eq!(error("fn f(xs: List) {\n}\nfn main() {\n}"), "`List` takes one element type, as in `List[i64]`");
-        assert_eq!(error("fn f(xs: Map[i64]) {\n}\nfn main() {\n}"), "generic types other than `List` are not supported by `azol build` yet");
+        assert_eq!(error("fn f(xs: Map[i64]) {\n}\nfn main() {\n}"), "unknown type `Map`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`");
     }
 
     #[test]
@@ -1629,7 +2505,7 @@ mod tests {
             "cannot change `xs`: a parameter is read-only unless it is declared `mut`"
         );
         assert_eq!(error(&list_main("let xs = [1]\ngrow(mut xs)")), "cannot pass `xs` as `mut`: declare it with `var` to make it changeable");
-        assert_eq!(error(&list_main("for x in [1, 2] {\nx = 3\n}")), "cannot change `x`: declare it with `var` to make it changeable");
+        assert_eq!(error(&list_main("for x in [1, 2] {\nx = 3\n}")), "cannot change `x`: a loop variable or pattern binding is read-only");
     }
 
     #[test]
@@ -1715,9 +2591,142 @@ mod tests {
     }
 
     #[test]
+    fn enum_layout_and_ownership() {
+        let src = "enum Shape {\n Circle(i64)\n Rect(i64, i64)\n Empty\n}\nstruct Named {\n name: Option[str]\n id: i64\n}\nfn main() {\n let a: Option[i64] = None\n let b: Result[Shape, str] = Err(\"no\")\n let c: Option[i64] = Some(1)\n}";
+        let tokens = lex(src).unwrap();
+        let ast = parse(src, &tokens).unwrap();
+        let prog = check(&ast, src).unwrap();
+        let find = |name: &str| prog.enums.iter().find(|e| e.name == name).unwrap_or_else(|| panic!("no enum {name}"));
+        // A tag, then room for the largest variant.
+        let shape = find("Shape");
+        assert_eq!((shape.size, shape.owning, shape.variants.len()), (3, false, 3));
+        assert_eq!(shape.variants[1].fields, vec![(Ty::I64, 1), (Ty::I64, 2)]);
+        let text = find("Option[str]");
+        assert_eq!((text.size, text.owning), (4, true));
+        assert_eq!(text.variants[0].heap, vec![(1, Ty::Str)]);
+        assert!(text.variants[1].heap.is_empty());
+        let result = find("Result[Shape, str]");
+        assert_eq!((result.size, result.owning), (4, true));
+        // The same type arguments give the same type.
+        assert_eq!(prog.enums.iter().filter(|e| e.name == "Option[i64]").count(), 1);
+        assert_eq!((find("Option[i64]").size, find("Option[i64]").owning), (2, false));
+        // The struct owns through its enum field, whose tag marks it as empty.
+        assert_eq!(prog.structs[0].size, 5);
+        assert_eq!(prog.structs[0].heap.len(), 1);
+        assert_eq!(prog.structs[0].heap[0].0, 0);
+        assert_eq!(idle_slot(prog.structs[0].heap[0].1), 0);
+        assert_eq!(idle_slot(Ty::Str), 2);
+    }
+
+    #[test]
+    fn enum_declaration_errors() {
+        assert_eq!(error("enum T {\n Leaf\n Node(T)\n}\nfn main() {\n}"), "enum `T` contains itself, so it would have no finite size; put the inner value in a `List`");
+        assert_eq!(error("struct S {\n o: Option[S]\n}\nfn main() {\n}"), "struct `S` contains itself, so it would have no finite size");
+        assert!(check_src("enum T {\n Leaf\n Node(List[T])\n}\nstruct S {\n o: List[Option[S]]\n}\nfn main() {\n}").is_ok());
+        assert_eq!(error("enum E[T] {\n A(E[List[T]])\n B\n}\nfn main() {\n let e: E[i64] = B\n}"), "this type nests enums too deeply");
+        assert_eq!(error("enum E {\n}\nfn main() {\n}"), "enum `E` has no variants");
+        assert_eq!(error("enum E {\n A\n}\nenum E {\n B\n}\nfn main() {\n}"), "enum `E` is defined more than once");
+        assert_eq!(error("enum E {\n A\n A\n}\nfn main() {\n}"), "variant `A` is declared more than once");
+        assert_eq!(error("enum E {\n A\n}\nenum F {\n A\n}\nfn main() {\n}"), "variant `A` already belongs to `E`; variant names must differ across enums");
+        assert_eq!(error("enum E {\n Some\n}\nfn main() {\n}"), "variant `Some` already belongs to `Option`; variant names must differ across enums");
+        assert_eq!(error("enum Option {\n A\n}\nfn main() {\n}"), "`Option` is built in and cannot be redefined");
+        assert_eq!(error("struct Result {\n}\nfn main() {\n}"), "`Result` is built in and cannot be redefined");
+        assert_eq!(error("struct E {\n}\nenum E {\n A\n}\nfn main() {\n}"), "`E` is already defined as a struct");
+        assert_eq!(error("enum E {\n A\n}\nstruct E {\n}\nfn main() {\n}"), "`E` is already defined as an enum");
+        assert_eq!(error("enum E[T, T] {\n A(T)\n}\nfn main() {\n}"), "type parameter `T` is declared more than once");
+        assert_eq!(error("enum E[T] {\n A(T[i64])\n}\nfn main() {\n}"), "`T` is a type parameter and takes no type arguments");
+        assert_eq!(error("enum E {\n A(Missing)\n}\nfn main() {\n}"), "unknown type `Missing`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`");
+        assert_eq!(error("fn f(o: Option) {\n}\nfn main() {\n}"), "`Option` takes 1 type argument, as in `Option[i64]`");
+        assert_eq!(error("fn f(o: Result[i64]) {\n}\nfn main() {\n}"), "`Result` takes 2 type arguments, as in `Result[i64, i64]`");
+        assert_eq!(error("enum E {\n A\n}\nfn f(e: E[i64]) {\n}\nfn main() {\n}"), "`E` takes no type arguments");
+        assert_eq!(error("fn f(a: i64[bool]) {\n}\nfn main() {\n}"), "`i64` takes no type arguments");
+        assert_eq!(error("fn Some() {\n}\nfn main() {\n}"), "`Some` is already a variant of `Option`");
+        assert_eq!(error(&in_main("let None = 1")), "`None` is a variant of `Option` and cannot be used as a variable name");
+        assert_eq!(error("fn f(Ok: i64) {\n}\nfn main() {\n}"), "`Ok` is a variant of `Result` and cannot be used as a variable name");
+        assert_eq!(error(&in_main("for Err in [1] {\n}")), "`Err` is a variant of `Result` and cannot be used as a variable name");
+    }
+
+    #[test]
+    fn enum_value_errors() {
+        assert_eq!(error(&in_main("let x = None")), "cannot tell which `Option` this is; give the variable a type, as in `let x: Option[i64] = ...`");
+        assert_eq!(error(&in_main("let x = Ok(1)")), "cannot tell which `Result` this is; give the variable a type, as in `let x: Result[i64, i64] = ...`");
+        assert_eq!(error(&in_main("let x: Option[i64] = Some(\"a\")")), "argument 1 of `Some` needs `i64` but this is `str`");
+        assert_eq!(error(&in_main("let x: Option[i64] = Ok(1)")), "cannot tell which `Result` this is; give the variable a type, as in `let x: Result[i64, i64] = ...`");
+        assert_eq!(error(&in_main("let x: Option[bool] = Some(1)")), "argument 1 of `Some` needs `bool` but this is `i64`");
+        assert_eq!(error(&in_main("let x: Option[str] = Some(1 > 2)\nlet y: Option[i64] = x")), "argument 1 of `Some` needs `str` but this is `bool`");
+        assert_eq!(error(&in_main("let x = Some(1)\nlet y: Option[bool] = x")), "expected `Option[bool]` but this is `Option[i64]`");
+        assert_eq!(error(&in_main("let x = Some(1, 2)")), "`Some` holds 1 value but 2 were given");
+        assert_eq!(error(&in_main("let x = Some")), "`Some` holds 1 value; write `Some(...)`");
+        assert_eq!(error(&in_main("let x: Option[i64] = None()")), "`None` holds no value; write it without `()`");
+        assert_eq!(error(&in_main("let x = Some(print(1))")), "this expression has no value to store");
+        assert_eq!(error(&in_main("let x = Some(1)\nif x == x {\n}")), "enums cannot be compared with `==` yet; use `match`");
+        assert_eq!(error(&in_main("let x = Some(1)\nprint(x.value)")), "`Option[i64]` has no fields; use `match` to look inside it");
+        assert_eq!(error(&in_main("let x = Some(1)\nprint(x)")), "`print` takes an `i64`, a `bool` or a `str` but this is `Option[i64]`");
+        assert_eq!(error("enum E {\n A\n}\nfn main() {\n let e = E\n}"), "`E` is an enum; create a value with one of its variants");
+        assert_eq!(error("enum Pair[T] {\n Two(T, T)\n}\nfn main() {\n let p = Two(1, true)\n}"), "argument 2 of `Two` needs `i64` but this is `bool`");
+        assert_eq!(error("enum Bag[T] {\n Full(List[T])\n}\nfn main() {\n let b = Full(1)\n}"), "argument 1 of `Full` needs `List[T]` but this is `i64`");
+        // The values decide the type arguments when nothing else does.
+        assert!(check_src("enum Bag[T] {\n Full(List[T])\n Nested(Option[Option[T]])\n}\nfn main() {\n let b = Full([\"a\"])\n let c: Bag[str] = b\n let d = Nested(Some(Some(1)))\n let e: Bag[i64] = d\n}").is_ok());
+        // The expected type reaches arguments, fields, elements and returns.
+        assert!(check_src("struct S {\n o: Option[i64]\n}\nfn f(o: Option[str]) -> Result[i64, str] {\n return Ok(1)\n}\nfn main() {\n let s = S { o: None }\n var xs: List[Option[i64]] = [None, Some(1)]\n xs.push(None)\n xs[0] = None\n var r = f(None)\n r = Err(\"e\")\n}").is_ok());
+    }
+
+    #[test]
+    fn match_errors() {
+        let opt = |arms: &str| in_main(&format!("var o = Some(1)\nmatch o {{\n{arms}\n}}"));
+        assert_eq!(error(&opt("Some(v) => print(v)")), "this `match` does not handle `None`; add an arm for it or a final `_ =>` arm");
+        assert_eq!(error(&opt("")), "this `match` does not handle `Some` and `None`; add arms for them or a final `_ =>` arm");
+        assert_eq!(error("enum E {\n A\n B\n C\n D\n}\nfn main() {\n let e = A\n match e {\n B => {}\n }\n}"), "this `match` does not handle `A`, `C` and `D`; add arms for them or a final `_ =>` arm");
+        assert_eq!(error(&opt("Some(v) => {}\nSome(w) => {}\nNone => {}")), "this arm can never run: `Some` is already handled above");
+        assert_eq!(error(&opt("_ => {}\nNone => {}")), "this arm can never run: the arms above already cover every case");
+        assert_eq!(error(&opt("whole => {}\n_ => {}")), "this arm can never run: the arms above already cover every case");
+        assert_eq!(error(&opt("Some(v) => {}\nNone => {}\n_ => {}")), "this arm can never run: the arms above already cover every case");
+        assert_eq!(error(&opt("Some => {}\nNone => {}")), "`Some` holds 1 value; write `Some(_)` to match it");
+        assert_eq!(error(&opt("Some(v) => {}\nNone(x) => {}")), "`None` holds no value; write it without `()`");
+        assert_eq!(error(&opt("Some(a, b) => {}\nNone => {}")), "`Some` holds 1 value but this pattern lists 2");
+        assert_eq!(error(&opt("Ok(v) => {}\n_ => {}")), "`Ok` is a variant of `Result` but this `match` is on `Option[i64]`");
+        assert_eq!(error(&opt("Nope(v) => {}\n_ => {}")), "unknown variant `Nope`");
+        assert_eq!(error(&opt("1 => {}\n_ => {}")), "this pattern is a number but the `match` is on `Option[i64]`");
+        assert_eq!(error(&opt("Some(1) => {}\n_ => {}")), "a pattern inside a pattern is not supported yet; give the value a name and `match` on it inside the arm");
+        assert_eq!(error(&opt("Some(None) => {}\n_ => {}")), "a pattern inside a pattern is not supported yet; give the value a name and `match` on it inside the arm");
+        assert_eq!(error("enum P {\n Two(i64, i64)\n}\nfn main() {\n let p = Two(1, 2)\n match p {\n Two(a, a) => {}\n }\n}"), "`a` is used twice in this pattern");
+        // What a pattern binds is a read-only view, and the matched value stays put.
+        assert_eq!(error(&opt("Some(v) => v = 2\nNone => {}")), "cannot change `v`: a loop variable or pattern binding is read-only");
+        assert_eq!(error(&opt("Some(v) => o = None\nNone => {}")), "cannot change `o` while a `match` is looking inside it");
+        assert_eq!(error(&format!("fn f(o: mut Option[i64]) {{\n}}\n{}", opt("Some(v) => f(mut o)\nNone => {}"))), "cannot pass `o` as `mut` while a `match` is looking inside it");
+        assert_eq!(error(&in_main("var xs = [Some(1)]\nmatch xs[0] {\nSome(v) => xs.push(None)\nNone => {}\n}")), "cannot change `xs` while a `match` is looking inside it");
+        assert!(check_src(&opt("Some(v) => print(v)\nNone => {}\n}\no = None\nmatch o {\n_ => o = Some(2)")).is_err());
+        assert!(check_src(&in_main("var o = Some(1)\nmatch o {\nSome(v) => print(v)\nNone => {}\n}\no = None")).is_ok());
+        // A computed value belongs to the statement, so the variable is free.
+        assert!(check_src("fn id(o: Option[i64]) -> Option[i64] {\n return o\n}\nfn main() {\n var o = Some(1)\n match id(o) {\n Some(v) => o = Some(v + 1)\n None => {}\n }\n}").is_ok());
+
+        assert_eq!(error(&in_main("match 3 {\n1 => {}\n}")), "a `match` on `i64` needs a final `_ =>` arm: the arms cannot list every value");
+        assert_eq!(error(&in_main("match \"a\" {\n\"a\" => {}\n}")), "a `match` on `str` needs a final `_ =>` arm: the arms cannot list every value");
+        assert_eq!(error(&in_main("match 3 {\n1 => {}\n1 => {}\n_ => {}\n}")), "this arm can never run: `1` is already handled above");
+        assert_eq!(error(&in_main("match 3 {\n-1 => {}\n- 1 => {}\n_ => {}\n}")), "this arm can never run: `-1` is already handled above");
+        assert_eq!(error(&in_main("match \"a\" {\n\"a\\n\" => {}\n\"a\\n\" => {}\n_ => {}\n}")), "this arm can never run: \"a\\n\" is already handled above");
+        assert_eq!(error(&in_main("match 3 {\n9223372036854775808 => {}\n_ => {}\n}")), "this number does not fit in `i64`");
+        assert!(check_src(&in_main("match 3 {\n-9223372036854775808 => {}\n9223372036854775807 => {}\n_ => {}\n}")).is_ok());
+        assert_eq!(error(&in_main("match true {\ntrue => {}\n}")), "this `match` does not handle `false`; add an arm for it or a final `_ =>` arm");
+        assert_eq!(error(&in_main("match true {\nfalse => {}\n}")), "this `match` does not handle `true`; add an arm for it or a final `_ =>` arm");
+        assert_eq!(error(&in_main("match true {\ntrue => {}\ntrue => {}\n}")), "this arm can never run: `true` is already handled above");
+        assert_eq!(error(&in_main("match true {\ntrue => {}\nfalse => {}\n_ => {}\n}")), "this arm can never run: the arms above already cover every case");
+        assert_eq!(error(&in_main("match 3 {\ntrue => {}\n_ => {}\n}")), "this pattern is a `bool` but the `match` is on `i64`");
+        assert_eq!(error(&in_main("match 3 {\n\"a\" => {}\n_ => {}\n}")), "this pattern is a string but the `match` is on `i64`");
+        assert_eq!(error(&in_main("match 3 {\nSome(v) => {}\n_ => {}\n}")), "`Some` is a variant of `Option` but this `match` is on `i64`");
+        assert_eq!(error(&in_main("match [1] {\n_ => {}\n}")), "`match` works on enums, `i64`, `bool` and `str` but this is `List[i64]`");
+        assert_eq!(error(&in_main("match print(1) {\n_ => {}\n}")), "this expression has no value to match on");
+        assert_eq!(error(&in_main("match 3 {\nn => n = 4\n}")), "cannot change `n`: a loop variable or pattern binding is read-only");
+        // Arms that all return make the `match` return.
+        assert!(check_src("fn f(o: Option[i64]) -> i64 {\n match o {\n Some(v) => return v\n None => return 0\n }\n}\nfn main() {\n}").is_ok());
+        assert_eq!(error("fn f(o: Option[i64]) -> i64 {\n match o {\n Some(v) => return v\n None => {}\n }\n}\nfn main() {\n}"), "function `f` must return a value of type `i64` on every path");
+    }
+
+    #[test]
     fn features_not_built_yet_are_reported_clearly() {
-        assert_eq!(error("enum E {\n A\n}\nfn main() {\n}"), "enums are not supported by `azol build` yet");
+        assert_eq!(error("fn f[T](a: T) {\n}\nfn main() {\n}"), "generic functions are not supported by `azol build` yet");
+        assert_eq!(error("struct Pair[T] {\n a: T\n}\nfn main() {\n}"), "generic structs are not supported by `azol build` yet");
         assert_eq!(error(&in_main("let a = 1.5")), "floating-point numbers are not supported by `azol build` yet");
-        assert_eq!(error("fn f(a: i32) {\n}\nfn main() {\n}"), "unknown type `i32`; the built-in types so far are `i64`, `bool`, `str` and `List`");
+        assert_eq!(error("fn f(a: i32) {\n}\nfn main() {\n}"), "unknown type `i32`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`");
     }
 }

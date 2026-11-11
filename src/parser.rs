@@ -475,6 +475,7 @@ impl<'a> Parser<'a> {
 
     fn pattern(&mut self) -> PResult<PatId> {
         self.enter()?;
+        let pos = self.here();
         let pattern = match self.kind() {
             K::Ident => {
                 let name = span(self.bump());
@@ -516,6 +517,7 @@ impl<'a> Parser<'a> {
         };
         self.depth -= 1;
         self.ast.patterns.push(pattern);
+        self.ast.pat_pos.push(pos);
         Ok((self.ast.patterns.len() - 1) as PatId)
     }
 

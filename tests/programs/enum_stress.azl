@@ -1,0 +1,286 @@
+// expect-exit: 0
+// expect-line: 0
+// expect-line: 3
+// expect-line: 2
+// expect-line: 6
+// expect-line: x1
+// expect-line: skip
+// expect-line: x3
+// expect-line: skip
+// expect-line: stop
+// expect-line: found cd
+// expect-line: nick
+// expect-line: 2
+// expect-line: same
+// expect-line: 3
+// expect-line: z
+// expect-line: none
+// expect-line: y
+// expect-line: 5
+// expect-line: replaced
+// expect-line: 12
+// expect-line: 40
+// expect-line: 1023
+// expect-line: 4
+// expect-line: ok
+
+// Corner cases of ownership with enums: temporaries that are skipped,
+// refilled in loops, taken over by a `match`, left early, copied onto
+// themselves, and nested deeply.
+
+struct Record {
+    title: str
+    tags: List[str]
+}
+
+struct Holder {
+    id: i64
+    item: Option[Record]
+    note: Result[str, List[i64]]
+}
+
+enum Chain {
+    End
+    Link(str, List[Chain])
+}
+
+enum Wide {
+    Small(i64)
+    Large(str, i64, List[i64], str, Option[str])
+}
+
+fn count(o: Option[str]) -> i64 {
+    match o {
+        Some(s) => return s.len()
+        None => return 0
+    }
+}
+
+fn truthy(o: Option[str]) -> bool {
+    return count(o) > 0
+}
+
+fn holder(id: i64) -> Holder {
+    if id % 2 == 0 {
+        return Holder { id: id, item: None, note: Err([id, id]) }
+    }
+    return Holder { id: id, item: Some(Record { title: "x" + str(id), tags: ["t"] }), note: Ok("nick") }
+}
+
+fn search(words: List[str], want: str) -> Option[str] {
+    for w in words {
+        match Some(w + "") {
+            Some(copy) => {
+                if copy == want {
+                    return Some("found " + copy)
+                }
+            }
+            None => {}
+        }
+    }
+    return None
+}
+
+fn depth(c: Chain) -> i64 {
+    match c {
+        End => return 0
+        Link(name, rest) => {
+            var best = 0
+            for r in rest {
+                let d = depth(r)
+                if d > best {
+                    best = d
+                }
+            }
+            return best + name.len()
+        }
+    }
+}
+
+fn build(n: i64) -> Chain {
+    if n == 0 {
+        return End
+    }
+    return Link("ab", [End, build(n - 1), End])
+}
+
+fn nodes(n: i64) -> Chain {
+    if n == 0 {
+        return End
+    }
+    return Link("", [nodes(n - 1), nodes(n - 1)])
+}
+
+fn size(c: Chain) -> i64 {
+    match c {
+        End => return 1
+        Link(name, rest) => {
+            var total = 0
+            for r in rest {
+                total = total + size(r)
+            }
+            return total + 1
+        }
+    }
+}
+
+fn swap_in(slot: mut Option[str], fresh: str) -> Option[str] {
+    let old = slot
+    slot = Some(fresh)
+    return old
+}
+
+fn weigh(w: Wide) -> i64 {
+    match w {
+        Small(n) => return n
+        Large(a, n, xs, b, extra) => {
+            var total = a.len() + n + xs.len() + b.len()
+            match extra {
+                Some(e) => total = total + e.len()
+                None => {}
+            }
+            return total
+        }
+    }
+}
+
+fn main() {
+    // A temporary that is never built must not be freed.
+    let off = false
+    if off && truthy(Some("a" + "b")) {
+        print(1)
+    }
+    print(count(None))
+    if truthy(Some("a" + "bc")) || truthy(Some("never" + "built")) {
+        print(3)
+    }
+
+    // The same temporaries, filled on some rounds and skipped on others.
+    var round = 0
+    var seen = ""
+    while round < 4 {
+        if round % 2 == 1 && truthy(Some(seen + "b")) {
+            seen = seen + "b"
+        } else {
+            seen = "a" + seen
+        }
+        round = round + 1
+    }
+    print(seen.len() - 2)
+    print(seen.len() + count(Some(seen)) - 2)
+
+    // A `match` that owns its value, left in every possible way.
+    var id = 0
+    while true {
+        id = id + 1
+        match holder(id).item {
+            Some(record) => {
+                if id == 5 {
+                    print("stop")
+                    break
+                }
+                print(record.title)
+                continue
+            }
+            None => print("skip")
+        }
+    }
+    match search(["ab", "cd", "ef"], "cd") {
+        Some(hit) => print(hit)
+        None => print("nothing")
+    }
+    match search([], "cd") {
+        Some(hit) => print(hit)
+        None => {}
+    }
+
+    // Looking inside a struct that is itself a temporary.
+    match holder(7).note {
+        Ok(text) => print(text)
+        Err(numbers) => print(numbers.len())
+    }
+    match holder(8).note {
+        Ok(text) => print(text)
+        Err(numbers) => print(numbers.len())
+    }
+
+    // Assigning a value to itself, and to a part of itself.
+    var o = Some("sa" + "me")
+    o = o
+    match o {
+        Some(s) => print(s)
+        None => {}
+    }
+    var chain = build(1)
+    chain = Link("x", [chain, chain])
+    chain = chain
+    print(depth(chain))
+
+    // Taking a value out of a `mut` parameter.
+    var slot: Option[str] = None
+    var names = ["x", "y", "z"]
+    for n in names {
+        let before = swap_in(mut slot, n)
+        match before {
+            Some(b) => {}
+            None => {}
+        }
+    }
+    match slot {
+        Some(s) => print(s)
+        None => print("none")
+    }
+    slot = None
+    match swap_in(mut slot, names.pop()) {
+        Some(s) => print(s)
+        None => print("none")
+    }
+    match swap_in(mut slot, "w") {
+        Some(s) => print(names[names.len() - 1])
+        None => print("none")
+    }
+
+    // Lists of options: grown, replaced, popped, looped over as a temporary.
+    var opts: List[Option[str]] = []
+    var k = 0
+    while k < 20 {
+        if k % 3 == 0 {
+            opts.push(None)
+        } else {
+            opts.push(Some("v" + str(k)))
+        }
+        k = k + 1
+    }
+    opts[0] = opts[19]
+    opts[19] = None
+    opts[1] = opts[1]
+    opts[2] = Some("replaced")
+    print(count(opts[0]) + count(opts.pop()) + count(opts[1]))
+    match opts[2] {
+        Some(s) => print(s)
+        None => {}
+    }
+    var total = 0
+    for h in [holder(1), holder(2), holder(3)] {
+        match h.item {
+            Some(record) => total = total + record.title.len() + record.tags.len()
+            None => total = total + 5
+        }
+        match h.note {
+            Ok(text) => total = total + 0
+            Err(numbers) => total = total + numbers[0]
+        }
+    }
+    print(total - 1)
+
+    // Deep and wide values are built and freed all the way down.
+    print(depth(build(20)))
+    print(size(nodes(9)))
+    var wide = Large("ab", 1, [1, 2, 3], "c", Some("xyz"))
+    let copy = wide
+    wide = Small(4)
+    print(weigh(wide))
+    if weigh(copy) == 10 && weigh(Large("", 0, [], "", None)) == 0 {
+        print("ok")
+    }
+}

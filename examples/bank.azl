@@ -1,0 +1,58 @@
+// Looking things up without null, and failing without exceptions:
+// enums, `Option`, `Result` and `match`.
+
+struct Account {
+    owner: str
+    balance: i64
+}
+
+enum Failure {
+    NoSuchAccount(str)
+    NotEnough(i64)
+}
+
+fn find(accounts: List[Account], owner: str) -> Option[i64] {
+    for i, account in accounts {
+        if account.owner == owner {
+            return Some(i)
+        }
+    }
+    return None
+}
+
+fn withdraw(accounts: mut List[Account], owner: str, amount: i64) -> Result[i64, Failure] {
+    match find(accounts, owner) {
+        None => return Err(NoSuchAccount(owner))
+        Some(i) => {
+            let balance = accounts[i].balance
+            if balance < amount {
+                return Err(NotEnough(amount - balance))
+            }
+            accounts[i].balance = balance - amount
+            return Ok(balance - amount)
+        }
+    }
+}
+
+fn report(owner: str, outcome: Result[i64, Failure]) {
+    match outcome {
+        Ok(left) => print(owner + " has " + str(left) + " left")
+        Err(failure) => {
+            match failure {
+                NoSuchAccount(name) => print("there is no account for " + name)
+                NotEnough(missing) => print(owner + " is " + str(missing) + " short")
+            }
+        }
+    }
+}
+
+fn main() {
+    var accounts = [
+        Account { owner: "ada", balance: 120 },
+        Account { owner: "grace", balance: 40 },
+    ]
+    report("ada", withdraw(mut accounts, "ada", 70))
+    report("grace", withdraw(mut accounts, "grace", 70))
+    report("linus", withdraw(mut accounts, "linus", 5))
+    report("ada", withdraw(mut accounts, "ada", 50))
+}

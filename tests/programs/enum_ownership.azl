@@ -1,0 +1,221 @@
+// expect-exit: 0
+// expect-line: hello
+// expect-line: hello world
+// expect-line: hello
+// expect-line: nobody
+// expect-line: ada
+// expect-line: 3
+// expect-line: none
+// expect-line: grace
+// expect-line: 6
+// expect-line: bad: seven
+// expect-line: 19
+// expect-line: leaf 4
+// expect-line: 10
+// expect-line: 3
+// expect-line: b
+// expect-line: a
+// expect-line: empty
+// expect-line: inner text
+// expect-line: outer none
+// expect-line: kept
+// expect-line: 2
+// expect-line: first
+// expect-line: done
+
+// Enum values that own strings and lists: built, copied, moved, stored
+// in lists and structs, matched in place and as temporaries.
+
+enum Tree {
+    Leaf(i64)
+    Node(List[Tree])
+}
+
+enum Token {
+    Word(str)
+    Number(i64)
+    Group(List[str], str)
+    Stop
+}
+
+struct Player {
+    name: str
+    nick: Option[str]
+    scores: List[i64]
+}
+
+fn sum(t: Tree) -> i64 {
+    match t {
+        Leaf(v) => return v
+        Node(children) => {
+            var total = 0
+            for child in children {
+                total = total + sum(child)
+            }
+            return total
+        }
+    }
+}
+
+fn make(depth: i64) -> Tree {
+    if depth == 0 {
+        return Leaf(1)
+    }
+    var children: List[Tree] = []
+    children.push(make(depth - 1))
+    children.push(Leaf(depth))
+    children.push(make(depth - 1))
+    return Node(children)
+}
+
+fn nick_or(p: Player, fallback: str) -> str {
+    match p.nick {
+        Some(n) => return n
+        None => return fallback
+    }
+}
+
+fn parse(text: str) -> Result[i64, str] {
+    if text == "six" {
+        return Ok(6)
+    }
+    return Err("bad: " + text)
+}
+
+fn first_word(tokens: List[Token]) -> Option[str] {
+    for t in tokens {
+        match t {
+            Word(w) => return Some(w)
+            _ => continue
+        }
+    }
+    return None
+}
+
+fn wrap(s: str) -> Option[Option[str]] {
+    if s.len() == 0 {
+        return None
+    }
+    if s == "-" {
+        return Some(None)
+    }
+    return Some(Some(s))
+}
+
+fn show(o: Option[Option[str]]) {
+    match o {
+        Some(inner) => {
+            match inner {
+                Some(s) => print(s)
+                None => print("empty")
+            }
+        }
+        None => print("outer none")
+    }
+}
+
+fn main() {
+    // A variable is copied into the new value; both stay usable.
+    var greeting = "hello"
+    let a = Some(greeting)
+    greeting = greeting + " world"
+    match a {
+        Some(s) => print(s)
+        None => print("?")
+    }
+    print(greeting)
+
+    // Copying an enum copies what it owns.
+    var b = a
+    b = None
+    match a {
+        Some(s) => print(s)
+        None => print("?")
+    }
+    match b {
+        Some(s) => print(s)
+        None => print("nobody")
+    }
+
+    // Enums inside structs inside lists.
+    var team: List[Player] = []
+    team.push(Player { name: "ada", nick: None, scores: [1, 2] })
+    team.push(Player { name: "grace hopper", nick: Some("gr" + "ace"), scores: [] })
+    print(nick_or(team[0], team[0].name))
+    match team[1].nick {
+        Some(n) => print(n.len() - 2)
+        None => print(0)
+    }
+    team[1].nick = None
+    match team[1].nick {
+        Some(n) => print(n)
+        None => print("none")
+    }
+    team[1].nick = Some("grace")
+    for p in team {
+        match p.nick {
+            Some(n) => print(n)
+            None => {}
+        }
+    }
+
+    // Results that carry a string in one variant only.
+    for word in ["six", "seven"] {
+        match parse(word) {
+            Ok(n) => print(n)
+            Err(message) => print(message)
+        }
+    }
+
+    // A recursive type, through a list.
+    let tree = make(3)
+    print(sum(tree))
+    match Leaf(4) {
+        Leaf(v) => print("leaf " + str(v))
+        Node(children) => print(children.len())
+    }
+
+    // Tokens: several owning fields, and leaving a loop from inside an arm.
+    var tokens: List[Token] = []
+    tokens.push(Number(10))
+    tokens.push(Group(["a", "b"], "c"))
+    tokens.push(Word("first"))
+    tokens.push(Stop)
+    var i = 0
+    while i < tokens.len() {
+        match tokens[i] {
+            Number(n) => print(n)
+            Group(items, last) => {
+                print(items.len() + last.len())
+                var copy = items
+                print(copy.pop())
+                print(copy.pop())
+            }
+            Word(w) => break
+            Stop => print("stop")
+        }
+        i = i + 1
+    }
+
+    show(wrap("-"))
+    show(wrap("inner text"))
+    show(wrap(""))
+
+    // An arm can keep a copy that outlives the matched temporary.
+    var kept = ""
+    match parse("x") {
+        Ok(n) => print(n)
+        Err(message) => kept = "kept"
+    }
+    print(kept)
+
+    // A popped enum and a replaced element.
+    let last = tokens.pop()
+    tokens[0] = last
+    print(tokens.len() - 1)
+    match first_word(tokens) {
+        Some(w) => print(w)
+        None => print("no word")
+    }
+    print("done")
+}

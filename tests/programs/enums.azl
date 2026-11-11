@@ -1,0 +1,205 @@
+// expect-exit: 7
+// expect-line: 12
+// expect-line: 12
+// expect-line: 0
+// expect-line: 2
+// expect-line: -1
+// expect-line: 3
+// expect-line: division by zero
+// expect-line: north
+// expect-line: 4
+// expect-line: 30
+// expect-line: 5
+// expect-line: 9
+// expect-line: true
+// expect-line: 1
+// expect-line: 2
+// expect-line: 0
+// expect-line: 42
+// expect-line: 8
+
+// Enums without and with values, the built-in `Option` and `Result`,
+// an enum with type parameters of its own, and `match` on all of them.
+
+enum Shape {
+    Circle(i64)
+    Rect(i64, i64)
+    Empty
+}
+
+enum Direction { North, East, South, West }
+
+enum Either[A, B] {
+    Left(A)
+    Right(B)
+}
+
+struct Move {
+    dir: Direction
+    steps: i64
+}
+
+fn area(s: Shape) -> i64 {
+    match s {
+        Circle(r) => return 3 * r * r
+        Rect(w, h) => return w * h
+        Empty => return 0
+    }
+}
+
+fn find(xs: List[i64], want: i64) -> Option[i64] {
+    for i, x in xs {
+        if x == want {
+            return Some(i)
+        }
+    }
+    return None
+}
+
+fn divide(a: i64, b: i64) -> Result[i64, str] {
+    if b == 0 {
+        return Err("division by zero")
+    }
+    return Ok(a / b)
+}
+
+fn name(d: Direction) -> str {
+    match d {
+        North => return "north"
+        East => return "east"
+        South => return "south"
+        West => return "west"
+    }
+}
+
+fn turn(d: Direction) -> Direction {
+    match d {
+        North => return East
+        East => return South
+        South => return West
+        West => return North
+    }
+}
+
+fn walk(moves: List[Move]) -> i64 {
+    var x = 0
+    var y = 0
+    for m in moves {
+        match m.dir {
+            North => y = y + m.steps
+            South => y = y - m.steps
+            East => x = x + m.steps
+            West => x = x - m.steps
+        }
+    }
+    return x * 10 + y
+}
+
+// A value cannot be replaced while a `match` is looking inside it, so
+// the new value is built first and stored afterwards.
+fn grow(s: mut Shape) {
+    var bigger = Empty
+    match s {
+        Circle(r) => bigger = Circle(r + 1)
+        Rect(w, h) => bigger = Rect(w + 1, h + 1)
+        Empty => {}
+    }
+    s = bigger
+}
+
+fn unwrap_or(o: Option[i64], fallback: i64) -> i64 {
+    match o {
+        Some(v) => return v
+        None => return fallback
+    }
+}
+
+fn pick(e: Either[i64, bool]) -> i64 {
+    match e {
+        Left(n) => return n
+        Right(flag) => {
+            if flag {
+                return 1
+            }
+            return 0
+        }
+    }
+}
+
+fn main() -> i64 {
+    print(area(Circle(2)))
+    print(area(Rect(3, 4)))
+    let nothing = Empty
+    print(area(nothing))
+
+    let xs = [5, 6, 7]
+    print(unwrap_or(find(xs, 7), -1))
+    print(unwrap_or(find(xs, 9), -1))
+    match divide(7, 2) {
+        Ok(v) => print(v)
+        Err(message) => print(message)
+    }
+    match divide(7, 0) {
+        Ok(v) => print(v)
+        Err(message) => print(message)
+    }
+
+    // Variants without values.
+    var d = West
+    d = turn(d)
+    print(name(d))
+    var turns = 0
+    var facing = North
+    while turns < 7 {
+        facing = turn(facing)
+        turns = turns + 1
+    }
+    match facing {
+        West => print(4)
+        _ => print(0)
+    }
+    print(walk([Move { dir: East, steps: 3 }, Move { dir: North, steps: 2 }, Move { dir: South, steps: 2 }]))
+
+    // A function that changes the shape it is given.
+    var shape = Rect(1, 2)
+    grow(mut shape)
+    grow(mut shape)
+    match shape {
+        Rect(w, h) => print(w + h - 2)
+        other => print(area(other))
+    }
+    match shape {
+        whole => print(area(whole) - 3)
+    }
+
+    // The type of `None` and `Left` comes from where the value goes.
+    var maybe: Option[bool] = None
+    maybe = Some(true)
+    match maybe {
+        Some(flag) => print(flag)
+        None => print(false)
+    }
+    let options: List[Option[i64]] = [Some(1), None, Some(2)]
+    for o in options {
+        match o {
+            Some(v) => print(v)
+            None => {}
+        }
+    }
+    let e: Either[i64, bool] = Right(false)
+    print(pick(e))
+    print(pick(Left(42)))
+
+    // Nested values by name, then a second `match`.
+    let nested: Option[Shape] = Some(Rect(2, 4))
+    match nested {
+        Some(inner) => {
+            match inner {
+                Rect(w, h) => print(w * h)
+                _ => print(0)
+            }
+        }
+        None => print(-1)
+    }
+    return unwrap_or(find(xs, 6), 0) + unwrap_or(Some(6), 0)
+}

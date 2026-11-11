@@ -52,13 +52,52 @@ The compiler reads your source and writes a signed, ready-to-run executable by i
 
 `grace` is a copy with her own list, so adding to it leaves `ada` alone. The strings and lists built along the way are freed the moment nothing owns them. Nothing in this program says how.
 
+There is no null and there are no exceptions. A value that may be missing is an `Option`, something that may fail returns a `Result`, and `match` makes you deal with every case:
+
+    struct Account {
+        owner: str
+        balance: i64
+    }
+
+    enum Failure {
+        NoSuchAccount(str)
+        NotEnough(i64)
+    }
+
+    fn find(accounts: List[Account], owner: str) -> Option[i64] {
+        for i, account in accounts {
+            if account.owner == owner {
+                return Some(i)
+            }
+        }
+        return None
+    }
+
+    fn withdraw(accounts: mut List[Account], owner: str, amount: i64) -> Result[i64, Failure] {
+        match find(accounts, owner) {
+            None => return Err(NoSuchAccount(owner))
+            Some(i) => {
+                let balance = accounts[i].balance
+                if balance < amount {
+                    return Err(NotEnough(amount - balance))
+                }
+                accounts[i].balance = balance - amount
+                return Ok(balance - amount)
+            }
+        }
+    }
+
+Leave out the `None` arm and the program does not compile:
+
+    error: this `match` does not handle `None`; add an arm for it or a final `_ =>` arm
+
 ## Why azoL
 
 **Builds that feel instant.** About 7 million lines per second, from source text to signed executable. A change is running before your finger leaves the key.
 
 **Safety without ceremony.** No `&`, no `&mut`, no `'a`, no borrow checker fights. You write values; the compiler works out who owns what.
 
-**Small enough to hold in your head.** No macros, no hidden control flow, one way to do things. The whole compiler is about 6,000 lines.
+**Small enough to hold in your head.** No macros, no hidden control flow, one way to do things. The whole compiler is about 7,000 lines.
 
 **Nothing underneath.** azoL does not sit on top of another compiler. It generates machine code and writes the executable file itself, down to the code signature.
 
@@ -66,10 +105,11 @@ The compiler reads your source and writes a signed, ready-to-run executable by i
 
 Values have value semantics: assigning a struct, a string or a list gives you an independent copy, and a function can change an argument only when the caller writes `mut`. That is the entire mental model.
 
-Underneath, large values are passed by reference for speed, and the compiler guarantees you can never notice. A reference behaves exactly like a private copy because nothing can be changed while something else still refers to it. Three rules enforce that, each checked inside one function at a time, which is what keeps checking fast:
+Underneath, large values are passed by reference for speed, and the compiler guarantees you can never notice. A reference behaves exactly like a private copy because nothing can be changed while something else still refers to it. Four rules enforce that, each checked inside one function at a time, which is what keeps checking fast:
 
 - One call cannot receive the same data twice when one of the uses is `mut`.
 - A list cannot be changed while a loop is going through it.
+- A value cannot be changed while a `match` is looking inside it.
 - A string cannot be changed while an operator is still reading it.
 
 When a rule is broken you get a plain sentence, not a puzzle:
@@ -80,7 +120,7 @@ When a rule is broken you get a plain sentence, not a puzzle:
     4 |         xs.push(x)
       |         ^
 
-Memory is managed by ownership. Every buffer has exactly one owner, a variable or a temporary. A temporary hands its buffer over when it is stored; a variable is duplicated when it is stored again; and each buffer is freed when its owner goes out of scope. This works at any depth: a tree of nodes that each own a list of nodes is copied and freed correctly with nothing written by hand.
+Memory is managed by ownership. Every buffer has exactly one owner, a variable or a temporary. A temporary hands its buffer over when it is stored; a variable is duplicated when it is stored again; and each buffer is freed when its owner goes out of scope. This works at any depth: a tree of nodes that each own a list of nodes is copied and freed correctly with nothing written by hand. An enum owns whatever its current variant holds, and only that.
 
 Out-of-range indexes, `pop` on an empty list and division by zero stop the program with a message. They never read or write memory they should not.
 
@@ -109,14 +149,17 @@ That is roughly 210 times faster than the full Rust build, and 110 times faster 
 - `i64`, `bool` and `str`, with `+`, `==`, `!=`, `len()` and `str(...)` for text
 - structs, including structs inside structs
 - `List[T]` for any `T`, including lists of lists and lists of structs: `push`, `pop`, `len`, indexing
+- enums whose variants carry values, with type parameters if you want them, and recursive ones through a list
+- `Option[T]` and `Result[T, E]` built in: `Some`, `None`, `Ok`, `Err`
+- `match` on enums, numbers, booleans and text, checked to cover every case
 - functions and recursion, read-only parameters and `mut` parameters
 - `let` (fixed) and `var` (changeable) variables
-- `if` / `else`, `while`, `for ... in`, `break`, `continue`
+- `if` / `else`, `while`, `for ... in`, `match`, `break`, `continue`
 - `print` for integers, booleans and text
 - automatic memory management with no garbage collector
 - compile errors that point at the exact place and say what to do
 
-It is young. azoL targets Apple Silicon Macs only, has no standard library yet, and is missing `match`, enums, generics, floating-point numbers, files and modules. Integer overflow currently wraps. Do not build anything you depend on with it yet.
+It is young. azoL targets Apple Silicon Macs only, has no standard library yet, and is missing generic functions and structs, patterns inside patterns, floating-point numbers, files and modules. Integer overflow currently wraps. Do not build anything you depend on with it yet.
 
 ## Try it
 
@@ -128,7 +171,7 @@ You need a Mac with Apple Silicon and a Rust toolchain to build the compiler.
     ./target/release/azol build examples/players.azl
     ./examples/players
 
-More to run: `examples/tree.azl`, `examples/lists.azl`, `examples/structs.azl`, `examples/fib.azl`.
+More to run: `examples/bank.azl`, `examples/tree.azl`, `examples/lists.azl`, `examples/structs.azl`, `examples/fib.azl`.
 
     azol build <file.azl>    compile to an executable
     azol parse <file.azl>    print the syntax tree
@@ -157,13 +200,14 @@ The compiler is written in Rust with no dependencies, SHA-256 included. A small 
 
 ## Roadmap
 
-1. `match`, enums and `Option`, so that "no value" and errors are checked by the compiler
-2. Files, command-line arguments and a first standard library
-3. Generics
-4. Skipping copies the compiler can prove unnecessary
-5. An optimizing release mode, to close the run-time gap
-6. Linux and x86-64
-7. **The azoL compiler written in azoL.** Rust is scaffolding; the goal is to remove it.
+Done so far: the compiler pipeline, ownership at any depth, and `match`, enums, `Option` and `Result`.
+
+1. Files, command-line arguments and a first standard library
+2. Generic functions and structs
+3. Skipping copies the compiler can prove unnecessary
+4. An optimizing release mode, to close the run-time gap
+5. Linux and x86-64
+6. **The azoL compiler written in azoL.** Rust is scaffolding; the goal is to remove it.
 
 ## Name
 

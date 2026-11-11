@@ -205,6 +205,8 @@ pub struct Ast {
     pub stmt_pos: Vec<u32>,
     pub types: Vec<Type>,
     pub patterns: Vec<Pattern>,
+    /// Source offset where each pattern starts, parallel to `patterns`.
+    pub pat_pos: Vec<u32>,
     pub params: Vec<Param>,
     pub fields: Vec<Field>,
     pub variants: Vec<Variant>,

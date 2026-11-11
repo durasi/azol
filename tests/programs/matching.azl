@@ -1,0 +1,115 @@
+// expect-exit: 0
+// expect-line: zero
+// expect-line: one
+// expect-line: minus
+// expect-line: many
+// expect-line: big
+// expect-line: yes
+// expect-line: no
+// expect-line: 1
+// expect-line: 2
+// expect-line: 0
+// expect-line: 0
+// expect-line: start
+// expect-line: stop it
+// expect-line: unknown: jump
+// expect-line: unknown: 
+// expect-line: 14
+// expect-line: 3
+// expect-line: quote " and tab
+// expect-line: 5
+// expect-line: 6
+// expect-line: done
+
+// `match` on numbers, `bool` and strings.
+
+fn describe(n: i64) -> str {
+    match n {
+        0 => return "zero"
+        1 => return "one"
+        -1 => return "minus"
+        9_223_372_036_854_775_807 => return "big"
+        _ => return "many"
+    }
+}
+
+fn answer(b: bool) -> str {
+    match b {
+        true => return "yes"
+        false => return "no"
+    }
+}
+
+fn code(command: str) -> i64 {
+    match command {
+        "go" => return 1
+        "stop" => return 2
+        _ => return 0
+    }
+}
+
+fn run(command: str) -> str {
+    match command {
+        "go" => return "start"
+        "stop" => {
+            let reply = command + " it"
+            return reply
+        }
+        other => return "unknown: " + other
+    }
+}
+
+fn main() {
+    print(describe(0))
+    print(describe(1))
+    print(describe(0 - 1))
+    print(describe(77))
+    print(describe(9223372036854775807))
+    print(answer(1 < 2))
+    print(answer(1 > 2))
+    print(code("go"))
+    print(code("st" + "op"))
+    print(code(""))
+    print(code("stopp"))
+    print(run("go"))
+    print(run("stop"))
+    print(run("jump"))
+    print(run(""))
+
+    // The value is evaluated once, and a name can stand for it.
+    var calls = 0
+    var total = 0
+    for n in [1, 2, 3, 4] {
+        calls = calls + 1
+        match n * calls {
+            1 => total = total + 1
+            4 => continue
+            9 => break
+            twice => total = total + twice
+        }
+        total = total + 10
+    }
+    print(total + calls)
+    print(calls)
+
+    // A computed string is owned by the statement while the arms run.
+    let prefix = "quote "
+    match prefix + "\" and tab" {
+        "quote \" and tab" => print(prefix + "\" and tab")
+        _ => print("no match")
+    }
+
+    // Arms that end the function early, and one that falls through.
+    var n = 5
+    while true {
+        match n > 5 {
+            false => print(n)
+            true => {
+                print(n)
+                break
+            }
+        }
+        n = n + 1
+    }
+    print("done")
+}
