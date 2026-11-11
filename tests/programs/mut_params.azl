@@ -1,0 +1,117 @@
+// expect-exit: 6
+// expect-output: 6 9 8 6 2 6 8 9 18 4 6 9 12 18 0 0 4 18 0 7
+struct Point {
+    x: i64
+    y: i64
+}
+
+struct Line {
+    from: Point
+    to: Point
+    width: i64
+}
+
+fn shift(p: mut Point, dx: i64) {
+    p.x = p.x + dx
+}
+
+fn swap(a: mut Point, b: mut Point) {
+    let t = a
+    a = b
+    b = t
+}
+
+fn inc(n: mut i64) {
+    n = n + 1
+}
+
+fn bump_twice(n: mut i64) {
+    inc(mut n)
+    inc(mut n)
+}
+
+fn reset(p: mut Point) {
+    p = Point { x: 0, y: 0 }
+}
+
+fn scale(p: mut Point, k: i64) {
+    p.x = p.x * k
+    p.y = p.y * k
+}
+
+fn scale_line(l: mut Line, k: i64) {
+    scale(mut l.from, k)
+    scale(mut l.to, k)
+    l.width = l.width * k
+}
+
+fn toggle(b: mut bool) {
+    b = !b
+}
+
+fn count_down(n: mut i64, steps: mut i64) {
+    while n > 0 {
+        n = n - 1
+        inc(mut steps)
+    }
+}
+
+fn sum_and_clear(p: mut Point) -> i64 {
+    let s = p.x + p.y
+    reset(mut p)
+    return s
+}
+
+fn read_then(p: Point, q: mut Point) {
+    q.x = p.x + 1
+}
+
+fn main() -> i64 {
+    var p = Point { x: 1, y: 2 }
+    shift(mut p, 5)
+    print(p.x)
+
+    var q = Point { x: 9, y: 8 }
+    swap(mut p, mut q)
+    print(p.x)
+    print(p.y)
+    print(q.x)
+    print(q.y)
+
+    var n = 5
+    inc(mut n)
+    print(n)
+    bump_twice(mut n)
+    print(n)
+    inc(mut p.y)
+    print(p.y)
+
+    // `l` holds copies, so scaling it leaves `p` and `q` alone.
+    var l = Line { from: p, to: q, width: 3 }
+    scale_line(mut l, 2)
+    print(l.from.x)
+    print(l.to.y)
+    print(l.width)
+    print(p.x)
+    swap(mut l.from, mut l.to)
+    print(l.from.x)
+    print(l.to.x)
+
+    var t = true
+    toggle(mut t)
+    if !t {
+        print(0)
+    }
+
+    var steps = 0
+    var k = 4
+    count_down(mut k, mut steps)
+    print(k)
+    print(steps)
+
+    print(sum_and_clear(mut p))
+    print(p.x)
+    read_then(q, mut p)
+    print(p.x)
+    return l.width
+}

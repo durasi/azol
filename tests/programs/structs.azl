@@ -1,0 +1,110 @@
+// expect-exit: 7
+// expect-output: 3 10 4 13 8 9 3 100 10 4 -5 6 11 100 4 10 20 2 3 10 30 55
+struct Point {
+    x: i64
+    y: i64
+}
+
+struct Line {
+    from: Point
+    to: Point
+    width: i64
+}
+
+struct Flags { on: bool, count: i64 }
+
+fn make(x: i64, y: i64) -> Point {
+    return Point { x: x, y: y }
+}
+
+fn add(a: Point, b: Point) -> Point {
+    return Point { x: a.x + b.x, y: a.y + b.y }
+}
+
+fn abs(n: i64) -> i64 {
+    if n < 0 {
+        return -n
+    }
+    return n
+}
+
+fn manhattan(p: Point) -> i64 {
+    return abs(p.x) + abs(p.y)
+}
+
+fn midpoint(l: Line) -> Point {
+    return Point { x: (l.from.x + l.to.x) / 2, y: (l.from.y + l.to.y) / 2 }
+}
+
+fn identity(p: Point) -> Point {
+    return p
+}
+
+fn first(l: Line) -> Point {
+    return l.from
+}
+
+fn step(p: Point, n: i64) -> Point {
+    if n == 0 {
+        return p
+    }
+    return step(Point { x: p.y, y: p.x + p.y }, n - 1)
+}
+
+fn main() -> i64 {
+    // Assignment copies: changing `b` leaves `a` alone.
+    let a = make(3, 4)
+    var b = a
+    b.x = 10
+    print(a.x)
+    print(b.x)
+    print(b.y)
+
+    let c = add(a, b)
+    print(c.x)
+    print(c.y)
+
+    var l = Line { from: a, to: Point { x: 7, y: 9 }, width: 2 }
+    print(l.to.y)
+    l.from.x = 100
+    print(a.x)
+    print(l.from.x)
+    l.to = b
+    print(l.to.x)
+
+    var l2 = l
+    l2.to.y = -5
+    print(l.to.y)
+    print(l2.to.y)
+
+    // Fields of computed values, and computed values as arguments.
+    print(make(5, 6).y)
+    print(add(make(1, 2), make(10, 20)).x)
+    print(first(l).x)
+    print(identity(identity(a)).y)
+    print(midpoint(Line { from: make(0, 0), to: make(10, 20), width: 1 }).y)
+
+    // The result of a call can replace one of its own arguments.
+    b = add(b, b)
+    print(b.x)
+    var s = make(1, 2)
+    s = s
+    print(s.y)
+
+    let f = Flags { on: true, count: 3 }
+    if f.on {
+        print(f.count)
+    }
+
+    var acc = make(0, 0)
+    var i = 0
+    while i < 5 {
+        acc = add(acc, make(i, i * i))
+        i = i + 1
+    }
+    print(acc.x)
+    print(acc.y)
+
+    print(step(make(0, 1), 10).x)
+    return manhattan(make(-3, 4))
+}

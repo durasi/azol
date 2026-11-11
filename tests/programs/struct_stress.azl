@@ -1,0 +1,149 @@
+// expect-exit: 3
+// expect-output: 1 2 3 4 5 6 12345678 36 78 1 2 3 11 22 33 44 55 66 77 88 21 7 15 6 28 120 5040 9
+struct Empty {}
+
+struct Inner {
+    a: i64
+    b: i64
+}
+
+struct Middle {
+    left: Inner
+    flag: bool
+    right: Inner
+}
+
+struct Outer {
+    first: Middle
+    tag: i64
+    second: Middle
+}
+
+struct Wide {
+    f1: i64, f2: i64, f3: i64, f4: i64, f5: i64, f6: i64
+    f7: i64, f8: i64, f9: i64, f10: i64, f11: i64, f12: i64
+}
+
+fn inner(a: i64, b: i64) -> Inner {
+    return Inner { a: a, b: b }
+}
+
+fn middle(base: i64) -> Middle {
+    return Middle { left: inner(base, base + 1), flag: base > 0, right: inner(base + 2, base + 3) }
+}
+
+fn outer() -> Outer {
+    return Outer { first: middle(1), tag: 5, second: middle(6) }
+}
+
+fn noisy(n: i64) -> i64 {
+    print(n)
+    return n
+}
+
+// Eight parameters: structs by reference, `mut` references and plain values.
+fn mixed(a: Inner, n: mut i64, b: Inner, k: i64, out: mut Inner, c: Middle, flag: bool, last: i64) -> i64 {
+    n = n + a.a + b.b
+    out.a = c.left.a * 10 + c.right.b
+    if flag {
+        out.b = last
+    }
+    return a.a * 10000000 + a.b * 1000000 + b.a * 100000 + b.b * 10000 + k * 1000 + c.left.b * 100 + c.right.a * 10 + last
+}
+
+fn wide(start: i64) -> Wide {
+    return Wide {
+        f1: start, f2: start + 1, f3: start + 2, f4: start + 3, f5: start + 4, f6: start + 5,
+        f7: start + 6, f8: start + 7, f9: start + 8, f10: start + 9, f11: start + 10, f12: start + 11,
+    }
+}
+
+fn sum_wide(w: Wide) -> i64 {
+    return w.f1 + w.f2 + w.f3 + w.f4 + w.f5 + w.f6 + w.f7 + w.f8 + w.f9 + w.f10 + w.f11 + w.f12
+}
+
+fn double_wide(w: mut Wide) {
+    w.f1 = w.f1 * 2
+    w.f12 = w.f12 * 2
+}
+
+fn nothing(e: Empty) -> Empty {
+    return e
+}
+
+fn factorial_in(acc: mut Inner, n: i64) {
+    if n <= 1 {
+        return
+    }
+    acc.a = acc.a * n
+    acc.b = acc.b + 1
+    factorial_in(mut acc, n - 1)
+}
+
+fn pick(first: bool, x: Inner, y: Inner) -> Inner {
+    if first {
+        return x
+    } else {
+        return y
+    }
+}
+
+fn main() -> i64 {
+    // Arguments are evaluated left to right, exactly once.
+    let o = Outer { first: middle(noisy(1)), tag: noisy(2), second: Middle { left: inner(noisy(3), noisy(4)), flag: false, right: inner(noisy(5), noisy(6)) } }
+
+    var n = 0
+    var out = inner(0, 0)
+    print(mixed(inner(1, 2), mut n, inner(3, 4), 5, mut out, Middle { left: inner(0, 6), flag: true, right: inner(7, 0) }, true, 8))
+    print(n + out.a + out.b + 23)
+
+    let w = wide(1)
+    print(sum_wide(w))
+    print(wide(1).f1)
+    print(outer().first.left.b)
+    print(outer().first.right.a)
+
+    var big = outer()
+    big.first.left.a = 11
+    big.first.left.b = 22
+    big.first.right.a = 33
+    big.first.right.b = 44
+    big.second.left.a = 55
+    big.second.left.b = 66
+    big.second.right.a = 77
+    big.second.right.b = 88
+    let copy = big
+    big.second = big.first
+    print(copy.first.left.a)
+    print(copy.first.left.b)
+    print(copy.first.right.a)
+    print(copy.first.right.b)
+    print(copy.second.left.a)
+    print(copy.second.left.b)
+    print(copy.second.right.a)
+    print(copy.second.right.b)
+
+    var w2 = wide(1)
+    double_wide(mut w2)
+    print(w2.f1 + w2.f12 - 5)
+    print(pick(false, inner(1, 2), inner(7, 8)).a)
+    print(pick(true, o.second.right, o.first.left).a + pick(false, o.second.right, o.first.left).a + o.tag + o.second.left.a + o.second.left.b)
+
+    let e = nothing(Empty {})
+    let e2 = e
+    var i = 3
+    var fact = inner(1, 0)
+    while i <= 7 {
+        fact = inner(1, 0)
+        factorial_in(mut fact, i)
+        if i == 3 || i == 5 || i == 7 {
+            print(fact.a)
+        }
+        if i == 4 {
+            print(fact.a + fact.b + 1)
+        }
+        i = i + 1
+    }
+    print(o.first.left.a + o.first.left.b + o.first.right.a + o.first.right.b - 1)
+    return o.second.left.a
+}

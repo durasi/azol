@@ -13,12 +13,22 @@ The compiler is written in Rust with no dependencies. It reads an `.azl` file an
 Supported so far:
 
 - `i64` and `bool` values
+- structs, including structs inside structs
 - functions, including recursion
+- read-only parameters and `mut` parameters
 - `let` (fixed) and `var` (changeable) variables
 - `if` / `else`, `while`, `break`, `continue`
 - `print` for integers
 
-The parser already accepts more of the planned language (structs, enums, `match`, `for`, generics). The compiler reports these as not supported yet.
+Values have value semantics. Assigning a struct copies it, and a function can only change an argument the caller passes as `mut`. Large values are still passed by reference for speed; the compiler rejects any call that would let two arguments refer to the same data while one of them is `mut`, so a reference can never be told apart from a private copy. This is the first rule of the memory safety analysis:
+
+    error: `p` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+      --> alias.azl:14:21
+       |
+    14 |     swap(mut p, mut p)
+       |                     ^
+
+The parser already accepts more of the planned language (enums, `match`, `for`, generics, strings, arrays). The compiler reports these as not supported yet.
 
 ## Try it
 
@@ -27,8 +37,8 @@ Requires a Mac with Apple Silicon and a Rust toolchain.
     git clone https://github.com/durasi/azol
     cd azol
     cargo build --release
-    ./target/release/azol build examples/fib.azl
-    ./examples/fib
+    ./target/release/azol build examples/structs.azl
+    ./examples/structs
 
 Other commands:
 
@@ -38,22 +48,26 @@ Other commands:
 
 ## Example
 
-    fn fib(n: i64) -> i64 {
-        if n < 2 {
-            return n
-        }
-        return fib(n - 1) + fib(n - 2)
+    struct Point {
+        x: i64
+        y: i64
+    }
+
+    fn shift(p: mut Point, dx: i64) {
+        p.x = p.x + dx
     }
 
     fn main() {
-        var i = 0
-        while i <= 30 {
-            print(fib(i))
-            i = i + 5
-        }
+        let a = Point { x: 1, y: 2 }
+        var b = a
+        shift(mut b, 3)
+        print(a.x)
+        print(b.x)
     }
 
-## First measurement
+This prints 1 and 4: `b` is a copy, so changing it leaves `a` alone.
+
+## First measurements
 
 Building `examples/fib.azl` and the same program in Rust (`bench/fib.rs`, plain `rustc`), ten times each on an Apple Silicon Mac:
 
@@ -70,6 +84,16 @@ Read this with care:
 
 On the front end alone, the lexer and parser handle about 13 million lines per second on the same machine.
 
+Run time, computing `fib(40)` (`bench/fib40.azl` and `bench/fib40.rs`):
+
+| | Run time |
+|---|---|
+| azoL | 0.64 s |
+| Rust, no optimization | 0.44 s |
+| Rust, optimized (`-O`) | 0.16 s |
+
+azoL's code is about 1.5 times slower than unoptimized Rust and about 4 times slower than optimized Rust. Closing that gap is the job of the planned release mode.
+
 ## Goals
 
 - Compile at least 4x faster than Rust on equivalent programs
@@ -85,12 +109,12 @@ On the front end alone, the lexer and parser handle about 13 million lines per s
 
 ## Roadmap
 
-1. Structs with value semantics and `mut` parameters
-2. Strings, arrays, `for` and `match`
-3. Enums and generics
-4. The memory safety analysis
-5. An optimizing release mode
-6. Linux and x86-64 targets
+1. Strings, arrays, `for` and `match`
+2. Enums and generics
+3. Heap values and the rest of the memory safety analysis
+4. An optimizing release mode
+5. Linux and x86-64 targets
+6. A compiler written in azoL itself, so that building azoL no longer needs Rust
 
 ## Name
 

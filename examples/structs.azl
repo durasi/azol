@@ -1,0 +1,27 @@
+// Structs have value semantics: assigning one makes a copy, and a
+// function can only change an argument that is passed as `mut`.
+//
+//     azol build examples/structs.azl
+//     ./examples/structs
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+fn shift(p: mut Point, dx: i64) {
+    p.x = p.x + dx
+}
+
+fn sum(p: Point) -> i64 {
+    return p.x + p.y
+}
+
+fn main() {
+    let a = Point { x: 1, y: 2 }
+    var b = a
+    shift(mut b, 3)
+    print(a.x)
+    print(b.x)
+    print(sum(b))
+}
