@@ -1,14 +1,22 @@
 // Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
 
 //! Turns a checked program into ARM64 machine code in one pass over the
-//! syntax tree. The scheme is deliberately simple: every expression
-//! leaves its value in x0, intermediate values go on the stack, and
-//! locals live in the function's frame. It is fast to generate, not fast
-//! to run; an optimizing backend comes later.
+//! syntax tree. The scheme is deliberately simple: a scalar expression
+//! leaves its value in x0, an aggregate expression leaves its address in
+//! x0, intermediate values go on the stack, and locals live in the
+//! function's frame. It is fast to generate, not fast to run; an
+//! optimizing backend comes later.
+//!
+//! Registers: x0-x2 carry values, x8 the address for an aggregate
+//! result, x9-x11 are scratch within one step. Nothing is kept in a
+//! register across a call.
 
 use crate::ast::*;
 use crate::runtime::{self, RuntimeReloc, RUNTIME, RUNTIME_DATA, RUNTIME_DATA_OFFSETS, RUNTIME_RELOCS};
-use crate::sema::{Program, Ty, BUILTIN_PRINT_BOOL, BUILTIN_PRINT_I64, BUILTIN_PRINT_STR, BY_REF, FIRST_BUILTIN};
+use crate::sema::{
+    Program, Ty, BUILTIN_LIST_LEN, BUILTIN_LIST_POP, BUILTIN_LIST_PUSH, BUILTIN_PRINT_BOOL, BUILTIN_PRINT_I64,
+    BUILTIN_PRINT_STR, BY_REF, FIRST_BUILTIN, FOR_COPIED, FOR_IN_PLACE,
+};
 
 pub struct Code {
     pub words: Vec<u32>,
@@ -34,7 +42,9 @@ const X2: u32 = 2;
 const X8: u32 = 8;
 const X9: u32 = 9;
 const X10: u32 = 10;
+const X11: u32 = 11;
 const FP: u32 = 29;
+const XZR: u32 = 31;
 
 // Condition codes.
 const EQ: u32 = 0;
@@ -43,6 +53,8 @@ const GE: u32 = 10;
 const LT: u32 = 11;
 const GT: u32 = 12;
 const LE: u32 = 13;
+/// Unsigned higher or same.
+const HS: u32 = 2;
 
 const RET: u32 = 0xD65F_03C0;
 const BRK_1: u32 = 0xD420_0020;
@@ -67,6 +79,21 @@ fn add_slots(rd: u32, rn: u32, slots: u32) -> u32 {
     0x9100_0000 | (slots * 8) << 10 | rn << 5 | rd
 }
 
+/// `add rd, rn, rm`
+fn add_reg(rd: u32, rn: u32, rm: u32) -> u32 {
+    0x8B00_0000 | rm << 16 | rn << 5 | rd
+}
+
+/// `add rd, rn, rm, lsl #3`
+fn add_scaled(rd: u32, rn: u32, rm: u32) -> u32 {
+    0x8B00_0C00 | rm << 16 | rn << 5 | rd
+}
+
+/// `madd rd, rn, rm, ra`: rd = ra + rn * rm
+fn madd(rd: u32, rn: u32, rm: u32, ra: u32) -> u32 {
+    0x9B00_0000 | rm << 16 | ra << 10 | rn << 5 | rd
+}
+
 /// Frame slot `n` sits above the saved frame pointer and return address.
 const fn frame(slot: u32) -> u32 {
     slot + 2
@@ -76,9 +103,17 @@ fn cset_x0(cond: u32) -> u32 {
     0x9A9F_07E0 | (cond ^ 1) << 12
 }
 
+/// Largest slot offset a single load or store can carry.
+const MAX_OFFSET: u32 = 4095;
+
 struct LoopFixups {
     start: usize,
     breaks: Vec<usize>,
+    /// In a `for` loop `continue` jumps forward to the step, so those
+    /// jumps are patched later. `None` for `while`.
+    continues: Option<Vec<usize>>,
+    /// Number of owning locals alive when the loop was entered.
+    live: usize,
 }
 
 /// Where a variable or field path lives: a frame slot, or an offset from
@@ -97,28 +132,33 @@ struct Gen<'a> {
     fn_starts: Vec<u32>,
     /// (instruction index, function index) of every `bl` to patch.
     calls: Vec<(usize, u32)>,
-    /// Instruction indices of `bl`s to the division-by-zero handler.
-    traps: Vec<usize>,
+    /// (instruction index, runtime entry) of every `bl` into the runtime.
+    runtime_calls: Vec<(usize, u32)>,
     relocs: Vec<Reloc>,
     loops: Vec<LoopFixups>,
+    /// Local variables that own buffers and are in scope: slot and type.
+    live: Vec<(u32, Ty)>,
     frame_bytes: u32,
     ret: Ty,
     sret_slot: Option<u32>,
+    scratch_slot: u32,
 }
 
 pub fn generate(ast: &Ast, prog: &Program) -> Code {
     let mut g = Gen {
         ast,
         prog,
-        words: Vec::with_capacity(ast.exprs.len() * 3 + 64),
+        words: Vec::with_capacity(ast.exprs.len() * 3 + 256),
         fn_starts: Vec::with_capacity(prog.fns.len()),
         calls: Vec::new(),
-        traps: Vec::new(),
+        runtime_calls: Vec::new(),
         relocs: Vec::new(),
         loops: Vec::new(),
+        live: Vec::new(),
         frame_bytes: 0,
         ret: Ty::Unit,
         sret_slot: None,
+        scratch_slot: 0,
     };
     let mut index = 0;
     for item in &ast.items {
@@ -140,16 +180,10 @@ pub fn generate(ast: &Ast, prog: &Program) -> Code {
     }
     let bl = |from: usize, to: u32| 0x9400_0000 | ((to as i64 - from as i64) as u32 & 0x03FF_FFFF);
     for &(at, target) in &g.calls {
-        let dest = match target {
-            BUILTIN_PRINT_I64 => runtime_start + runtime::PRINT_I64,
-            BUILTIN_PRINT_BOOL => runtime_start + runtime::PRINT_BOOL,
-            BUILTIN_PRINT_STR => runtime_start + runtime::PRINT_STR,
-            index => g.fn_starts[index as usize],
-        };
-        g.words[at] = bl(at, dest);
+        g.words[at] = bl(at, g.fn_starts[target as usize]);
     }
-    for &at in &g.traps {
-        g.words[at] = bl(at, runtime_start + runtime::DIV_ZERO);
+    for &(at, entry) in &g.runtime_calls {
+        g.words[at] = bl(at, runtime_start + entry);
     }
     let mut data = Vec::with_capacity(RUNTIME_DATA.len() + prog.data.len());
     data.extend_from_slice(RUNTIME_DATA);
@@ -175,6 +209,12 @@ impl<'a> Gen<'a> {
         self.words[at] = op | (delta & 0x7_FFFF) << 5 | X0;
     }
 
+    /// Completes a conditional branch at `at` to jump here.
+    fn patch_branch_if(&mut self, at: usize, cond: u32) {
+        let delta = (self.words.len() - at) as u32;
+        self.words[at] = 0x5400_0000 | (delta & 0x7_FFFF) << 5 | cond;
+    }
+
     fn patch_jump(&mut self, at: usize) {
         let delta = (self.words.len() - at) as u32;
         self.words[at] = 0x1400_0000 | (delta & 0x03FF_FFFF);
@@ -185,7 +225,13 @@ impl<'a> Gen<'a> {
         self.emit(0x1400_0000 | (delta as u32 & 0x03FF_FFFF));
     }
 
-    fn mov_imm(&mut self, value: i64) {
+    /// Calls a runtime routine.
+    fn runtime(&mut self, entry: u32) {
+        let at = self.placeholder();
+        self.runtime_calls.push((at, entry));
+    }
+
+    fn mov_imm(&mut self, reg: u32, value: i64) {
         let bits = value as u64;
         let mut first = true;
         for chunk in 0..4 {
@@ -194,7 +240,7 @@ impl<'a> Gen<'a> {
                 continue;
             }
             let op = if first { 0xD280_0000 } else { 0xF280_0000 }; // movz / movk
-            self.emit(op | chunk << 21 | part << 5 | X0);
+            self.emit(op | chunk << 21 | part << 5 | reg);
             first = false;
         }
     }
@@ -203,8 +249,8 @@ impl<'a> Gen<'a> {
         self.prog.expr_ty[id as usize]
     }
 
-    /// True for values handled by address: structs and strings.
-    fn is_struct(&self, id: ExprId) -> bool {
+    /// True for values handled by address: structs, strings and lists.
+    fn is_aggregate(&self, id: ExprId) -> bool {
         self.ty(id).is_aggregate()
     }
 
@@ -214,6 +260,8 @@ impl<'a> Gen<'a> {
         self.frame_bytes = (16 + 8 * info.slots).div_ceil(16) * 16;
         self.ret = info.ret;
         self.sret_slot = info.sret_slot;
+        self.scratch_slot = info.scratch_slot;
+        self.live.clear();
 
         self.emit(0xD100_03FF | self.frame_bytes << 10); // sub sp, sp, #frame
         self.emit(0xA900_7BFD); // stp x29, x30, [sp]
@@ -225,9 +273,14 @@ impl<'a> Gen<'a> {
         if let Some(slot) = self.sret_slot {
             self.emit(str(X8, FP, frame(slot)));
         }
+        // A temporary may be freed without having been filled, when the
+        // expression that fills it was skipped. Null makes that harmless.
+        for &slot in &info.zero_slots {
+            self.emit(str(XZR, FP, frame(slot)));
+        }
         self.block(body);
         if self.ret == Ty::Unit {
-            self.mov_imm(0);
+            self.mov_imm(X0, 0);
             self.epilogue();
         } else {
             // The checker proved every path returns; this is unreachable.
@@ -242,62 +295,126 @@ impl<'a> Gen<'a> {
         self.emit(RET);
     }
 
+    /// Generates a block and frees the owning locals declared in it.
     fn block(&mut self, body: List) {
+        let outer = self.live.len();
         for &id in self.ast.list(body) {
             self.stmt(id);
         }
+        self.drop_live_from(outer);
+        self.live.truncate(outer);
     }
+
+    // ---- ownership -----------------------------------------------------
+
+    /// Frees the buffers owned by the value in frame slot `slot`.
+    fn drop_frame(&mut self, slot: u32, ty: Ty) {
+        for (offset, _) in self.prog.heap_fields(ty) {
+            self.emit(ldr(X0, FP, frame(slot + offset)));
+            self.runtime(runtime::FREE);
+        }
+    }
+
+    /// Frees the buffers owned by the value whose address is parked in
+    /// frame slot `pointer_slot`.
+    fn drop_pointer(&mut self, pointer_slot: u32, ty: Ty) {
+        for (offset, _) in self.prog.heap_fields(ty) {
+            self.emit(ldr(X9, FP, frame(pointer_slot)));
+            self.emit(ldr(X0, X9, offset));
+            self.runtime(runtime::FREE);
+        }
+    }
+
+    /// Frees the owning locals declared since `from`, newest first,
+    /// without forgetting them: used on every way out of a scope.
+    fn drop_live_from(&mut self, from: usize) {
+        for i in (from..self.live.len()).rev() {
+            let (slot, ty) = self.live[i];
+            self.drop_frame(slot, ty);
+        }
+    }
+
+    /// Frees the temporaries of statement `id`. `keep_x0` preserves a
+    /// value the statement still needs.
+    fn drop_temps(&mut self, id: StmtId, keep_x0: bool) {
+        let (start, len) = self.prog.stmt_drops[id as usize];
+        if len == 0 {
+            return;
+        }
+        if keep_x0 {
+            self.emit(PUSH_X0);
+        }
+        for i in start..start + len {
+            let (slot, ty) = self.prog.drops[i as usize];
+            for (offset, _) in self.prog.heap_fields(ty) {
+                self.emit(ldr(X0, FP, frame(slot + offset)));
+                self.runtime(runtime::FREE);
+                // Inside a loop the same temporary is freed again.
+                self.emit(str(XZR, FP, frame(slot + offset)));
+            }
+        }
+        if keep_x0 {
+            self.emit(pop(X0));
+        }
+    }
+
+    /// The value in frame slot `slot` was copied bit by bit from another
+    /// owner. Gives each of its lists a buffer of its own.
+    fn clone_frame(&mut self, slot: u32, ty: Ty) {
+        for (offset, bytes) in self.prog.heap_fields(ty) {
+            self.emit(add_slots(X0, FP, frame(slot + offset)));
+            self.mov_imm(X1, bytes as i64);
+            self.runtime(runtime::LIST_CLONE);
+        }
+    }
+
+    /// Like `clone_frame`, for the value whose address is parked in frame
+    /// slot `pointer_slot`.
+    fn clone_pointer(&mut self, pointer_slot: u32, ty: Ty) {
+        for (offset, bytes) in self.prog.heap_fields(ty) {
+            self.emit(ldr(X0, FP, frame(pointer_slot)));
+            if offset > 0 {
+                self.emit(add_slots(X0, X0, offset));
+            }
+            self.mov_imm(X1, bytes as i64);
+            self.runtime(runtime::LIST_CLONE);
+        }
+    }
+
+    // ---- statements ----------------------------------------------------
 
     fn stmt(&mut self, id: StmtId) {
         match self.ast.stmts[id as usize] {
             Stmt::Let { value, .. } => {
                 let slot = self.prog.stmt_slot[id as usize];
-                if self.is_struct(value) {
+                let ty = self.ty(value);
+                if ty.is_aggregate() {
                     self.address(value);
-                    self.copy_to_frame(slot, self.prog.size_of(self.ty(value)));
+                    self.copy_to_frame(slot, self.prog.size_of(ty));
+                    if self.prog.needs_drop(ty) && !self.prog.expr_moved[value as usize] {
+                        self.clone_frame(slot, ty);
+                    }
                 } else {
                     self.value(value);
                     self.emit(str(X0, FP, frame(slot)));
                 }
+                self.drop_temps(id, false);
+                if self.prog.needs_drop(ty) {
+                    self.live.push((slot, ty));
+                }
             }
             Stmt::Assign { target, value } => {
-                let place = self.place(target).expect("checked: the target is a place");
-                if self.is_struct(target) {
-                    let size = self.prog.size_of(self.ty(target));
-                    self.address(value);
-                    if place.by_ref {
-                        self.emit(ldr(X9, FP, frame(place.slot)));
-                        self.copy_to_pointer(place.offset, size);
-                    } else {
-                        self.copy_to_frame(place.slot + place.offset, size);
-                    }
-                } else {
-                    self.value(value);
-                    if place.by_ref {
-                        self.emit(ldr(X9, FP, frame(place.slot)));
-                        self.emit(str(X0, X9, place.offset));
-                    } else {
-                        self.emit(str(X0, FP, frame(place.slot + place.offset)));
-                    }
-                }
+                self.assign(id, target, value);
+                self.drop_temps(id, false);
             }
-            Stmt::Expr(expr) => self.eval(expr),
-            Stmt::Return(value) => {
-                match value {
-                    Some(value) if self.is_struct(value) => {
-                        let size = self.prog.size_of(self.ty(value));
-                        self.address(value);
-                        let slot = self.sret_slot.expect("checked: this function returns a struct");
-                        self.emit(ldr(X9, FP, frame(slot)));
-                        self.copy_to_pointer(0, size);
-                    }
-                    Some(value) => self.value(value),
-                    None => self.mov_imm(0),
-                }
-                self.epilogue();
+            Stmt::Expr(expr) => {
+                self.eval(expr);
+                self.drop_temps(id, false);
             }
+            Stmt::Return(value) => self.return_stmt(id, value),
             Stmt::If { cond, then_block, else_branch } => {
                 self.value(cond);
+                self.drop_temps(id, true);
                 let skip_then = self.placeholder();
                 self.block(then_block);
                 match else_branch {
@@ -319,8 +436,9 @@ impl<'a> Gen<'a> {
             Stmt::While { cond, body } => {
                 let start = self.words.len();
                 self.value(cond);
+                self.drop_temps(id, true);
                 let exit = self.placeholder();
-                self.loops.push(LoopFixups { start, breaks: Vec::new() });
+                self.loops.push(LoopFixups { start, breaks: Vec::new(), continues: None, live: self.live.len() });
                 self.block(body);
                 self.jump_back(start);
                 self.patch_cbz(exit, false);
@@ -329,17 +447,197 @@ impl<'a> Gen<'a> {
                     self.patch_jump(at);
                 }
             }
+            Stmt::For { index, iter, body, .. } => self.for_stmt(id, index.is_some(), iter, body),
             Stmt::Break => {
+                let live = self.loops.last().expect("checked: inside a loop").live;
+                self.drop_live_from(live);
                 let at = self.placeholder();
                 self.loops.last_mut().expect("checked: inside a loop").breaks.push(at);
             }
             Stmt::Continue => {
-                let start = self.loops.last().expect("checked: inside a loop").start;
-                self.jump_back(start);
+                let fixups = self.loops.last().expect("checked: inside a loop");
+                let (live, start, forward) = (fixups.live, fixups.start, fixups.continues.is_some());
+                self.drop_live_from(live);
+                if forward {
+                    let at = self.placeholder();
+                    let fixups = self.loops.last_mut().expect("checked: inside a loop");
+                    fixups.continues.as_mut().expect("a `for` loop collects its continues").push(at);
+                } else {
+                    self.jump_back(start);
+                }
             }
-            Stmt::For { .. } | Stmt::Match { .. } => unreachable!("rejected by the checker"),
+            Stmt::Match { .. } => unreachable!("rejected by the checker"),
         }
     }
+
+    fn assign(&mut self, id: StmtId, target: ExprId, value: ExprId) {
+        let ty = self.ty(target);
+        let place = self.place(target);
+        if !ty.is_aggregate() {
+            self.value(value);
+            match place {
+                Some(place) if place.by_ref => {
+                    self.emit(ldr(X9, FP, frame(place.slot)));
+                    self.emit(str(X0, X9, place.offset));
+                }
+                Some(place) => self.emit(str(X0, FP, frame(place.slot + place.offset))),
+                None => {
+                    // The target is a list element: its address is only
+                    // known once the index has been evaluated.
+                    self.emit(PUSH_X0);
+                    self.address(target);
+                    self.emit(0xAA00_03E9); // mov x9, x0
+                    self.emit(pop(X0));
+                    self.emit(str(X0, X9, 0));
+                }
+            }
+            return;
+        }
+
+        let size = self.prog.size_of(ty);
+        let owning = self.prog.needs_drop(ty);
+        if let (Some(place), false) = (place, owning) {
+            // Plain data into a fixed place: copy straight across.
+            self.address(value);
+            if place.by_ref {
+                self.emit(ldr(X9, FP, frame(place.slot)));
+                self.copy_to_pointer(place.offset, size);
+            } else {
+                self.copy_to_frame(place.slot + place.offset, size);
+            }
+            return;
+        }
+
+        // First get the new value into a frame area this statement owns:
+        // the temporary that computed it, or a fresh copy of a variable.
+        self.address(value);
+        let source = if self.prog.expr_moved[value as usize] {
+            self.prog.expr_tmp[value as usize]
+        } else {
+            let scratch = self.prog.stmt_slot[id as usize];
+            self.copy_to_frame(scratch, size);
+            self.clone_frame(scratch, ty);
+            scratch
+        };
+        // Then find the target, free what it holds and move the value in.
+        self.address(target);
+        self.emit(str(X0, FP, frame(self.scratch_slot)));
+        self.drop_pointer(self.scratch_slot, ty);
+        self.emit(add_slots(X0, FP, frame(source)));
+        self.emit(ldr(X9, FP, frame(self.scratch_slot)));
+        self.copy_to_pointer(0, size);
+    }
+
+    fn return_stmt(&mut self, id: StmtId, value: Option<ExprId>) {
+        // A local that is returned whole hands its buffers to the caller
+        // and so must not be freed here.
+        let mut moved_local = None;
+        let scalar = match value {
+            Some(value) if self.is_aggregate(value) => {
+                let ty = self.ty(value);
+                let slot = self.sret_slot.expect("checked: this function returns an aggregate");
+                self.address(value);
+                self.emit(ldr(X9, FP, frame(slot)));
+                self.copy_to_pointer(0, self.prog.size_of(ty));
+                if self.prog.needs_drop(ty) {
+                    if !self.prog.expr_moved[value as usize] {
+                        self.clone_pointer(slot, ty);
+                    } else if let Expr::Ident(_) = self.ast.exprs[value as usize] {
+                        moved_local = self.place(value).map(|place| place.slot);
+                    }
+                }
+                false
+            }
+            Some(value) => {
+                self.value(value);
+                true
+            }
+            None => {
+                self.mov_imm(X0, 0);
+                false
+            }
+        };
+        let frees_something = self.prog.stmt_drops[id as usize].1 > 0 || !self.live.is_empty();
+        if scalar && frees_something {
+            self.emit(PUSH_X0);
+        }
+        self.drop_temps(id, false);
+        for i in (0..self.live.len()).rev() {
+            let (slot, ty) = self.live[i];
+            if Some(slot) != moved_local {
+                self.drop_frame(slot, ty);
+            }
+        }
+        if scalar && frees_something {
+            self.emit(pop(X0));
+        }
+        self.epilogue();
+    }
+
+    fn for_stmt(&mut self, id: StmtId, has_index: bool, iter: ExprId, body: List) {
+        let list_ty = self.ty(iter);
+        let Ty::List(list) = list_ty else {
+            unreachable!("checked: `for` goes through a list");
+        };
+        let elem_size = self.prog.size_of(self.prog.lists[list as usize]);
+        let base = self.prog.stmt_slot[id as usize];
+        let (position, own_list, item_slot) = (base, base + 1, base + 4);
+        let index_slot = item_slot + elem_size;
+        let in_place = self.prog.stmt_flag[id as usize] == FOR_IN_PLACE;
+
+        if !in_place {
+            // The loop owns the list: a temporary it takes over, or its
+            // own copy of a list that is part of a temporary.
+            self.address(iter);
+            self.copy_to_frame(own_list, 3);
+            if self.prog.stmt_flag[id as usize] == FOR_COPIED {
+                self.clone_frame(own_list, list_ty);
+            }
+        }
+        self.drop_temps(id, false);
+        if !in_place {
+            self.live.push((own_list, list_ty));
+        }
+        self.emit(str(XZR, FP, frame(position)));
+
+        let start = self.words.len();
+        if in_place {
+            self.address(iter);
+        } else {
+            self.emit(add_slots(X0, FP, frame(own_list)));
+        }
+        self.emit(ldr(X9, X0, 1)); // length
+        self.emit(ldr(X1, FP, frame(position)));
+        self.emit(0xEB09_003F); // cmp x1, x9
+        let exit = self.placeholder();
+        if has_index {
+            self.emit(str(X1, FP, frame(index_slot)));
+        }
+        self.emit(ldr(X9, X0, 0)); // buffer
+        self.element_address(X0, X9, X1, elem_size);
+        self.copy_to_frame(item_slot, elem_size);
+
+        self.loops.push(LoopFixups { start, breaks: Vec::new(), continues: Some(Vec::new()), live: self.live.len() });
+        self.block(body);
+        let fixups = self.loops.pop().expect("loop stack is balanced");
+        for at in fixups.continues.expect("a `for` loop collects its continues") {
+            self.patch_jump(at);
+        }
+        self.emit(ldr(X0, FP, frame(position)));
+        self.emit(0x9100_0400); // add x0, x0, #1
+        self.emit(str(X0, FP, frame(position)));
+        self.jump_back(start);
+        self.patch_branch_if(exit, HS);
+        for at in fixups.breaks {
+            self.patch_jump(at);
+        }
+        if !in_place {
+            self.live.pop();
+            self.drop_frame(own_list, list_ty);
+        }
+    }
+
+    // ---- memory helpers ------------------------------------------------
 
     /// Copies `size` slots from the address in x0 into the frame.
     fn copy_to_frame(&mut self, slot: u32, size: u32) {
@@ -358,7 +656,21 @@ impl<'a> Gen<'a> {
         }
     }
 
-    /// The location of a variable or of a field path inside a variable.
+    /// `rd = buffer + index * element size`. Uses x10 when the element is
+    /// larger than one slot; `rd` may be the same register as an input.
+    fn element_address(&mut self, rd: u32, buffer: u32, index: u32, elem_size: u32) {
+        if elem_size == 1 {
+            self.emit(add_scaled(rd, buffer, index));
+        } else {
+            debug_assert!(buffer != X11 && index != X11);
+            self.mov_imm(X11, elem_size as i64 * 8);
+            self.emit(madd(rd, index, X11, buffer));
+        }
+    }
+
+    /// The location of a variable or of a field path inside a variable,
+    /// when it is fixed at compile time. `None` for computed values and
+    /// for anything reached through a list index.
     fn place(&self, id: ExprId) -> Option<Place> {
         match self.ast.exprs[id as usize] {
             Expr::Ident(_) => {
@@ -386,17 +698,20 @@ impl<'a> Gen<'a> {
         }
     }
 
+    // ---- expressions ---------------------------------------------------
+
     /// Evaluates an expression for its effects, whatever its type.
     fn eval(&mut self, id: ExprId) {
-        if self.is_struct(id) {
+        if self.is_aggregate(id) {
             self.address(id);
         } else {
             self.value(id);
         }
     }
 
-    /// Generates code that leaves the address of a struct value in x0.
-    /// A computed struct is first stored in its own temporary.
+    /// Generates code that leaves in x0 the address of an aggregate value,
+    /// or of any expression that names a place. A computed aggregate is
+    /// first stored in its own temporary.
     fn address(&mut self, id: ExprId) {
         if let Some(place) = self.place(id) {
             self.place_address(place);
@@ -412,7 +727,7 @@ impl<'a> Gen<'a> {
                 self.emit(0);
                 self.relocs.push(Reloc::Data { at, offset: RUNTIME_DATA.len() as u32 + offset, reg: X0 });
                 self.emit(str(X0, FP, frame(tmp)));
-                self.mov_imm(len as i64);
+                self.mov_imm(X0, len as i64);
                 self.emit(str(X0, FP, frame(tmp + 1)));
                 self.emit(add_slots(X0, FP, frame(tmp)));
             }
@@ -421,9 +736,13 @@ impl<'a> Gen<'a> {
                 for &init_id in self.ast.list(fields) {
                     let init = self.ast.field_inits[init_id as usize];
                     let slot = tmp + self.prog.init_offset[init_id as usize];
-                    if self.is_struct(init.value) {
+                    let ty = self.ty(init.value);
+                    if ty.is_aggregate() {
                         self.address(init.value);
-                        self.copy_to_frame(slot, self.prog.size_of(self.ty(init.value)));
+                        self.copy_to_frame(slot, self.prog.size_of(ty));
+                        if self.prog.needs_drop(ty) && !self.prog.expr_moved[init.value as usize] {
+                            self.clone_frame(slot, ty);
+                        }
                     } else {
                         self.value(init.value);
                         self.emit(str(X0, FP, frame(slot)));
@@ -431,6 +750,7 @@ impl<'a> Gen<'a> {
                 }
                 self.emit(add_slots(X0, FP, frame(tmp)));
             }
+            Expr::ArrayLit { items } => self.list_literal(id, items),
             Expr::Call { args, .. } => {
                 self.call(id, args);
                 self.emit(add_slots(X0, FP, frame(self.prog.expr_tmp[id as usize])));
@@ -442,32 +762,81 @@ impl<'a> Gen<'a> {
                     self.emit(add_slots(X0, X0, offset));
                 }
             }
-            _ => unreachable!("checked: only these expressions produce a struct or a string"),
+            Expr::Index { base, index } => {
+                // The index is evaluated first, so that nothing runs
+                // between reading the buffer pointer and using it.
+                let Ty::List(list) = self.ty(base) else {
+                    unreachable!("checked: only lists are indexed");
+                };
+                let elem_size = self.prog.size_of(self.prog.lists[list as usize]);
+                self.value(index);
+                self.emit(PUSH_X0);
+                self.address(base);
+                self.emit(pop(X1));
+                self.emit(ldr(X9, X0, 1)); // length
+                self.emit(0xEB09_003F); // cmp x1, x9
+                self.emit(0x5400_0043); // b.lo +2: an unsigned compare also rejects negatives
+                self.runtime(runtime::INDEX_FAIL);
+                self.emit(ldr(X9, X0, 0)); // buffer
+                self.element_address(X0, X9, X1, elem_size);
+            }
+            _ => unreachable!("checked: only these expressions have an address"),
         }
     }
 
-    /// Generates code that leaves an `i64` or `bool` value in x0.
+    fn list_literal(&mut self, id: ExprId, items: List) {
+        let tmp = self.prog.expr_tmp[id as usize];
+        let item_ids = self.ast.list(items);
+        let count = item_ids.len() as u32;
+        if count == 0 {
+            for i in 0..3 {
+                self.emit(str(XZR, FP, frame(tmp + i)));
+            }
+            self.emit(add_slots(X0, FP, frame(tmp)));
+            return;
+        }
+        let elem_size = self.prog.size_of(self.ty(item_ids[0]));
+        self.mov_imm(X0, (count * elem_size * 8) as i64);
+        self.runtime(runtime::ALLOC);
+        self.emit(str(X0, FP, frame(tmp)));
+        for (i, &item) in item_ids.iter().enumerate() {
+            let mut offset = i as u32 * elem_size;
+            self.eval(item);
+            self.emit(ldr(X9, FP, frame(tmp)));
+            if offset + elem_size > MAX_OFFSET {
+                self.mov_imm(X11, offset as i64 * 8);
+                self.emit(add_reg(X9, X9, X11));
+                offset = 0;
+            }
+            if self.is_aggregate(item) {
+                self.copy_to_pointer(offset, elem_size);
+            } else {
+                self.emit(str(X0, X9, offset));
+            }
+        }
+        self.mov_imm(X0, count as i64);
+        self.emit(str(X0, FP, frame(tmp + 1))); // length
+        self.emit(str(X0, FP, frame(tmp + 2))); // capacity
+        self.emit(add_slots(X0, FP, frame(tmp)));
+    }
+
+    /// Generates code that leaves a scalar value in x0.
     fn value(&mut self, id: ExprId) {
         match self.ast.exprs[id as usize] {
-            Expr::Int(_) => self.mov_imm(self.prog.ints[self.prog.expr_res[id as usize] as usize]),
-            Expr::Bool(value) => self.mov_imm(value as i64),
-            Expr::Ident(_) | Expr::Field { .. } => {
-                if let Some(place) = self.place(id) {
-                    if place.by_ref {
-                        self.emit(ldr(X9, FP, frame(place.slot)));
-                        self.emit(ldr(X0, X9, place.offset));
-                    } else {
-                        self.emit(ldr(X0, FP, frame(place.slot + place.offset)));
-                    }
-                } else {
-                    // A field of a computed struct, such as `make().x`.
-                    let Expr::Field { base, .. } = self.ast.exprs[id as usize] else {
-                        unreachable!("a name is always a place");
-                    };
-                    self.address(base);
-                    self.emit(ldr(X0, X0, self.prog.expr_res[id as usize]));
+            Expr::Int(_) => self.mov_imm(X0, self.prog.ints[self.prog.expr_res[id as usize] as usize]),
+            Expr::Bool(value) => self.mov_imm(X0, value as i64),
+            Expr::Ident(_) | Expr::Field { .. } | Expr::Index { .. } => match self.place(id) {
+                Some(place) if place.by_ref => {
+                    self.emit(ldr(X9, FP, frame(place.slot)));
+                    self.emit(ldr(X0, X9, place.offset));
                 }
-            }
+                Some(place) => self.emit(ldr(X0, FP, frame(place.slot + place.offset))),
+                None => {
+                    // A list element, or a field of a computed value.
+                    self.address(id);
+                    self.emit(ldr(X0, X0, 0));
+                }
+            },
             Expr::Unary { op, operand } => {
                 self.value(operand);
                 self.emit(match op {
@@ -511,20 +880,29 @@ impl<'a> Gen<'a> {
                 }
             }
             Expr::Call { args, .. } => self.call(id, args),
-            Expr::MutArg(_)
-            | Expr::Float(_)
-            | Expr::Str(_)
-            | Expr::Index { .. }
-            | Expr::StructLit { .. }
-            | Expr::ArrayLit { .. } => unreachable!("rejected by the checker or not a scalar"),
+            Expr::MutArg(_) | Expr::Float(_) | Expr::Str(_) | Expr::StructLit { .. } | Expr::ArrayLit { .. } => {
+                unreachable!("rejected by the checker or not a scalar")
+            }
         }
     }
 
-    /// Calls a function. A scalar result is left in x0; a struct result is
-    /// written to the call's temporary.
+    /// Calls a function or a built-in. A scalar result is left in x0; an
+    /// aggregate result is written to the call's temporary.
     fn call(&mut self, id: ExprId, args: List) {
         let target = self.prog.expr_res[id as usize];
         let arg_ids = self.ast.list(args);
+        match target {
+            BUILTIN_LIST_LEN | BUILTIN_LIST_PUSH | BUILTIN_LIST_POP => {
+                let Expr::Call { callee, .. } = self.ast.exprs[id as usize] else {
+                    unreachable!("a call is a call");
+                };
+                let Expr::Field { base, .. } = self.ast.exprs[callee as usize] else {
+                    unreachable!("checked: a method call names its receiver");
+                };
+                return self.list_method(id, target, base, arg_ids);
+            }
+            _ => {}
+        }
         for (i, &arg) in arg_ids.iter().enumerate() {
             let by_ref = if target >= FIRST_BUILTIN {
                 target == BUILTIN_PRINT_STR
@@ -532,10 +910,7 @@ impl<'a> Gen<'a> {
                 self.prog.fns[target as usize].params[i].by_ref
             };
             match self.ast.exprs[arg as usize] {
-                Expr::MutArg(inner) => {
-                    let place = self.place(inner).expect("checked: `mut` is given a place");
-                    self.place_address(place);
-                }
+                Expr::MutArg(inner) => self.address(inner),
                 _ if by_ref => self.address(arg),
                 _ => self.value(arg),
             }
@@ -544,12 +919,64 @@ impl<'a> Gen<'a> {
         for reg in (0..arg_ids.len() as u32).rev() {
             self.emit(pop(reg));
         }
-        if self.is_struct(id) {
-            // The callee writes its result where x8 points.
-            self.emit(add_slots(X8, FP, frame(self.prog.expr_tmp[id as usize])));
+        match target {
+            BUILTIN_PRINT_I64 => self.runtime(runtime::PRINT_I64),
+            BUILTIN_PRINT_BOOL => self.runtime(runtime::PRINT_BOOL),
+            BUILTIN_PRINT_STR => self.runtime(runtime::PRINT_STR),
+            _ => {
+                if self.is_aggregate(id) {
+                    // The callee writes its result where x8 points.
+                    self.emit(add_slots(X8, FP, frame(self.prog.expr_tmp[id as usize])));
+                }
+                let at = self.placeholder();
+                self.calls.push((at, target));
+            }
         }
-        let at = self.placeholder();
-        self.calls.push((at, target));
+    }
+
+    fn list_method(&mut self, id: ExprId, method: u32, base: ExprId, args: &[u32]) {
+        let Ty::List(list) = self.ty(base) else {
+            unreachable!("checked: the receiver is a list");
+        };
+        let elem = self.prog.lists[list as usize];
+        let elem_size = self.prog.size_of(elem);
+        match method {
+            BUILTIN_LIST_LEN => {
+                self.address(base);
+                self.emit(ldr(X0, X0, 1));
+            }
+            BUILTIN_LIST_PUSH => {
+                // The element is copied aside first: it may live in this
+                // very list, whose buffer can move while it grows.
+                let tmp = self.prog.expr_tmp[id as usize];
+                if elem.is_aggregate() {
+                    self.address(args[0]);
+                    self.copy_to_frame(tmp, elem_size);
+                } else {
+                    self.value(args[0]);
+                    self.emit(str(X0, FP, frame(tmp)));
+                }
+                self.address(base);
+                self.emit(add_slots(X1, FP, frame(tmp)));
+                self.mov_imm(X2, elem_size as i64 * 8);
+                self.runtime(runtime::LIST_PUSH);
+            }
+            _ => {
+                self.address(base);
+                self.emit(ldr(X9, X0, 1)); // length
+                self.emit(0xB500_0049); // cbnz x9, +2
+                self.runtime(runtime::POP_EMPTY);
+                self.emit(0xD100_0529); // sub x9, x9, #1
+                self.emit(str(X9, X0, 1));
+                self.emit(ldr(X10, X0, 0)); // buffer
+                self.element_address(X0, X10, X9, elem_size);
+                if elem.is_aggregate() {
+                    self.copy_to_frame(self.prog.expr_tmp[id as usize], elem_size);
+                } else {
+                    self.emit(ldr(X0, X0, 0));
+                }
+            }
+        }
     }
 
     fn compare(&mut self, cond: u32) {
@@ -561,8 +988,7 @@ impl<'a> Gen<'a> {
     /// producing garbage.
     fn trap_if_zero(&mut self) {
         self.emit(0xB500_0040); // cbnz x0, +2
-        let at = self.placeholder();
-        self.traps.push(at);
+        self.runtime(runtime::DIV_ZERO);
     }
 }
 
@@ -591,6 +1017,13 @@ mod tests {
         assert_eq!(add_slots(X8, FP, 501), 0x913EA3A8);
         assert_eq!(add_slots(X0, X0, 3), 0x91006000);
         assert_eq!(add_slots(X9, X9, 1), 0x91002129);
+        assert_eq!(add_slots(X1, FP, 7), 0x9100E3A1);
+        assert_eq!(add_scaled(X0, X9, X1), 0x8B010D20);
+        assert_eq!(add_scaled(X0, X10, X9), 0x8B090D40);
+        assert_eq!(madd(X0, X1, X10, X9), 0x9B0A2420);
+        assert_eq!(madd(X0, X9, X11, X10), 0x9B0B2920);
+        assert_eq!(add_reg(X9, X9, X10), 0x8B0A0129);
+        assert_eq!(str(XZR, FP, 6), 0xF9001BBF);
         assert_eq!(cset_x0(EQ), 0x9A9F17E0);
         assert_eq!(cset_x0(NE), 0x9A9F07E0);
         assert_eq!(cset_x0(LT), 0x9A9FA7E0);

@@ -8,28 +8,41 @@ azoL is an experimental, memory-safe systems programming language designed for v
 
 ## What works today
 
-The compiler is written in Rust with no dependencies. It reads an `.azl` file and writes a signed macOS executable directly: no LLVM, no assembler, no system linker and no `codesign` run. The small runtime (printing, error exits) is written in assembly; its machine code is embedded in the compiler.
+The compiler is written in Rust with no dependencies. It reads an `.azl` file and writes a signed macOS executable directly: no LLVM, no assembler, no system linker and no `codesign` run. The small runtime (printing, growing lists, error exits) is written in assembly; its machine code is embedded in the compiler.
 
 Supported so far:
 
 - `i64`, `bool` and `str` values (text literals)
 - structs, including structs inside structs
+- `List[T]`: growable arrays with `push`, `pop`, `len` and indexing
 - functions, including recursion
 - read-only parameters and `mut` parameters
 - `let` (fixed) and `var` (changeable) variables
-- `if` / `else`, `while`, `break`, `continue`
+- `if` / `else`, `while`, `for ... in`, `break`, `continue`
 - `print` for integers, booleans and text
-- division by zero stops the program with a message instead of continuing
+- memory is freed automatically, with no garbage collector
+- division by zero, a bad index or `pop` on an empty list stop the program with a message instead of continuing
 
-Values have value semantics. Assigning a struct copies it, and a function can only change an argument the caller passes as `mut`. Large values are still passed by reference for speed; the compiler rejects any call that would let two arguments refer to the same data while one of them is `mut`, so a reference can never be told apart from a private copy. This is the first rule of the memory safety analysis:
+### Memory safety so far
 
-    error: `p` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
-      --> alias.azl:14:21
-       |
-    14 |     swap(mut p, mut p)
-       |                     ^
+Values have value semantics. Assigning a struct or a list copies it, and a function can only change an argument the caller passes as `mut`. Large values are still passed by reference for speed, so the compiler makes sure a reference can never be told apart from a private copy: nothing can be changed while something else still refers to it.
 
-The parser already accepts more of the planned language (enums, `match`, `for`, generics, arrays). The compiler reports these as not supported yet.
+Two rules do that, both checked inside one function at a time and without any annotations:
+
+- One call cannot receive the same data twice when one of the uses is `mut`.
+- A list cannot be changed while a loop is going through it.
+
+      error: cannot change `xs` while a loop is going through it
+       --> loop.azl:4:9
+        |
+      4 |         xs.push(x)
+        |         ^
+
+Every list buffer has exactly one owner, a variable or a temporary. A temporary hands its buffer over when it is stored (a move); a variable is duplicated when it is stored again (a copy); and the compiler frees each buffer when its owner goes out of scope. The test suite runs every test program on an emulated CPU with a checking heap, which confirms that each buffer is freed exactly once and never used afterwards.
+
+Not covered yet: lists whose elements own memory (a list of lists), growable text, and integer overflow, which currently wraps.
+
+The parser already accepts more of the planned language (enums, `match`, generics). The compiler reports these as not supported yet.
 
 ## Try it
 
@@ -38,8 +51,8 @@ Requires a Mac with Apple Silicon and a Rust toolchain.
     git clone https://github.com/durasi/azol
     cd azol
     cargo build --release
-    ./target/release/azol build examples/structs.azl
-    ./examples/structs
+    ./target/release/azol build examples/lists.azl
+    ./examples/lists
 
 Other commands:
 
@@ -49,24 +62,36 @@ Other commands:
 
 ## Example
 
-    struct Point {
-        x: i64
-        y: i64
+    struct Player {
+        name: str
+        scores: List[i64]
     }
 
-    fn shift(p: mut Point, dx: i64) {
-        p.x = p.x + dx
+    fn total(scores: List[i64]) -> i64 {
+        var sum = 0
+        for score in scores {
+            sum = sum + score
+        }
+        return sum
+    }
+
+    fn add_round(player: mut Player, score: i64) {
+        player.scores.push(score)
     }
 
     fn main() {
-        let a = Point { x: 1, y: 2 }
-        var b = a
-        shift(mut b, 3)
-        print(a.x)
-        print(b.x)
+        var ada = Player { name: "Ada", scores: [12, 30] }
+        add_round(mut ada, 25)
+
+        var grace = ada
+        grace.name = "Grace"
+        add_round(mut grace, 40)
+
+        print(total(ada.scores))
+        print(total(grace.scores))
     }
 
-This prints 1 and 4: `b` is a copy, so changing it leaves `a` alone.
+This prints 67 and 107: `grace` is a copy with its own list, so adding to it leaves `ada` alone.
 
 ## First measurements
 
@@ -110,9 +135,9 @@ azoL's code is about 1.5 times slower than unoptimized Rust and about 4 times sl
 
 ## Roadmap
 
-1. Growable text and arrays on the heap, `for` and `match`
+1. Lists of lists, growable text and `match`
 2. Enums and generics
-3. Heap values and the rest of the memory safety analysis
+3. Avoiding copies the compiler can prove unnecessary
 4. An optimizing release mode
 5. Linux and x86-64 targets
 6. A compiler written in azoL itself, so that building azoL no longer needs Rust

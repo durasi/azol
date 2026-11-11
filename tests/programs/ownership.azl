@@ -1,0 +1,240 @@
+// expect-exit: 0
+// expect-output: 3 4 3 1 2 9 2 3 1 6 0 3 5 2 2 7 1 6 6 12 3 0 2 1 4 10 20 30 3 1 5 2 8 3 8 1 1 2 3 3 0 0 2 6 15 21 4 1 7 42
+// Every list buffer has exactly one owner. This program moves, copies,
+// overwrites and abandons lists in as many ways as the language allows;
+// the test harness checks that each buffer is freed exactly once.
+struct Bag {
+    name: str
+    items: List[i64]
+    count: i64
+}
+
+struct Pair {
+    left: Bag
+    right: Bag
+}
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+fn range(n: i64) -> List[i64] {
+    var out: List[i64] = []
+    var i = 1
+    while i <= n {
+        out.push(i)
+        i = i + 1
+    }
+    return out
+}
+
+fn sum(xs: List[i64]) -> i64 {
+    var total = 0
+    for x in xs {
+        total = total + x
+    }
+    return total
+}
+
+fn bag(name: str, n: i64) -> Bag {
+    return Bag { name: name, items: range(n), count: n }
+}
+
+// Returns a parameter: the caller gets its own copy.
+fn same(xs: List[i64]) -> List[i64] {
+    return xs
+}
+
+// Returns part of a parameter: also a copy.
+fn items_of(b: Bag) -> List[i64] {
+    return b.items
+}
+
+// Returns a local: its buffer moves to the caller.
+fn grown(xs: List[i64], extra: i64) -> List[i64] {
+    var out = xs
+    out.push(extra)
+    return out
+}
+
+fn replace(xs: mut List[i64], with: List[i64]) {
+    xs = with
+}
+
+fn clear(xs: mut List[i64]) {
+    xs = []
+}
+
+fn refill(b: mut Bag, n: i64) {
+    b.items = range(n)
+    b.count = n
+}
+
+fn swap(a: mut Bag, b: mut Bag) {
+    let t = a
+    a = b
+    b = t
+}
+
+// Leaves through `return` from inside two loops while several lists are alive.
+fn first_shared(xs: List[i64], ys: List[i64]) -> i64 {
+    let scratch = range(3)
+    for x in xs {
+        let more = range(2)
+        for y in grown(ys, 0) {
+            let inner = range(1)
+            if x == y {
+                return x + inner.len() + more.len() + scratch.len() - 6
+            }
+        }
+    }
+    return -1
+}
+
+fn count_until(limit: i64) -> i64 {
+    var seen = 0
+    for x in range(100) {
+        let waste = range(x)
+        if x % 2 == 0 {
+            continue
+        }
+        if x > limit {
+            break
+        }
+        seen = seen + waste.len() - x + 1
+    }
+    return seen
+}
+
+fn is_long(xs: List[i64]) -> bool {
+    return xs.len() > 2
+}
+
+fn main() {
+    let a = range(3)
+    var b = a
+    b.push(4)
+    print(a.len())
+    print(b.len())
+
+    // Overwriting frees the old buffer; so does self-assignment, safely.
+    b = a
+    b = b
+    print(b.len())
+    b = range(1)
+    print(b.len())
+    b = same(range(2))
+    print(b.len())
+    b = grown(grown(range(7), 8), 9)
+    print(b.len())
+    replace(mut b, range(2))
+    print(b.len())
+    replace(mut b, a)
+    print(b.len())
+    clear(mut b)
+    b.push(1)
+    print(b.len())
+
+    // Structs that own lists.
+    var one = bag("one", 3)
+    print(sum(one.items))
+    var two = Bag { name: "two", items: [], count: 0 }
+    print(two.items.len())
+    two = one
+    two.items.push(4)
+    print(one.items.len())
+    refill(mut one, 5)
+    print(one.count)
+    one = Bag { name: "moved", items: range(2), count: 2 }
+    print(one.items.len())
+    one = Bag { name: "copied", items: one.items, count: 2 }
+    print(one.items.len())
+    one.items = grown(one.items, 7)
+    print(one.items[2])
+    swap(mut one, mut two)
+    print(sum(one.items) - sum(two.items) - 9 + 10)
+
+    var pair = Pair { left: one, right: bag("r", 2) }
+    pair.left.items.push(5)
+    pair.right = pair.left
+    pair.right.items.push(6)
+    print(pair.left.items.len() + 1)
+    print(pair.right.items.len())
+    let pair2 = pair
+    pair.left = bag("x", 12)
+    print(pair.left.items.len())
+    print(items_of(pair2.right).len() - 3)
+    print(two.items.len() - 3)
+
+    // Temporaries that nobody stores are freed by their statement, also
+    // when part of a condition is skipped.
+    range(4)
+    bag("unused", 4)
+    print(bag("temp", 2).items.len())
+    if is_long(range(1)) && is_long(range(50)) {
+        print(99)
+    }
+    if is_long(range(1)) || is_long(range(3)) {
+        print(1)
+    }
+    var rounds = 0
+    while sum(range(rounds)) < 6 {
+        rounds = rounds + 1
+    }
+    print(rounds + 1)
+
+    // Looping over a temporary, and over part of a temporary.
+    for x in [10, 20, 30] {
+        print(x)
+    }
+    var n = 0
+    for x in bag("loop", 3).items {
+        n = n + 1
+    }
+    print(n)
+    print(first_shared(range(4), [9, 1]))
+    print(count_until(5) + 2)
+
+    // Lists of plain structs.
+    var points = [Point { x: 1, y: 2 }]
+    points.push(Point { x: 3, y: 4 })
+    points.push(points[0])
+    points[0] = Point { x: 8, y: 8 }
+    points[1].y = 5
+    let copy = points
+    points[2].x = 3
+    print(copy.len() - 1)
+    print(copy[0].x)
+    print(points.len())
+    print(copy[0].y)
+    print(copy[2].x)
+    let last = points.pop()
+    print(last.y - 1)
+    print(points[1].x - 1)
+    print(last.x)
+    print(points[1].x)
+    print(copy[2].x - 1)
+    var i = 0
+    while i < 3 {
+        let scoped = range(i)
+        if i == 1 {
+            i = i + 1
+            continue
+        }
+        print(scoped.len())
+        i = i + 1
+    }
+    print(sum(same(same(range(3)))))
+    print(sum(grown(same([1, 2, 3, 4]), 5)))
+    print(sum(range(sum(range(3)))))
+    var acc: List[i64] = []
+    for x in range(4) {
+        acc = grown(acc, x)
+    }
+    print(acc.len())
+    print(acc[0])
+    acc = [7]
+    print(acc[0])
+    print(sum(items_of(Bag { name: "last", items: [40, 2], count: 2 })))
+}

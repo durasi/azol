@@ -1,0 +1,194 @@
+// expect-exit: 0
+// expect-output: 3 10 20 30 4 40 99 20 30 40 3 40 2 0 5 15 6 21 1 2 3 4 5 6 3 0 4 9 16 25 36 49 64 81 100 285 10 7 8 0 3 6 100 2 4 12 0 11 1 22 2 33 55 60 3 true false true 4 2 a b c 3 9 81
+struct Point {
+    x: i64
+    y: i64
+}
+
+fn sum(xs: List[i64]) -> i64 {
+    var total = 0
+    for x in xs {
+        total = total + x
+    }
+    return total
+}
+
+fn range(n: i64) -> List[i64] {
+    var out: List[i64] = []
+    var i = 1
+    while i <= n {
+        out.push(i)
+        i = i + 1
+    }
+    return out
+}
+
+fn squares(n: i64) -> List[i64] {
+    var out: List[i64] = []
+    for x in range(n) {
+        out.push(x * x)
+    }
+    return out
+}
+
+fn append(xs: mut List[i64], value: i64) {
+    xs.push(value)
+}
+
+fn double_all(xs: mut List[i64]) {
+    var i = 0
+    while i < xs.len() {
+        xs[i] = xs[i] * 2
+        i = i + 1
+    }
+}
+
+fn first_or(xs: List[i64], fallback: i64) -> i64 {
+    if xs.len() == 0 {
+        return fallback
+    }
+    return xs[0]
+}
+
+fn evens(xs: List[i64]) -> List[i64] {
+    var out: List[i64] = []
+    for x in xs {
+        if x % 2 != 0 {
+            continue
+        }
+        out.push(x)
+    }
+    return out
+}
+
+fn find(xs: List[i64], wanted: i64) -> i64 {
+    for i, x in xs {
+        if x == wanted {
+            return i
+        }
+    }
+    return -1
+}
+
+fn main() {
+    var xs = [10, 20, 30]
+    print(xs.len())
+    print(xs[0])
+    print(xs[1])
+    print(xs[2])
+    xs.push(40)
+    print(xs.len())
+    print(xs[3])
+    xs[0] = 99
+    print(xs[0])
+
+    // Assignment copies: `ys` keeps its own buffer.
+    var ys = xs
+    ys[0] = 20
+    ys.push(50)
+    print(ys[0])
+    print(xs[2])
+    print(ys.pop() - 10)
+    print(xs.pop() - 37)
+    print(xs.pop() + 10)
+    print(xs.len())
+
+    var empty: List[i64] = []
+    print(empty.len())
+    print(first_or(empty, 5))
+    print(sum(range(5)))
+    append(mut empty, 6)
+    print(first_or(empty, 5))
+    print(sum(range(6)))
+
+    for x in range(3) {
+        print(x)
+    }
+    // Growing far past the first buffer keeps earlier elements intact.
+    var big = [4, 5]
+    var n = 6
+    while n <= 200 {
+        big.push(n)
+        n = n + 1
+    }
+    print(big[0])
+    print(big[1])
+    print(big[2])
+    print(find(big, 7))
+
+    for i, sq in squares(10) {
+        if i == 0 {
+            print(i)
+        }
+        if i > 0 && i < 10 {
+            print(sq)
+        }
+    }
+    print(sum(squares(9)))
+    print(squares(10).len())
+    print(big[3])
+    print(evens(range(9))[3])
+
+    // A list element can be changed in place, and an index can be any expression.
+    var zs = [0, 0, 0]
+    zs[sum([1])] = 3
+    zs[zs.len() - 1] = zs[1] * 2
+    for z in zs {
+        print(z)
+    }
+    double_all(mut big)
+    print(big[46])
+    print(evens([1, 2, 3, 4])[0])
+    print(evens([1, 2, 3, 4])[1])
+    print(sum(evens(range(6))))
+
+    let ps = [Point { x: 0, y: 11 }, Point { x: 1, y: 22 }, Point { x: 2, y: 33 }]
+    var total = 0
+    for p in ps {
+        print(p.x)
+        print(p.y)
+        total = total + p.y
+    }
+    print(total - 11)
+    var qs = ps
+    qs[1] = Point { x: 5, y: 60 }
+    qs.push(qs[1])
+    print(qs.pop().y)
+    print(ps.len())
+
+    let flags = [true, false, true]
+    for f in flags {
+        print(f)
+    }
+    var count = 0
+    for x in [1, 2, 3, 4] {
+        count = count + 1
+    }
+    print(count)
+    for x in [1, 2, 3, 4] {
+        if x == 2 {
+            print(x)
+            break
+        }
+    }
+    var names = ["a", "b"]
+    names.push("c")
+    for name in names {
+        print(name)
+    }
+    print(names.len())
+    var nested = 0
+    for a in [1, 2, 3] {
+        for b in [1, 2, 3] {
+            nested = nested + 1
+        }
+    }
+    print(nested)
+    var last = 0
+    for a in range(9) {
+        for b in range(9) {
+            last = a * b
+        }
+    }
+    print(last)
+}

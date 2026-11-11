@@ -1,0 +1,8 @@
+// expect-exit: 1
+// expect-line: 7
+// expect-stderr: azol: pop from an empty list
+fn main() {
+    var xs = [7]
+    print(xs.pop())
+    print(xs.pop())
+}

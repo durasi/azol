@@ -60,15 +60,34 @@ fn read_source(path: &str) -> Option<String> {
 }
 
 /// Prints an error with the offending source line and a caret under it.
+/// A very long line is cut down to the part around the problem.
 fn report(path: &str, src: &str, offset: u32, message: &str) {
+    const WIDTH: usize = 100;
     let (line, col) = lexer::line_col(src, offset);
     let text = src.lines().nth(line - 1).unwrap_or("");
+    let chars: Vec<char> = text.chars().collect();
+    let (shown, caret) = if chars.len() <= WIDTH {
+        (text.to_string(), col - 1)
+    } else {
+        let start = (col - 1).saturating_sub(WIDTH / 2).min(chars.len().saturating_sub(WIDTH));
+        let end = (start + WIDTH).min(chars.len());
+        let mut shown: String = chars[start..end].iter().collect();
+        let mut caret = col - 1 - start;
+        if start > 0 {
+            shown.insert_str(0, "...");
+            caret += 3;
+        }
+        if end < chars.len() {
+            shown.push_str("...");
+        }
+        (shown, caret)
+    };
     let gutter = line.to_string().len();
     eprintln!("error: {message}");
     eprintln!("{:gutter$}--> {path}:{line}:{col}", "");
     eprintln!("{:gutter$} |", "");
-    eprintln!("{line} | {text}");
-    eprintln!("{:gutter$} | {:pad$}^", "", "", pad = col - 1);
+    eprintln!("{line} | {shown}");
+    eprintln!("{:gutter$} | {:caret$}^", "", "");
 }
 
 fn speed(bytes: usize, lines: usize, secs: f64) -> String {

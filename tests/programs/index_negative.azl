@@ -1,0 +1,9 @@
+// expect-exit: 1
+// expect-line: 1
+// expect-stderr: azol: index out of range
+fn main() {
+    var xs = [10, 20, 30]
+    print(1)
+    xs[0 - 1] = 5
+    print(2)
+}

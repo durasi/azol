@@ -1,0 +1,50 @@
+// Lists grow on the heap and are freed automatically. Assigning a list
+// makes a copy, and a list cannot be changed while a loop goes through it.
+//
+//     azol build examples/lists.azl
+//     ./examples/lists
+
+struct Player {
+    name: str
+    scores: List[i64]
+}
+
+fn total(scores: List[i64]) -> i64 {
+    var sum = 0
+    for score in scores {
+        sum = sum + score
+    }
+    return sum
+}
+
+fn best(scores: List[i64]) -> i64 {
+    var top = scores[0]
+    for score in scores {
+        if score > top {
+            top = score
+        }
+    }
+    return top
+}
+
+fn add_round(player: mut Player, score: i64) {
+    player.scores.push(score)
+}
+
+fn main() {
+    var ada = Player { name: "Ada", scores: [12, 30] }
+    add_round(mut ada, 25)
+
+    // A copy: Grace starts with Ada's scores but owns her own list.
+    var grace = ada
+    grace.name = "Grace"
+    add_round(mut grace, 40)
+
+    for player in [ada.name, grace.name] {
+        print(player)
+    }
+    print(ada.scores.len())
+    print(total(ada.scores))
+    print(grace.scores.len())
+    print(best(grace.scores))
+}

@@ -1,15 +1,21 @@
 // Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
 
-//! Name resolution, type checking and the first part of the memory
-//! safety analysis, for the part of the language `azol build` compiles:
-//! `i64`, `bool` and struct values, functions with read-only and `mut`
-//! parameters, `let`/`var`, assignment, `if`, `while`, `return`, `print`.
+//! Name resolution, type checking and the memory safety analysis, for
+//! the part of the language `azol build` compiles: `i64`, `bool`, `str`,
+//! struct and `List` values, functions with read-only and `mut`
+//! parameters, `let`/`var`, assignment, `if`, `while`, `for`, `return`.
 //!
-//! Values have value semantics. A struct argument is passed by reference
-//! for speed, but the callee cannot change it unless the parameter is
-//! `mut`, and one call can never be handed two overlapping places when
-//! one of them is `mut`. Together these make a reference indistinguishable
-//! from a private copy.
+//! Values have value semantics. Aggregates are passed by reference for
+//! speed, but the callee cannot change one unless the parameter is `mut`,
+//! and a place can never be changed while something else still refers to
+//! it: another argument of the same call, or a loop iterating over it.
+//! Together these make a reference indistinguishable from a private copy.
+//!
+//! A list owns a heap buffer. Every buffer has exactly one owner: a
+//! variable, or a temporary that lives until the end of its statement.
+//! This pass decides, for each value that is stored somewhere, whether it
+//! is moved (a temporary handing its buffer over) or copied (a variable
+//! being duplicated), and which temporaries each statement must free.
 
 use crate::ast::*;
 use std::collections::HashMap;
@@ -32,21 +38,27 @@ pub enum Ty {
     Str,
     /// Index into `Program::structs`.
     Struct(u32),
+    /// A growable array: pointer, length, capacity. The index selects the
+    /// element type in `Program::lists`.
+    List(u32),
 }
 
 impl Ty {
     /// Values that live in memory and are handed around by address.
     pub fn is_aggregate(self) -> bool {
-        matches!(self, Ty::Str | Ty::Struct(_))
+        matches!(self, Ty::Str | Ty::Struct(_) | Ty::List(_))
     }
 }
 
-/// Built-in functions, as call resolutions.
+/// Built-in functions and methods, as call resolutions.
 pub const BUILTIN_PRINT_I64: u32 = u32::MAX;
 pub const BUILTIN_PRINT_BOOL: u32 = u32::MAX - 1;
 pub const BUILTIN_PRINT_STR: u32 = u32::MAX - 2;
+pub const BUILTIN_LIST_PUSH: u32 = u32::MAX - 3;
+pub const BUILTIN_LIST_POP: u32 = u32::MAX - 4;
+pub const BUILTIN_LIST_LEN: u32 = u32::MAX - 5;
 /// Resolutions at or above this value are built-ins.
-pub const FIRST_BUILTIN: u32 = u32::MAX - 2;
+pub const FIRST_BUILTIN: u32 = u32::MAX - 5;
 /// Set in the resolution of a name whose stack slot holds a pointer.
 pub const BY_REF: u32 = 1 << 31;
 
@@ -55,12 +67,21 @@ pub const MAX_PARAMS: usize = 8;
 /// Keeps every local reachable with one load/store instruction.
 pub const MAX_SLOTS: u32 = 500;
 
+/// How a `for` loop reaches the list it iterates over.
+pub const FOR_IN_PLACE: u8 = 0;
+/// The list is a temporary; the loop takes it over and frees it.
+pub const FOR_MOVED: u8 = 1;
+/// The list is part of a temporary; the loop works on its own copy.
+pub const FOR_COPIED: u8 = 2;
+
 #[derive(Debug)]
 pub struct StructInfo<'a> {
     pub name: &'a str,
     /// Size in 8-byte slots.
     pub size: u32,
     pub fields: Vec<FieldInfo<'a>>,
+    /// Lists inside the struct: slot offset and element size in bytes.
+    pub heap: Vec<(u32, u32)>,
 }
 
 #[derive(Debug)]
@@ -74,7 +95,7 @@ pub struct FieldInfo<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct ParamInfo {
     pub ty: Ty,
-    /// Passed as a pointer: every `mut` parameter and every struct.
+    /// Passed as a pointer: every `mut` parameter and every aggregate.
     pub by_ref: bool,
     pub mutable: bool,
 }
@@ -85,13 +106,20 @@ pub struct FnInfo {
     pub params: Vec<ParamInfo>,
     /// Stack slots for parameters, locals and temporaries.
     pub slots: u32,
-    /// Slot that keeps the caller's result address when a struct is returned.
+    /// Slot that keeps the caller's result address when an aggregate is returned.
     pub sret_slot: Option<u32>,
+    /// A slot the code generator may use to park an address.
+    pub scratch_slot: u32,
+    /// Slots that must hold null on entry: the buffer pointers of
+    /// temporaries, which may be freed without ever having been filled.
+    pub zero_slots: Vec<u32>,
 }
 
 #[derive(Debug)]
 pub struct Program<'a> {
     pub structs: Vec<StructInfo<'a>>,
+    /// Element type of each list type.
+    pub lists: Vec<Ty>,
     /// Parallel to the functions in `Ast::items`.
     pub fns: Vec<FnInfo>,
     pub main: u32,
@@ -102,11 +130,22 @@ pub struct Program<'a> {
     pub expr_res: Vec<u32>,
     /// Per expression: its type.
     pub expr_ty: Vec<Ty>,
-    /// Per struct-valued call or struct literal: the first slot of the
-    /// temporary that holds its result.
+    /// Per expression that computes an aggregate: the first slot of the
+    /// temporary that holds it. For `push`, the slot the element waits in.
     pub expr_tmp: Vec<u32>,
-    /// Per `let`/`var` statement: its first stack slot.
+    /// Per expression used as the source of a store: true when its
+    /// buffers are handed over instead of copied.
+    pub expr_moved: Vec<bool>,
+    /// Per `let`/`var`: its first slot. Per assignment that copies an
+    /// owning value: a scratch area. Per `for`: the loop's hidden slots.
     pub stmt_slot: Vec<u32>,
+    /// Per `for` statement: one of the `FOR_` constants.
+    pub stmt_flag: Vec<u8>,
+    /// Per statement: range in `drops` of the temporaries to free once
+    /// its expression has been evaluated.
+    pub stmt_drops: Vec<(u32, u32)>,
+    /// Temporaries that own buffers: first slot and type.
+    pub drops: Vec<(u32, Ty)>,
     /// Per field initializer in a struct literal: the field's offset.
     pub init_offset: Vec<u32>,
     pub ints: Vec<i64>,
@@ -118,12 +157,43 @@ pub struct Program<'a> {
 
 impl Program<'_> {
     pub fn size_of(&self, ty: Ty) -> u32 {
-        match ty {
-            Ty::I64 | Ty::Bool => 1,
-            Ty::Str => 2,
-            Ty::Unit => 0,
-            Ty::Struct(index) => self.structs[index as usize].size,
-        }
+        size_of(&self.structs, ty)
+    }
+
+    /// The lists a value of this type owns: slot offset and element size
+    /// in bytes. Empty for plain data.
+    pub fn heap_fields(&self, ty: Ty) -> Vec<(u32, u32)> {
+        heap_fields(&self.structs, &self.lists, ty)
+    }
+
+    pub fn needs_drop(&self, ty: Ty) -> bool {
+        needs_drop(&self.structs, ty)
+    }
+}
+
+fn size_of(structs: &[StructInfo], ty: Ty) -> u32 {
+    match ty {
+        Ty::I64 | Ty::Bool => 1,
+        Ty::Str => 2,
+        Ty::List(_) => 3,
+        Ty::Unit => 0,
+        Ty::Struct(index) => structs[index as usize].size,
+    }
+}
+
+fn heap_fields(structs: &[StructInfo], lists: &[Ty], ty: Ty) -> Vec<(u32, u32)> {
+    match ty {
+        Ty::List(index) => vec![(0, size_of(structs, lists[index as usize]) * 8)],
+        Ty::Struct(index) => structs[index as usize].heap.clone(),
+        _ => Vec::new(),
+    }
+}
+
+fn needs_drop(structs: &[StructInfo], ty: Ty) -> bool {
+    match ty {
+        Ty::List(_) => true,
+        Ty::Struct(index) => !structs[index as usize].heap.is_empty(),
+        _ => false,
     }
 }
 
@@ -136,7 +206,7 @@ struct Local<'a> {
     is_param: bool,
 }
 
-/// A variable or a field path inside one, as a range of slots.
+/// A variable or a part of one, as a range of slots.
 #[derive(Clone, Copy)]
 struct Place {
     root: u32,
@@ -146,10 +216,19 @@ struct Place {
     is_param: bool,
 }
 
-/// A place handed by reference to a call that has not finished yet.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Holder {
+    /// An argument of a call that has not finished yet.
+    Call,
+    /// A `for` loop that is iterating over the place.
+    Loop,
+}
+
+/// A place something else currently refers to.
 struct Borrow {
     place: Place,
     mutable: bool,
+    holder: Holder,
 }
 
 struct Checker<'a> {
@@ -157,18 +236,31 @@ struct Checker<'a> {
     src: &'a str,
     structs: Vec<StructInfo<'a>>,
     struct_names: HashMap<&'a str, u32>,
+    /// True once struct sizes are known.
+    laid_out: bool,
+    lists: Vec<Ty>,
+    /// List types written before struct layout: index and source offset.
+    early_lists: Vec<(u32, u32)>,
     fns: Vec<FnInfo>,
     fn_names: HashMap<&'a str, u32>,
     expr_res: Vec<u32>,
     expr_ty: Vec<Ty>,
     expr_tmp: Vec<u32>,
+    expr_moved: Vec<bool>,
     stmt_slot: Vec<u32>,
+    stmt_flag: Vec<u8>,
+    stmt_drops: Vec<(u32, u32)>,
+    drops: Vec<(u32, Ty)>,
     init_offset: Vec<u32>,
     ints: Vec<i64>,
     data: Vec<u8>,
     strings: Vec<(u32, u32)>,
     locals: Vec<Local<'a>>,
     borrows: Vec<Borrow>,
+    /// Owning temporaries of the statement being checked that nothing
+    /// has taken over yet: expression, first slot, type.
+    pending: Vec<(ExprId, u32, Ty)>,
+    zero_slots: Vec<u32>,
     ret: Ty,
     next_slot: u32,
     loop_depth: u32,
@@ -180,18 +272,27 @@ pub fn check<'a>(ast: &'a Ast, src: &'a str) -> Result<Program<'a>, SemaError> {
         src,
         structs: Vec::new(),
         struct_names: HashMap::new(),
+        laid_out: false,
+        lists: Vec::new(),
+        early_lists: Vec::new(),
         fns: Vec::new(),
         fn_names: HashMap::new(),
         expr_res: vec![0; ast.exprs.len()],
         expr_ty: vec![Ty::Unit; ast.exprs.len()],
         expr_tmp: vec![0; ast.exprs.len()],
+        expr_moved: vec![false; ast.exprs.len()],
         stmt_slot: vec![0; ast.stmts.len()],
+        stmt_flag: vec![0; ast.stmts.len()],
+        stmt_drops: vec![(0, 0); ast.stmts.len()],
+        drops: Vec::new(),
         init_offset: vec![0; ast.field_inits.len()],
         ints: Vec::new(),
         data: Vec::new(),
         strings: Vec::new(),
         locals: Vec::new(),
         borrows: Vec::new(),
+        pending: Vec::new(),
+        zero_slots: Vec::new(),
         ret: Ty::Unit,
         next_slot: 0,
         loop_depth: 0,
@@ -210,12 +311,17 @@ pub fn check<'a>(ast: &'a Ast, src: &'a str) -> Result<Program<'a>, SemaError> {
     };
     Ok(Program {
         structs: c.structs,
+        lists: c.lists,
         fns: c.fns,
         main,
         expr_res: c.expr_res,
         expr_ty: c.expr_ty,
         expr_tmp: c.expr_tmp,
+        expr_moved: c.expr_moved,
         stmt_slot: c.stmt_slot,
+        stmt_flag: c.stmt_flag,
+        stmt_drops: c.stmt_drops,
+        drops: c.drops,
         init_offset: c.init_offset,
         ints: c.ints,
         data: c.data,
@@ -239,23 +345,61 @@ impl<'a> Checker<'a> {
             Ty::Str => "str".to_string(),
             Ty::Unit => "no value".to_string(),
             Ty::Struct(index) => self.structs[index as usize].name.to_string(),
+            Ty::List(index) => format!("List[{}]", self.ty_name(self.lists[index as usize])),
         }
     }
 
     fn size_of(&self, ty: Ty) -> u32 {
-        match ty {
-            Ty::I64 | Ty::Bool => 1,
-            Ty::Str => 2,
-            Ty::Unit => 0,
-            Ty::Struct(index) => self.structs[index as usize].size,
+        size_of(&self.structs, ty)
+    }
+
+    fn needs_drop(&self, ty: Ty) -> bool {
+        needs_drop(&self.structs, ty)
+    }
+
+    fn list_of(&mut self, elem: Ty) -> Ty {
+        let index = match self.lists.iter().position(|&known| known == elem) {
+            Some(index) => index,
+            None => {
+                self.lists.push(elem);
+                self.lists.len() - 1
+            }
+        };
+        Ty::List(index as u32)
+    }
+
+    /// For now a list's elements must be plain data, so that copying and
+    /// freeing a list never has to visit its elements.
+    fn check_element(&self, elem: Ty, at: u32) -> SResult<()> {
+        match elem {
+            Ty::List(_) => err(at, "lists of lists are not supported by `azol build` yet"),
+            Ty::Struct(_) if self.needs_drop(elem) => err(
+                at,
+                format!("a list of `{}` is not supported yet, because `{}` contains a list", self.ty_name(elem), self.ty_name(elem)),
+            ),
+            _ => Ok(()),
         }
     }
 
-    fn ty(&self, id: TypeId) -> SResult<Ty> {
+    fn ty(&mut self, id: TypeId) -> SResult<Ty> {
         let ty = self.ast.types[id as usize];
         let name = ty.name.text(self.src);
+        if name == "List" {
+            let args = self.ast.list(ty.args);
+            if args.len() != 1 {
+                return err(ty.name.start, "`List` takes one element type, as in `List[i64]`");
+            }
+            let elem = self.ty(args[0])?;
+            let list = self.list_of(elem);
+            if self.laid_out {
+                self.check_element(elem, ty.name.start)?;
+            } else if let Ty::List(index) = list {
+                self.early_lists.push((index, ty.name.start));
+            }
+            return Ok(list);
+        }
         if ty.args.len > 0 {
-            return err(ty.name.start, "generic types are not supported by `azol build` yet");
+            return err(ty.name.start, "generic types other than `List` are not supported by `azol build` yet");
         }
         match name {
             "i64" => Ok(Ty::I64),
@@ -263,7 +407,7 @@ impl<'a> Checker<'a> {
             "str" => Ok(Ty::Str),
             _ => match self.struct_names.get(name) {
                 Some(&index) => Ok(Ty::Struct(index)),
-                None => err(ty.name.start, format!("unknown type `{name}`; the built-in types so far are `i64`, `bool` and `str`")),
+                None => err(ty.name.start, format!("unknown type `{name}`; the built-in types so far are `i64`, `bool`, `str` and `List`")),
             },
         }
     }
@@ -279,14 +423,14 @@ impl<'a> Checker<'a> {
                     if generics.len > 0 {
                         return err(name.start, "generic structs are not supported by `azol build` yet");
                     }
-                    if text == "i64" || text == "bool" || text == "str" {
+                    if matches!(text, "i64" | "bool" | "str" | "List") {
                         return err(name.start, format!("`{text}` is a built-in type and cannot be redefined"));
                     }
                     let index = self.structs.len() as u32;
                     if self.struct_names.insert(text, index).is_some() {
                         return err(name.start, format!("struct `{text}` is defined more than once"));
                     }
-                    self.structs.push(StructInfo { name: text, size: 0, fields: Vec::new() });
+                    self.structs.push(StructInfo { name: text, size: 0, fields: Vec::new(), heap: Vec::new() });
                     decls.push((name, fields));
                 }
                 Item::Enum { name, .. } => {
@@ -315,7 +459,31 @@ impl<'a> Checker<'a> {
         for index in 0..self.structs.len() {
             self.layout(index, &mut state, &decls)?;
         }
+        // With every size known, find the lists each struct owns.
+        for index in 0..self.structs.len() {
+            self.structs[index].heap = self.collect_heap(Ty::Struct(index as u32));
+        }
+        self.laid_out = true;
+        for &(list, at) in &self.early_lists {
+            self.check_element(self.lists[list as usize], at)?;
+        }
         Ok(())
+    }
+
+    fn collect_heap(&self, ty: Ty) -> Vec<(u32, u32)> {
+        match ty {
+            Ty::List(index) => vec![(0, self.size_of(self.lists[index as usize]) * 8)],
+            Ty::Struct(index) => {
+                let mut out = Vec::new();
+                for field in &self.structs[index as usize].fields {
+                    for (offset, bytes) in self.collect_heap(field.ty) {
+                        out.push((field.offset + offset, bytes));
+                    }
+                }
+                out
+            }
+            _ => Vec::new(),
+        }
     }
 
     fn layout(&mut self, index: usize, state: &mut [u8], decls: &[(Span, List)]) -> SResult<u32> {
@@ -385,7 +553,7 @@ impl<'a> Checker<'a> {
             if self.fn_names.insert(text, index).is_some() {
                 return err(name.start, format!("function `{text}` is defined more than once"));
             }
-            self.fns.push(FnInfo { ret, params: infos, slots: 0, sret_slot: None });
+            self.fns.push(FnInfo { ret, params: infos, slots: 0, sret_slot: None, scratch_slot: 0, zero_slots: Vec::new() });
         }
         Ok(())
     }
@@ -395,6 +563,8 @@ impl<'a> Checker<'a> {
     fn function(&mut self, index: u32, name: Span, params: List, body: List) -> SResult<()> {
         self.locals.clear();
         self.borrows.clear();
+        self.pending.clear();
+        self.zero_slots.clear();
         self.next_slot = 0;
         self.loop_depth = 0;
         self.ret = self.fns[index as usize].ret;
@@ -414,6 +584,7 @@ impl<'a> Checker<'a> {
         if self.ret.is_aggregate() {
             self.fns[index as usize].sret_slot = Some(self.alloc(1, name.start)?);
         }
+        self.fns[index as usize].scratch_slot = self.alloc(1, name.start)?;
         self.block(body)?;
         if self.ret != Ty::Unit && !self.always_returns(body) {
             return err(
@@ -422,6 +593,7 @@ impl<'a> Checker<'a> {
             );
         }
         self.fns[index as usize].slots = self.next_slot;
+        self.fns[index as usize].zero_slots = std::mem::take(&mut self.zero_slots);
         Ok(())
     }
 
@@ -469,16 +641,54 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// Registers an owning temporary created by `id`.
+    fn temp(&mut self, id: ExprId, ty: Ty) -> SResult<u32> {
+        let slot = self.alloc(self.size_of(ty), self.ast.expr_pos[id as usize])?;
+        if self.needs_drop(ty) {
+            self.pending.push((id, slot, ty));
+        }
+        Ok(slot)
+    }
+
+    /// Called where the value of `id` is stored somewhere that will own
+    /// it. A temporary hands its buffers over; anything else is copied.
+    fn take(&mut self, id: ExprId) -> bool {
+        match self.pending.iter().position(|&(expr, ..)| expr == id) {
+            Some(at) => {
+                self.pending.remove(at);
+                self.expr_moved[id as usize] = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Ends the expression of statement `id`: the temporaries nothing
+    /// took over are freed by the statement.
+    fn finish(&mut self, id: StmtId) {
+        let start = self.drops.len() as u32;
+        for (_, slot, ty) in std::mem::take(&mut self.pending) {
+            for (offset, _) in heap_fields(&self.structs, &self.lists, ty) {
+                self.zero_slots.push(slot + offset);
+            }
+            self.drops.push((slot, ty));
+        }
+        self.stmt_drops[id as usize] = (start, self.drops.len() as u32 - start);
+    }
+
     fn stmt(&mut self, id: StmtId) -> SResult<()> {
         let pos = self.ast.stmt_pos[id as usize];
         match self.ast.stmts[id as usize] {
             Stmt::Let { mutable, name, ty, value } => {
-                let value_ty = self.expr(value)?;
+                let declared = match ty {
+                    Some(ty) => Some(self.ty(ty)?),
+                    None => None,
+                };
+                let value_ty = self.expr_hint(value, declared)?;
                 if value_ty == Ty::Unit {
                     return err(self.ast.expr_pos[value as usize], "this expression has no value to store");
                 }
-                if let Some(ty) = ty {
-                    let declared = self.ty(ty)?;
+                if let Some(declared) = declared {
                     if declared != value_ty {
                         return err(
                             self.ast.expr_pos[value as usize],
@@ -486,6 +696,8 @@ impl<'a> Checker<'a> {
                         );
                     }
                 }
+                self.take(value);
+                self.finish(id);
                 let slot = self.alloc(self.size_of(value_ty), name.start)?;
                 self.locals.push(Local { name: name.text(self.src), slot, ty: value_ty, mutable, by_ref: false, is_param: false });
                 self.stmt_slot[id as usize] = slot;
@@ -493,7 +705,7 @@ impl<'a> Checker<'a> {
             Stmt::Assign { target, value } => {
                 let target_ty = self.expr(target)?;
                 let Some(place) = self.place(target) else {
-                    return err(pos, "only a variable or a field of a variable can be assigned");
+                    return err(pos, "only a variable or a part of a variable can be assigned");
                 };
                 if !place.mutable {
                     let root = self.root_name(target);
@@ -506,20 +718,31 @@ impl<'a> Checker<'a> {
                         },
                     );
                 }
-                let value_ty = self.expr(value)?;
+                self.check_change(target, &place)?;
+                let value_ty = self.expr_hint(value, Some(target_ty))?;
                 if value_ty != target_ty {
                     return err(
                         self.ast.expr_pos[value as usize],
                         format!("expected `{}` but this is `{}`", self.ty_name(target_ty), self.ty_name(value_ty)),
                     );
                 }
+                let owning = self.needs_drop(target_ty);
+                let moved = owning && self.take(value);
+                if target_ty.is_aggregate() && !moved && (owning || self.contains_index(target)) {
+                    // The value is copied aside first. That lets `a = a`
+                    // read the old value before it is freed, and keeps the
+                    // copy safe while a list index on the left is computed.
+                    self.stmt_slot[id as usize] = self.alloc(self.size_of(target_ty), pos)?;
+                }
+                self.finish(id);
             }
             Stmt::Expr(expr) => {
                 self.expr(expr)?;
+                self.finish(id);
             }
             Stmt::Return(value) => {
                 let value_ty = match value {
-                    Some(value) => self.expr(value)?,
+                    Some(value) => self.expr_hint(value, Some(self.ret))?,
                     None => Ty::Unit,
                 };
                 if value_ty != self.ret {
@@ -533,9 +756,23 @@ impl<'a> Checker<'a> {
                         },
                     );
                 }
+                if let Some(value) = value {
+                    if self.needs_drop(value_ty) && !self.take(value) {
+                        // Returning a whole local variable hands its
+                        // buffers to the caller instead of copying them.
+                        if let Expr::Ident(name) = self.ast.exprs[value as usize] {
+                            let local = self.lookup(name.text(self.src)).expect("checked: the name resolves");
+                            if !local.is_param && !local.by_ref {
+                                self.expr_moved[value as usize] = true;
+                            }
+                        }
+                    }
+                }
+                self.finish(id);
             }
             Stmt::If { cond, then_block, else_branch } => {
                 self.condition(cond)?;
+                self.finish(id);
                 self.block(then_block)?;
                 match else_branch {
                     Else::None => {}
@@ -545,16 +782,56 @@ impl<'a> Checker<'a> {
             }
             Stmt::While { cond, body } => {
                 self.condition(cond)?;
+                self.finish(id);
                 self.loop_depth += 1;
                 self.block(body)?;
                 self.loop_depth -= 1;
+            }
+            Stmt::For { index, item, iter, body } => {
+                let iter_ty = self.expr(iter)?;
+                let Ty::List(list) = iter_ty else {
+                    return err(
+                        self.ast.expr_pos[iter as usize],
+                        format!("`for` needs a list to go through but this is `{}`", self.ty_name(iter_ty)),
+                    );
+                };
+                let elem = self.lists[list as usize];
+                let place = self.place(iter);
+                self.stmt_flag[id as usize] = if self.take(iter) {
+                    FOR_MOVED
+                } else if place.is_some() {
+                    FOR_IN_PLACE
+                } else {
+                    FOR_COPIED
+                };
+                self.finish(id);
+                // Hidden slots: the position, then room for a list the
+                // loop owns, then the loop variables.
+                let base = self.alloc(4, pos)?;
+                self.stmt_slot[id as usize] = base;
+                let scope = self.locals.len();
+                let item_slot = self.alloc(self.size_of(elem), item.start)?;
+                self.locals.push(Local { name: item.text(self.src), slot: item_slot, ty: elem, mutable: false, by_ref: false, is_param: false });
+                if let Some(index) = index {
+                    let index_slot = self.alloc(1, index.start)?;
+                    self.locals.push(Local { name: index.text(self.src), slot: index_slot, ty: Ty::I64, mutable: false, by_ref: false, is_param: false });
+                }
+                let borrows = self.borrows.len();
+                if self.stmt_flag[id as usize] == FOR_IN_PLACE {
+                    let place = place.expect("in-place iteration has a place");
+                    self.borrows.push(Borrow { place, mutable: false, holder: Holder::Loop });
+                }
+                self.loop_depth += 1;
+                self.block(body)?;
+                self.loop_depth -= 1;
+                self.borrows.truncate(borrows);
+                self.locals.truncate(scope);
             }
             Stmt::Break | Stmt::Continue => {
                 if self.loop_depth == 0 {
                     return err(pos, "`break` and `continue` can only be used inside a loop");
                 }
             }
-            Stmt::For { .. } => return err(pos, "`for` loops are not supported by `azol build` yet; use `while`"),
             Stmt::Match { .. } => return err(pos, "`match` is not supported by `azol build` yet"),
         }
         Ok(())
@@ -570,8 +847,9 @@ impl<'a> Checker<'a> {
 
     // ---- places --------------------------------------------------------
 
-    /// The variable, or field path inside a variable, that an already
-    /// checked expression names. `None` for a computed value.
+    /// The variable, or part of a variable, that an already checked
+    /// expression names. `None` for a computed value. An element of a list
+    /// counts as the whole list: which element is only known at run time.
     fn place(&self, id: ExprId) -> Option<Place> {
         match self.ast.exprs[id as usize] {
             Expr::Ident(name) => {
@@ -580,42 +858,75 @@ impl<'a> Checker<'a> {
             }
             Expr::Field { base, .. } => {
                 let mut place = self.place(base)?;
+                if self.contains_index(base) {
+                    return Some(place);
+                }
                 place.start += self.expr_res[id as usize];
                 place.len = self.size_of(self.expr_ty[id as usize]);
                 Some(place)
             }
+            Expr::Index { base, .. } => self.place(base),
             _ => None,
+        }
+    }
+
+    fn contains_index(&self, id: ExprId) -> bool {
+        match self.ast.exprs[id as usize] {
+            Expr::Index { .. } => true,
+            Expr::Field { base, .. } => self.contains_index(base),
+            _ => false,
         }
     }
 
     fn root_name(&self, id: ExprId) -> &'a str {
         match self.ast.exprs[id as usize] {
             Expr::Ident(name) => name.text(self.src),
-            Expr::Field { base, .. } => self.root_name(base),
+            Expr::Field { base, .. } | Expr::Index { base, .. } => self.root_name(base),
             _ => "this value",
         }
     }
 
+    /// Fails when `place` cannot be changed right now because something
+    /// else still refers to it.
+    fn check_change(&self, id: ExprId, place: &Place) -> SResult<()> {
+        for other in &self.borrows {
+            if overlaps(place, &other.place) {
+                let name = self.root_name(id);
+                return err(
+                    self.ast.expr_pos[id as usize],
+                    match other.holder {
+                        Holder::Loop => format!("cannot change `{name}` while a loop is going through it"),
+                        Holder::Call => format!("cannot change `{name}` here: it is also passed to a function in the same expression"),
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Records that `place` is handed to a call by reference, after
-    /// checking it against the places other unfinished calls hold.
+    /// checking it against everything that already refers to it.
     fn borrow(&mut self, id: ExprId, place: Place, mutable: bool) -> SResult<()> {
         for other in &self.borrows {
             if (mutable || other.mutable) && overlaps(&place, &other.place) {
                 let name = self.root_name(id);
                 return err(
                     self.ast.expr_pos[id as usize],
-                    format!("`{name}` is passed twice in one call and one of the uses is `mut`; copy it into a variable first"),
+                    match other.holder {
+                        Holder::Loop => format!("cannot pass `{name}` as `mut` while a loop is going through it"),
+                        Holder::Call => format!("`{name}` is passed twice in one call and one of the uses is `mut`; copy it into a variable first"),
+                    },
                 );
             }
         }
-        self.borrows.push(Borrow { place, mutable });
+        self.borrows.push(Borrow { place, mutable, holder: Holder::Call });
         Ok(())
     }
 
     // ---- expressions ---------------------------------------------------
 
     fn expect(&mut self, expr: ExprId, want: Ty, what: &str) -> SResult<()> {
-        let ty = self.expr(expr)?;
+        let ty = self.expr_hint(expr, Some(want))?;
         if ty != want {
             return err(
                 self.ast.expr_pos[expr as usize],
@@ -626,12 +937,18 @@ impl<'a> Checker<'a> {
     }
 
     fn expr(&mut self, id: ExprId) -> SResult<Ty> {
-        let ty = self.expr_inner(id)?;
+        self.expr_hint(id, None)
+    }
+
+    /// Checks an expression. `hint` is the type the surroundings expect,
+    /// which is what gives `[]` its element type.
+    fn expr_hint(&mut self, id: ExprId, hint: Option<Ty>) -> SResult<Ty> {
+        let ty = self.expr_inner(id, hint)?;
         self.expr_ty[id as usize] = ty;
         Ok(ty)
     }
 
-    fn expr_inner(&mut self, id: ExprId) -> SResult<Ty> {
+    fn expr_inner(&mut self, id: ExprId, hint: Option<Ty>) -> SResult<Ty> {
         let pos = self.ast.expr_pos[id as usize];
         match self.ast.exprs[id as usize] {
             Expr::Int(span) => {
@@ -644,6 +961,30 @@ impl<'a> Checker<'a> {
                 Ok(Ty::I64)
             }
             Expr::Bool(_) => Ok(Ty::Bool),
+            Expr::Str(span) => {
+                let offset = self.data.len() as u32;
+                let text = span.text(self.src);
+                let mut bytes = text.as_bytes()[1..text.len() - 1].iter();
+                while let Some(&byte) = bytes.next() {
+                    // The lexer accepted only these escapes.
+                    self.data.push(if byte != b'\\' {
+                        byte
+                    } else {
+                        match bytes.next() {
+                            Some(b'n') => b'\n',
+                            Some(b't') => b'\t',
+                            Some(b'r') => b'\r',
+                            Some(b'0') => 0,
+                            Some(&other) => other,
+                            None => b'\\',
+                        }
+                    });
+                }
+                self.expr_res[id as usize] = self.strings.len() as u32;
+                self.strings.push((offset, self.data.len() as u32 - offset));
+                self.expr_tmp[id as usize] = self.alloc(2, pos)?;
+                Ok(Ty::Str)
+            }
             Expr::Ident(name) => {
                 let text = name.text(self.src);
                 let Some(local) = self.lookup(text) else {
@@ -693,6 +1034,7 @@ impl<'a> Checker<'a> {
                             Ty::Unit => return err(self.ast.expr_pos[lhs as usize], "this expression has no value to compare"),
                             Ty::Struct(_) => return err(pos, format!("structs cannot be compared with {what} yet; compare their fields")),
                             Ty::Str => return err(pos, format!("strings cannot be compared with {what} yet")),
+                            Ty::List(_) => return err(pos, format!("lists cannot be compared with {what} yet")),
                             Ty::I64 | Ty::Bool => {}
                         }
                         self.expect(rhs, left, &what)?;
@@ -704,7 +1046,14 @@ impl<'a> Checker<'a> {
                 let base_ty = self.expr(base)?;
                 let field_name = name.text(self.src);
                 let Ty::Struct(index) = base_ty else {
-                    return err(name.start, format!("`{}` has no fields", self.ty_name(base_ty)));
+                    return err(
+                        name.start,
+                        if matches!(base_ty, Ty::List(_)) {
+                            format!("`{}` has no field `{field_name}`; its methods are `len()`, `push(...)` and `pop()`", self.ty_name(base_ty))
+                        } else {
+                            format!("`{}` has no fields", self.ty_name(base_ty))
+                        },
+                    );
                 };
                 let info = &self.structs[index as usize];
                 let Some(field) = info.fields.iter().find(|f| f.name == field_name) else {
@@ -712,6 +1061,38 @@ impl<'a> Checker<'a> {
                 };
                 self.expr_res[id as usize] = field.offset;
                 Ok(field.ty)
+            }
+            Expr::Index { base, index } => {
+                let base_ty = self.expr(base)?;
+                let Ty::List(list) = base_ty else {
+                    return err(pos, format!("only a list can be indexed but this is `{}`", self.ty_name(base_ty)));
+                };
+                self.expect(index, Ty::I64, "an index")?;
+                Ok(self.lists[list as usize])
+            }
+            Expr::ArrayLit { items } => {
+                let item_ids = self.ast.list(items);
+                let hinted = match hint {
+                    Some(Ty::List(list)) => Some(self.lists[list as usize]),
+                    _ => None,
+                };
+                let elem = match (item_ids.first(), hinted) {
+                    (_, Some(elem)) => elem,
+                    (Some(&first), None) => self.expr(first)?,
+                    (None, None) => {
+                        return err(pos, "cannot tell what this empty list holds; give the variable a type, as in `var xs: List[i64] = []`");
+                    }
+                };
+                if elem == Ty::Unit {
+                    return err(pos, "this expression has no value to put in a list");
+                }
+                self.check_element(elem, pos)?;
+                for &item in item_ids {
+                    self.expect(item, elem, "this list's element")?;
+                }
+                let ty = self.list_of(elem);
+                self.expr_tmp[id as usize] = self.temp(id, ty)?;
+                Ok(ty)
             }
             Expr::StructLit { name, fields } => {
                 let text = name.text(self.src);
@@ -735,6 +1116,8 @@ impl<'a> Checker<'a> {
                         (field.ty, field.offset)
                     };
                     self.expect(init.value, want, &format!("field `{field_name}`"))?;
+                    // The new struct takes a temporary's buffers over.
+                    self.take(init.value);
                     self.init_offset[init_id as usize] = offset;
                 }
                 if let Some(missing) = seen.iter().position(|&given| !given) {
@@ -742,47 +1125,24 @@ impl<'a> Checker<'a> {
                     return err(pos, format!("field `{field_name}` of `{text}` is missing"));
                 }
                 let ty = Ty::Struct(index);
-                self.expr_tmp[id as usize] = self.alloc(self.size_of(ty), pos)?;
+                self.expr_tmp[id as usize] = self.temp(id, ty)?;
                 Ok(ty)
             }
             Expr::Call { callee, args } => self.call(id, callee, args),
             Expr::MutArg(_) => err(pos, "`mut` can only be used on a function argument"),
             Expr::Float(_) => err(pos, "floating-point numbers are not supported by `azol build` yet"),
-            Expr::Str(span) => {
-                let offset = self.data.len() as u32;
-                let text = span.text(self.src);
-                let mut bytes = text.as_bytes()[1..text.len() - 1].iter();
-                while let Some(&byte) = bytes.next() {
-                    // The lexer accepted only these escapes.
-                    self.data.push(if byte != b'\\' {
-                        byte
-                    } else {
-                        match bytes.next() {
-                            Some(b'n') => b'\n',
-                            Some(b't') => b'\t',
-                            Some(b'r') => b'\r',
-                            Some(b'0') => 0,
-                            Some(&other) => other,
-                            None => b'\\',
-                        }
-                    });
-                }
-                self.expr_res[id as usize] = self.strings.len() as u32;
-                self.strings.push((offset, self.data.len() as u32 - offset));
-                self.expr_tmp[id as usize] = self.alloc(2, pos)?;
-                Ok(Ty::Str)
-            }
-            Expr::Index { .. } | Expr::ArrayLit { .. } => err(pos, "arrays are not supported by `azol build` yet"),
         }
     }
 
     fn call(&mut self, id: ExprId, callee: ExprId, args: List) -> SResult<Ty> {
         let pos = self.ast.expr_pos[id as usize];
-        let Expr::Ident(name) = self.ast.exprs[callee as usize] else {
-            return err(pos, "only functions can be called");
+        let arg_ids = self.ast.list(args);
+        let name = match self.ast.exprs[callee as usize] {
+            Expr::Ident(name) => name,
+            Expr::Field { base, name } => return self.method(id, base, name, arg_ids),
+            _ => return err(pos, "only functions can be called"),
         };
         let text = name.text(self.src);
-        let arg_ids = self.ast.list(args);
         if self.lookup(text).is_some() {
             return err(pos, format!("`{text}` is a variable, not a function"));
         }
@@ -831,7 +1191,7 @@ impl<'a> Checker<'a> {
                     self.expect(inner, param.ty, &what)?;
                     self.expr_ty[arg as usize] = param.ty;
                     let Some(place) = self.place(inner) else {
-                        return err(arg_pos, "`mut` needs a variable or a field of a variable");
+                        return err(arg_pos, "`mut` needs a variable or a part of a variable");
                     };
                     if !place.mutable {
                         let root = self.root_name(inner);
@@ -867,9 +1227,67 @@ impl<'a> Checker<'a> {
         let ret = self.fns[index as usize].ret;
         self.expr_res[id as usize] = index;
         if ret.is_aggregate() {
-            self.expr_tmp[id as usize] = self.alloc(self.size_of(ret), pos)?;
+            self.expr_tmp[id as usize] = self.temp(id, ret)?;
         }
         Ok(ret)
+    }
+
+    /// A call written `value.name(...)`. Only lists have methods so far.
+    fn method(&mut self, id: ExprId, base: ExprId, name: Span, args: &[u32]) -> SResult<Ty> {
+        let pos = self.ast.expr_pos[id as usize];
+        let base_ty = self.expr(base)?;
+        let text = name.text(self.src);
+        let Ty::List(list) = base_ty else {
+            return err(name.start, format!("`{}` has no method `{text}`", self.ty_name(base_ty)));
+        };
+        let elem = self.lists[list as usize];
+        let arity = |expected: usize| -> SResult<()> {
+            if args.len() == expected {
+                Ok(())
+            } else {
+                err(pos, format!("`{text}` takes {expected} argument{} but {} were given", if expected == 1 { "" } else { "s" }, args.len()))
+            }
+        };
+        match text {
+            "len" => {
+                arity(0)?;
+                self.expr_res[id as usize] = BUILTIN_LIST_LEN;
+                Ok(Ty::I64)
+            }
+            "push" | "pop" => {
+                arity(if text == "push" { 1 } else { 0 })?;
+                let Some(place) = self.place(base) else {
+                    return err(pos, format!("`{text}` changes the list, so it needs a variable or a part of a variable"));
+                };
+                if !place.mutable {
+                    let root = self.root_name(base);
+                    return err(
+                        pos,
+                        if place.is_param {
+                            format!("cannot change `{root}`: a parameter is read-only unless it is declared `mut`")
+                        } else {
+                            format!("cannot change `{root}`: declare it with `var` to make it changeable")
+                        },
+                    );
+                }
+                if text == "push" {
+                    self.expect(args[0], elem, "`push`")?;
+                    self.check_change(base, &place)?;
+                    // The element waits here while the list makes room.
+                    self.expr_tmp[id as usize] = self.alloc(self.size_of(elem), pos)?;
+                    self.expr_res[id as usize] = BUILTIN_LIST_PUSH;
+                    Ok(Ty::Unit)
+                } else {
+                    self.check_change(base, &place)?;
+                    if elem.is_aggregate() {
+                        self.expr_tmp[id as usize] = self.alloc(self.size_of(elem), pos)?;
+                    }
+                    self.expr_res[id as usize] = BUILTIN_LIST_POP;
+                    Ok(elem)
+                }
+            }
+            _ => err(name.start, format!("`{}` has no method `{text}`; its methods are `len()`, `push(...)` and `pop()`", self.ty_name(base_ty))),
+        }
     }
 }
 
@@ -909,7 +1327,7 @@ mod tests {
         let ast = parse(src, &tokens).unwrap();
         let program = check(&ast, src).unwrap();
         assert_eq!(program.fns.len(), 2);
-        assert_eq!(program.fns[0].slots, 3);
+        assert_eq!(program.fns[0].slots, 4);
         assert_eq!(program.main, 1);
         assert_eq!(program.ints, vec![1, 2]);
     }
@@ -1001,7 +1419,7 @@ mod tests {
         assert_eq!(error("struct A {\n b: B\n}\nstruct B {\n a: A\n}\nfn main() {\n}"), "struct `A` contains itself, so it would have no finite size");
         assert_eq!(error("struct A {\n x: i64\n x: bool\n}\nfn main() {\n}"), "field `x` is declared more than once");
         assert_eq!(error("struct A {\n}\nstruct A {\n}\nfn main() {\n}"), "struct `A` is defined more than once");
-        assert_eq!(error("struct A {\n x: Missing\n}\nfn main() {\n}"), "unknown type `Missing`; the built-in types so far are `i64`, `bool` and `str`");
+        assert_eq!(error("struct A {\n x: Missing\n}\nfn main() {\n}"), "unknown type `Missing`; the built-in types so far are `i64`, `bool`, `str` and `List`");
         assert_eq!(error("struct i64 {\n}\nfn main() {\n}"), "`i64` is a built-in type and cannot be redefined");
     }
 
@@ -1020,7 +1438,7 @@ mod tests {
         assert_eq!(error(&main("var p = Point { x: 1, y: 2 }\np = 3")), "expected `Point` but this is `i64`");
         assert_eq!(error(&main("let p = Point { x: 1, y: 2 }\nif p == p {\n}")), "structs cannot be compared with `==` yet; compare their fields");
         assert_eq!(error(&main("let p = Point")), "`Point` is a struct; create a value with `Point { ... }`");
-        assert_eq!(error(&main("Point { x: 1, y: 2 }.x = 3")), "only a variable or a field of a variable can be assigned");
+        assert_eq!(error(&main("Point { x: 1, y: 2 }.x = 3")), "only a variable or a part of a variable can be assigned");
         assert!(check_src(&main("var l = Line { from: Point { x: 1, y: 2 }, to: Point { x: 3, y: 4 } }\nl.to.y = l.from.x\nl.from = l.to")).is_ok());
     }
 
@@ -1048,7 +1466,7 @@ mod tests {
         );
         assert_eq!(
             error(&with_fn(shift, "shift(mut Point { x: 1, y: 2 }, 3)")),
-            "`mut` needs a variable or a field of a variable"
+            "`mut` needs a variable or a part of a variable"
         );
         assert_eq!(
             error(&with_fn(&format!("{shift}\nfn g(q: Point) {{\n shift(mut q, 1)\n}}"), "")),
@@ -1079,11 +1497,103 @@ mod tests {
         assert!(check_src(&main("mix(mut p, q)\nmix(mut q, p)")).is_ok());
     }
 
+    const LISTS: &str = "struct Point {\n x: i64\n y: i64\n}\nstruct Bag {\n items: List[i64]\n name: str\n}\nfn total(xs: List[i64]) -> i64 {\n return 0\n}\nfn grow(xs: mut List[i64]) {\n xs.push(1)\n}\nfn make() -> List[i64] {\n return [1, 2]\n}\n";
+
+    fn list_main(body: &str) -> String {
+        format!("{LISTS}{}", in_main(body))
+    }
+
+    #[test]
+    fn list_programs_that_are_accepted() {
+        assert!(check_src(&list_main("var xs = [1, 2, 3]\nxs.push(4)\nxs[0] = xs[1] + xs.len()\nlet last = xs.pop()\nprint(last)")).is_ok());
+        assert!(check_src(&list_main("var xs: List[i64] = []\nxs = []\nxs = make()\ngrow(mut xs)\nprint(total(xs) + total([]) + total(make()))")).is_ok());
+        assert!(check_src(&list_main("let ps = [Point { x: 1, y: 2 }]\nprint(ps[0].x)\nfor i, p in ps {\nprint(i + p.y)\n}")).is_ok());
+        assert!(check_src(&list_main("var b = Bag { items: [1], name: \"a\" }\nb.items.push(2)\nb.items[0] = 5\nlet c = b\nfor x in c.items {\nb.items.push(x)\n}")).is_ok());
+        assert!(check_src(&list_main("let names = [\"a\", \"b\"]\nlet flags = [true, false]\nfor n in names {\nprint(n)\n}\nfor f in flags {\nprint(f)\n}")).is_ok());
+        assert!(check_src(&list_main("var xs = [1]\nxs.push(xs[0])\nxs.push(xs.len())\nxs.push(xs.pop())")).is_ok());
+    }
+
+    #[test]
+    fn list_type_errors() {
+        assert_eq!(
+            error(&list_main("let xs = []")),
+            "cannot tell what this empty list holds; give the variable a type, as in `var xs: List[i64] = []`"
+        );
+        assert_eq!(error(&list_main("let xs = [1, true]")), "this list's element needs `i64` but this is `bool`");
+        assert_eq!(error(&list_main("let xs: List[bool] = [1]")), "this list's element needs `bool` but this is `i64`");
+        assert_eq!(error(&list_main("var xs = [1]\nxs.push(true)")), "`push` needs `i64` but this is `bool`");
+        assert_eq!(error(&list_main("let xs = [1]\nprint(xs[true])")), "an index needs `i64` but this is `bool`");
+        assert_eq!(error(&list_main("let n = 1\nprint(n[0])")), "only a list can be indexed but this is `i64`");
+        assert_eq!(error(&list_main("let xs = [1]\nprint(xs.size())")), "`List[i64]` has no method `size`; its methods are `len()`, `push(...)` and `pop()`");
+        assert_eq!(error(&list_main("let xs = [1]\nprint(xs.len)")), "`List[i64]` has no field `len`; its methods are `len()`, `push(...)` and `pop()`");
+        assert_eq!(error(&list_main("let xs = [1]\nprint(xs.len(1))")), "`len` takes 0 arguments but 1 were given");
+        assert_eq!(error(&list_main("let n = 1\nn.push(2)")), "`i64` has no method `push`");
+        assert_eq!(error(&list_main("let xs = [1]\nif xs == xs {\n}")), "lists cannot be compared with `==` yet");
+        assert_eq!(error(&list_main("for x in 5 {\n}")), "`for` needs a list to go through but this is `i64`");
+        assert_eq!(error(&list_main("let xs = [[1]]")), "lists of lists are not supported by `azol build` yet");
+        assert_eq!(error(&list_main("let bs = [Bag { items: [1], name: \"a\" }]")), "a list of `Bag` is not supported yet, because `Bag` contains a list");
+        assert_eq!(error("struct A {\n xs: List[B]\n}\nstruct B {\n ys: List[i64]\n}\nfn main() {\n}"), "a list of `B` is not supported yet, because `B` contains a list");
+        assert_eq!(error("fn f(xs: List) {\n}\nfn main() {\n}"), "`List` takes one element type, as in `List[i64]`");
+        assert_eq!(error("fn f(xs: Map[i64]) {\n}\nfn main() {\n}"), "generic types other than `List` are not supported by `azol build` yet");
+    }
+
+    #[test]
+    fn lists_can_only_be_changed_through_changeable_places() {
+        assert_eq!(error(&list_main("let xs = [1]\nxs.push(2)")), "cannot change `xs`: declare it with `var` to make it changeable");
+        assert_eq!(error(&list_main("let xs = [1]\nxs[0] = 2")), "cannot change `xs`: declare it with `var` to make it changeable");
+        assert_eq!(error(&list_main("let xs = [1]\nlet x = xs.pop()")), "cannot change `xs`: declare it with `var` to make it changeable");
+        assert_eq!(error(&list_main("make().push(1)")), "`push` changes the list, so it needs a variable or a part of a variable");
+        assert_eq!(
+            error(&format!("{LISTS}fn f(xs: List[i64]) {{\n xs.push(1)\n}}\nfn main() {{\n}}")),
+            "cannot change `xs`: a parameter is read-only unless it is declared `mut`"
+        );
+        assert_eq!(error(&list_main("let xs = [1]\ngrow(mut xs)")), "cannot pass `xs` as `mut`: declare it with `var` to make it changeable");
+        assert_eq!(error(&list_main("for x in [1, 2] {\nx = 3\n}")), "cannot change `x`: declare it with `var` to make it changeable");
+    }
+
+    #[test]
+    fn a_list_cannot_change_while_something_refers_to_it() {
+        let going = "while a loop is going through it";
+        assert_eq!(error(&list_main("var xs = [1]\nfor x in xs {\nxs.push(x)\n}")), format!("cannot change `xs` {going}"));
+        assert_eq!(error(&list_main("var xs = [1]\nfor x in xs {\nxs[0] = x\n}")), format!("cannot change `xs` {going}"));
+        assert_eq!(error(&list_main("var xs = [1]\nfor x in xs {\nxs = [2]\n}")), format!("cannot change `xs` {going}"));
+        assert_eq!(error(&list_main("var xs = [1]\nfor x in xs {\nlet y = xs.pop()\n}")), format!("cannot change `xs` {going}"));
+        assert_eq!(error(&list_main("var xs = [1]\nfor x in xs {\ngrow(mut xs)\n}")), format!("cannot pass `xs` as `mut` {going}"));
+        assert_eq!(error(&list_main("var b = Bag { items: [1], name: \"a\" }\nfor x in b.items {\nb = Bag { items: [], name: \"b\" }\n}")), format!("cannot change `b` {going}"));
+        assert_eq!(error(&list_main("var xs = [1]\nfor x in xs {\nif x > 0 {\nwhile true {\nxs.push(1)\n}\n}\n}")), format!("cannot change `xs` {going}"));
+        // Reading it, changing another list, or changing it after the loop is fine.
+        assert!(check_src(&list_main("var xs = [1]\nvar ys = [2]\nfor x in xs {\nys.push(x + xs.len() + total(xs))\n}\nxs.push(3)")).is_ok());
+        assert!(check_src(&list_main("var b = Bag { items: [1], name: \"a\" }\nfor x in b.items {\nb.name = \"c\"\n}")).is_ok());
+        assert_eq!(
+            error(&format!("{LISTS}fn both(xs: List[i64], n: i64) -> i64 {{\n return n\n}}\n{}", in_main("var xs = [1]\nprint(both(xs, xs.pop()))"))),
+            "cannot change `xs` here: it is also passed to a function in the same expression"
+        );
+        assert_eq!(
+            error(&format!("{LISTS}fn both(n: mut i64, xs: List[i64]) {{\n}}\n{}", in_main("var xs = [1]\nboth(mut xs[0], xs)"))),
+            "`xs` is passed twice in one call and one of the uses is `mut`; copy it into a variable first"
+        );
+    }
+
+    #[test]
+    fn ownership_decisions() {
+        let src = list_main("let a = make()\nlet b = a\nvar c = [1]\nc = a\nc = make()\nlet d = Bag { items: a, name: \"n\" }\nlet e = Bag { items: [7], name: \"n\" }\nprint(total(make()))");
+        let tokens = lex(&src).unwrap();
+        let ast = parse(&src, &tokens).unwrap();
+        let program = check(&ast, &src).unwrap();
+        // One move per temporary that is stored: make() twice, [1], [7],
+        // the two struct literals, and `[1, 2]` returned inside `make`.
+        // Copies of `a` are not moves.
+        assert_eq!(program.expr_moved.iter().filter(|&&moved| moved).count(), 7);
+        // Only `total(make())` leaves a temporary for its statement to free.
+        assert_eq!(program.drops.len(), 1);
+        let main = &program.fns[program.main as usize];
+        assert_eq!(main.zero_slots.len(), 1);
+    }
+
     #[test]
     fn features_not_built_yet_are_reported_clearly() {
         assert_eq!(error("enum E {\n A\n}\nfn main() {\n}"), "enums are not supported by `azol build` yet");
         assert_eq!(error(&in_main("let a = 1.5")), "floating-point numbers are not supported by `azol build` yet");
-        assert_eq!(error(&in_main("for x in y {\n}")), "`for` loops are not supported by `azol build` yet; use `while`");
-        assert_eq!(error("fn f(a: i32) {\n}\nfn main() {\n}"), "unknown type `i32`; the built-in types so far are `i64`, `bool` and `str`");
+        assert_eq!(error("fn f(a: i32) {\n}\nfn main() {\n}"), "unknown type `i32`; the built-in types so far are `i64`, `bool`, `str` and `List`");
     }
 }
