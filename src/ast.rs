@@ -198,7 +198,11 @@ pub enum Item {
 pub struct Ast {
     pub items: Vec<Item>,
     pub exprs: Vec<Expr>,
+    /// Source offset where each expression starts, parallel to `exprs`.
+    pub expr_pos: Vec<u32>,
     pub stmts: Vec<Stmt>,
+    /// Source offset where each statement starts, parallel to `stmts`.
+    pub stmt_pos: Vec<u32>,
     pub types: Vec<Type>,
     pub patterns: Vec<Pattern>,
     pub params: Vec<Param>,

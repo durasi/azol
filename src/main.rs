@@ -1,9 +1,13 @@
 // Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
 
+mod arm64;
 mod ast;
 mod dump;
 mod lexer;
+mod macho;
 mod parser;
+mod sema;
+mod sha256;
 mod token;
 
 use std::env;
@@ -18,6 +22,8 @@ Usage:
     azol lex --time <file.azl>       Lex the file and report the speed only
     azol parse <file.azl>            Print the syntax tree of a source file
     azol parse --time <file.azl>     Lex and parse the file and report the speed only
+    azol build <file.azl>            Compile to an executable next to the source file
+    azol build <file.azl> -o <out>   Compile to the given output path
     azol --version                   Print the version";
 
 fn main() -> ExitCode {
@@ -33,6 +39,8 @@ fn main() -> ExitCode {
         ["lex", "--time", path] => run_lex(path, true),
         ["parse", path] => run_parse(path, false),
         ["parse", "--time", path] => run_parse(path, true),
+        ["build", path] => run_build(path, None),
+        ["build", path, "-o", out] | ["build", "-o", out, path] => run_build(path, Some(out)),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -150,4 +158,91 @@ fn run_parse(path: &str, time_only: bool) -> ExitCode {
         speed(src.len(), lines, total),
     );
     ExitCode::SUCCESS
+}
+
+fn run_build(path: &str, out: Option<&str>) -> ExitCode {
+    let started = Instant::now();
+    let Some(src) = read_source(path) else {
+        return ExitCode::FAILURE;
+    };
+    let read = started.elapsed().as_secs_f64();
+
+    let tokens = match lexer::lex(&src) {
+        Ok(tokens) => tokens,
+        Err(err) => {
+            report(path, &src, err.offset, err.message);
+            return ExitCode::FAILURE;
+        }
+    };
+    let ast = match parser::parse(&src, &tokens) {
+        Ok(ast) => ast,
+        Err(err) => {
+            report(path, &src, err.offset, &err.message);
+            return ExitCode::FAILURE;
+        }
+    };
+    let parsed = started.elapsed().as_secs_f64();
+
+    let program = match sema::check(&ast, &src) {
+        Ok(program) => program,
+        Err(err) => {
+            report(path, &src, err.offset, &err.message);
+            return ExitCode::FAILURE;
+        }
+    };
+    let checked = started.elapsed().as_secs_f64();
+
+    let code = arm64::generate(&ast, &program);
+    let generated = started.elapsed().as_secs_f64();
+
+    let source_path = std::path::Path::new(path);
+    let out_path = match out {
+        Some(out) => std::path::PathBuf::from(out),
+        None => source_path.with_extension(""),
+    };
+    if out_path == source_path {
+        eprintln!("error: the output would overwrite the source file; pass `-o <out>`");
+        return ExitCode::FAILURE;
+    }
+    let ident = out_path.file_name().and_then(|name| name.to_str()).unwrap_or("azol-program");
+    let image = macho::build_executable(&code.words, code.entry, ident);
+    let linked = started.elapsed().as_secs_f64();
+
+    if let Err(err) = write_executable(&out_path, &image) {
+        eprintln!("error: cannot write '{}': {err}", out_path.display());
+        return ExitCode::FAILURE;
+    }
+    let total = started.elapsed().as_secs_f64();
+
+    let ms = |from: f64, to: f64| (to - from) * 1000.0;
+    eprintln!(
+        "built {} ({} bytes of code) in {:.3} ms (read {:.3}, parse {:.3}, check {:.3}, codegen {:.3}, link+sign {:.3}, write {:.3})",
+        out_path.display(),
+        code.words.len() * 4,
+        total * 1000.0,
+        read * 1000.0,
+        ms(read, parsed),
+        ms(parsed, checked),
+        ms(checked, generated),
+        ms(generated, linked),
+        ms(linked, total),
+    );
+    ExitCode::SUCCESS
+}
+
+/// Writes a fresh file. An existing executable is removed first: macOS
+/// caches code signatures per file and rejects one rewritten in place.
+fn write_executable(path: &std::path::Path, image: &[u8]) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err),
+    }
+    fs::write(path, image)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(())
 }

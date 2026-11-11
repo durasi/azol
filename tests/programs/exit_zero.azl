@@ -1,0 +1,5 @@
+// expect-exit: 0
+// expect-output: 5
+fn main() {
+    print(5)
+}

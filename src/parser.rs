@@ -22,7 +22,9 @@ pub fn parse(src: &str, tokens: &[Token]) -> Result<Ast, ParseError> {
     debug_assert!(matches!(tokens.last(), Some(t) if t.kind == K::Eof));
     let mut ast = Ast::default();
     ast.exprs.reserve(tokens.len() / 2);
+    ast.expr_pos.reserve(tokens.len() / 2);
     ast.stmts.reserve(tokens.len() / 6);
+    ast.stmt_pos.reserve(tokens.len() / 6);
     ast.lists.reserve(tokens.len() / 4);
     let mut parser = Parser {
         src,
@@ -138,14 +140,21 @@ impl<'a> Parser<'a> {
         list
     }
 
-    fn push_expr(&mut self, expr: Expr) -> ExprId {
+    fn push_expr(&mut self, expr: Expr, pos: u32) -> ExprId {
         self.ast.exprs.push(expr);
+        self.ast.expr_pos.push(pos);
         (self.ast.exprs.len() - 1) as ExprId
     }
 
-    fn push_stmt(&mut self, stmt: Stmt) -> StmtId {
+    fn push_stmt(&mut self, stmt: Stmt, pos: u32) -> StmtId {
         self.ast.stmts.push(stmt);
+        self.ast.stmt_pos.push(pos);
         (self.ast.stmts.len() - 1) as StmtId
+    }
+
+    #[inline(always)]
+    fn here(&self) -> u32 {
+        self.tokens[self.pos].start
     }
 
     // ---- items ---------------------------------------------------------
@@ -339,6 +348,7 @@ impl<'a> Parser<'a> {
     }
 
     fn statement(&mut self) -> PResult<StmtId> {
+        let pos = self.here();
         let stmt = match self.kind() {
             K::Let | K::Var => {
                 let mutable = self.bump().kind == K::Var;
@@ -407,11 +417,12 @@ impl<'a> Parser<'a> {
                 }
             }
         };
-        Ok(self.push_stmt(stmt))
+        Ok(self.push_stmt(stmt, pos))
     }
 
     fn if_statement(&mut self) -> PResult<StmtId> {
         self.enter()?;
+        let pos = self.here();
         self.bump();
         let cond = self.condition()?;
         let then_block = self.block()?;
@@ -427,7 +438,7 @@ impl<'a> Parser<'a> {
             Else::None
         };
         self.depth -= 1;
-        Ok(self.push_stmt(Stmt::If { cond, then_block, else_branch }))
+        Ok(self.push_stmt(Stmt::If { cond, then_block, else_branch }, pos))
     }
 
     fn match_statement(&mut self) -> PResult<Stmt> {
@@ -549,7 +560,8 @@ impl<'a> Parser<'a> {
             self.bump();
             self.skip_newlines();
             let rhs = self.binary(prec + 1)?;
-            lhs = self.push_expr(Expr::Binary { op, lhs, rhs });
+            let pos = self.ast.expr_pos[lhs as usize];
+            lhs = self.push_expr(Expr::Binary { op, lhs, rhs }, pos);
         }
         Ok(lhs)
     }
@@ -561,14 +573,16 @@ impl<'a> Parser<'a> {
             _ => return self.postfix(),
         };
         self.enter()?;
+        let pos = self.here();
         self.bump();
         let operand = self.unary()?;
         self.depth -= 1;
-        Ok(self.push_expr(Expr::Unary { op, operand }))
+        Ok(self.push_expr(Expr::Unary { op, operand }, pos))
     }
 
     fn postfix(&mut self) -> PResult<ExprId> {
         let mut expr = self.primary()?;
+        let pos = self.ast.expr_pos[expr as usize];
         loop {
             match self.kind() {
                 K::LParen => {
@@ -578,9 +592,10 @@ impl<'a> Parser<'a> {
                     let start = self.scratch.len();
                     self.skip_newlines();
                     while !self.at(K::RParen) {
+                        let arg_pos = self.here();
                         let arg = if self.eat(K::Mut) {
                             let value = self.expr()?;
-                            self.push_expr(Expr::MutArg(value))
+                            self.push_expr(Expr::MutArg(value), arg_pos)
                         } else {
                             self.expr()?
                         };
@@ -594,7 +609,7 @@ impl<'a> Parser<'a> {
                     self.expect(K::RParen)?;
                     self.no_struct = saved;
                     let args = self.finish_list(start);
-                    expr = self.push_expr(Expr::Call { callee: expr, args });
+                    expr = self.push_expr(Expr::Call { callee: expr, args }, pos);
                 }
                 K::LBracket => {
                     self.bump();
@@ -605,12 +620,12 @@ impl<'a> Parser<'a> {
                     self.skip_newlines();
                     self.expect(K::RBracket)?;
                     self.no_struct = saved;
-                    expr = self.push_expr(Expr::Index { base: expr, index });
+                    expr = self.push_expr(Expr::Index { base: expr, index }, pos);
                 }
                 K::Dot => {
                     self.bump();
                     let name = self.ident("a field name")?;
-                    expr = self.push_expr(Expr::Field { base: expr, name });
+                    expr = self.push_expr(Expr::Field { base: expr, name }, pos);
                 }
                 // A line that starts with `.` continues the previous one.
                 K::Newline if self.kind_after_newlines() == K::Dot => self.skip_newlines(),
@@ -620,6 +635,7 @@ impl<'a> Parser<'a> {
     }
 
     fn primary(&mut self) -> PResult<ExprId> {
+        let pos = self.here();
         let expr = match self.kind() {
             K::Int => Expr::Int(span(self.bump())),
             K::Float => Expr::Float(span(self.bump())),
@@ -677,7 +693,7 @@ impl<'a> Parser<'a> {
                 return Err(self.error(format!("expected an expression but found {}", describe(other))));
             }
         };
-        Ok(self.push_expr(expr))
+        Ok(self.push_expr(expr, pos))
     }
 
     fn struct_literal(&mut self, name: Span) -> PResult<ExprId> {
@@ -700,7 +716,7 @@ impl<'a> Parser<'a> {
         self.expect(K::RBrace)?;
         self.depth -= 1;
         let fields = self.finish_list(start);
-        Ok(self.push_expr(Expr::StructLit { name, fields }))
+        Ok(self.push_expr(Expr::StructLit { name, fields }, name.start))
     }
 }
 

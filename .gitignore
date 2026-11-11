@@ -1,1 +1,5 @@
 /target
+/examples/*
+!/examples/*.azl
+/bench/*
+!/bench/*.rs
