@@ -3,3 +3,4 @@
 !/examples/*.azl
 /bench/*
 !/bench/*.rs
+!/bench/*.azl
