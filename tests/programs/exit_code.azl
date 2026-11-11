@@ -1,0 +1,18 @@
+// expect-exit: 3
+// expect-output: 1
+
+// `exit` ends the program at once with the given code.
+
+fn check(value: i64) {
+    if value > 1 {
+        exit(value)
+    }
+    print(value)
+}
+
+fn main() {
+    let kept = "freed by the system when the program ends" + "!"
+    check(1)
+    check(3)
+    print(kept)
+}

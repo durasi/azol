@@ -8,7 +8,10 @@ import os, struct, subprocess, sys, tempfile
 import capstone, lief
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-IMPORTS = ["_write", "_exit", "_malloc", "_realloc", "_free", "_memcpy", "_memcmp"]
+IMPORTS = [
+    "_write", "_exit", "_malloc", "_realloc", "_free", "_memcpy", "_memcmp", "_open", "_read", "_close", "___error",
+    "_strerror", "_strlen", "__NSGetArgc", "__NSGetArgv",
+]
 TEXT = [
     (None, b"\n"),
     (None, b"true"),
@@ -17,10 +20,14 @@ TEXT = [
     ("LEN_INDEX", b"azol: index out of range\n"),
     ("LEN_POP", b"azol: pop from an empty list\n"),
     ("LEN_MEMORY", b"azol: out of memory\n"),
+    ("LEN_SLICE", b"azol: slice out of range\n"),
+    ("LEN_CHR", b"azol: chr needs a number from 0 to 255\n"),
+    (None, bytes(range(256))),
 ]
 ENTRIES = [
     "print_i64", "print_bool", "print_str", "div_zero", "index_fail", "pop_empty", "alloc", "free", "list_push",
-    "list_clone", "drop", "str_concat", "str_eq", "str_from_i64", "str_from_bool",
+    "list_clone", "drop", "str_concat", "str_eq", "str_from_i64", "str_from_bool", "eprint_str", "exit", "str_slice",
+    "chr", "args", "read_file", "write_file",
 ]
 
 source = open(os.path.join(HERE, "runtime.s")).read()

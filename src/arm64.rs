@@ -17,9 +17,10 @@
 use crate::ast::*;
 use crate::runtime::{self, RuntimeReloc, RUNTIME, RUNTIME_DATA, RUNTIME_DATA_OFFSETS, RUNTIME_RELOCS};
 use crate::sema::{
-    idle_slot, Program, Ty, BUILTIN_LEN, BUILTIN_LIST_POP, BUILTIN_LIST_PUSH, BUILTIN_PRINT_BOOL, BUILTIN_PRINT_I64,
-    BUILTIN_PRINT_STR, BUILTIN_STR_FROM_BOOL, BUILTIN_STR_FROM_I64, BUILTIN_VARIANT, BY_REF, COPIED, FIRST_BUILTIN,
-    IN_PLACE, PAT_BIND, PAT_LITERAL, PAT_VARIANT, VARIANT,
+    idle_slot, Program, Ty, BUILTIN_ARGS, BUILTIN_CHR, BUILTIN_EPRINT, BUILTIN_EXIT, BUILTIN_LEN, BUILTIN_LIST_POP,
+    BUILTIN_LIST_PUSH, BUILTIN_PRINT_BOOL, BUILTIN_PRINT_I64, BUILTIN_PRINT_STR, BUILTIN_READ_FILE,
+    BUILTIN_STR_FROM_BOOL, BUILTIN_STR_FROM_I64, BUILTIN_STR_SLICE, BUILTIN_VARIANT, BUILTIN_WRITE_FILE, BY_REF,
+    COPIED, FIRST_BUILTIN, IN_PLACE, PAT_BIND, PAT_LITERAL, PAT_VARIANT, VARIANT,
 };
 use std::collections::HashMap;
 
@@ -1176,6 +1177,19 @@ impl<'a> Gen<'a> {
         match self.ast.exprs[id as usize] {
             Expr::Int(_) => self.mov_imm(X0, self.prog.ints[self.prog.expr_res[id as usize] as usize]),
             Expr::Bool(value) => self.mov_imm(X0, value as i64),
+            Expr::Index { base, index } if self.ty(base) == Ty::Str => {
+                // A byte of a string, checked like a list index.
+                self.value(index);
+                self.emit(PUSH_X0);
+                self.address(base);
+                self.emit(pop(X1));
+                self.emit(ldr(X9, X0, 1)); // length
+                self.emit(0xEB09_003F); // cmp x1, x9
+                self.emit(0x5400_0043); // b.lo +2: an unsigned compare also rejects negatives
+                self.runtime(runtime::INDEX_FAIL);
+                self.emit(ldr(X9, X0, 0)); // bytes
+                self.emit(0x3861_6920); // ldrb w0, [x9, x1]
+            }
             Expr::Ident(_) | Expr::Field { .. } | Expr::Index { .. } => match self.place(id) {
                 Some(place) if place.by_ref => {
                     self.emit(ldr(X9, FP, frame(place.slot)));
@@ -1254,21 +1268,24 @@ impl<'a> Gen<'a> {
     fn call(&mut self, id: ExprId, args: List) {
         let target = self.prog.expr_res[id as usize];
         let arg_ids = self.ast.list(args);
-        match target {
-            BUILTIN_LEN | BUILTIN_LIST_PUSH | BUILTIN_LIST_POP => {
-                let Expr::Call { callee, .. } = self.ast.exprs[id as usize] else {
-                    unreachable!("a call is a call");
-                };
-                let Expr::Field { base, .. } = self.ast.exprs[callee as usize] else {
-                    unreachable!("checked: a method call names its receiver");
-                };
-                return self.list_method(id, target, base, arg_ids);
-            }
-            _ => {}
+        let Expr::Call { callee, .. } = self.ast.exprs[id as usize] else {
+            unreachable!("a call is a call");
+        };
+        // In `value.method(...)` the value is the receiver.
+        let receiver = match self.ast.exprs[callee as usize] {
+            Expr::Field { base, .. } => Some(base),
+            _ => None,
+        };
+        if let BUILTIN_LEN | BUILTIN_LIST_PUSH | BUILTIN_LIST_POP | BUILTIN_STR_SLICE = target {
+            let base = receiver.expect("checked: a method call names its receiver");
+            return self.list_method(id, target, base, arg_ids);
         }
-        for (i, &arg) in arg_ids.iter().enumerate() {
+        // A method the standard library writes in azoL is a function
+        // whose first argument is the receiver.
+        let mut count = 0;
+        for (i, arg) in receiver.into_iter().chain(arg_ids.iter().copied()).enumerate() {
             let by_ref = if target >= FIRST_BUILTIN {
-                target == BUILTIN_PRINT_STR
+                matches!(target, BUILTIN_PRINT_STR | BUILTIN_EPRINT | BUILTIN_READ_FILE | BUILTIN_WRITE_FILE)
             } else {
                 self.prog.fns[target as usize].params[i].by_ref
             };
@@ -1278,14 +1295,30 @@ impl<'a> Gen<'a> {
                 _ => self.value(arg),
             }
             self.emit(PUSH_X0);
+            count += 1;
         }
-        for reg in (0..arg_ids.len() as u32).rev() {
+        for reg in (0..count).rev() {
             self.emit(pop(reg));
         }
         match target {
             BUILTIN_PRINT_I64 => self.runtime(runtime::PRINT_I64),
             BUILTIN_PRINT_BOOL => self.runtime(runtime::PRINT_BOOL),
             BUILTIN_PRINT_STR => self.runtime(runtime::PRINT_STR),
+            BUILTIN_EPRINT => self.runtime(runtime::EPRINT_STR),
+            BUILTIN_EXIT => self.runtime(runtime::EXIT),
+            BUILTIN_CHR | BUILTIN_ARGS => {
+                self.frame_address(X8, self.prog.expr_tmp[id as usize]);
+                self.runtime(if target == BUILTIN_CHR { runtime::CHR } else { runtime::ARGS });
+            }
+            BUILTIN_READ_FILE | BUILTIN_WRITE_FILE => {
+                // The routine fills in what the `Result` holds and says
+                // which variant it is: 0 for `Ok`, 1 for `Err`.
+                let tmp = self.prog.expr_tmp[id as usize];
+                self.frame_address(X8, tmp + 1);
+                self.runtime(if target == BUILTIN_READ_FILE { runtime::READ_FILE } else { runtime::WRITE_FILE });
+                self.emit(0x9100_0400); // add x0, x0, #1: the tag
+                self.emit(str(X0, FP, frame(tmp)));
+            }
             BUILTIN_STR_FROM_I64 | BUILTIN_STR_FROM_BOOL => {
                 self.frame_address(X8, self.prog.expr_tmp[id as usize]);
                 self.runtime(if target == BUILTIN_STR_FROM_I64 { runtime::STR_FROM_I64 } else { runtime::STR_FROM_BOOL });
@@ -1306,6 +1339,20 @@ impl<'a> Gen<'a> {
             // Lists and strings keep their length in the same place.
             self.address(base);
             self.emit(ldr(X0, X0, 1));
+            return;
+        }
+        if method == BUILTIN_STR_SLICE {
+            // The bounds are evaluated first, so that nothing runs
+            // between finding the string and reading it.
+            self.value(args[0]);
+            self.emit(PUSH_X0);
+            self.value(args[1]);
+            self.emit(PUSH_X0);
+            self.address(base);
+            self.emit(pop(X2));
+            self.emit(pop(X1));
+            self.frame_address(X8, self.prog.expr_tmp[id as usize]);
+            self.runtime(runtime::STR_SLICE);
             return;
         }
         let Ty::List(list) = self.ty(base) else {

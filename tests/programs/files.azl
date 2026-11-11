@@ -1,0 +1,87 @@
+// expect-exit: 0
+// expect-stderr: this goes to standard error
+// expect-line: 28
+// expect-line: 28
+// expect-line: [first line]
+// expect-line: [second line]
+// expect-line: []
+// expect-line: [last]
+// expect-line: x
+// expect-line: 0
+// expect-line: 0
+// expect-line: No such file or directory
+// expect-line: Is a directory
+// expect-line: No such file or directory
+// expect-line: 196608
+// expect-line: 196608
+// expect-line: true
+// expect-line: 1
+// expect-line: true
+
+// Reading and writing files, the program's arguments, standard error.
+
+fn written(outcome: Result[i64, str]) {
+    match outcome {
+        Ok(bytes) => print(bytes)
+        Err(problem) => print(problem)
+    }
+}
+
+fn main() {
+    let path = "/tmp/azol_test_files.txt"
+    written(write_file(path, "first line\nsecond line\n\nlast"))
+    match read_file(path) {
+        Ok(text) => {
+            print(text.len())
+            for line in text.lines() {
+                print("[" + line + "]")
+            }
+        }
+        Err(problem) => print(problem)
+    }
+
+    // Writing again replaces what was there.
+    write_file(path, "x")
+    match read_file(path) {
+        Ok(text) => print(text)
+        Err(problem) => print(problem)
+    }
+    written(write_file(path, ""))
+    match read_file(path) {
+        Ok(text) => print(text.len())
+        Err(problem) => print(problem)
+    }
+
+    // Failures come back as values that say what went wrong.
+    match read_file("/tmp/azol_no_such_file") {
+        Ok(text) => print(text)
+        Err(problem) => print(problem)
+    }
+    match read_file("/tmp") {
+        Ok(text) => print(text)
+        Err(problem) => print(problem)
+    }
+    written(write_file("/tmp/azol_no_such_folder/file", "a"))
+
+    // A file larger than any one read or write.
+    var big = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\n"
+    var doublings = 0
+    while doublings < 11 {
+        big = big + big
+        doublings = doublings + 1
+    }
+    written(write_file(path, big))
+    match read_file(path) {
+        Ok(text) => {
+            print(text.len())
+            print(text == big)
+        }
+        Err(problem) => print(problem)
+    }
+    write_file(path, "")
+
+    let arguments = args()
+    print(arguments.len())
+    print(arguments[0].len() > 0)
+    eprint("this goes to standard error")
+}

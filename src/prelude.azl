@@ -1,0 +1,175 @@
+// The part of the standard library that is written in azoL. It is
+// compiled together with every program.
+//
+// A function named `type_method` here becomes the method `method` of the
+// type of its first parameter: `str_find` is what `text.find(part)` calls.
+// These names are not visible to programs as plain functions.
+
+// Where `part` first occurs in `s`, as a byte position.
+fn str_find(s: str, part: str) -> Option[i64] {
+    let n = part.len()
+    if n > s.len() {
+        return None
+    }
+    let last = s.len() - n
+    var i = 0
+    while i <= last {
+        var j = 0
+        while j < n && s[i + j] == part[j] {
+            j = j + 1
+        }
+        if j == n {
+            return Some(i)
+        }
+        i = i + 1
+    }
+    return None
+}
+
+fn str_contains(s: str, part: str) -> bool {
+    match s.find(part) {
+        Some(at) => return true
+        None => return false
+    }
+}
+
+fn str_starts_with(s: str, prefix: str) -> bool {
+    let n = prefix.len()
+    if n > s.len() {
+        return false
+    }
+    var i = 0
+    while i < n {
+        if s[i] != prefix[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+fn str_ends_with(s: str, suffix: str) -> bool {
+    let n = suffix.len()
+    if n > s.len() {
+        return false
+    }
+    let offset = s.len() - n
+    var i = 0
+    while i < n {
+        if s[offset + i] != suffix[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// `s` without the spaces, tabs and line ends at its two ends.
+fn str_trim(s: str) -> str {
+    var start = 0
+    var end = s.len()
+    while start < end {
+        let c = s[start]
+        if c != 32 && c != 9 && c != 10 && c != 13 {
+            break
+        }
+        start = start + 1
+    }
+    while end > start {
+        let c = s[end - 1]
+        if c != 32 && c != 9 && c != 10 && c != 13 {
+            break
+        }
+        end = end - 1
+    }
+    return s.slice(start, end)
+}
+
+// The pieces of `s` between occurrences of `separator`. There is always
+// at least one piece; an empty separator gives `s` whole.
+fn str_split(s: str, separator: str) -> List[str] {
+    var parts: List[str] = []
+    let n = separator.len()
+    var start = 0
+    var i = 0
+    while n > 0 && i + n <= s.len() {
+        var j = 0
+        while j < n && s[i + j] == separator[j] {
+            j = j + 1
+        }
+        if j == n {
+            parts.push(s.slice(start, i))
+            i = i + n
+            start = i
+        } else {
+            i = i + 1
+        }
+    }
+    parts.push(s.slice(start, s.len()))
+    return parts
+}
+
+// The lines of `s`, without their line ends. A final line end does not
+// start one more, empty line.
+fn str_lines(s: str) -> List[str] {
+    var lines: List[str] = []
+    var start = 0
+    var i = 0
+    while i < s.len() {
+        if s[i] == 10 {
+            var end = i
+            if end > start && s[end - 1] == 13 {
+                end = end - 1
+            }
+            lines.push(s.slice(start, end))
+            start = i + 1
+        }
+        i = i + 1
+    }
+    if start < s.len() {
+        lines.push(s.slice(start, s.len()))
+    }
+    return lines
+}
+
+// The number `s` spells in decimal digits, with an optional `-` in
+// front. `None` when it is anything else or does not fit in `i64`.
+fn str_to_i64(s: str) -> Option[i64] {
+    var i = 0
+    var negative = false
+    if s.len() > 0 && s[0] == 45 {
+        negative = true
+        i = 1
+    }
+    if i == s.len() {
+        return None
+    }
+    var value = 0
+    while i < s.len() {
+        let digit = s[i] - 48
+        if digit < 0 || digit > 9 {
+            return None
+        }
+        if value > (9223372036854775807 - digit) / 10 {
+            return None
+        }
+        value = value * 10 + digit
+        i = i + 1
+    }
+    if negative {
+        return Some(-value)
+    }
+    return Some(value)
+}
+
+// The strings of `parts` in one string, with `separator` between them.
+fn list_join(parts: List[str], separator: str) -> str {
+    var out = ""
+    for i, part in parts {
+        if i > 0 {
+            out = out + separator
+        }
+        out = out + part
+    }
+    return out
+}

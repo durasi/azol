@@ -1,0 +1,8 @@
+// expect-exit: 1
+// expect-output: 1
+// expect-stderr: azol: chr needs a number from 0 to 255
+
+fn main() {
+    print(chr(0).len())
+    print(chr(256))
+}

@@ -67,8 +67,21 @@ pub const BUILTIN_STR_FROM_I64: u32 = u32::MAX - 6;
 pub const BUILTIN_STR_FROM_BOOL: u32 = u32::MAX - 7;
 /// A call that builds an enum value; `expr_aux` holds the variant.
 pub const BUILTIN_VARIANT: u32 = u32::MAX - 8;
+pub const BUILTIN_ARGS: u32 = u32::MAX - 9;
+pub const BUILTIN_READ_FILE: u32 = u32::MAX - 10;
+pub const BUILTIN_WRITE_FILE: u32 = u32::MAX - 11;
+pub const BUILTIN_CHR: u32 = u32::MAX - 12;
+pub const BUILTIN_EXIT: u32 = u32::MAX - 13;
+pub const BUILTIN_EPRINT: u32 = u32::MAX - 14;
+/// `slice(start, end)` of a string.
+pub const BUILTIN_STR_SLICE: u32 = u32::MAX - 15;
 /// Resolutions at or above this value are built-ins.
-pub const FIRST_BUILTIN: u32 = u32::MAX - 8;
+pub const FIRST_BUILTIN: u32 = u32::MAX - 15;
+
+/// Names of the built-in functions; a program cannot define these.
+const BUILTIN_FUNCTIONS: [&str; 8] = ["print", "eprint", "str", "chr", "args", "read_file", "write_file", "exit"];
+/// Where the built-in `Result` sits among the enum declarations.
+const RESULT: u32 = 1;
 /// Set in the resolution of a name whose stack slot holds a pointer.
 pub const BY_REF: u32 = 1 << 31;
 /// The resolution of a name that is a variant without fields, such as
@@ -404,6 +417,11 @@ struct Checker<'a> {
     lists: Vec<Ty>,
     fns: Vec<FnInfo>,
     fn_names: HashMap<&'a str, u32>,
+    /// Source offset where the standard library's own azoL code starts.
+    /// Functions from there on are methods: `str_find` is `find` on the
+    /// type of its first parameter, and no name a program can call.
+    prelude_start: u32,
+    methods: HashMap<(Ty, &'a str), u32>,
     expr_res: Vec<u32>,
     expr_ty: Vec<Ty>,
     expr_aux: Vec<u32>,
@@ -429,7 +447,16 @@ struct Checker<'a> {
     loop_depth: u32,
 }
 
+/// Checks a program that stands on its own, without the part of the
+/// standard library that is written in azoL.
+#[cfg(test)]
 pub fn check<'a>(ast: &'a Ast, src: &'a str) -> Result<Program<'a>, SemaError> {
+    check_with_prelude(ast, src, u32::MAX)
+}
+
+/// Checks a program whose source text continues, from `prelude_start`
+/// on, with the standard library's azoL code.
+pub fn check_with_prelude<'a>(ast: &'a Ast, src: &'a str, prelude_start: u32) -> Result<Program<'a>, SemaError> {
     let mut c = Checker {
         ast,
         src,
@@ -450,6 +477,8 @@ pub fn check<'a>(ast: &'a Ast, src: &'a str) -> Result<Program<'a>, SemaError> {
         lists: Vec::new(),
         fns: Vec::new(),
         fn_names: HashMap::new(),
+        prelude_start,
+        methods: HashMap::new(),
         expr_res: vec![0; ast.exprs.len()],
         expr_ty: vec![Ty::Unit; ast.exprs.len()],
         expr_aux: vec![0; ast.exprs.len()],
@@ -1008,11 +1037,14 @@ impl<'a> Checker<'a> {
             if generics.len > 0 {
                 return err(name.start, "generic functions are not supported by `azol build` yet");
             }
-            if text == "print" || text == "str" {
-                return err(name.start, format!("`{text}` is built in and cannot be redefined"));
-            }
-            if let Some(&(template, _)) = self.variant_names.get(text) {
-                return err(name.start, format!("`{text}` is already a variant of `{}`", self.templates[template as usize].name));
+            let in_prelude = name.start >= self.prelude_start;
+            if !in_prelude {
+                if BUILTIN_FUNCTIONS.contains(&text) {
+                    return err(name.start, format!("`{text}` is built in and cannot be redefined"));
+                }
+                if let Some(&(template, _)) = self.variant_names.get(text) {
+                    return err(name.start, format!("`{text}` is already a variant of `{}`", self.templates[template as usize].name));
+                }
             }
             let param_ids = self.ast.list(params);
             if param_ids.len() > MAX_PARAMS {
@@ -1028,7 +1060,7 @@ impl<'a> Checker<'a> {
                 Some(id) => self.ty(id)?,
                 None => Ty::Unit,
             };
-            if text == "main" {
+            if text == "main" && !in_prelude {
                 if !infos.is_empty() {
                     return err(name.start, "`main` cannot take parameters");
                 }
@@ -1037,7 +1069,11 @@ impl<'a> Checker<'a> {
                 }
             }
             let index = self.fns.len() as u32;
-            if self.fn_names.insert(text, index).is_some() {
+            if in_prelude {
+                let (_, method) = text.split_once('_').expect("a standard library function is named `type_method`");
+                let receiver = infos.first().expect("a method has a receiver").ty;
+                self.methods.insert((receiver, method), index);
+            } else if self.fn_names.insert(text, index).is_some() {
                 return err(name.start, format!("function `{text}` is defined more than once"));
             }
             self.fns.push(FnInfo { ret, params: infos, slots: 0, sret_slot: None, scratch_slot: 0, zero_slots: Vec::new() });
@@ -1216,6 +1252,11 @@ impl<'a> Checker<'a> {
             }
             Stmt::Assign { target, value } => {
                 let target_ty = self.expr(target)?;
+                if let Expr::Index { base, .. } = self.ast.exprs[target as usize] {
+                    if self.expr_ty[base as usize] == Ty::Str {
+                        return err(pos, "a string cannot be changed in place; build a new one with `slice` and `+`");
+                    }
+                }
                 let Some(place) = self.place(target) else {
                     return err(pos, "only a variable or a part of a variable can be assigned");
                 };
@@ -1638,6 +1679,8 @@ impl<'a> Checker<'a> {
                 place.len = self.size_of(self.expr_ty[id as usize]);
                 Some(place)
             }
+            // A byte of a string is a number read from it, not a place.
+            Expr::Index { base, .. } if self.expr_ty[base as usize] == Ty::Str => None,
             Expr::Index { base, .. } => self.place(base),
             _ => None,
         }
@@ -1761,7 +1804,7 @@ impl<'a> Checker<'a> {
                     if let Some((template, variant)) = self.variant(text) {
                         return self.construct(id, template, variant, None, hint);
                     }
-                    return if self.fn_names.contains_key(text) || text == "print" {
+                    return if self.fn_names.contains_key(text) || BUILTIN_FUNCTIONS.contains(&text) {
                         err(pos, format!("`{text}` is a function; call it with `{text}(...)`"))
                     } else if self.struct_names.contains_key(text) {
                         err(pos, format!("`{text}` is a struct; create a value with `{text} {{ ... }}`"))
@@ -1862,11 +1905,14 @@ impl<'a> Checker<'a> {
             }
             Expr::Index { base, index } => {
                 let base_ty = self.expr(base)?;
-                let Ty::List(list) = base_ty else {
-                    return err(pos, format!("only a list can be indexed but this is `{}`", self.ty_name(base_ty)));
+                let elem = match base_ty {
+                    Ty::List(list) => self.lists[list as usize],
+                    // A string gives its bytes, as numbers from 0 to 255.
+                    Ty::Str => Ty::I64,
+                    _ => return err(pos, format!("only a list or a string can be indexed but this is `{}`", self.ty_name(base_ty))),
                 };
                 self.expect(index, Ty::I64, What::Text("an index"))?;
-                Ok(self.lists[list as usize])
+                Ok(elem)
             }
             Expr::ArrayLit { items } => {
                 let item_ids = self.ast.list(items);
@@ -2121,17 +2167,69 @@ impl<'a> Checker<'a> {
             return Ok(Ty::Str);
         }
         let Some(&index) = self.fn_names.get(text) else {
+            if BUILTIN_FUNCTIONS.contains(&text) {
+                return self.builtin(id, text, arg_ids);
+            }
             return if self.struct_names.contains_key(text) {
                 err(pos, format!("`{text}` is a struct; create a value with `{text} {{ ... }}`"))
             } else {
                 err(pos, format!("unknown function `{text}`"))
             };
         };
-        let expected = self.fns[index as usize].params.len();
-        if arg_ids.len() != expected {
+        self.call_function(id, index, text, arg_ids, false)
+    }
+
+    /// The built-in functions that talk to the system.
+    fn builtin(&mut self, id: ExprId, text: &'a str, arg_ids: &[u32]) -> SResult<Ty> {
+        let pos = self.ast.expr_pos[id as usize];
+        let (params, target): (&[Ty], u32) = match text {
+            "eprint" => (&[Ty::Str], BUILTIN_EPRINT),
+            "exit" => (&[Ty::I64], BUILTIN_EXIT),
+            "chr" => (&[Ty::I64], BUILTIN_CHR),
+            "args" => (&[], BUILTIN_ARGS),
+            "read_file" => (&[Ty::Str], BUILTIN_READ_FILE),
+            "write_file" => (&[Ty::Str, Ty::Str], BUILTIN_WRITE_FILE),
+            _ => unreachable!("`print` and `str` are handled by the caller"),
+        };
+        if arg_ids.len() != params.len() {
             return err(
                 pos,
-                format!("`{text}` takes {expected} argument{} but {} were given", if expected == 1 { "" } else { "s" }, arg_ids.len()),
+                format!("`{text}` takes {} argument{} but {} were given", params.len(), if params.len() == 1 { "" } else { "s" }, arg_ids.len()),
+            );
+        }
+        for (i, (&arg, &param)) in arg_ids.iter().zip(params).enumerate() {
+            self.expect(arg, param, What::Argument(i + 1, text))?;
+        }
+        self.expr_res[id as usize] = target;
+        let ty = match target {
+            BUILTIN_EPRINT | BUILTIN_EXIT => return Ok(Ty::Unit),
+            BUILTIN_CHR => Ty::Str,
+            BUILTIN_ARGS => self.list_of(Ty::Str),
+            // The text of the file, or what the system says went wrong.
+            BUILTIN_READ_FILE => self.instance(RESULT, vec![Ty::Str, Ty::Str], pos)?,
+            // The number of bytes written, or what went wrong.
+            _ => self.instance(RESULT, vec![Ty::I64, Ty::Str], pos)?,
+        };
+        self.settle()?;
+        self.expr_tmp[id as usize] = self.temp(id, ty)?;
+        Ok(ty)
+    }
+
+    /// Checks the arguments of a call to function `index`. For a method
+    /// call, `arg_ids` starts with the receiver, which is already checked.
+    fn call_function(&mut self, id: ExprId, index: u32, text: &'a str, arg_ids: &[u32], method: bool) -> SResult<Ty> {
+        let pos = self.ast.expr_pos[id as usize];
+        let receivers = method as usize;
+        let expected = self.fns[index as usize].params.len();
+        if arg_ids.len() != expected {
+            let expected = expected - receivers;
+            return err(
+                pos,
+                format!(
+                    "`{text}` takes {expected} argument{} but {} were given",
+                    if expected == 1 { "" } else { "s" },
+                    arg_ids.len() - receivers
+                ),
             );
         }
 
@@ -2141,8 +2239,9 @@ impl<'a> Checker<'a> {
         for (i, &arg) in arg_ids.iter().enumerate() {
             let param = self.fns[index as usize].params[i];
             let arg_pos = self.ast.expr_pos[arg as usize];
-            let what = What::Argument(i + 1, text);
-            let describe = || format!("argument {} of `{text}`", i + 1);
+            let number = i + 1 - receivers;
+            let what = What::Argument(number, text);
+            let describe = || format!("argument {number} of `{text}`");
             match (param.mutable, self.ast.exprs[arg as usize]) {
                 (true, Expr::MutArg(inner)) => {
                     self.expect(inner, param.ty, what)?;
@@ -2162,7 +2261,9 @@ impl<'a> Checker<'a> {
                     return err(arg_pos, format!("{} is not a `mut` parameter; remove `mut`", describe()));
                 }
                 (false, _) => {
-                    self.expect(arg, param.ty, what)?;
+                    if !(method && i == 0) {
+                        self.expect(arg, param.ty, what)?;
+                    }
                     if param.by_ref {
                         if let Some(place) = self.place(arg) {
                             self.borrow(arg, place, false)?;
@@ -2181,25 +2282,24 @@ impl<'a> Checker<'a> {
         Ok(ret)
     }
 
-    /// A call written `value.name(...)`. Only lists have methods so far.
+    /// A method the standard library defines in azoL for this type: an
+    /// ordinary function that takes the receiver as its first argument.
+    fn library_method(&mut self, id: ExprId, base: ExprId, base_ty: Ty, name: Span, args: &[u32]) -> SResult<Ty> {
+        let text = name.text(self.src);
+        let Some(&index) = self.methods.get(&(base_ty, text)) else {
+            return err(name.start, format!("`{}` has no method `{text}`", self.ty_name(base_ty)));
+        };
+        let mut all = Vec::with_capacity(args.len() + 1);
+        all.push(base);
+        all.extend_from_slice(args);
+        self.call_function(id, index, text, &all, true)
+    }
+
+    /// A call written `value.name(...)`.
     fn method(&mut self, id: ExprId, base: ExprId, name: Span, args: &[u32]) -> SResult<Ty> {
         let pos = self.ast.expr_pos[id as usize];
         let base_ty = self.expr(base)?;
         let text = name.text(self.src);
-        if base_ty == Ty::Str {
-            if text != "len" {
-                return err(name.start, format!("`str` has no method `{text}`; its only method so far is `len()`"));
-            }
-            if !args.is_empty() {
-                return err(pos, format!("`len` takes 0 arguments but {} were given", args.len()));
-            }
-            self.expr_res[id as usize] = BUILTIN_LEN;
-            return Ok(Ty::I64);
-        }
-        let Ty::List(list) = base_ty else {
-            return err(name.start, format!("`{}` has no method `{text}`", self.ty_name(base_ty)));
-        };
-        let elem = self.lists[list as usize];
         let arity = |expected: usize| -> SResult<()> {
             if args.len() == expected {
                 Ok(())
@@ -2207,6 +2307,29 @@ impl<'a> Checker<'a> {
                 err(pos, format!("`{text}` takes {expected} argument{} but {} were given", if expected == 1 { "" } else { "s" }, args.len()))
             }
         };
+        if base_ty == Ty::Str {
+            return match text {
+                "len" => {
+                    arity(0)?;
+                    self.expr_res[id as usize] = BUILTIN_LEN;
+                    Ok(Ty::I64)
+                }
+                "slice" => {
+                    arity(2)?;
+                    self.expect(args[0], Ty::I64, What::Argument(1, "slice"))?;
+                    self.expect(args[1], Ty::I64, What::Argument(2, "slice"))?;
+                    // The bytes are copied into a string of their own.
+                    self.expr_tmp[id as usize] = self.temp(id, Ty::Str)?;
+                    self.expr_res[id as usize] = BUILTIN_STR_SLICE;
+                    Ok(Ty::Str)
+                }
+                _ => self.library_method(id, base, base_ty, name, args),
+            };
+        }
+        let Ty::List(list) = base_ty else {
+            return self.library_method(id, base, base_ty, name, args);
+        };
+        let elem = self.lists[list as usize];
         match text {
             "len" => {
                 arity(0)?;
@@ -2240,7 +2363,7 @@ impl<'a> Checker<'a> {
                     Ok(elem)
                 }
             }
-            _ => err(name.start, format!("`{}` has no method `{text}`; its methods are `len()`, `push(...)` and `pop()`", self.ty_name(base_ty))),
+            _ => self.library_method(id, base, base_ty, name, args),
         }
     }
 }
@@ -2481,8 +2604,8 @@ mod tests {
         assert_eq!(error(&list_main("let xs: List[bool] = [1]")), "this list's element needs `bool` but this is `i64`");
         assert_eq!(error(&list_main("var xs = [1]\nxs.push(true)")), "`push` needs `i64` but this is `bool`");
         assert_eq!(error(&list_main("let xs = [1]\nprint(xs[true])")), "an index needs `i64` but this is `bool`");
-        assert_eq!(error(&list_main("let n = 1\nprint(n[0])")), "only a list can be indexed but this is `i64`");
-        assert_eq!(error(&list_main("let xs = [1]\nprint(xs.size())")), "`List[i64]` has no method `size`; its methods are `len()`, `push(...)` and `pop()`");
+        assert_eq!(error(&list_main("let n = 1\nprint(n[0])")), "only a list or a string can be indexed but this is `i64`");
+        assert_eq!(error(&list_main("let xs = [1]\nprint(xs.size())")), "`List[i64]` has no method `size`");
         assert_eq!(error(&list_main("let xs = [1]\nprint(xs.len)")), "`List[i64]` has no field `len`; its methods are `len()`, `push(...)` and `pop()`");
         assert_eq!(error(&list_main("let xs = [1]\nprint(xs.len(1))")), "`len` takes 0 arguments but 1 were given");
         assert_eq!(error(&list_main("let n = 1\nn.push(2)")), "`i64` has no method `push`");
@@ -2560,7 +2683,7 @@ mod tests {
     fn string_errors() {
         assert_eq!(error(&in_main("let a = str(\"x\")")), "`str` turns an `i64` or a `bool` into text but this is `str`");
         assert_eq!(error(&in_main("let a = str()")), "`str` takes 1 argument but 0 were given");
-        assert_eq!(error(&in_main("let a = \"x\"\nprint(a.size())")), "`str` has no method `size`; its only method so far is `len()`");
+        assert_eq!(error(&in_main("let a = \"x\"\nprint(a.size())")), "`str` has no method `size`");
         assert_eq!(error("fn str(a: i64) {\n}\nfn main() {\n}"), "`str` is built in and cannot be redefined");
         assert_eq!(error(&in_main("var a = \"x\"\na = 1")), "expected `str` but this is `i64`");
     }
@@ -2720,6 +2843,64 @@ mod tests {
         // Arms that all return make the `match` return.
         assert!(check_src("fn f(o: Option[i64]) -> i64 {\n match o {\n Some(v) => return v\n None => return 0\n }\n}\nfn main() {\n}").is_ok());
         assert_eq!(error("fn f(o: Option[i64]) -> i64 {\n match o {\n Some(v) => return v\n None => {}\n }\n}\nfn main() {\n}"), "function `f` must return a value of type `i64` on every path");
+    }
+
+    /// Checks a program together with the standard library's azoL code.
+    fn library_error(body: &str) -> Option<String> {
+        let user = in_main(body);
+        let src = format!("{user}\n{}", include_str!("prelude.azl"));
+        let tokens = lex(&src).expect("lexing failed");
+        let ast = parse(&src, &tokens).expect("parsing failed");
+        check_with_prelude(&ast, &src, user.len() as u32 + 1).err().map(|e| e.message)
+    }
+
+    #[test]
+    fn system_functions() {
+        assert!(check_src(&in_main("let a: List[str] = args()\nlet r: Result[str, str] = read_file(\"a\")\nlet w: Result[i64, str] = write_file(\"a\", \"b\")\nlet c: str = chr(65)\neprint(c)\nexit(2)")).is_ok());
+        assert_eq!(error(&in_main("args(1)")), "`args` takes 0 arguments but 1 were given");
+        assert_eq!(error(&in_main("read_file()")), "`read_file` takes 1 argument but 0 were given");
+        assert_eq!(error(&in_main("read_file(1)")), "argument 1 of `read_file` needs `str` but this is `i64`");
+        assert_eq!(error(&in_main("write_file(\"a\", 1)")), "argument 2 of `write_file` needs `str` but this is `i64`");
+        assert_eq!(error(&in_main("eprint(1)")), "argument 1 of `eprint` needs `str` but this is `i64`");
+        assert_eq!(error(&in_main("exit(\"a\")")), "argument 1 of `exit` needs `i64` but this is `str`");
+        assert_eq!(error(&in_main("let x = exit(1)")), "this expression has no value to store");
+        assert_eq!(error(&in_main("let x = args")), "`args` is a function; call it with `args(...)`");
+        for name in ["print", "eprint", "str", "chr", "args", "read_file", "write_file", "exit"] {
+            assert_eq!(error(&format!("fn {name}() {{\n}}\nfn main() {{\n}}")), format!("`{name}` is built in and cannot be redefined"));
+        }
+    }
+
+    #[test]
+    fn string_bytes_and_slices() {
+        assert!(check_src(&in_main("let s = \"abc\"\nlet b: i64 = s[0]\nlet t: str = s.slice(0, b)\nlet u = (s + t)[1] + s.slice(1, 2).len()")).is_ok());
+        assert_eq!(error(&in_main("var s = \"abc\"\ns[0] = 65")), "a string cannot be changed in place; build a new one with `slice` and `+`");
+        assert_eq!(error("fn f(b: mut i64) {\n}\nfn main() {\n var s = \"abc\"\n f(mut s[0])\n}"), "`mut` needs a variable or a part of a variable");
+        assert_eq!(error(&in_main("let s = \"abc\"\nlet b = s[true]")), "an index needs `i64` but this is `bool`");
+        assert_eq!(error(&in_main("let s = \"abc\"\nlet t = s.slice(1)")), "`slice` takes 2 arguments but 1 were given");
+        assert_eq!(error(&in_main("let s = \"abc\"\nlet t = s.slice(1, \"b\")")), "argument 2 of `slice` needs `i64` but this is `str`");
+        assert_eq!(error(&in_main("let b = true[0]")), "only a list or a string can be indexed but this is `bool`");
+        // The library's methods need the library.
+        assert_eq!(error(&in_main("let s = \"abc\"\nlet t = s.trim()")), "`str` has no method `trim`");
+        assert_eq!(error(&in_main("let n = 1\nlet t = n.trim()")), "`i64` has no method `trim`");
+        assert_eq!(error(&in_main("let xs = [1]\nxs.sort()")), "`List[i64]` has no method `sort`");
+    }
+
+    #[test]
+    fn library_methods() {
+        assert_eq!(library_error("let s = \" a,b \"\nlet t: str = s.trim()\nlet p: List[str] = t.split(\",\")\nlet j: str = p.join(\"-\")\nlet f: Option[i64] = s.find(\"a\")\nlet n: Option[i64] = \"12\".to_i64()\nlet b: bool = s.contains(\"a\") && s.starts_with(\" \") && s.ends_with(\" \")\nlet l: List[str] = (s + s).lines()"), None);
+        assert_eq!(library_error("let s = \"a\"\nlet t = s.find()").as_deref(), Some("`find` takes 1 argument but 0 were given"));
+        assert_eq!(library_error("let s = \"a\"\nlet t = s.find(1)").as_deref(), Some("argument 1 of `find` needs `str` but this is `i64`"));
+        assert_eq!(library_error("let s = \"a\"\nlet t = s.trim(1)").as_deref(), Some("`trim` takes 0 arguments but 1 were given"));
+        assert_eq!(library_error("let xs = [1]\nlet t = xs.join(\",\")").as_deref(), Some("`List[i64]` has no method `join`"));
+        assert_eq!(library_error("let s = \"a\"\nlet t = s.nothing()").as_deref(), Some("`str` has no method `nothing`"));
+        // The library's functions are methods only: their names stay free.
+        assert_eq!(library_error("let t = str_find(\"a\", \"a\")").as_deref(), Some("unknown function `str_find`"));
+        assert_eq!(library_error("let t = find(\"a\", \"a\")").as_deref(), Some("unknown function `find`"));
+        let user = "fn str_find(a: i64) -> i64 {\n return a\n}\nfn find(a: i64) -> i64 {\n return str_find(a)\n}\nfn main() {\n let n = find(1)\n let at = \"abc\".find(\"c\")\n}";
+        let src = format!("{user}\n{}", include_str!("prelude.azl"));
+        let tokens = lex(&src).unwrap();
+        let ast = parse(&src, &tokens).unwrap();
+        assert!(check_with_prelude(&ast, &src, user.len() as u32 + 1).is_ok());
     }
 
     #[test]

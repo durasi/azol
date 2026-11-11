@@ -19,8 +19,14 @@ type PResult<T> = Result<T, ParseError>;
 const MAX_DEPTH: u32 = 200;
 
 pub fn parse(src: &str, tokens: &[Token]) -> Result<Ast, ParseError> {
+    parse_into(Ast::default(), src, tokens)
+}
+
+/// Parses `tokens` and adds what they declare to `ast`. This is how the
+/// standard library's own source joins a program: its tokens refer to
+/// the same `src`, further along.
+pub fn parse_into(mut ast: Ast, src: &str, tokens: &[Token]) -> Result<Ast, ParseError> {
     debug_assert!(matches!(tokens.last(), Some(t) if t.kind == K::Eof));
-    let mut ast = Ast::default();
     ast.exprs.reserve(tokens.len() / 2);
     ast.expr_pos.reserve(tokens.len() / 2);
     ast.stmts.reserve(tokens.len() / 6);

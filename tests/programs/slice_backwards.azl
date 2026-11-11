@@ -1,0 +1,9 @@
+// expect-exit: 1
+// expect-output: 0
+// expect-stderr: azol: slice out of range
+
+fn main() {
+    let text = "abcdef"
+    print(text.slice(3, 3).len())
+    print(text.slice(3, 2))
+}

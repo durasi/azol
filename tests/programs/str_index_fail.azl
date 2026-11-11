@@ -1,0 +1,9 @@
+// expect-exit: 1
+// expect-output: 99
+// expect-stderr: azol: index out of range
+
+fn main() {
+    let text = "abc"
+    print(text[2])
+    print(text[3])
+}

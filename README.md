@@ -97,7 +97,7 @@ Leave out the `None` arm and the program does not compile:
 
 **Safety without ceremony.** No `&`, no `&mut`, no `'a`, no borrow checker fights. You write values; the compiler works out who owns what.
 
-**Small enough to hold in your head.** No macros, no hidden control flow, one way to do things. The whole compiler is about 7,000 lines.
+**Small enough to hold in your head.** No macros, no hidden control flow, one way to do things. The whole compiler is about 8,000 lines.
 
 **Nothing underneath.** azoL does not sit on top of another compiler. It generates machine code and writes the executable file itself, down to the code signature.
 
@@ -122,7 +122,7 @@ When a rule is broken you get a plain sentence, not a puzzle:
 
 Memory is managed by ownership. Every buffer has exactly one owner, a variable or a temporary. A temporary hands its buffer over when it is stored; a variable is duplicated when it is stored again; and each buffer is freed when its owner goes out of scope. This works at any depth: a tree of nodes that each own a list of nodes is copied and freed correctly with nothing written by hand. An enum owns whatever its current variant holds, and only that.
 
-Out-of-range indexes, `pop` on an empty list and division by zero stop the program with a message. They never read or write memory they should not.
+Out-of-range indexes and slices, `pop` on an empty list and division by zero stop the program with a message. They never read or write memory they should not.
 
 ## Numbers
 
@@ -146,7 +146,8 @@ That is roughly 210 times faster than the full Rust build, and 110 times faster 
 
 ## What works today
 
-- `i64`, `bool` and `str`, with `+`, `==`, `!=`, `len()` and `str(...)` for text
+- `i64`, `bool` and `str`
+- text: `+`, `==`, `!=`, `len`, bytes with `text[i]`, `slice`, `find`, `contains`, `starts_with`, `ends_with`, `trim`, `split`, `lines`, `join`, `to_i64`, and `str(...)` and `chr(...)` to make text from numbers
 - structs, including structs inside structs
 - `List[T]` for any `T`, including lists of lists and lists of structs: `push`, `pop`, `len`, indexing
 - enums whose variants carry values, with type parameters if you want them, and recursive ones through a list
@@ -155,11 +156,13 @@ That is roughly 210 times faster than the full Rust build, and 110 times faster 
 - functions and recursion, read-only parameters and `mut` parameters
 - `let` (fixed) and `var` (changeable) variables
 - `if` / `else`, `while`, `for ... in`, `match`, `break`, `continue`
-- `print` for integers, booleans and text
+- `print` for integers, booleans and text, `eprint` for standard error
+- files with `read_file` and `write_file`, which return a `Result` instead of failing silently
+- command-line arguments with `args()`, and `exit(code)`
 - automatic memory management with no garbage collector
 - compile errors that point at the exact place and say what to do
 
-It is young. azoL targets Apple Silicon Macs only, has no standard library yet, and is missing generic functions and structs, patterns inside patterns, floating-point numbers, files and modules. Integer overflow currently wraps. Do not build anything you depend on with it yet.
+It is young. azoL targets Apple Silicon Macs only, has only a first, small standard library, and is missing generic functions and structs, patterns inside patterns, floating-point numbers and modules. Integer overflow currently wraps. Do not build anything you depend on with it yet.
 
 ## Try it
 
@@ -170,6 +173,11 @@ You need a Mac with Apple Silicon and a Rust toolchain to build the compiler.
     cargo build --release
     ./target/release/azol build examples/players.azl
     ./examples/players
+
+A real command-line tool, written in azoL:
+
+    ./target/release/azol build examples/wc.azl
+    ./examples/wc README.md src/main.rs
 
 More to run: `examples/bank.azl`, `examples/tree.azl`, `examples/lists.azl`, `examples/structs.azl`, `examples/fib.azl`.
 
@@ -194,20 +202,17 @@ Five stages, each a plain pass over the previous one's output:
 4. **Code generator.** Syntax tree straight to ARM64 machine code in one pass.
 5. **Linker.** Lays out the Mach-O file, binds the system library imports, and computes the code signature macOS requires, hashing pages on several threads.
 
-The compiler is written in Rust with no dependencies, SHA-256 included. A small runtime for printing, growing lists and joining strings is written in assembly and embedded as machine code.
+The compiler is written in Rust with no dependencies, SHA-256 included. A small runtime for printing, files, growing lists and joining strings is written in assembly and embedded as machine code. The text methods of the standard library (`find`, `split`, `trim` and the rest) are written in azoL itself, in `src/prelude.azl`, and compiled with every program.
 
 **How it is tested.** Besides unit tests for every stage, each test program is executed on an emulated ARM64 CPU with a checking heap. The heap reports any buffer that is leaked, freed twice, used after being freed or overrun by a single byte, and it moves a buffer every time it grows so that stale pointers cannot hide. Every test program must come out clean. On a Mac the same programs also run natively against the real system allocator.
 
 ## Roadmap
 
-Done so far: the compiler pipeline, ownership at any depth, and `match`, enums, `Option` and `Result`.
-
-1. Files, command-line arguments and a first standard library
-2. Generic functions and structs
-3. Skipping copies the compiler can prove unnecessary
-4. An optimizing release mode, to close the run-time gap
-5. Linux and x86-64
-6. **The azoL compiler written in azoL.** Rust is scaffolding; the goal is to remove it.
+1. Generic functions and structs
+2. Skipping copies the compiler can prove unnecessary
+3. An optimizing release mode, to close the run-time gap
+4. Linux and x86-64
+5. **The azoL compiler written in azoL.** Rust is scaffolding; the goal is to remove it.
 
 ## Name
 

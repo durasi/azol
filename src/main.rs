@@ -180,33 +180,53 @@ fn run_parse(path: &str, time_only: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// The part of the standard library that is written in azoL.
+const PRELUDE: &str = include_str!("prelude.azl");
+
 fn run_build(path: &str, out: Option<&str>) -> ExitCode {
     let started = Instant::now();
-    let Some(src) = read_source(path) else {
+    let Some(mut src) = read_source(path) else {
         return ExitCode::FAILURE;
     };
+    // The standard library's source follows the program's in one text, so
+    // that every position in either is a plain offset. Only `user` is
+    // ever shown in a message.
+    let user_len = src.len();
+    let prelude_start = user_len + 1;
+    src.push('\n');
+    src.push_str(PRELUDE);
+    let user = &src[..user_len];
     let read = started.elapsed().as_secs_f64();
 
-    let tokens = match lexer::lex(&src) {
+    let tokens = match lexer::lex(user) {
         Ok(tokens) => tokens,
         Err(err) => {
-            report(path, &src, err.offset, err.message);
+            report(path, user, err.offset, err.message);
             return ExitCode::FAILURE;
         }
     };
     let ast = match parser::parse(&src, &tokens) {
         Ok(ast) => ast,
         Err(err) => {
-            report(path, &src, err.offset, &err.message);
+            report(path, user, err.offset, &err.message);
             return ExitCode::FAILURE;
         }
     };
+    let mut prelude_tokens = lexer::lex(&src[prelude_start..]).expect("the standard library has valid tokens");
+    for token in &mut prelude_tokens {
+        token.start += prelude_start as u32;
+    }
+    let ast = parser::parse_into(ast, &src, &prelude_tokens).expect("the standard library parses");
     let parsed = started.elapsed().as_secs_f64();
 
-    let program = match sema::check(&ast, &src) {
+    let program = match sema::check_with_prelude(&ast, &src, prelude_start as u32) {
         Ok(program) => program,
+        Err(err) if err.offset as usize >= prelude_start => {
+            eprintln!("error: {} (inside the standard library; this is a bug in azoL)", err.message);
+            return ExitCode::FAILURE;
+        }
         Err(err) => {
-            report(path, &src, err.offset, &err.message);
+            report(path, user, err.offset, &err.message);
             return ExitCode::FAILURE;
         }
     };
