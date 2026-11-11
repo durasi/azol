@@ -7,12 +7,25 @@
 //! to run; an optimizing backend comes later.
 
 use crate::ast::*;
-use crate::sema::{Program, Ty, BUILTIN_PRINT, BY_REF};
+use crate::runtime::{self, RuntimeReloc, RUNTIME, RUNTIME_DATA, RUNTIME_DATA_OFFSETS, RUNTIME_RELOCS};
+use crate::sema::{Program, Ty, BUILTIN_PRINT_BOOL, BUILTIN_PRINT_I64, BUILTIN_PRINT_STR, BY_REF, FIRST_BUILTIN};
 
 pub struct Code {
     pub words: Vec<u32>,
     /// Index of the first instruction of `main`.
     pub entry: u32,
+    /// Read-only bytes placed after the code: runtime text, then the
+    /// program's string literals.
+    pub data: Vec<u8>,
+    /// Instructions the linker completes once addresses are known.
+    pub relocs: Vec<Reloc>,
+}
+
+pub enum Reloc {
+    /// Three words at `at`: load an imported function's address and call it.
+    Import { at: u32, import: u32 },
+    /// Two words at `at`: put the address of `data[offset]` in `reg`.
+    Data { at: u32, offset: u32, reg: u32 },
 }
 
 const X0: u32 = 0;
@@ -34,35 +47,6 @@ const LE: u32 = 13;
 const RET: u32 = 0xD65F_03C0;
 const BRK_1: u32 = 0xD420_0020;
 const PUSH_X0: u32 = 0xF81F_0FE0; // str x0, [sp, #-16]!
-
-/// `print(i64)`: formats the number into a stack buffer and writes it,
-/// followed by a newline, to standard output with the `write` system call.
-const PRINT_I64: [u32; 24] = [
-    0xD100C3FF, // sub sp, sp, #48
-    0x9100BFE9, // add x9, sp, #47
-    0x5280014A, // mov w10, #10
-    0x3900012A, // strb w10, [x9]
-    0xF100001F, // cmp x0, #0
-    0xDA80A40B, // cneg x11, x0, lt
-    0xD280014D, // mov x13, #10
-    0x9ACD096E, // udiv x14, x11, x13
-    0x9B0DADCF, // msub x15, x14, x13, x11
-    0x1100C1EF, // add w15, w15, #48
-    0x381FFD2F, // strb w15, [x9, #-1]!
-    0xAA0E03EB, // mov x11, x14
-    0xB5FFFF6B, // cbnz x11, -5
-    0xB6F80060, // tbz x0, #63, +3
-    0x528005AF, // mov w15, #45
-    0x381FFD2F, // strb w15, [x9, #-1]!
-    0xD2800020, // mov x0, #1
-    0xAA0903E1, // mov x1, x9
-    0x9100C3E2, // add x2, sp, #48
-    0xCB090042, // sub x2, x2, x9
-    0xD2800090, // mov x16, #4
-    0xD4001001, // svc #0x80
-    0x9100C3FF, // add sp, sp, #48
-    0xD65F03C0, // ret
-];
 
 fn pop(reg: u32) -> u32 {
     0xF841_07E0 | reg // ldr reg, [sp], #16
@@ -113,6 +97,9 @@ struct Gen<'a> {
     fn_starts: Vec<u32>,
     /// (instruction index, function index) of every `bl` to patch.
     calls: Vec<(usize, u32)>,
+    /// Instruction indices of `bl`s to the division-by-zero handler.
+    traps: Vec<usize>,
+    relocs: Vec<Reloc>,
     loops: Vec<LoopFixups>,
     frame_bytes: u32,
     ret: Ty,
@@ -126,6 +113,8 @@ pub fn generate(ast: &Ast, prog: &Program) -> Code {
         words: Vec::with_capacity(ast.exprs.len() * 3 + 64),
         fn_starts: Vec::with_capacity(prog.fns.len()),
         calls: Vec::new(),
+        traps: Vec::new(),
+        relocs: Vec::new(),
         loops: Vec::new(),
         frame_bytes: 0,
         ret: Ty::Unit,
@@ -138,14 +127,34 @@ pub fn generate(ast: &Ast, prog: &Program) -> Code {
             index += 1;
         }
     }
-    let print_start = g.words.len() as u32;
-    g.words.extend_from_slice(&PRINT_I64);
-    for &(at, target) in &g.calls {
-        let dest = if target == BUILTIN_PRINT { print_start } else { g.fn_starts[target as usize] };
-        let delta = dest as i64 - at as i64;
-        g.words[at] = 0x9400_0000 | (delta as u32 & 0x03FF_FFFF);
+    // The runtime follows the program's functions.
+    let runtime_start = g.words.len() as u32;
+    g.words.extend_from_slice(&RUNTIME);
+    for reloc in &RUNTIME_RELOCS {
+        g.relocs.push(match *reloc {
+            RuntimeReloc::Import { at, import } => Reloc::Import { at: runtime_start + at, import },
+            RuntimeReloc::Data { at, data, reg } => {
+                Reloc::Data { at: runtime_start + at, offset: RUNTIME_DATA_OFFSETS[data as usize], reg }
+            }
+        });
     }
-    Code { entry: g.fn_starts[prog.main as usize], words: g.words }
+    let bl = |from: usize, to: u32| 0x9400_0000 | ((to as i64 - from as i64) as u32 & 0x03FF_FFFF);
+    for &(at, target) in &g.calls {
+        let dest = match target {
+            BUILTIN_PRINT_I64 => runtime_start + runtime::PRINT_I64,
+            BUILTIN_PRINT_BOOL => runtime_start + runtime::PRINT_BOOL,
+            BUILTIN_PRINT_STR => runtime_start + runtime::PRINT_STR,
+            index => g.fn_starts[index as usize],
+        };
+        g.words[at] = bl(at, dest);
+    }
+    for &at in &g.traps {
+        g.words[at] = bl(at, runtime_start + runtime::DIV_ZERO);
+    }
+    let mut data = Vec::with_capacity(RUNTIME_DATA.len() + prog.data.len());
+    data.extend_from_slice(RUNTIME_DATA);
+    data.extend_from_slice(&prog.data);
+    Code { entry: g.fn_starts[prog.main as usize], words: g.words, data, relocs: g.relocs }
 }
 
 impl<'a> Gen<'a> {
@@ -194,8 +203,9 @@ impl<'a> Gen<'a> {
         self.prog.expr_ty[id as usize]
     }
 
+    /// True for values handled by address: structs and strings.
     fn is_struct(&self, id: ExprId) -> bool {
-        matches!(self.ty(id), Ty::Struct(_))
+        self.ty(id).is_aggregate()
     }
 
     fn function(&mut self, index: u32, params: List, body: List) {
@@ -393,6 +403,19 @@ impl<'a> Gen<'a> {
             return;
         }
         match self.ast.exprs[id as usize] {
+            Expr::Str(_) => {
+                // A string value is a pointer and a length.
+                let tmp = self.prog.expr_tmp[id as usize];
+                let (offset, len) = self.prog.strings[self.prog.expr_res[id as usize] as usize];
+                let at = self.words.len() as u32;
+                self.emit(0);
+                self.emit(0);
+                self.relocs.push(Reloc::Data { at, offset: RUNTIME_DATA.len() as u32 + offset, reg: X0 });
+                self.emit(str(X0, FP, frame(tmp)));
+                self.mov_imm(len as i64);
+                self.emit(str(X0, FP, frame(tmp + 1)));
+                self.emit(add_slots(X0, FP, frame(tmp)));
+            }
             Expr::StructLit { fields, .. } => {
                 let tmp = self.prog.expr_tmp[id as usize];
                 for &init_id in self.ast.list(fields) {
@@ -419,7 +442,7 @@ impl<'a> Gen<'a> {
                     self.emit(add_slots(X0, X0, offset));
                 }
             }
-            _ => unreachable!("checked: only these expressions produce a struct"),
+            _ => unreachable!("checked: only these expressions produce a struct or a string"),
         }
     }
 
@@ -503,7 +526,11 @@ impl<'a> Gen<'a> {
         let target = self.prog.expr_res[id as usize];
         let arg_ids = self.ast.list(args);
         for (i, &arg) in arg_ids.iter().enumerate() {
-            let by_ref = target != BUILTIN_PRINT && self.prog.fns[target as usize].params[i].by_ref;
+            let by_ref = if target >= FIRST_BUILTIN {
+                target == BUILTIN_PRINT_STR
+            } else {
+                self.prog.fns[target as usize].params[i].by_ref
+            };
             match self.ast.exprs[arg as usize] {
                 Expr::MutArg(inner) => {
                     let place = self.place(inner).expect("checked: `mut` is given a place");
@@ -530,10 +557,12 @@ impl<'a> Gen<'a> {
         self.emit(cset_x0(cond));
     }
 
-    /// Division by zero stops the program instead of producing garbage.
+    /// Division by zero stops the program with a message instead of
+    /// producing garbage.
     fn trap_if_zero(&mut self) {
         self.emit(0xB500_0040); // cbnz x0, +2
-        self.emit(BRK_1);
+        let at = self.placeholder();
+        self.traps.push(at);
     }
 }
 

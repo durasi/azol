@@ -6,6 +6,7 @@ mod dump;
 mod lexer;
 mod macho;
 mod parser;
+mod runtime;
 mod sema;
 mod sha256;
 mod token;
@@ -205,7 +206,7 @@ fn run_build(path: &str, out: Option<&str>) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let ident = out_path.file_name().and_then(|name| name.to_str()).unwrap_or("azol-program");
-    let image = macho::build_executable(&code.words, code.entry, ident);
+    let image = macho::build_executable(&code, &runtime::IMPORTS, ident);
     let linked = started.elapsed().as_secs_f64();
 
     if let Err(err) = write_executable(&out_path, &image) {

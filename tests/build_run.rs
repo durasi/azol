@@ -12,18 +12,35 @@ use std::process::Command;
 struct Expectation {
     exit: i32,
     output: String,
+    /// Text the program must write to standard error, if any.
+    stderr: Option<String>,
 }
 
+/// Reads the `// expect-...:` comments of a test program. The output is
+/// given either as `expect-line` comments, one per printed line, or as
+/// one `expect-output` comment listing the printed values.
 fn expectation(source: &str, path: &Path) -> Expectation {
-    let field = |key: &str| {
+    let values = |key: &str| -> Vec<&str> {
+        let prefix = format!("// {key}:");
         source
             .lines()
-            .find_map(|line| line.strip_prefix(&format!("// {key}: ")))
-            .unwrap_or_else(|| panic!("{} has no `// {key}:` comment", path.display()))
+            .filter_map(|line| line.strip_prefix(prefix.as_str()))
+            .map(|rest| rest.strip_prefix(' ').unwrap_or(rest))
+            .collect()
+    };
+    let exit = values("expect-exit");
+    let lines = values("expect-line");
+    let output = if lines.is_empty() {
+        let listed = values("expect-output");
+        assert_eq!(listed.len(), 1, "{} needs `expect-line` or one `expect-output` comment", path.display());
+        listed[0].split_whitespace().map(|part| format!("{part}\n")).collect()
+    } else {
+        lines.iter().map(|line| format!("{line}\n")).collect()
     };
     Expectation {
-        exit: field("expect-exit").trim().parse().expect("expect-exit must be a number"),
-        output: field("expect-output").split_whitespace().map(|part| format!("{part}\n")).collect(),
+        exit: exit.first().unwrap_or_else(|| panic!("{} has no `// expect-exit:` comment", path.display())).trim().parse().expect("expect-exit must be a number"),
+        output,
+        stderr: values("expect-stderr").first().map(|line| format!("{line}\n")),
     }
 }
 
@@ -72,6 +89,9 @@ fn programs_compile_and_run() {
                 path.display()
             );
             assert_eq!(run.status.code(), Some(expected.exit), "{}: wrong exit code", path.display());
+            if let Some(stderr) = &expected.stderr {
+                assert_eq!(&String::from_utf8_lossy(&run.stderr), stderr, "{}: wrong error output", path.display());
+            }
         }
     }
     let _ = fs::remove_dir_all(&out_dir);

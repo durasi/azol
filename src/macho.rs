@@ -4,6 +4,7 @@
 //! including the ad-hoc code signature the system requires. No external
 //! linker or `codesign` run is involved.
 
+use crate::arm64::{Code, Reloc};
 use crate::sha256::sha256;
 
 const PAGE: u64 = 0x4000;
@@ -41,7 +42,7 @@ impl Buf {
         self.0.resize(start + total, 0);
     }
     #[allow(clippy::too_many_arguments)]
-    fn segment(&mut self, name: &str, vmaddr: u64, vmsize: u64, fileoff: u64, filesize: u64, prot: u32, nsects: u32) {
+    fn segment(&mut self, name: &str, vmaddr: u64, vmsize: u64, fileoff: u64, filesize: u64, prot: u32, nsects: u32, flags: u32) {
         self.u32(LC_SEGMENT_64);
         self.u32(72 + 80 * nsects);
         self.name16(name);
@@ -52,6 +53,21 @@ impl Buf {
         self.u32(prot);
         self.u32(prot);
         self.u32(nsects);
+        self.u32(flags);
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn section(&mut self, name: &str, segment: &str, addr: u64, size: u64, offset: u64, align: u32, flags: u32) {
+        self.name16(name);
+        self.name16(segment);
+        self.u64(addr);
+        self.u64(size);
+        self.u32(offset as u32);
+        self.u32(align);
+        self.u32(0); // relocations
+        self.u32(0);
+        self.u32(flags);
+        self.u32(0); // reserved1: index into the indirect symbol table
+        self.u32(0);
         self.u32(0);
     }
 }
@@ -113,19 +129,77 @@ pub fn code_signature(signed: &[u8], ident: &str, text_file_size: u64, page_shif
     out
 }
 
-/// Lays out and signs an executable whose code is `code` and whose entry
-/// point is the instruction at index `entry_word`.
-pub fn build_executable(code: &[u32], entry_word: u32, ident: &str) -> Vec<u8> {
-    const NCMDS: u32 = 11;
-    const SIZEOFCMDS: u32 = 72 + 152 + 72 + 48 + 24 + 80 + 32 + 24 + 24 + 56 + 16;
+/// `adrp rd, target`: the 4 KiB page of `target`, relative to `pc`.
+fn adrp(rd: u32, pc: u64, target: u64) -> u32 {
+    let delta = (target >> 12) as i64 - (pc >> 12) as i64;
+    0x9000_0000 | ((delta & 3) as u32) << 29 | (((delta >> 2) & 0x7_FFFF) as u32) << 5 | rd
+}
+
+fn uleb(out: &mut Vec<u8>, mut value: u64) {
+    loop {
+        let byte = (value & 0x7F) as u8;
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+/// Lays out, links and signs an executable.
+///
+/// The file has three mapped parts: `__TEXT` (headers, code, read-only
+/// data), `__DATA_CONST` (one pointer per imported function, filled in by
+/// the system loader) and `__LINKEDIT` (the loader's instructions for
+/// those pointers, the symbol table and the signature).
+pub fn build_executable(code: &Code, imports: &[&str], ident: &str) -> Vec<u8> {
+    const NCMDS: u32 = 12;
+    const SIZEOFCMDS: u32 = 72 + 232 + 152 + 72 + 48 + 24 + 80 + 32 + 24 + 24 + 56 + 16;
+    const DATA_CONST_SEGMENT: u8 = 2;
+    let n_imports = imports.len() as u64;
+
     let code_off = align_up(32 + SIZEOFCMDS as u64, 16);
-    let code_size = code.len() as u64 * 4;
-    let text_size = align_up(code_off + code_size, PAGE);
-    let linkedit_off = text_size;
-    let strtab_size = 16u64;
-    let sig_off = linkedit_off + strtab_size;
+    let code_size = code.words.len() as u64 * 4;
+    let const_off = code_off + code_size;
+    let const_size = code.data.len() as u64;
+    let text_size = align_up(const_off + const_size, PAGE);
+    let got_off = text_size;
+    let got_addr = TEXT_VMADDR + got_off;
+    let got_size = n_imports * 8;
+    let linkedit_off = got_off + PAGE;
+
+    // Loader instructions: bind each GOT slot to its symbol in libSystem.
+    let mut bind = Vec::new();
+    for (i, name) in imports.iter().enumerate() {
+        bind.push(0x70 | DATA_CONST_SEGMENT); // set segment and offset
+        uleb(&mut bind, i as u64 * 8);
+        bind.push(0x40); // symbol name follows
+        bind.extend_from_slice(name.as_bytes());
+        bind.push(0);
+        bind.push(0x51); // type: pointer
+        bind.push(0x11); // library ordinal 1
+        bind.push(0x90); // bind
+    }
+    bind.push(0x00); // done
+    bind.resize(align_up(bind.len() as u64, 8) as usize, 0);
+
+    let mut strtab = vec![b' ', 0];
+    let mut name_offsets = Vec::with_capacity(imports.len());
+    for name in imports {
+        name_offsets.push(strtab.len() as u32);
+        strtab.extend_from_slice(name.as_bytes());
+        strtab.push(0);
+    }
+
+    let bind_off = linkedit_off;
+    let symtab_off = bind_off + bind.len() as u64;
+    let indirect_off = symtab_off + n_imports * 16;
+    let strtab_off = align_up(indirect_off + n_imports * 4, 8);
+    let sig_off = align_up(strtab_off + strtab.len() as u64, 16);
+    let strtab_size = sig_off - strtab_off;
     let sig_size = align_up(signature_size(sig_off, ident) as u64, 16);
-    let linkedit_size = strtab_size + sig_size;
+    let linkedit_size = sig_off + sig_size - linkedit_off;
 
     let mut b = Buf(Vec::with_capacity((linkedit_off + linkedit_size) as usize));
     // mach_header_64
@@ -138,41 +212,49 @@ pub fn build_executable(code: &[u32], entry_word: u32, ident: &str) -> Vec<u8> {
     b.u32(0x0020_0085); // NOUNDEFS | DYLDLINK | TWOLEVEL | PIE
     b.u32(0);
 
-    b.segment("__PAGEZERO", 0, TEXT_VMADDR, 0, 0, 0, 0);
+    b.segment("__PAGEZERO", 0, TEXT_VMADDR, 0, 0, 0, 0, 0);
 
-    b.segment("__TEXT", TEXT_VMADDR, text_size, 0, text_size, 5, 1);
-    b.name16("__text");
-    b.name16("__TEXT");
-    b.u64(TEXT_VMADDR + code_off);
-    b.u64(code_size);
-    b.u32(code_off as u32);
-    b.u32(2); // 4-byte alignment
-    b.u32(0);
-    b.u32(0);
-    b.u32(0x8000_0400); // pure instructions
-    b.u32(0);
-    b.u32(0);
-    b.u32(0);
+    b.segment("__TEXT", TEXT_VMADDR, text_size, 0, text_size, 5, 2, 0);
+    b.section("__text", "__TEXT", TEXT_VMADDR + code_off, code_size, code_off, 2, 0x8000_0400); // pure instructions
+    b.section("__const", "__TEXT", TEXT_VMADDR + const_off, const_size, const_off, 0, 0);
 
-    b.segment("__LINKEDIT", TEXT_VMADDR + linkedit_off, align_up(linkedit_size, PAGE), linkedit_off, linkedit_size, 1, 0);
+    b.segment("__DATA_CONST", got_addr, PAGE, got_off, PAGE, 3, 1, 0x10); // read-only after loading
+    b.section("__got", "__DATA_CONST", got_addr, got_size, got_off, 3, 0x6); // non-lazy symbol pointers
+
+    b.segment("__LINKEDIT", TEXT_VMADDR + linkedit_off, align_up(linkedit_size, PAGE), linkedit_off, linkedit_size, 1, 0, 0);
 
     b.u32(LC_DYLD_INFO_ONLY);
     b.u32(48);
-    for _ in 0..10 {
-        b.u32(0);
+    b.u32(0); // rebase
+    b.u32(0);
+    b.u32(bind_off as u32);
+    b.u32(bind.len() as u32);
+    for _ in 0..6 {
+        b.u32(0); // weak bind, lazy bind, export
     }
 
     b.u32(LC_SYMTAB);
     b.u32(24);
-    b.u32(linkedit_off as u32);
-    b.u32(0);
-    b.u32(linkedit_off as u32);
+    b.u32(symtab_off as u32);
+    b.u32(n_imports as u32);
+    b.u32(strtab_off as u32);
     b.u32(strtab_size as u32);
 
     b.u32(LC_DYSYMTAB);
     b.u32(80);
-    for _ in 0..18 {
-        b.u32(0);
+    b.u32(0); // local symbols
+    b.u32(0);
+    b.u32(0); // defined external symbols
+    b.u32(0);
+    b.u32(0); // undefined symbols
+    b.u32(n_imports as u32);
+    for _ in 0..6 {
+        b.u32(0); // table of contents, modules, external references
+    }
+    b.u32(indirect_off as u32);
+    b.u32(n_imports as u32);
+    for _ in 0..4 {
+        b.u32(0); // relocations
     }
 
     b.u32(LC_LOAD_DYLINKER);
@@ -189,7 +271,7 @@ pub fn build_executable(code: &[u32], entry_word: u32, ident: &str) -> Vec<u8> {
 
     b.u32(LC_MAIN);
     b.u32(24);
-    b.u64(code_off + entry_word as u64 * 4);
+    b.u64(code_off + code.entry as u64 * 4);
     b.u64(0);
 
     b.u32(LC_LOAD_DYLIB);
@@ -206,12 +288,47 @@ pub fn build_executable(code: &[u32], entry_word: u32, ident: &str) -> Vec<u8> {
     b.u32(sig_size as u32);
 
     debug_assert_eq!(b.0.len() as u32, 32 + SIZEOFCMDS);
+
+    // Code, with the instructions that depend on final addresses filled in.
     b.0.resize(code_off as usize, 0);
-    for word in code {
+    let mut words = code.words.clone();
+    for reloc in &code.relocs {
+        match *reloc {
+            Reloc::Import { at, import } => {
+                let pc = TEXT_VMADDR + code_off + at as u64 * 4;
+                let target = got_addr + import as u64 * 8;
+                words[at as usize] = adrp(16, pc, target);
+                words[at as usize + 1] = 0xF940_0210 | (((target & 0xFFF) / 8) as u32) << 10; // ldr x16, [x16, #lo12]
+                words[at as usize + 2] = 0xD63F_0200; // blr x16
+            }
+            Reloc::Data { at, offset, reg } => {
+                let pc = TEXT_VMADDR + code_off + at as u64 * 4;
+                let target = TEXT_VMADDR + const_off + offset as u64;
+                words[at as usize] = adrp(reg, pc, target);
+                words[at as usize + 1] = 0x9100_0000 | ((target & 0xFFF) as u32) << 10 | reg << 5 | reg; // add reg, reg, #lo12
+            }
+        }
+    }
+    for word in &words {
         b.u32(*word);
     }
+    b.0.extend_from_slice(&code.data);
+
+    // The GOT page is all zeros in the file; the loader fills it.
     b.0.resize(linkedit_off as usize, 0);
-    b.0.extend_from_slice(b" \0");
+    b.0.extend_from_slice(&bind);
+    for &name_offset in &name_offsets {
+        b.u32(name_offset);
+        b.0.push(0x01); // undefined, external
+        b.0.push(0);
+        b.0.extend_from_slice(&0x0100u16.to_le_bytes()); // from library 1
+        b.u64(0);
+    }
+    for index in 0..n_imports as u32 {
+        b.u32(index);
+    }
+    b.0.resize(strtab_off as usize, 0);
+    b.0.extend_from_slice(&strtab);
     b.0.resize(sig_off as usize, 0);
 
     let signature = code_signature(&b.0, ident, text_size, SIGN_PAGE_SHIFT);
@@ -230,8 +347,14 @@ mod tests {
 
     #[test]
     fn layout_is_consistent() {
-        let code = [0xD280_0540, 0xD65F_03C0]; // mov x0, #42 ; ret
-        let file = build_executable(&code, 0, "t");
+        // mov x0, #42 ; ret, then a call through GOT slot 1 and a data address.
+        let code = Code {
+            words: vec![0xD280_0540, 0xD65F_03C0, 0, 0, 0, 0, 0],
+            entry: 0,
+            data: b"hello".to_vec(),
+            relocs: vec![Reloc::Import { at: 2, import: 1 }, Reloc::Data { at: 5, offset: 1, reg: 3 }],
+        };
+        let file = build_executable(&code, &["_write", "_exit"], "t");
         assert_eq!(le32(&file, 0), 0xFEED_FACF);
         let ncmds = le32(&file, 16);
         let sizeofcmds = le32(&file, 20) as usize;
@@ -244,11 +367,36 @@ mod tests {
         }
         assert_eq!(at, 32 + sizeofcmds);
         assert_eq!(seen.last(), Some(&LC_CODE_SIGNATURE));
-        // The code sits where LC_MAIN says and the file ends with the signature.
-        let code_off = 640;
+
+        let code_off = 864;
         assert_eq!(le32(&file, code_off), 0xD280_0540);
-        assert_eq!(file.len(), 0x4000 + 16 + 272);
-        assert_eq!(&file[0x4010..0x4014], &[0xFA, 0xDE, 0x0C, 0xC0]);
+        // Text is one page, the GOT is at 0x4000: adrp x16, +4 pages (of 4 KiB).
+        assert_eq!(le32(&file, code_off + 8), 0x9000_0030);
+        assert_eq!(le32(&file, code_off + 12), 0xF940_0610); // ldr x16, [x16, #8]
+        assert_eq!(le32(&file, code_off + 16), 0xD63F_0200); // blr x16
+        // The data starts right after the 7 words of code.
+        let data_off = code_off + 28;
+        assert_eq!(&file[data_off..data_off + 5], b"hello");
+        assert_eq!(le32(&file, code_off + 20), 0x9000_0003); // adrp x3, same page
+        assert_eq!(le32(&file, code_off + 24), 0x9100_0063 | ((data_off as u32 + 1) << 10)); // add x3, x3, #lo12
+
+        // Loader instructions name both imports and the file ends with the signature.
+        let linkedit = 0x8000;
+        let bind = &file[linkedit..linkedit + 27];
+        assert_eq!(bind, b"\x72\x00\x40_write\x00\x51\x11\x90\x72\x08\x40_exit\x00\x51\x11\x90\x00\x00");
+        let sig_off = le32(&file, 32 + sizeofcmds - 8) as usize;
+        let sig_size = le32(&file, 32 + sizeofcmds - 4) as usize;
+        assert_eq!(&file[sig_off..sig_off + 4], &[0xFA, 0xDE, 0x0C, 0xC0]);
+        assert_eq!(sig_off % 16, 0);
+        assert_eq!(file.len(), sig_off + sig_size);
+    }
+
+    #[test]
+    fn adrp_reaches_other_pages_in_both_directions() {
+        // Expected encodings from clang's assembler.
+        assert_eq!(adrp(16, 0x1_0000_1588, 0x1_0000_8000), 0xF000_0030);
+        assert_eq!(adrp(1, 0x1_0000_1590, 0x1_0000_160C), 0x9000_0001);
+        assert_eq!(adrp(0, 0x1_0000_5000, 0x1_0000_1000), 0x90FF_FFE0);
     }
 
     #[test]

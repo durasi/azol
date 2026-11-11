@@ -27,12 +27,26 @@ pub enum Ty {
     I64,
     Bool,
     Unit,
+    /// Text: a pointer and a length in bytes. So far only literals exist,
+    /// so the bytes always live in the executable itself.
+    Str,
     /// Index into `Program::structs`.
     Struct(u32),
 }
 
-/// Index of the built-in `print` in call resolutions.
-pub const BUILTIN_PRINT: u32 = u32::MAX;
+impl Ty {
+    /// Values that live in memory and are handed around by address.
+    pub fn is_aggregate(self) -> bool {
+        matches!(self, Ty::Str | Ty::Struct(_))
+    }
+}
+
+/// Built-in functions, as call resolutions.
+pub const BUILTIN_PRINT_I64: u32 = u32::MAX;
+pub const BUILTIN_PRINT_BOOL: u32 = u32::MAX - 1;
+pub const BUILTIN_PRINT_STR: u32 = u32::MAX - 2;
+/// Resolutions at or above this value are built-ins.
+pub const FIRST_BUILTIN: u32 = u32::MAX - 2;
 /// Set in the resolution of a name whose stack slot holds a pointer.
 pub const BY_REF: u32 = 1 << 31;
 
@@ -83,7 +97,8 @@ pub struct Program<'a> {
     pub main: u32,
     /// Per expression: for a name its stack slot (with `BY_REF` when the
     /// slot holds a pointer), for a field access the field's offset, for a
-    /// call the function index, for an integer literal the index in `ints`.
+    /// call the function index, for an integer literal the index in `ints`,
+    /// for a string literal the index in `strings`.
     pub expr_res: Vec<u32>,
     /// Per expression: its type.
     pub expr_ty: Vec<Ty>,
@@ -95,12 +110,17 @@ pub struct Program<'a> {
     /// Per field initializer in a struct literal: the field's offset.
     pub init_offset: Vec<u32>,
     pub ints: Vec<i64>,
+    /// Bytes of all string literals, escapes already decoded.
+    pub data: Vec<u8>,
+    /// Per string literal: offset in `data` and length.
+    pub strings: Vec<(u32, u32)>,
 }
 
 impl Program<'_> {
     pub fn size_of(&self, ty: Ty) -> u32 {
         match ty {
             Ty::I64 | Ty::Bool => 1,
+            Ty::Str => 2,
             Ty::Unit => 0,
             Ty::Struct(index) => self.structs[index as usize].size,
         }
@@ -145,6 +165,8 @@ struct Checker<'a> {
     stmt_slot: Vec<u32>,
     init_offset: Vec<u32>,
     ints: Vec<i64>,
+    data: Vec<u8>,
+    strings: Vec<(u32, u32)>,
     locals: Vec<Local<'a>>,
     borrows: Vec<Borrow>,
     ret: Ty,
@@ -166,6 +188,8 @@ pub fn check<'a>(ast: &'a Ast, src: &'a str) -> Result<Program<'a>, SemaError> {
         stmt_slot: vec![0; ast.stmts.len()],
         init_offset: vec![0; ast.field_inits.len()],
         ints: Vec::new(),
+        data: Vec::new(),
+        strings: Vec::new(),
         locals: Vec::new(),
         borrows: Vec::new(),
         ret: Ty::Unit,
@@ -194,6 +218,8 @@ pub fn check<'a>(ast: &'a Ast, src: &'a str) -> Result<Program<'a>, SemaError> {
         stmt_slot: c.stmt_slot,
         init_offset: c.init_offset,
         ints: c.ints,
+        data: c.data,
+        strings: c.strings,
     })
 }
 
@@ -210,6 +236,7 @@ impl<'a> Checker<'a> {
         match ty {
             Ty::I64 => "i64".to_string(),
             Ty::Bool => "bool".to_string(),
+            Ty::Str => "str".to_string(),
             Ty::Unit => "no value".to_string(),
             Ty::Struct(index) => self.structs[index as usize].name.to_string(),
         }
@@ -218,6 +245,7 @@ impl<'a> Checker<'a> {
     fn size_of(&self, ty: Ty) -> u32 {
         match ty {
             Ty::I64 | Ty::Bool => 1,
+            Ty::Str => 2,
             Ty::Unit => 0,
             Ty::Struct(index) => self.structs[index as usize].size,
         }
@@ -232,9 +260,10 @@ impl<'a> Checker<'a> {
         match name {
             "i64" => Ok(Ty::I64),
             "bool" => Ok(Ty::Bool),
+            "str" => Ok(Ty::Str),
             _ => match self.struct_names.get(name) {
                 Some(&index) => Ok(Ty::Struct(index)),
-                None => err(ty.name.start, format!("unknown type `{name}`; the built-in types so far are `i64` and `bool`")),
+                None => err(ty.name.start, format!("unknown type `{name}`; the built-in types so far are `i64`, `bool` and `str`")),
             },
         }
     }
@@ -250,7 +279,7 @@ impl<'a> Checker<'a> {
                     if generics.len > 0 {
                         return err(name.start, "generic structs are not supported by `azol build` yet");
                     }
-                    if text == "i64" || text == "bool" {
+                    if text == "i64" || text == "bool" || text == "str" {
                         return err(name.start, format!("`{text}` is a built-in type and cannot be redefined"));
                     }
                     let index = self.structs.len() as u32;
@@ -305,7 +334,7 @@ impl<'a> Checker<'a> {
         for field in 0..self.structs[index].fields.len() {
             let size = match self.structs[index].fields[field].ty {
                 Ty::Struct(inner) => self.layout(inner as usize, state, decls)?,
-                _ => 1,
+                other => self.size_of(other),
             };
             self.structs[index].fields[field].offset = offset;
             offset += size;
@@ -338,7 +367,7 @@ impl<'a> Checker<'a> {
             for &id in param_ids {
                 let param = self.ast.params[id as usize];
                 let ty = self.ty(param.ty)?;
-                infos.push(ParamInfo { ty, by_ref: param.mutable || matches!(ty, Ty::Struct(_)), mutable: param.mutable });
+                infos.push(ParamInfo { ty, by_ref: param.mutable || ty.is_aggregate(), mutable: param.mutable });
             }
             let ret = match ret {
                 Some(id) => self.ty(id)?,
@@ -382,7 +411,7 @@ impl<'a> Checker<'a> {
                 is_param: true,
             });
         }
-        if matches!(self.ret, Ty::Struct(_)) {
+        if self.ret.is_aggregate() {
             self.fns[index as usize].sret_slot = Some(self.alloc(1, name.start)?);
         }
         self.block(body)?;
@@ -663,6 +692,7 @@ impl<'a> Checker<'a> {
                         match left {
                             Ty::Unit => return err(self.ast.expr_pos[lhs as usize], "this expression has no value to compare"),
                             Ty::Struct(_) => return err(pos, format!("structs cannot be compared with {what} yet; compare their fields")),
+                            Ty::Str => return err(pos, format!("strings cannot be compared with {what} yet")),
                             Ty::I64 | Ty::Bool => {}
                         }
                         self.expect(rhs, left, &what)?;
@@ -718,7 +748,30 @@ impl<'a> Checker<'a> {
             Expr::Call { callee, args } => self.call(id, callee, args),
             Expr::MutArg(_) => err(pos, "`mut` can only be used on a function argument"),
             Expr::Float(_) => err(pos, "floating-point numbers are not supported by `azol build` yet"),
-            Expr::Str(_) => err(pos, "strings are not supported by `azol build` yet"),
+            Expr::Str(span) => {
+                let offset = self.data.len() as u32;
+                let text = span.text(self.src);
+                let mut bytes = text.as_bytes()[1..text.len() - 1].iter();
+                while let Some(&byte) = bytes.next() {
+                    // The lexer accepted only these escapes.
+                    self.data.push(if byte != b'\\' {
+                        byte
+                    } else {
+                        match bytes.next() {
+                            Some(b'n') => b'\n',
+                            Some(b't') => b'\t',
+                            Some(b'r') => b'\r',
+                            Some(b'0') => 0,
+                            Some(&other) => other,
+                            None => b'\\',
+                        }
+                    });
+                }
+                self.expr_res[id as usize] = self.strings.len() as u32;
+                self.strings.push((offset, self.data.len() as u32 - offset));
+                self.expr_tmp[id as usize] = self.alloc(2, pos)?;
+                Ok(Ty::Str)
+            }
             Expr::Index { .. } | Expr::ArrayLit { .. } => err(pos, "arrays are not supported by `azol build` yet"),
         }
     }
@@ -737,8 +790,18 @@ impl<'a> Checker<'a> {
             if arg_ids.len() != 1 {
                 return err(pos, format!("`print` takes 1 argument but {} were given", arg_ids.len()));
             }
-            self.expect(arg_ids[0], Ty::I64, "`print`")?;
-            self.expr_res[id as usize] = BUILTIN_PRINT;
+            let arg = arg_ids[0];
+            self.expr_res[id as usize] = match self.expr(arg)? {
+                Ty::I64 => BUILTIN_PRINT_I64,
+                Ty::Bool => BUILTIN_PRINT_BOOL,
+                Ty::Str => BUILTIN_PRINT_STR,
+                other => {
+                    return err(
+                        self.ast.expr_pos[arg as usize],
+                        format!("`print` takes an `i64`, a `bool` or a `str` but this is `{}`", self.ty_name(other)),
+                    );
+                }
+            };
             return Ok(Ty::Unit);
         }
         let Some(&index) = self.fn_names.get(text) else {
@@ -803,7 +866,7 @@ impl<'a> Checker<'a> {
 
         let ret = self.fns[index as usize].ret;
         self.expr_res[id as usize] = index;
-        if matches!(ret, Ty::Struct(_)) {
+        if ret.is_aggregate() {
             self.expr_tmp[id as usize] = self.alloc(self.size_of(ret), pos)?;
         }
         Ok(ret)
@@ -852,6 +915,18 @@ mod tests {
     }
 
     #[test]
+    fn string_literals_are_decoded() {
+        let src = "struct Named {\n name: str\n id: i64\n}\nfn main() {\n let a = \"hi\\n\"\n let b = \"q\\\"\\\\\\t\"\n let n = Named { name: a, id: 1 }\n print(n.name)\n}";
+        let tokens = lex(src).unwrap();
+        let ast = parse(src, &tokens).unwrap();
+        let program = check(&ast, src).unwrap();
+        assert_eq!(program.data, b"hi\nq\"\\\t");
+        assert_eq!(program.strings, vec![(0, 3), (3, 4)]);
+        assert_eq!(program.structs[0].size, 3);
+        assert_eq!(program.structs[0].fields[1].offset, 2);
+    }
+
+    #[test]
     fn struct_layout() {
         let src = with_point("fn main() {\n}");
         let tokens = lex(&src).unwrap();
@@ -875,7 +950,11 @@ mod tests {
         assert_eq!(error(&in_main("let a = !1")), "`!` needs `bool` but this is `i64`");
         assert_eq!(error(&in_main("let a = 1 == true")), "`==` needs `i64` but this is `bool`");
         assert_eq!(error(&in_main("let a = 1 < 2 < 3")), "`<` needs `i64` but this is `bool`");
-        assert_eq!(error(&in_main("print(true)")), "`print` needs `i64` but this is `bool`");
+        assert_eq!(error(&with_point(&in_main("print(Point { x: 1, y: 2 })"))), "`print` takes an `i64`, a `bool` or a `str` but this is `Point`");
+        assert_eq!(error(&in_main("print(print(1))")), "`print` takes an `i64`, a `bool` or a `str` but this is `no value`");
+        assert_eq!(error(&in_main("let a = \"x\" == \"y\"")), "strings cannot be compared with `==` yet");
+        assert_eq!(error(&in_main("let a = \"x\" + 1")), "`+` needs `i64` but this is `str`");
+        assert_eq!(error(&in_main("let a: str = 1")), "expected `str` but this is `i64`");
         assert_eq!(error(&in_main("let a = print(1)")), "this expression has no value to store");
     }
 
@@ -922,7 +1001,7 @@ mod tests {
         assert_eq!(error("struct A {\n b: B\n}\nstruct B {\n a: A\n}\nfn main() {\n}"), "struct `A` contains itself, so it would have no finite size");
         assert_eq!(error("struct A {\n x: i64\n x: bool\n}\nfn main() {\n}"), "field `x` is declared more than once");
         assert_eq!(error("struct A {\n}\nstruct A {\n}\nfn main() {\n}"), "struct `A` is defined more than once");
-        assert_eq!(error("struct A {\n x: Missing\n}\nfn main() {\n}"), "unknown type `Missing`; the built-in types so far are `i64` and `bool`");
+        assert_eq!(error("struct A {\n x: Missing\n}\nfn main() {\n}"), "unknown type `Missing`; the built-in types so far are `i64`, `bool` and `str`");
         assert_eq!(error("struct i64 {\n}\nfn main() {\n}"), "`i64` is a built-in type and cannot be redefined");
     }
 
@@ -1003,9 +1082,8 @@ mod tests {
     #[test]
     fn features_not_built_yet_are_reported_clearly() {
         assert_eq!(error("enum E {\n A\n}\nfn main() {\n}"), "enums are not supported by `azol build` yet");
-        assert_eq!(error(&in_main("let a = \"text\"")), "strings are not supported by `azol build` yet");
         assert_eq!(error(&in_main("let a = 1.5")), "floating-point numbers are not supported by `azol build` yet");
         assert_eq!(error(&in_main("for x in y {\n}")), "`for` loops are not supported by `azol build` yet; use `while`");
-        assert_eq!(error("fn f(a: i32) {\n}\nfn main() {\n}"), "unknown type `i32`; the built-in types so far are `i64` and `bool`");
+        assert_eq!(error("fn f(a: i32) {\n}\nfn main() {\n}"), "unknown type `i32`; the built-in types so far are `i64`, `bool` and `str`");
     }
 }

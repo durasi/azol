@@ -1,0 +1,80 @@
+// expect-exit: 0
+// expect-line: Hello, azoL
+// expect-line: line with "quotes" and a \ backslash
+// expect-line: 
+// expect-line: true
+// expect-line: false
+// expect-line: true
+// expect-line: stored
+// expect-line: changed
+// expect-line: Ada
+// expect-line: 36
+// expect-line: Grace
+// expect-line: left
+// expect-line: right
+// expect-line: negative
+// expect-line: zero
+// expect-line: positive
+// expect-line: ünïcödé ✓ çalışıyor
+// expect-line: two
+// expect-line: lines
+// expect-line: 42
+struct Person {
+    name: str
+    age: i64
+}
+
+fn greet(p: Person) {
+    print(p.name)
+    print(p.age)
+}
+
+fn pick(first: bool, a: str, b: str) -> str {
+    if first {
+        return a
+    }
+    return b
+}
+
+fn label(n: i64) -> str {
+    if n < 0 {
+        return "negative"
+    } else if n == 0 {
+        return "zero"
+    } else {
+        return "positive"
+    }
+}
+
+fn rename(p: mut Person, name: str) {
+    p.name = name
+}
+
+fn main() {
+    print("Hello, azoL")
+    print("line with \"quotes\" and a \\ backslash")
+    print("")
+    print(true)
+    print(false)
+    print(1 < 2)
+
+    let s = "stored"
+    var t = s
+    t = "changed"
+    print(s)
+    print(t)
+
+    var p = Person { name: "Ada", age: 36 }
+    greet(p)
+    rename(mut p, "Grace")
+    print(p.name)
+
+    print(pick(true, "left", "right"))
+    print(pick(false, "left", "right"))
+    print(label(-5))
+    print(label(0))
+    print(label(5))
+    print("ünïcödé ✓ çalışıyor")
+    print("two\nlines")
+    print(42)
+}

@@ -8,17 +8,18 @@ azoL is an experimental, memory-safe systems programming language designed for v
 
 ## What works today
 
-The compiler is written in Rust with no dependencies. It reads an `.azl` file and writes a signed macOS executable directly: no LLVM, no assembler, no system linker and no `codesign` run.
+The compiler is written in Rust with no dependencies. It reads an `.azl` file and writes a signed macOS executable directly: no LLVM, no assembler, no system linker and no `codesign` run. The small runtime (printing, error exits) is written in assembly; its machine code is embedded in the compiler.
 
 Supported so far:
 
-- `i64` and `bool` values
+- `i64`, `bool` and `str` values (text literals)
 - structs, including structs inside structs
 - functions, including recursion
 - read-only parameters and `mut` parameters
 - `let` (fixed) and `var` (changeable) variables
 - `if` / `else`, `while`, `break`, `continue`
-- `print` for integers
+- `print` for integers, booleans and text
+- division by zero stops the program with a message instead of continuing
 
 Values have value semantics. Assigning a struct copies it, and a function can only change an argument the caller passes as `mut`. Large values are still passed by reference for speed; the compiler rejects any call that would let two arguments refer to the same data while one of them is `mut`, so a reference can never be told apart from a private copy. This is the first rule of the memory safety analysis:
 
@@ -28,7 +29,7 @@ Values have value semantics. Assigning a struct copies it, and a function can on
     14 |     swap(mut p, mut p)
        |                     ^
 
-The parser already accepts more of the planned language (enums, `match`, `for`, generics, strings, arrays). The compiler reports these as not supported yet.
+The parser already accepts more of the planned language (enums, `match`, `for`, generics, arrays). The compiler reports these as not supported yet.
 
 ## Try it
 
@@ -73,7 +74,7 @@ Building `examples/fib.azl` and the same program in Rust (`bench/fib.rs`, plain 
 
 | | Per build | Executable size |
 |---|---|---|
-| azoL | about 0.01 s | 16.7 KB |
+| azoL | about 0.01 s | 33 KB |
 | Rust | about 0.23 s | 472 KB |
 
 Read this with care:
@@ -109,7 +110,7 @@ azoL's code is about 1.5 times slower than unoptimized Rust and about 4 times sl
 
 ## Roadmap
 
-1. Strings, arrays, `for` and `match`
+1. Growable text and arrays on the heap, `for` and `match`
 2. Enums and generics
 3. Heap values and the rest of the memory safety analysis
 4. An optimizing release mode
