@@ -212,6 +212,7 @@ impl<'a> Parser<'a> {
     }
 
     fn function(&mut self) -> PResult<Item> {
+        let first = (self.ast.exprs.len(), self.ast.stmts.len(), self.ast.patterns.len(), self.ast.field_inits.len());
         self.bump();
         let name = self.ident("a function name")?;
         let generics = self.generics()?;
@@ -235,7 +236,14 @@ impl<'a> Parser<'a> {
         let params = self.finish_list(start);
         let ret = if self.eat(K::Arrow) { Some(self.ty()?) } else { None };
         let body = self.block()?;
-        Ok(Item::Fn { name, generics, params, ret, body })
+        let run = |start: usize, end: usize| (start as u32, (end - start) as u32);
+        let nodes = Nodes {
+            exprs: run(first.0, self.ast.exprs.len()),
+            stmts: run(first.1, self.ast.stmts.len()),
+            patterns: run(first.2, self.ast.patterns.len()),
+            field_inits: run(first.3, self.ast.field_inits.len()),
+        };
+        Ok(Item::Fn { name, generics, params, ret, body, nodes })
     }
 
     fn structure(&mut self) -> PResult<Item> {

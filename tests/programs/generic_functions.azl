@@ -1,0 +1,193 @@
+// expect-exit: 0
+// expect-line: 7
+// expect-line: b
+// expect-line: true
+// expect-line: 3
+// expect-line: 9
+// expect-line: none
+// expect-line: c
+// expect-line: 3
+// expect-line: [c][b][a]
+// expect-line: 321
+// expect-line: 2
+// expect-line: xx
+// expect-line: 5
+// expect-line: 4
+// expect-line: 10
+// expect-line: 1
+// expect-line: 0
+// expect-line: 6
+// expect-line: right
+// expect-line: 8
+// expect-line: deep
+// expect-line: 15
+// expect-line: 2
+
+// Functions with type parameters: each is compiled once for every
+// combination of types it is used with.
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+enum Either[A, B] {
+    Left(A)
+    Right(B)
+}
+
+fn identity[T](value: T) -> T {
+    return value
+}
+
+fn pick[T](first: T, second: T, use_first: bool) -> T {
+    if use_first {
+        return first
+    }
+    return second
+}
+
+fn larger[T](a: T, b: T) -> T {
+    if a > b {
+        return a
+    }
+    return b
+}
+
+fn last[T](items: List[T]) -> Option[T] {
+    if items.len() == 0 {
+        return None
+    }
+    return Some(items[items.len() - 1])
+}
+
+fn reversed[T](items: List[T]) -> List[T] {
+    var out: List[T] = []
+    var i = items.len()
+    while i > 0 {
+        i = i - 1
+        out.push(items[i])
+    }
+    return out
+}
+
+fn append_twice[T](items: mut List[T], value: T) {
+    items.push(value)
+    items.push(value)
+}
+
+fn count[T](items: List[T], wanted: T) -> i64 {
+    var found = 0
+    for item in items {
+        if item == wanted {
+            found = found + 1
+        }
+    }
+    return found
+}
+
+fn swap[A, B](pair: Either[A, B]) -> Either[B, A] {
+    match pair {
+        Left(a) => return Right(a)
+        Right(b) => return Left(b)
+    }
+}
+
+fn or_else[T](maybe: Option[T], fallback: T) -> T {
+    match maybe {
+        Some(value) => return value
+        None => return fallback
+    }
+}
+
+fn nothing[T]() -> Option[T] {
+    return None
+}
+
+// Generic functions calling generic functions, and themselves.
+fn nest[T](value: T, levels: i64) -> List[T] {
+    if levels == 0 {
+        return [value]
+    }
+    var out = nest(value, levels - 1)
+    out.push(identity(value))
+    return out
+}
+
+fn wrap_all[T](items: List[T]) -> List[Option[T]] {
+    var out: List[Option[T]] = []
+    for item in items {
+        out.push(Some(item))
+    }
+    return out
+}
+
+fn main() {
+    print(identity(7))
+    print(pick("a", "b", false))
+    print(identity(true))
+    print(identity(Point { x: 3, y: 4 }).x)
+    print(larger(4, 9))
+
+    let empty: List[str] = []
+    match last(empty) {
+        Some(text) => print(text)
+        None => print("none")
+    }
+    let letters = ["a", "b", "c"]
+    print(or_else(last(letters), "?"))
+    print(or_else(last([1, 2, 3]), 0))
+
+    var shown = ""
+    for letter in reversed(letters) {
+        shown = shown + "[" + letter + "]"
+    }
+    print(shown)
+    var digits = 0
+    for digit in reversed([1, 2, 3]) {
+        digits = digits * 10 + digit
+    }
+    print(digits)
+
+    var words: List[str] = []
+    append_twice(mut words, "x" + "")
+    print(words.len())
+    print(words[0] + words[1])
+    var numbers = [5]
+    append_twice(mut numbers, 5)
+    print(count(numbers, 5) + count(words, "x"))
+    print(count(["a", "b", "a", "a", "a"], "a"))
+
+    // The type parameters trade places.
+    let pair: Either[i64, str] = Left(10)
+    match swap(pair) {
+        Left(text) => print(text)
+        Right(number) => print(number)
+    }
+    let other: Either[i64, str] = Right("right")
+    match swap(swap(other)) {
+        Left(number) => print(number)
+        Right(text) => print(text.len() - 4)
+    }
+
+    // No argument says what `T` is; the expected type does.
+    let missing: Option[i64] = nothing()
+    print(or_else(missing, 0))
+    let absent: Option[str] = nothing()
+    print(or_else(absent, "x").len() + 5)
+    match swap(other) {
+        Left(text) => print(text)
+        Right(number) => print(number)
+    }
+
+    print(nest(1, 7).len())
+    let deep = nest(["deep"], 2)
+    print(deep[2][0])
+
+    var total = 0
+    for maybe in wrap_all([4, 5, 6]) {
+        total = total + or_else(maybe, 0)
+    }
+    print(total)
+    print(wrap_all(wrap_all(["a", "b"])).len())
+}

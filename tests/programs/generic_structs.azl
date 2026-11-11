@@ -1,0 +1,180 @@
+// expect-exit: 0
+// expect-line: one
+// expect-line: one
+// expect-line: 1
+// expect-line: one!
+// expect-line: 2
+// expect-line: bc
+// expect-line: 1
+// expect-line: a
+// expect-line: empty
+// expect-line: 6
+// expect-line: 0
+// expect-line: 5
+// expect-line: root
+// expect-line: 4
+// expect-line: twig
+// expect-line: 5
+// expect-line: 4
+// expect-line: 30
+// expect-line: ada
+// expect-line: true
+// expect-line: 3
+// expect-line: 7
+// expect-line: x
+// expect-line: 2
+
+// Structs with type parameters, alone and together with generic
+// functions, enums and lists.
+
+struct Pair[A, B] {
+    first: A
+    second: B
+}
+
+struct Stack[T] {
+    items: List[T]
+}
+
+struct Node[T] {
+    value: T
+    children: List[Node[T]]
+}
+
+struct Named[T] {
+    name: str
+    value: T
+}
+
+struct Cell[T] {
+    content: Option[T]
+    history: Stack[T]
+}
+
+fn empty[T]() -> Stack[T] {
+    return Stack { items: [] }
+}
+
+fn push[T](stack: mut Stack[T], item: T) {
+    stack.items.push(item)
+}
+
+fn pop[T](stack: mut Stack[T]) -> Option[T] {
+    if stack.items.len() == 0 {
+        return None
+    }
+    return Some(stack.items.pop())
+}
+
+fn flip[A, B](pair: Pair[A, B]) -> Pair[B, A] {
+    return Pair { first: pair.second, second: pair.first }
+}
+
+fn size[T](node: Node[T]) -> i64 {
+    var total = 1
+    for child in node.children {
+        total = total + size(child)
+    }
+    return total
+}
+
+fn deepest[T](node: Node[T]) -> T {
+    if node.children.len() == 0 {
+        return node.value
+    }
+    return deepest(node.children[node.children.len() - 1])
+}
+
+fn store[T](cell: mut Cell[T], value: T) {
+    match cell.content {
+        Some(old) => push(mut cell.history, old)
+        None => {}
+    }
+    cell.content = Some(value)
+}
+
+fn name_of[T](item: Named[T]) -> str {
+    return item.name
+}
+
+fn main() {
+    // The fields say what the type parameters are.
+    let pair = Pair { first: 1, second: "one" }
+    print(pair.second)
+    let flipped = flip(pair)
+    print(flipped.first)
+    print(flipped.second)
+    let nested = Pair { first: pair, second: [flipped, flip(pair)] }
+    print(nested.second[1].first + "!")
+    print(nested.second.len())
+
+    // A stack of strings and a stack of numbers are different types.
+    var words: Stack[str] = empty()
+    push(mut words, "a")
+    push(mut words, "b" + "c")
+    match pop(mut words) {
+        Some(word) => print(word)
+        None => print("empty")
+    }
+    print(words.items.len())
+    match pop(mut words) {
+        Some(word) => print(word)
+        None => print("empty")
+    }
+    match pop(mut words) {
+        Some(word) => print(word)
+        None => print("empty")
+    }
+    var numbers = Stack { items: [1, 2, 3] }
+    var sum = 0
+    while numbers.items.len() > 0 {
+        match pop(mut numbers) {
+            Some(n) => sum = sum + n
+            None => {}
+        }
+    }
+    print(sum)
+    print(numbers.items.len())
+
+    // A struct that contains itself through a list.
+    var tree = Node { value: "root", children: [Node { value: "leaf", children: [] }] }
+    tree.children.push(Node { value: "branch", children: [Node { value: "twig", children: [] }] })
+    let copy = tree
+    tree.children[1].children.push(Node { value: "bud", children: [] })
+    print(size(tree))
+    print(copy.value)
+    print(size(copy))
+    print(deepest(copy))
+    let counts = Node { value: 5, children: [Node { value: 4, children: [] }] }
+    print(counts.value)
+    print(deepest(counts))
+
+    // Generic structs inside generic structs and enums.
+    let named = Named { name: "ada", value: Pair { first: 10, second: [20] } }
+    print(named.value.first + named.value.second[0])
+    print(name_of(named))
+    print(name_of(Named { name: "x", value: true }).len() == 1)
+
+    var cell: Cell[str] = Cell { content: None, history: empty() }
+    store(mut cell, "v1")
+    store(mut cell, "v2")
+    store(mut cell, "v3" + "!")
+    match cell.content {
+        Some(text) => print(text.len())
+        None => print(0)
+    }
+    var lengths = 0
+    for old in cell.history.items {
+        lengths = lengths + old.len()
+    }
+    print(lengths + cell.history.items.len() + 1)
+
+    let maybe: Option[Pair[str, i64]] = Some(Pair { first: "x", second: 2 })
+    match maybe {
+        Some(found) => {
+            print(found.first)
+            print(found.second)
+        }
+        None => {}
+    }
+}

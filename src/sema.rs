@@ -6,6 +6,10 @@
 //! parameters, `let`/`var`, assignment, `if`, `while`, `for`, `match`,
 //! `return`.
 //!
+//! A struct, enum or function with type parameters is a declaration
+//! that becomes one concrete type or function per combination of types
+//! it is used with. A generic function's body is checked once for each.
+//!
 //! Values have value semantics. Aggregates are passed by reference for
 //! speed, but the callee cannot change one unless the parameter is `mut`,
 //! and a place can never be changed while something else still refers to
@@ -21,6 +25,7 @@
 
 use crate::ast::*;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemaError {
@@ -132,9 +137,15 @@ pub struct PatInfo {
     pub slot: u32,
 }
 
+/// One struct type. A generic struct has one entry per combination of
+/// type arguments that the program uses.
 #[derive(Debug)]
 pub struct StructInfo<'a> {
-    pub name: &'a str,
+    /// As written in messages: `Point`, `Pair[i64, str]`.
+    pub name: String,
+    /// The declaration this type was made from.
+    pub template: u32,
+    pub args: Vec<Ty>,
     /// Size in 8-byte slots.
     pub size: u32,
     pub fields: Vec<FieldInfo<'a>>,
@@ -185,8 +196,56 @@ pub struct ParamInfo {
     pub mutable: bool,
 }
 
+/// Where a function's entries sit in the per-node tables of `Program`.
+/// A node's entry is at its id plus the shift for its kind. The shift is
+/// zero for an ordinary function. A generic function is checked once per
+/// combination of types it is used with, and each of those has entries
+/// of its own, added at the end of the tables.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Shift {
+    pub expr: u32,
+    pub stmt: u32,
+    pub pat: u32,
+    pub init: u32,
+}
+
+impl Shift {
+    #[inline(always)]
+    pub fn e(self, id: ExprId) -> usize {
+        id.wrapping_add(self.expr) as usize
+    }
+
+    #[inline(always)]
+    pub fn s(self, id: StmtId) -> usize {
+        id.wrapping_add(self.stmt) as usize
+    }
+
+    #[inline(always)]
+    pub fn p(self, id: PatId) -> usize {
+        id.wrapping_add(self.pat) as usize
+    }
+
+    #[inline(always)]
+    pub fn i(self, id: u32) -> usize {
+        id.wrapping_add(self.init) as usize
+    }
+}
+
 #[derive(Debug)]
 pub struct FnInfo {
+    /// Index in `Ast::items` of the function's source.
+    pub item: u32,
+    pub shift: Shift,
+    /// For a use of a generic function: which one, and the types its
+    /// type parameters stand for here.
+    pub generic: Option<u32>,
+    pub type_args: Vec<Ty>,
+    /// How many uses of generic functions led to this one, each made
+    /// while checking the one before.
+    pub depth: u32,
+    /// For a use of a generic function: where in the program it was
+    /// first asked for.
+    pub origin: u32,
     pub ret: Ty,
     pub params: Vec<ParamInfo>,
     /// Stack slots for parameters, locals and temporaries.
@@ -206,7 +265,8 @@ pub struct Program<'a> {
     pub enums: Vec<EnumInfo>,
     /// Element type of each list type.
     pub lists: Vec<Ty>,
-    /// Parallel to the functions in `Ast::items`.
+    /// Every function to generate code for: the ordinary ones in source
+    /// order, then each use of a generic function with new types.
     pub fns: Vec<FnInfo>,
     pub main: u32,
     /// Per expression: for a name its stack slot (with `BY_REF` when the
@@ -299,17 +359,53 @@ fn needs_drop(structs: &[StructInfo], enums: &[EnumInfo], ty: Ty) -> bool {
     }
 }
 
-/// A type as written in an enum declaration, where it may mention the
-/// enum's type parameters.
+/// A type as written in a declaration, where it may mention the
+/// declaration's type parameters.
 #[derive(Clone)]
 enum Shape {
-    /// The enum's own type parameter with this number.
+    /// The declaration's own type parameter with this number.
     Param(u32),
-    /// `i64`, `bool`, `str` or a struct.
+    /// `i64`, `bool`, `str`, or a struct without type parameters once
+    /// its one type exists.
     Known(Ty),
     List(Box<Shape>),
+    /// A struct declaration and its type arguments.
+    Struct(u32, Vec<Shape>),
     /// An enum declaration and its type arguments.
     Enum(u32, Vec<Shape>),
+}
+
+/// A struct declaration. Each use with concrete type arguments becomes
+/// a `StructInfo`.
+struct StructTemplate<'a> {
+    name: &'a str,
+    pos: u32,
+    params: Vec<&'a str>,
+    /// Shared, so that making a type from the declaration does not copy it.
+    fields: Rc<Vec<(&'a str, Shape)>>,
+    /// For a struct without type parameters, its one `StructInfo`.
+    only: Option<u32>,
+}
+
+/// A function with type parameters. It is checked once for each
+/// combination of types it is called with, like a separate function.
+struct GenericFn<'a> {
+    item: u32,
+    name: &'a str,
+    type_params: Vec<&'a str>,
+    /// Type and `mut` of each parameter.
+    params: Vec<(Shape, bool)>,
+    ret: Option<Shape>,
+}
+
+/// What an argument of a call is checked against.
+enum Want<'s> {
+    Known(Ty),
+    /// The argument has been checked already and has this type.
+    Checked(Ty),
+    /// A parameter of a generic function: its type may mention type
+    /// parameters that this very argument settles.
+    Infer(&'s Shape),
 }
 
 /// An enum declaration. Each use with concrete type arguments becomes
@@ -392,11 +488,15 @@ struct Checker<'a> {
     ast: &'a Ast,
     src: &'a str,
     structs: Vec<StructInfo<'a>>,
+    struct_templates: Vec<StructTemplate<'a>>,
+    /// Struct name to its declaration in `struct_templates`.
     struct_names: HashMap<&'a str, u32>,
-    /// Where each struct is declared, and how far its layout has got:
-    /// 0 not started, 1 in progress, 2 done.
-    struct_pos: Vec<u32>,
+    struct_ids: HashMap<(u32, Vec<Ty>), u32>,
+    /// How far the layout of each struct type has got: 0 not started,
+    /// 1 in progress, 2 done.
     struct_state: Vec<u8>,
+    /// Number of struct types whose layout is finished.
+    settled_structs: usize,
     templates: Vec<Template<'a>>,
     template_names: HashMap<&'a str, u32>,
     /// Variant name to its enum declaration and its index there.
@@ -422,6 +522,20 @@ struct Checker<'a> {
     /// type of its first parameter, and no name a program can call.
     prelude_start: u32,
     methods: HashMap<(Ty, &'a str), u32>,
+    generic_fns: Vec<GenericFn<'a>>,
+    generic_names: HashMap<&'a str, u32>,
+    /// Generic functions of the standard library, by method name.
+    generic_methods: HashMap<&'a str, u32>,
+    /// A generic function and type arguments to its entry in `fns`.
+    fn_ids: HashMap<(u32, Vec<Ty>), u32>,
+    /// The type parameters of the function being checked, what they
+    /// stand for, and its `FnInfo::depth`.
+    fn_params: Vec<&'a str>,
+    fn_bound: Vec<Option<Ty>>,
+    fn_depth: u32,
+    fn_origin: u32,
+    /// The table shift of the function being checked.
+    sh: Shift,
     expr_res: Vec<u32>,
     expr_ty: Vec<Ty>,
     expr_aux: Vec<u32>,
@@ -461,9 +575,11 @@ pub fn check_with_prelude<'a>(ast: &'a Ast, src: &'a str, prelude_start: u32) ->
         ast,
         src,
         structs: Vec::new(),
+        struct_templates: Vec::new(),
         struct_names: HashMap::new(),
-        struct_pos: Vec::new(),
+        struct_ids: HashMap::new(),
         struct_state: Vec::new(),
+        settled_structs: 0,
         templates: Vec::new(),
         template_names: HashMap::new(),
         variant_names: HashMap::new(),
@@ -479,6 +595,15 @@ pub fn check_with_prelude<'a>(ast: &'a Ast, src: &'a str, prelude_start: u32) ->
         fn_names: HashMap::new(),
         prelude_start,
         methods: HashMap::new(),
+        generic_fns: Vec::new(),
+        generic_names: HashMap::new(),
+        generic_methods: HashMap::new(),
+        fn_ids: HashMap::new(),
+        fn_params: Vec::new(),
+        fn_bound: Vec::new(),
+        fn_depth: 0,
+        fn_origin: 0,
+        sh: Shift::default(),
         expr_res: vec![0; ast.exprs.len()],
         expr_ty: vec![Ty::Unit; ast.exprs.len()],
         expr_aux: vec![0; ast.exprs.len()],
@@ -503,12 +628,12 @@ pub fn check_with_prelude<'a>(ast: &'a Ast, src: &'a str, prelude_start: u32) ->
     };
     c.declare_types()?;
     c.signatures()?;
+    // Checking a function can add to the list: each new use of a generic
+    // function is one more function to check.
     let mut index = 0;
-    for item in &ast.items {
-        if let Item::Fn { name, params, body, .. } = *item {
-            c.function(index, name, params, body)?;
-            index += 1;
-        }
+    while index < c.fns.len() {
+        c.function(index as u32)?;
+        index += 1;
     }
     let Some(&main) = c.fn_names.get("main") else {
         return Err(SemaError { message: "the program has no `main` function".to_string(), offset: 0 });
@@ -551,7 +676,7 @@ impl<'a> Checker<'a> {
             Ty::Bool => "bool".to_string(),
             Ty::Str => "str".to_string(),
             Ty::Unit => "no value".to_string(),
-            Ty::Struct(index) => self.structs[index as usize].name.to_string(),
+            Ty::Struct(index) => self.structs[index as usize].name.clone(),
             Ty::List(index) => format!("List[{}]", self.ty_name(self.lists[index as usize])),
             Ty::Enum(index) => self.enums[index as usize].name.clone(),
         }
@@ -580,11 +705,18 @@ impl<'a> Checker<'a> {
         Ty::List(index as u32)
     }
 
-    /// Resolves a type written outside an enum declaration.
+    /// Resolves a type written in a function or a struct. Inside a use
+    /// of a generic function its type parameters stand for known types.
     fn ty(&mut self, id: TypeId) -> SResult<Ty> {
         let at = self.ast.types[id as usize].name.start;
-        let shape = self.shape(id, &[])?;
-        let ty = self.realize(&shape, &[], at)?;
+        let ty = if self.fn_params.is_empty() {
+            let shape = self.shape(id, &[])?;
+            self.realize(&shape, &[], at)?
+        } else {
+            let (params, bound) = (self.fn_params.clone(), self.fn_bound.clone());
+            let shape = self.shape(id, &params)?;
+            self.realize(&shape, &bound, at)?
+        };
         self.settle()?;
         Ok(ty)
     }
@@ -623,18 +755,7 @@ impl<'a> Checker<'a> {
         if let Some(&template) = self.template_names.get(name) {
             let want = self.templates[template as usize].params.len();
             if args.len() != want {
-                return err(
-                    ty.name.start,
-                    if want == 0 {
-                        format!("`{name}` takes no type arguments")
-                    } else {
-                        format!(
-                            "`{name}` takes {want} type argument{}, as in `{name}[{}]`",
-                            if want == 1 { "" } else { "s" },
-                            vec!["i64"; want].join(", ")
-                        )
-                    },
-                );
+                return err(ty.name.start, Self::wrong_type_arguments(name, want));
             }
             let mut shapes = Vec::with_capacity(want);
             for &arg in args {
@@ -642,16 +763,38 @@ impl<'a> Checker<'a> {
             }
             return Ok(Shape::Enum(template, shapes));
         }
-        let Some(&index) = self.struct_names.get(name) else {
+        let Some(&template) = self.struct_names.get(name) else {
             return err(
                 ty.name.start,
                 format!("unknown type `{name}`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`"),
             );
         };
-        if !args.is_empty() {
-            return err(ty.name.start, format!("`{name}` takes no type arguments"));
+        let want = self.struct_templates[template as usize].params.len();
+        if args.len() != want {
+            return err(ty.name.start, Self::wrong_type_arguments(name, want));
         }
-        Ok(Shape::Known(Ty::Struct(index)))
+        if let Some(only) = self.struct_templates[template as usize].only {
+            // A struct without type parameters is one known type.
+            return Ok(Shape::Known(Ty::Struct(only)));
+        }
+        let mut shapes = Vec::with_capacity(want);
+        for &arg in args {
+            shapes.push(self.shape(arg, params)?);
+        }
+        Ok(Shape::Struct(template, shapes))
+    }
+
+    /// The message for a type written with the wrong number of type arguments.
+    fn wrong_type_arguments(name: &str, want: usize) -> String {
+        if want == 0 {
+            format!("`{name}` takes no type arguments")
+        } else {
+            format!(
+                "`{name}` takes {want} type argument{}, as in `{name}[{}]`",
+                if want == 1 { "" } else { "s" },
+                vec!["i64"; want].join(", ")
+            )
+        }
     }
 
     /// True when `shape` mentions no type parameter that is still unknown.
@@ -660,7 +803,7 @@ impl<'a> Checker<'a> {
             Shape::Param(index) => bound[*index as usize].is_some(),
             Shape::Known(_) => true,
             Shape::List(elem) => Self::ready(elem, bound),
-            Shape::Enum(_, args) => args.iter().all(|arg| Self::ready(arg, bound)),
+            Shape::Struct(_, args) | Shape::Enum(_, args) => args.iter().all(|arg| Self::ready(arg, bound)),
         }
     }
 
@@ -674,14 +817,52 @@ impl<'a> Checker<'a> {
                 let elem = self.realize(elem, bound, at)?;
                 Ok(self.list_of(elem))
             }
-            Shape::Enum(template, shapes) => {
+            Shape::Struct(template, shapes) | Shape::Enum(template, shapes) => {
                 let mut args = Vec::with_capacity(shapes.len());
                 for shape in shapes {
                     args.push(self.realize(shape, bound, at)?);
                 }
-                self.instance(*template, args, at)
+                if matches!(shape, Shape::Struct(..)) {
+                    self.struct_instance(*template, args, at)
+                } else {
+                    self.instance(*template, args, at)
+                }
             }
         }
+    }
+
+    /// The struct type made from a declaration and type arguments,
+    /// created the first time it is asked for. Like `instance`, which
+    /// does the same for enums.
+    fn struct_instance(&mut self, template: u32, args: Vec<Ty>, at: u32) -> SResult<Ty> {
+        let key = (template, args);
+        if let Some(&index) = self.struct_ids.get(&key) {
+            return Ok(Ty::Struct(index));
+        }
+        let (template, args) = key;
+        if self.nesting >= 200 {
+            return err(at, "this type nests structs too deeply");
+        }
+        let info = &self.struct_templates[template as usize];
+        let mut name = info.name.to_string();
+        if !args.is_empty() {
+            let parts: Vec<String> = args.iter().map(|&arg| self.ty_name(arg)).collect();
+            name = format!("{name}[{}]", parts.join(", "));
+        }
+        let shapes = Rc::clone(&info.fields);
+        let index = self.structs.len() as u32;
+        self.struct_ids.insert((template, args.clone()), index);
+        let bound: Vec<Option<Ty>> = args.iter().map(|&arg| Some(arg)).collect();
+        self.structs.push(StructInfo { name, template, args, size: 0, fields: Vec::new(), heap: Vec::new() });
+        self.struct_state.push(0);
+        self.nesting += 1;
+        let mut fields = Vec::with_capacity(shapes.len());
+        for (field, shape) in shapes.iter() {
+            fields.push(FieldInfo { name: field, ty: self.realize(shape, &bound, at)?, offset: 0 });
+        }
+        self.nesting -= 1;
+        self.structs[index as usize].fields = fields;
+        Ok(Ty::Struct(index))
     }
 
     /// The enum type made from a declaration and type arguments. It is
@@ -724,10 +905,14 @@ impl<'a> Checker<'a> {
         Ok(Ty::Enum(index))
     }
 
-    /// Lays out the enum types made since the last call.
+    /// Lays out the struct and enum types made since the last call.
     fn settle(&mut self) -> SResult<()> {
         if !self.declared {
             return Ok(());
+        }
+        while self.settled_structs < self.structs.len() {
+            self.layout_struct(self.settled_structs)?;
+            self.settled_structs += 1;
         }
         while self.settled < self.enums.len() {
             self.layout_enum(self.settled)?;
@@ -742,8 +927,11 @@ impl<'a> Checker<'a> {
             Shape::Param(index) => params[*index as usize].to_string(),
             Shape::Known(ty) => self.ty_name(*ty),
             Shape::List(elem) => format!("List[{}]", self.shape_name(elem, params)),
-            Shape::Enum(template, args) => {
-                let name = self.templates[*template as usize].name;
+            Shape::Struct(template, args) | Shape::Enum(template, args) => {
+                let name = match shape {
+                    Shape::Struct(..) => self.struct_templates[*template as usize].name,
+                    _ => self.templates[*template as usize].name,
+                };
                 if args.is_empty() {
                     name.to_string()
                 } else {
@@ -768,6 +956,13 @@ impl<'a> Checker<'a> {
             Shape::Known(known) => *known == ty,
             Shape::List(elem) => match ty {
                 Ty::List(list) => self.unify(elem, self.lists[list as usize], bound),
+                _ => false,
+            },
+            Shape::Struct(template, shapes) => match ty {
+                Ty::Struct(index) if self.structs[index as usize].template == *template => {
+                    let args = &self.structs[index as usize].args;
+                    shapes.iter().zip(args).all(|(shape, &arg)| self.unify(shape, arg, bound))
+                }
                 _ => false,
             },
             Shape::Enum(template, shapes) => match ty {
@@ -844,27 +1039,26 @@ impl<'a> Checker<'a> {
                     },
                 );
             }
-            match *item {
-                Item::Struct { generics, fields, .. } => {
-                    if generics.len > 0 {
-                        return err(name.start, "generic structs are not supported by `azol build` yet");
-                    }
-                    self.struct_names.insert(text, self.structs.len() as u32);
-                    self.structs.push(StructInfo { name: text, size: 0, fields: Vec::new(), heap: Vec::new() });
-                    self.struct_pos.push(name.start);
-                    self.struct_state.push(0);
-                    struct_decls.push(fields);
+            let (Item::Struct { generics, .. } | Item::Enum { generics, .. }) = *item else {
+                continue;
+            };
+            let mut params: Vec<&'a str> = Vec::with_capacity(generics.len as usize);
+            for &id in self.ast.list(generics) {
+                let param = self.ast.names[id as usize];
+                let param_text = param.text(self.src);
+                if params.contains(&param_text) {
+                    return err(param.start, format!("type parameter `{param_text}` is declared more than once"));
                 }
-                Item::Enum { generics, variants, .. } => {
-                    let mut params: Vec<&'a str> = Vec::with_capacity(generics.len as usize);
-                    for &id in self.ast.list(generics) {
-                        let param = self.ast.names[id as usize];
-                        let param_text = param.text(self.src);
-                        if params.contains(&param_text) {
-                            return err(param.start, format!("type parameter `{param_text}` is declared more than once"));
-                        }
-                        params.push(param_text);
-                    }
+                params.push(param_text);
+            }
+            match *item {
+                Item::Struct { fields, .. } => {
+                    let index = self.struct_templates.len() as u32;
+                    self.struct_names.insert(text, index);
+                    self.struct_templates.push(StructTemplate { name: text, pos: name.start, params, fields: Rc::new(Vec::new()), only: None });
+                    struct_decls.push((index, fields));
+                }
+                Item::Enum { variants, .. } => {
                     let index = self.templates.len() as u32;
                     self.template_names.insert(text, index);
                     self.templates.push(Template { name: text, pos: name.start, params, variants: Vec::new(), builtin: false });
@@ -911,21 +1105,31 @@ impl<'a> Checker<'a> {
         }
 
         // Then the fields of each struct.
-        for (index, &fields) in struct_decls.iter().enumerate() {
-            let mut infos: Vec<FieldInfo<'a>> = Vec::new();
+        for &(index, fields) in &struct_decls {
+            let params = self.struct_templates[index as usize].params.clone();
+            let mut shapes: Vec<(&'a str, Shape)> = Vec::new();
             for &id in self.ast.list(fields) {
                 let field = self.ast.fields[id as usize];
                 let name = field.name.text(self.src);
-                if infos.iter().any(|f| f.name == name) {
+                if shapes.iter().any(|&(known, _)| known == name) {
                     return err(field.name.start, format!("field `{name}` is declared more than once"));
                 }
-                infos.push(FieldInfo { name, ty: self.ty(field.ty)?, offset: 0 });
+                shapes.push((name, self.shape(field.ty, &params)?));
             }
-            self.structs[index].fields = infos;
+            self.struct_templates[index as usize].fields = Rc::new(shapes);
         }
 
-        // An enum without type parameters is one type; make it now so
-        // that it is checked even if nothing uses it.
+        // A struct or enum without type parameters is one type; make it
+        // now so that it is checked even if nothing uses it.
+        for &(index, _) in &struct_decls {
+            let info = &self.struct_templates[index as usize];
+            if info.params.is_empty() {
+                let pos = info.pos;
+                if let Ty::Struct(only) = self.struct_instance(index, Vec::new(), pos)? {
+                    self.struct_templates[index as usize].only = Some(only);
+                }
+            }
+        }
         for &(index, _) in &enum_decls {
             let info = &self.templates[index as usize];
             if info.params.is_empty() {
@@ -936,9 +1140,6 @@ impl<'a> Checker<'a> {
 
         // Sizes and offsets, depth first. A type that contains itself
         // would have no finite size.
-        for index in 0..self.structs.len() {
-            self.layout_struct(index)?;
-        }
         self.declared = true;
         self.settle()
     }
@@ -953,11 +1154,12 @@ impl<'a> Checker<'a> {
     }
 
     fn layout_struct(&mut self, index: usize) -> SResult<u32> {
+        let pos = self.struct_templates[self.structs[index].template as usize].pos;
         match self.struct_state[index] {
             2 => return Ok(self.structs[index].size),
             1 => {
                 return err(
-                    self.struct_pos[index],
+                    pos,
                     format!("struct `{}` contains itself, so it would have no finite size", self.structs[index].name),
                 );
             }
@@ -976,7 +1178,7 @@ impl<'a> Checker<'a> {
             offset += size;
         }
         if offset > MAX_SIZE {
-            return err(self.struct_pos[index], format!("struct `{}` is too large for now", self.structs[index].name));
+            return err(pos, format!("struct `{}` is too large for now", self.structs[index].name));
         }
         self.structs[index].size = offset;
         self.structs[index].heap = heap;
@@ -1029,14 +1231,11 @@ impl<'a> Checker<'a> {
     }
 
     fn signatures(&mut self) -> SResult<()> {
-        for item in &self.ast.items {
+        for (item_index, item) in self.ast.items.iter().enumerate() {
             let Item::Fn { name, generics, params, ret, .. } = *item else {
                 continue;
             };
             let text = name.text(self.src);
-            if generics.len > 0 {
-                return err(name.start, "generic functions are not supported by `azol build` yet");
-            }
             let in_prelude = name.start >= self.prelude_start;
             if !in_prelude {
                 if BUILTIN_FUNCTIONS.contains(&text) {
@@ -1049,6 +1248,42 @@ impl<'a> Checker<'a> {
             let param_ids = self.ast.list(params);
             if param_ids.len() > MAX_PARAMS {
                 return err(name.start, format!("function `{text}` has more than {MAX_PARAMS} parameters, which is not supported yet"));
+            }
+            if generics.len > 0 {
+                if text == "main" {
+                    return err(name.start, "`main` cannot have type parameters");
+                }
+                let mut type_params: Vec<&'a str> = Vec::with_capacity(generics.len as usize);
+                for &id in self.ast.list(generics) {
+                    let param = self.ast.names[id as usize];
+                    let param_text = param.text(self.src);
+                    if type_params.contains(&param_text) {
+                        return err(param.start, format!("type parameter `{param_text}` is declared more than once"));
+                    }
+                    type_params.push(param_text);
+                }
+                // What the types mean is settled per use; here they are
+                // only read, which also reports unknown type names.
+                let mut shapes = Vec::with_capacity(param_ids.len());
+                for &id in param_ids {
+                    let param = self.ast.params[id as usize];
+                    shapes.push((self.shape(param.ty, &type_params)?, param.mutable));
+                }
+                let ret = match ret {
+                    Some(id) => Some(self.shape(id, &type_params)?),
+                    None => None,
+                };
+                let index = self.generic_fns.len() as u32;
+                let mut shown = text;
+                if in_prelude {
+                    let (_, method) = text.split_once('_').expect("a standard library function is named `type_method`");
+                    self.generic_methods.insert(method, index);
+                    shown = method;
+                } else if self.fn_names.contains_key(text) || self.generic_names.insert(text, index).is_some() {
+                    return err(name.start, format!("function `{text}` is defined more than once"));
+                }
+                self.generic_fns.push(GenericFn { item: item_index as u32, name: shown, type_params, params: shapes, ret });
+                continue;
             }
             let mut infos = Vec::with_capacity(param_ids.len());
             for &id in param_ids {
@@ -1073,17 +1308,71 @@ impl<'a> Checker<'a> {
                 let (_, method) = text.split_once('_').expect("a standard library function is named `type_method`");
                 let receiver = infos.first().expect("a method has a receiver").ty;
                 self.methods.insert((receiver, method), index);
-            } else if self.fn_names.insert(text, index).is_some() {
+            } else if self.generic_names.contains_key(text) || self.fn_names.insert(text, index).is_some() {
                 return err(name.start, format!("function `{text}` is defined more than once"));
             }
-            self.fns.push(FnInfo { ret, params: infos, slots: 0, sret_slot: None, scratch_slot: 0, zero_slots: Vec::new() });
+            self.fns.push(FnInfo {
+                item: item_index as u32,
+                shift: Shift::default(),
+                generic: None,
+                type_args: Vec::new(),
+                depth: 0,
+                origin: name.start,
+                ret,
+                params: infos,
+                slots: 0,
+                sret_slot: None,
+                scratch_slot: 0,
+                zero_slots: Vec::new(),
+            });
         }
         Ok(())
     }
 
     // ---- functions and statements --------------------------------------
 
-    fn function(&mut self, index: u32, name: Span, params: List, body: List) -> SResult<()> {
+    /// Checks the body of function `index`. A mistake inside a generic
+    /// function may only show with some types, so the message names them.
+    fn function(&mut self, index: u32) -> SResult<()> {
+        let info = &self.fns[index as usize];
+        self.sh = info.shift;
+        self.fn_depth = info.depth;
+        self.fn_origin = info.origin;
+        self.fn_bound = info.type_args.iter().map(|&ty| Some(ty)).collect();
+        let Some(generic) = info.generic else {
+            self.fn_params.clear();
+            return self.function_body(index);
+        };
+        self.fn_params = self.generic_fns[generic as usize].type_params.clone();
+        let result = self.function_body(index);
+        result.map_err(|mut error| {
+            let types: Vec<String> = self
+                .fn_params
+                .iter()
+                .zip(&self.fns[index as usize].type_args)
+                .map(|(param, &ty)| {
+                    let mut name = self.ty_name(ty);
+                    if name.len() > 60 {
+                        name.truncate(57);
+                        name.push_str("...");
+                    }
+                    format!("`{param}` = `{name}`")
+                })
+                .collect();
+            error.message = format!("{} (in `{}` with {})", error.message, self.generic_fns[generic as usize].name, types.join(", "));
+            // A mistake inside the standard library's code is shown where
+            // the program asked for these types.
+            if error.offset >= self.prelude_start {
+                error.offset = self.fns[index as usize].origin;
+            }
+            error
+        })
+    }
+
+    fn function_body(&mut self, index: u32) -> SResult<()> {
+        let Item::Fn { name, params, body, .. } = self.ast.items[self.fns[index as usize].item as usize] else {
+            unreachable!("a function's item is a function");
+        };
         self.locals.clear();
         self.borrows.clear();
         self.pending.clear();
@@ -1198,13 +1487,13 @@ impl<'a> Checker<'a> {
     fn take(&mut self, id: ExprId) -> bool {
         if let Expr::Str(_) = self.ast.exprs[id as usize] {
             // A literal owns nothing, so there is nothing to copy either.
-            self.expr_moved[id as usize] = true;
+            self.expr_moved[self.sh.e(id)] = true;
             return true;
         }
         match self.pending.iter().position(|&(expr, ..)| expr == id) {
             Some(at) => {
                 self.pending.remove(at);
-                self.expr_moved[id as usize] = true;
+                self.expr_moved[self.sh.e(id)] = true;
                 true
             }
             None => false,
@@ -1221,7 +1510,7 @@ impl<'a> Checker<'a> {
             }
             self.drops.push((slot, ty));
         }
-        self.stmt_drops[id as usize] = (start, self.drops.len() as u32 - start);
+        self.stmt_drops[self.sh.s(id)] = (start, self.drops.len() as u32 - start);
     }
 
     fn stmt(&mut self, id: StmtId) -> SResult<()> {
@@ -1248,12 +1537,12 @@ impl<'a> Checker<'a> {
                 self.finish(id);
                 let slot = self.alloc(self.size_of(value_ty), name.start)?;
                 self.locals.push(Local { name: self.binding(name)?, slot, ty: value_ty, mutable, by_ref: false, is_param: false, is_view: false, owns: true });
-                self.stmt_slot[id as usize] = slot;
+                self.stmt_slot[self.sh.s(id)] = slot;
             }
             Stmt::Assign { target, value } => {
                 let target_ty = self.expr(target)?;
                 if let Expr::Index { base, .. } = self.ast.exprs[target as usize] {
-                    if self.expr_ty[base as usize] == Ty::Str {
+                    if self.expr_ty[self.sh.e(base)] == Ty::Str {
                         return err(pos, "a string cannot be changed in place; build a new one with `slice` and `+`");
                     }
                 }
@@ -1277,7 +1566,7 @@ impl<'a> Checker<'a> {
                     // The value is copied aside first. That lets `a = a`
                     // read the old value before it is freed, and keeps the
                     // copy safe while a list index on the left is computed.
-                    self.stmt_slot[id as usize] = self.alloc(self.size_of(target_ty), pos)?;
+                    self.stmt_slot[self.sh.s(id)] = self.alloc(self.size_of(target_ty), pos)?;
                 }
                 self.finish(id);
             }
@@ -1307,7 +1596,7 @@ impl<'a> Checker<'a> {
                         // buffers to the caller instead of copying them.
                         if let Expr::Ident(name) = self.ast.exprs[value as usize] {
                             if self.lookup(name.text(self.src)).is_some_and(|local| local.owns) {
-                                self.expr_moved[value as usize] = true;
+                                self.expr_moved[self.sh.e(value)] = true;
                             }
                         }
                     }
@@ -1341,7 +1630,7 @@ impl<'a> Checker<'a> {
                 };
                 let elem = self.lists[list as usize];
                 let place = self.place(iter);
-                self.stmt_flag[id as usize] = if self.take(iter) {
+                self.stmt_flag[self.sh.s(id)] = if self.take(iter) {
                     MOVED
                 } else if place.is_some() {
                     IN_PLACE
@@ -1352,7 +1641,7 @@ impl<'a> Checker<'a> {
                 // Hidden slots: the position, then room for a list the
                 // loop owns, then the loop variables.
                 let base = self.alloc(4, pos)?;
-                self.stmt_slot[id as usize] = base;
+                self.stmt_slot[self.sh.s(id)] = base;
                 let scope = self.locals.len();
                 let item_slot = self.alloc(self.size_of(elem), item.start)?;
                 // The loop variable looks at the element; the list keeps owning it.
@@ -1362,7 +1651,7 @@ impl<'a> Checker<'a> {
                     self.locals.push(Local { name: self.binding(index)?, slot: index_slot, ty: Ty::I64, mutable: false, by_ref: false, is_param: false, is_view: true, owns: false });
                 }
                 let borrows = self.borrows.len();
-                if self.stmt_flag[id as usize] == IN_PLACE {
+                if self.stmt_flag[self.sh.s(id)] == IN_PLACE {
                     let place = place.expect("in-place iteration has a place");
                     self.borrows.push(Borrow { place, mutable: false, holder: Holder::Loop });
                 }
@@ -1408,7 +1697,7 @@ impl<'a> Checker<'a> {
         } else {
             COPIED
         };
-        self.stmt_flag[id as usize] = mode;
+        self.stmt_flag[self.sh.s(id)] = mode;
         self.finish(id);
         // Hidden slots: the value itself (a number or `bool`) or its
         // address, then room for a value the statement owns.
@@ -1416,7 +1705,7 @@ impl<'a> Checker<'a> {
         if aggregate && mode != IN_PLACE {
             self.alloc(self.size_of(ty), pos)?;
         }
-        self.stmt_slot[id as usize] = base;
+        self.stmt_slot[self.sh.s(id)] = base;
         let outer_borrows = self.borrows.len();
         if let (IN_PLACE, Some(place)) = (mode, place) {
             self.borrows.push(Borrow { place, mutable: false, holder: Holder::Match });
@@ -1450,7 +1739,7 @@ impl<'a> Checker<'a> {
             let scope = self.locals.len();
             match self.ast.patterns[pat] {
                 Pattern::Wildcard => {
-                    self.pats[pat] = PatInfo { kind: PAT_ANY, res: 0, slot: 0 };
+                    self.pats[self.sh.p(arm.pattern)] = PatInfo { kind: PAT_ANY, res: 0, slot: 0 };
                     catch_all = true;
                 }
                 Pattern::Name(name) if !self.variant_names.contains_key(name.text(self.src)) => {
@@ -1466,7 +1755,7 @@ impl<'a> Checker<'a> {
                         is_view: true,
                         owns: false,
                     });
-                    self.pats[pat] = PatInfo { kind: PAT_BIND, res: 0, slot };
+                    self.pats[self.sh.p(arm.pattern)] = PatInfo { kind: PAT_BIND, res: 0, slot };
                     catch_all = true;
                 }
                 Pattern::Name(name) | Pattern::Variant { name, .. } => {
@@ -1534,7 +1823,7 @@ impl<'a> Checker<'a> {
                                     is_view: true,
                                     owns: false,
                                 });
-                                self.pats[sub as usize] = PatInfo { kind: PAT_BIND, res: offset, slot };
+                                self.pats[self.sh.p(sub)] = PatInfo { kind: PAT_BIND, res: offset, slot };
                             }
                             _ => {
                                 return err(
@@ -1544,7 +1833,7 @@ impl<'a> Checker<'a> {
                             }
                         }
                     }
-                    self.pats[pat] = PatInfo { kind: PAT_VARIANT, res: variant, slot: 0 };
+                    self.pats[self.sh.p(arm.pattern)] = PatInfo { kind: PAT_VARIANT, res: variant, slot: 0 };
                 }
                 Pattern::Int { negative, digits } => {
                     if ty != Ty::I64 {
@@ -1567,7 +1856,7 @@ impl<'a> Checker<'a> {
                         return err(pat_pos, format!("this arm can never run: `{value}` is already handled above"));
                     }
                     seen_ints.push(value);
-                    self.pats[pat] = PatInfo { kind: PAT_LITERAL, res: self.ints.len() as u32, slot: 0 };
+                    self.pats[self.sh.p(arm.pattern)] = PatInfo { kind: PAT_LITERAL, res: self.ints.len() as u32, slot: 0 };
                     self.ints.push(value);
                 }
                 Pattern::Bool(value) => {
@@ -1578,7 +1867,7 @@ impl<'a> Checker<'a> {
                         return err(pat_pos, format!("this arm can never run: `{value}` is already handled above"));
                     }
                     seen_bools[value as usize] = true;
-                    self.pats[pat] = PatInfo { kind: PAT_LITERAL, res: value as u32, slot: 0 };
+                    self.pats[self.sh.p(arm.pattern)] = PatInfo { kind: PAT_LITERAL, res: value as u32, slot: 0 };
                 }
                 Pattern::Str(span) => {
                     if ty != Ty::Str {
@@ -1603,7 +1892,7 @@ impl<'a> Checker<'a> {
                             slot
                         }
                     };
-                    self.pats[pat] = PatInfo { kind: PAT_LITERAL, res: index, slot };
+                    self.pats[self.sh.p(arm.pattern)] = PatInfo { kind: PAT_LITERAL, res: index, slot };
                 }
             }
             self.block(arm.body)?;
@@ -1675,12 +1964,12 @@ impl<'a> Checker<'a> {
                 if self.contains_index(base) {
                     return Some(place);
                 }
-                place.start += self.expr_res[id as usize];
-                place.len = self.size_of(self.expr_ty[id as usize]);
+                place.start += self.expr_res[self.sh.e(id)];
+                place.len = self.size_of(self.expr_ty[self.sh.e(id)]);
                 Some(place)
             }
             // A byte of a string is a number read from it, not a place.
-            Expr::Index { base, .. } if self.expr_ty[base as usize] == Ty::Str => None,
+            Expr::Index { base, .. } if self.expr_ty[self.sh.e(base)] == Ty::Str => None,
             Expr::Index { base, .. } => self.place(base),
             _ => None,
         }
@@ -1772,7 +2061,7 @@ impl<'a> Checker<'a> {
     /// which is what gives `[]` its element type.
     fn expr_hint(&mut self, id: ExprId, hint: Option<Ty>) -> SResult<Ty> {
         let ty = self.expr_inner(id, hint)?;
-        self.expr_ty[id as usize] = ty;
+        self.expr_ty[self.sh.e(id)] = ty;
         Ok(ty)
     }
 
@@ -1788,14 +2077,14 @@ impl<'a> Checker<'a> {
                     };
                     value = next;
                 }
-                self.expr_res[id as usize] = self.ints.len() as u32;
+                self.expr_res[self.sh.e(id)] = self.ints.len() as u32;
                 self.ints.push(value);
                 Ok(Ty::I64)
             }
             Expr::Bool(_) => Ok(Ty::Bool),
             Expr::Str(span) => {
-                self.expr_res[id as usize] = self.string_literal(span);
-                self.expr_tmp[id as usize] = self.alloc(3, pos)?;
+                self.expr_res[self.sh.e(id)] = self.string_literal(span);
+                self.expr_tmp[self.sh.e(id)] = self.alloc(3, pos)?;
                 Ok(Ty::Str)
             }
             Expr::Ident(name) => {
@@ -1804,7 +2093,7 @@ impl<'a> Checker<'a> {
                     if let Some((template, variant)) = self.variant(text) {
                         return self.construct(id, template, variant, None, hint);
                     }
-                    return if self.fn_names.contains_key(text) || BUILTIN_FUNCTIONS.contains(&text) {
+                    return if self.fn_names.contains_key(text) || self.generic_names.contains_key(text) || BUILTIN_FUNCTIONS.contains(&text) {
                         err(pos, format!("`{text}` is a function; call it with `{text}(...)`"))
                     } else if self.struct_names.contains_key(text) {
                         err(pos, format!("`{text}` is a struct; create a value with `{text} {{ ... }}`"))
@@ -1815,7 +2104,7 @@ impl<'a> Checker<'a> {
                     };
                 };
                 let (slot, ty, by_ref) = (local.slot, local.ty, local.by_ref);
-                self.expr_res[id as usize] = slot | if by_ref { BY_REF } else { 0 };
+                self.expr_res[self.sh.e(id)] = slot | if by_ref { BY_REF } else { 0 };
                 Ok(ty)
             }
             Expr::Unary { op, operand } => match op {
@@ -1845,7 +2134,7 @@ impl<'a> Checker<'a> {
                         }
                         self.string_operands(lhs, rhs, what)?;
                         // Joining makes a new string, which this temporary owns.
-                        self.expr_tmp[id as usize] = self.temp(id, Ty::Str)?;
+                        self.expr_tmp[self.sh.e(id)] = self.temp(id, Ty::Str)?;
                         Ok(Ty::Str)
                     }
                     BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
@@ -1900,7 +2189,7 @@ impl<'a> Checker<'a> {
                 let Some(field) = info.fields.iter().find(|f| f.name == field_name) else {
                     return err(name.start, format!("struct `{}` has no field `{field_name}`", info.name));
                 };
-                self.expr_res[id as usize] = field.offset;
+                self.expr_res[self.sh.e(id)] = field.offset;
                 Ok(field.ty)
             }
             Expr::Index { base, index } => {
@@ -1938,43 +2227,10 @@ impl<'a> Checker<'a> {
                     self.take(item);
                 }
                 let ty = self.list_of(elem);
-                self.expr_tmp[id as usize] = self.temp(id, ty)?;
+                self.expr_tmp[self.sh.e(id)] = self.temp(id, ty)?;
                 Ok(ty)
             }
-            Expr::StructLit { name, fields } => {
-                let text = name.text(self.src);
-                let Some(&index) = self.struct_names.get(text) else {
-                    return err(pos, format!("unknown struct `{text}`"));
-                };
-                let field_count = self.structs[index as usize].fields.len();
-                let mut seen = vec![false; field_count];
-                for &init_id in self.ast.list(fields) {
-                    let init = self.ast.field_inits[init_id as usize];
-                    let field_name = init.name.text(self.src);
-                    let Some(at) = self.structs[index as usize].fields.iter().position(|f| f.name == field_name) else {
-                        return err(init.name.start, format!("struct `{text}` has no field `{field_name}`"));
-                    };
-                    if seen[at] {
-                        return err(init.name.start, format!("field `{field_name}` is given more than once"));
-                    }
-                    seen[at] = true;
-                    let (want, offset) = {
-                        let field = &self.structs[index as usize].fields[at];
-                        (field.ty, field.offset)
-                    };
-                    self.expect(init.value, want, What::Field(field_name))?;
-                    // The new struct takes a temporary's buffers over.
-                    self.take(init.value);
-                    self.init_offset[init_id as usize] = offset;
-                }
-                if let Some(missing) = seen.iter().position(|&given| !given) {
-                    let field_name = self.structs[index as usize].fields[missing].name;
-                    return err(pos, format!("field `{field_name}` of `{text}` is missing"));
-                }
-                let ty = Ty::Struct(index);
-                self.expr_tmp[id as usize] = self.temp(id, ty)?;
-                Ok(ty)
-            }
+            Expr::StructLit { name, fields } => self.struct_literal(id, name, fields, hint),
             Expr::Call { callee, args } => self.call(id, callee, args, hint),
             Expr::MutArg(_) => err(pos, "`mut` can only be used on a function argument"),
             Expr::Float(_) => err(pos, "floating-point numbers are not supported by `azol build` yet"),
@@ -1992,6 +2248,114 @@ impl<'a> Checker<'a> {
         self.expect(rhs, Ty::Str, what)?;
         self.borrows.truncate(outer);
         Ok(())
+    }
+
+    /// Checks `Name { field: value, ... }`. The type arguments of a
+    /// generic struct come from the type the surroundings expect, or
+    /// else from the values given.
+    fn struct_literal(&mut self, id: ExprId, name: Span, fields: List, hint: Option<Ty>) -> SResult<Ty> {
+        let pos = self.ast.expr_pos[id as usize];
+        let text = name.text(self.src);
+        let Some(&template) = self.struct_names.get(text) else {
+            return err(pos, format!("unknown struct `{text}`"));
+        };
+        if let Some(index) = self.struct_templates[template as usize].only {
+            // The common case: every field's type is already known.
+            let field_count = self.structs[index as usize].fields.len();
+            let mut seen = vec![false; field_count];
+            for &init_id in self.ast.list(fields) {
+                let init = self.ast.field_inits[init_id as usize];
+                let field_name = init.name.text(self.src);
+                let Some(at) = self.structs[index as usize].fields.iter().position(|f| f.name == field_name) else {
+                    return err(init.name.start, format!("struct `{text}` has no field `{field_name}`"));
+                };
+                if seen[at] {
+                    return err(init.name.start, format!("field `{field_name}` is given more than once"));
+                }
+                seen[at] = true;
+                let (want, offset) = {
+                    let field = &self.structs[index as usize].fields[at];
+                    (field.ty, field.offset)
+                };
+                self.expect(init.value, want, What::Field(field_name))?;
+                // The new struct takes a temporary's buffers over.
+                self.take(init.value);
+                self.init_offset[self.sh.i(init_id)] = offset;
+            }
+            if let Some(missing) = seen.iter().position(|&given| !given) {
+                let field_name = self.structs[index as usize].fields[missing].name;
+                return err(pos, format!("field `{field_name}` of `{text}` is missing"));
+            }
+            let ty = Ty::Struct(index);
+            self.expr_tmp[self.sh.e(id)] = self.temp(id, ty)?;
+            return Ok(ty);
+        }
+        let info = &self.struct_templates[template as usize];
+        let (params, shapes) = (info.params.clone(), Rc::clone(&info.fields));
+        let mut bound: Vec<Option<Ty>> = match hint {
+            Some(Ty::Struct(index)) if self.structs[index as usize].template == template => {
+                self.structs[index as usize].args.iter().map(|&arg| Some(arg)).collect()
+            }
+            _ => vec![None; params.len()],
+        };
+        let mut seen = vec![false; shapes.len()];
+        // Field initializers and the fields they fill, for the offsets.
+        let mut filled = Vec::with_capacity(shapes.len());
+        for &init_id in self.ast.list(fields) {
+            let init = self.ast.field_inits[init_id as usize];
+            let field_name = init.name.text(self.src);
+            let Some(at) = shapes.iter().position(|&(known, _)| known == field_name) else {
+                return err(init.name.start, format!("struct `{text}` has no field `{field_name}`"));
+            };
+            if seen[at] {
+                return err(init.name.start, format!("field `{field_name}` is given more than once"));
+            }
+            seen[at] = true;
+            let shape = &shapes[at].1;
+            if Self::ready(shape, &bound) {
+                let want = self.realize(shape, &bound, pos)?;
+                self.settle()?;
+                self.expect(init.value, want, What::Field(field_name))?;
+            } else {
+                // This value decides what a type parameter stands for.
+                let value_pos = self.ast.expr_pos[init.value as usize];
+                let got = self.expr(init.value)?;
+                if got == Ty::Unit {
+                    return err(value_pos, "this expression has no value to store");
+                }
+                if !self.unify(shape, got, &mut bound) {
+                    return err(
+                        value_pos,
+                        format!("field `{field_name}` needs `{}` but this is `{}`", self.shape_name(shape, &params), self.ty_name(got)),
+                    );
+                }
+            }
+            // The new struct takes a temporary's buffers over.
+            self.take(init.value);
+            filled.push((init_id, at));
+        }
+        if let Some(missing) = seen.iter().position(|&given| !given) {
+            return err(pos, format!("field `{}` of `{text}` is missing", shapes[missing].0));
+        }
+        if bound.iter().any(Option::is_none) {
+            return err(
+                pos,
+                format!(
+                    "cannot tell which `{text}` this is; give the variable a type, as in `let x: {text}[{}] = ...`",
+                    vec!["i64"; params.len()].join(", ")
+                ),
+            );
+        }
+        let ty = self.struct_instance(template, bound.into_iter().flatten().collect(), pos)?;
+        self.settle()?;
+        let Ty::Struct(index) = ty else {
+            unreachable!("a struct declaration makes struct types");
+        };
+        for (init_id, at) in filled {
+            self.init_offset[self.sh.i(init_id)] = self.structs[index as usize].fields[at].offset;
+        }
+        self.expr_tmp[self.sh.e(id)] = self.temp(id, ty)?;
+        Ok(ty)
     }
 
     /// Stores the bytes of a string literal, escapes decoded, and
@@ -2109,9 +2473,9 @@ impl<'a> Checker<'a> {
             }
         };
         self.settle()?;
-        self.expr_res[id as usize] = if args.is_some() { BUILTIN_VARIANT } else { VARIANT };
-        self.expr_aux[id as usize] = variant;
-        self.expr_tmp[id as usize] = self.temp(id, ty)?;
+        self.expr_res[self.sh.e(id)] = if args.is_some() { BUILTIN_VARIANT } else { VARIANT };
+        self.expr_aux[self.sh.e(id)] = variant;
+        self.expr_tmp[self.sh.e(id)] = self.temp(id, ty)?;
         Ok(ty)
     }
 
@@ -2135,7 +2499,7 @@ impl<'a> Checker<'a> {
                 return err(pos, format!("`print` takes 1 argument but {} were given", arg_ids.len()));
             }
             let arg = arg_ids[0];
-            self.expr_res[id as usize] = match self.expr(arg)? {
+            self.expr_res[self.sh.e(id)] = match self.expr(arg)? {
                 Ty::I64 => BUILTIN_PRINT_I64,
                 Ty::Bool => BUILTIN_PRINT_BOOL,
                 Ty::Str => BUILTIN_PRINT_STR,
@@ -2153,7 +2517,7 @@ impl<'a> Checker<'a> {
                 return err(pos, format!("`str` takes 1 argument but {} were given", arg_ids.len()));
             }
             let arg = arg_ids[0];
-            self.expr_res[id as usize] = match self.expr(arg)? {
+            self.expr_res[self.sh.e(id)] = match self.expr(arg)? {
                 Ty::I64 => BUILTIN_STR_FROM_I64,
                 Ty::Bool => BUILTIN_STR_FROM_BOOL,
                 other => {
@@ -2163,12 +2527,15 @@ impl<'a> Checker<'a> {
                     );
                 }
             };
-            self.expr_tmp[id as usize] = self.temp(id, Ty::Str)?;
+            self.expr_tmp[self.sh.e(id)] = self.temp(id, Ty::Str)?;
             return Ok(Ty::Str);
         }
         let Some(&index) = self.fn_names.get(text) else {
             if BUILTIN_FUNCTIONS.contains(&text) {
                 return self.builtin(id, text, arg_ids);
+            }
+            if let Some(&generic) = self.generic_names.get(text) {
+                return self.call_generic(id, generic, text, arg_ids, hint, false);
             }
             return if self.struct_names.contains_key(text) {
                 err(pos, format!("`{text}` is a struct; create a value with `{text} {{ ... }}`"))
@@ -2200,7 +2567,7 @@ impl<'a> Checker<'a> {
         for (i, (&arg, &param)) in arg_ids.iter().zip(params).enumerate() {
             self.expect(arg, param, What::Argument(i + 1, text))?;
         }
-        self.expr_res[id as usize] = target;
+        self.expr_res[self.sh.e(id)] = target;
         let ty = match target {
             BUILTIN_EPRINT | BUILTIN_EXIT => return Ok(Ty::Unit),
             BUILTIN_CHR => Ty::Str,
@@ -2211,7 +2578,7 @@ impl<'a> Checker<'a> {
             _ => self.instance(RESULT, vec![Ty::I64, Ty::Str], pos)?,
         };
         self.settle()?;
-        self.expr_tmp[id as usize] = self.temp(id, ty)?;
+        self.expr_tmp[self.sh.e(id)] = self.temp(id, ty)?;
         Ok(ty)
     }
 
@@ -2238,48 +2605,234 @@ impl<'a> Checker<'a> {
         let outer_borrows = self.borrows.len();
         for (i, &arg) in arg_ids.iter().enumerate() {
             let param = self.fns[index as usize].params[i];
-            let arg_pos = self.ast.expr_pos[arg as usize];
-            let number = i + 1 - receivers;
-            let what = What::Argument(number, text);
-            let describe = || format!("argument {number} of `{text}`");
-            match (param.mutable, self.ast.exprs[arg as usize]) {
-                (true, Expr::MutArg(inner)) => {
-                    self.expect(inner, param.ty, what)?;
-                    self.expr_ty[arg as usize] = param.ty;
-                    let Some(place) = self.place(inner) else {
-                        return err(arg_pos, "`mut` needs a variable or a part of a variable");
-                    };
-                    if !place.mutable {
-                        return err(arg_pos, format!("cannot pass `{}` as `mut`: {}", self.root_name(inner), read_only(&place)));
-                    }
-                    self.borrow(inner, place, true)?;
-                }
-                (true, _) => {
-                    return err(arg_pos, format!("{} can be changed by the function, so it must be written `mut <variable>`", describe()));
-                }
-                (false, Expr::MutArg(_)) => {
-                    return err(arg_pos, format!("{} is not a `mut` parameter; remove `mut`", describe()));
-                }
-                (false, _) => {
-                    if !(method && i == 0) {
-                        self.expect(arg, param.ty, what)?;
-                    }
-                    if param.by_ref {
-                        if let Some(place) = self.place(arg) {
-                            self.borrow(arg, place, false)?;
-                        }
-                    }
-                }
-            }
+            let want = if method && i == 0 { Want::Checked(param.ty) } else { Want::Known(param.ty) };
+            self.argument(text, i + 1 - receivers, arg, param.mutable, want, &mut [], &[])?;
         }
         self.borrows.truncate(outer_borrows);
+        self.finish_call(id, index)
+    }
 
+    /// Checks one argument of a call: that `mut` is written exactly where
+    /// the parameter is `mut`, the type, and that the place it names is
+    /// free to be handed over. For a generic function, `bound` is what its
+    /// type parameters (`type_params`) are known to stand for so far.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn argument(
+        &mut self,
+        text: &'a str,
+        number: usize,
+        arg: ExprId,
+        mutable: bool,
+        want: Want,
+        bound: &mut [Option<Ty>],
+        type_params: &[&'a str],
+    ) -> SResult<()> {
+        let arg_pos = self.ast.expr_pos[arg as usize];
+        let what = What::Argument(number, text);
+        let value = match (mutable, self.ast.exprs[arg as usize]) {
+            (true, Expr::MutArg(inner)) => inner,
+            (true, _) => {
+                return err(
+                    arg_pos,
+                    format!("argument {number} of `{text}` can be changed by the function, so it must be written `mut <variable>`"),
+                );
+            }
+            (false, Expr::MutArg(_)) => {
+                return err(arg_pos, format!("argument {number} of `{text}` is not a `mut` parameter; remove `mut`"));
+            }
+            (false, _) => arg,
+        };
+        let ty = match want {
+            Want::Known(ty) => {
+                self.expect(value, ty, what)?;
+                ty
+            }
+            Want::Checked(ty) => ty,
+            Want::Infer(shape) if Self::ready(shape, bound) => {
+                let ty = self.realize(shape, bound, arg_pos)?;
+                self.settle()?;
+                self.expect(value, ty, what)?;
+                ty
+            }
+            Want::Infer(shape) => {
+                // This argument decides what a type parameter stands for.
+                let got = self.expr(value)?;
+                if got == Ty::Unit {
+                    return err(self.ast.expr_pos[value as usize], "this expression has no value to pass");
+                }
+                if !self.unify(shape, got, bound) {
+                    return err(
+                        self.ast.expr_pos[value as usize],
+                        format!(
+                            "argument {number} of `{text}` needs `{}` but this is `{}`",
+                            self.shape_name(shape, type_params),
+                            self.ty_name(got)
+                        ),
+                    );
+                }
+                got
+            }
+        };
+        if mutable {
+            self.expr_ty[self.sh.e(arg)] = ty;
+            let Some(place) = self.place(value) else {
+                return err(arg_pos, "`mut` needs a variable or a part of a variable");
+            };
+            if !place.mutable {
+                return err(arg_pos, format!("cannot pass `{}` as `mut`: {}", self.root_name(value), read_only(&place)));
+            }
+            self.borrow(value, place, true)?;
+        } else if ty.is_aggregate() {
+            // Passed by reference: the place must not change meanwhile.
+            if let Some(place) = self.place(arg) {
+                self.borrow(arg, place, false)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Records that call `id` goes to function `index` and gives the
+    /// call's type.
+    fn finish_call(&mut self, id: ExprId, index: u32) -> SResult<Ty> {
         let ret = self.fns[index as usize].ret;
-        self.expr_res[id as usize] = index;
+        self.expr_res[self.sh.e(id)] = index;
         if ret.is_aggregate() {
-            self.expr_tmp[id as usize] = self.temp(id, ret)?;
+            self.expr_tmp[self.sh.e(id)] = self.temp(id, ret)?;
         }
         Ok(ret)
+    }
+
+    /// A call to a generic function. What its type parameters stand for
+    /// comes from the arguments, read left to right; a parameter no
+    /// argument mentions comes from the type expected of the result.
+    fn call_generic(
+        &mut self,
+        id: ExprId,
+        generic: u32,
+        text: &'a str,
+        arg_ids: &[u32],
+        hint: Option<Ty>,
+        method: bool,
+    ) -> SResult<Ty> {
+        let pos = self.ast.expr_pos[id as usize];
+        let info = &self.generic_fns[generic as usize];
+        let (type_params, params, ret) = (info.type_params.clone(), info.params.clone(), info.ret.clone());
+        // For a method call, `arg_ids` starts with the receiver, which is
+        // already checked and not counted as an argument.
+        let receivers = method as usize;
+        if arg_ids.len() != params.len() {
+            let expected = params.len() - receivers;
+            return err(
+                pos,
+                format!(
+                    "`{text}` takes {expected} argument{} but {} were given",
+                    if expected == 1 { "" } else { "s" },
+                    arg_ids.len() - receivers
+                ),
+            );
+        }
+        let mut bound: Vec<Option<Ty>> = vec![None; type_params.len()];
+        let outer_borrows = self.borrows.len();
+        for (i, &arg) in arg_ids.iter().enumerate() {
+            let want = if method && i == 0 {
+                let ty = self.expr_ty[self.sh.e(arg)];
+                let fits = self.unify(&params[0].0, ty, &mut bound);
+                debug_assert!(fits, "the caller matched the receiver");
+                Want::Checked(ty)
+            } else {
+                Want::Infer(&params[i].0)
+            };
+            self.argument(text, i + 1 - receivers, arg, params[i].1, want, &mut bound, &type_params)?;
+        }
+        self.borrows.truncate(outer_borrows);
+        // What the arguments leave open, the expected type may settle.
+        if let (Some(ret), Some(hint), true) = (&ret, hint, bound.iter().any(Option::is_none)) {
+            let mut trial = bound.clone();
+            if self.unify(ret, hint, &mut trial) {
+                bound = trial;
+            }
+        }
+        if let Some(unknown) = bound.iter().position(Option::is_none) {
+            return err(
+                pos,
+                format!(
+                    "cannot tell what `{}` is in this call to `{text}`: no argument settles it; store the result in a variable with a type",
+                    type_params[unknown]
+                ),
+            );
+        }
+        let index = self.fn_instance(generic, bound.into_iter().flatten().collect(), pos)?;
+        self.finish_call(id, index)
+    }
+
+    /// The function a generic function becomes with these types. It is
+    /// added to the list of functions the first time it is asked for, and
+    /// its body is checked when its turn comes.
+    fn fn_instance(&mut self, generic: u32, type_args: Vec<Ty>, at: u32) -> SResult<u32> {
+        let key = (generic, type_args);
+        if let Some(&index) = self.fn_ids.get(&key) {
+            return Ok(index);
+        }
+        let (generic, type_args) = key;
+        let info = &self.generic_fns[generic as usize];
+        let (item, name, shapes, ret_shape) = (info.item, info.name, info.params.clone(), info.ret.clone());
+        // `fn f[T](x: T) { f([x]) }` would ask for ever larger types.
+        let depth = self.fn_depth + 1;
+        if depth > 40 {
+            return err(at, format!("`{name}` is used with types that grow without end"));
+        }
+        let bound: Vec<Option<Ty>> = type_args.iter().map(|&ty| Some(ty)).collect();
+        let mut params = Vec::with_capacity(shapes.len());
+        for (shape, mutable) in &shapes {
+            let ty = self.realize(shape, &bound, at)?;
+            params.push(ParamInfo { ty, by_ref: *mutable || ty.is_aggregate(), mutable: *mutable });
+        }
+        let ret = match &ret_shape {
+            Some(shape) => self.realize(shape, &bound, at)?,
+            None => Ty::Unit,
+        };
+        self.settle()?;
+        let Item::Fn { nodes, .. } = self.ast.items[item as usize] else {
+            unreachable!("a function's item is a function");
+        };
+        // Entries of its own in every per-node table.
+        let shift = Shift {
+            expr: (self.expr_res.len() as u32).wrapping_sub(nodes.exprs.0),
+            stmt: (self.stmt_slot.len() as u32).wrapping_sub(nodes.stmts.0),
+            pat: (self.pats.len() as u32).wrapping_sub(nodes.patterns.0),
+            init: (self.init_offset.len() as u32).wrapping_sub(nodes.field_inits.0),
+        };
+        let exprs = self.expr_res.len() + nodes.exprs.1 as usize;
+        self.expr_res.resize(exprs, 0);
+        self.expr_ty.resize(exprs, Ty::Unit);
+        self.expr_aux.resize(exprs, 0);
+        self.expr_tmp.resize(exprs, 0);
+        self.expr_moved.resize(exprs, false);
+        let stmts = self.stmt_slot.len() + nodes.stmts.1 as usize;
+        self.stmt_slot.resize(stmts, 0);
+        self.stmt_flag.resize(stmts, 0);
+        self.stmt_drops.resize(stmts, (0, 0));
+        self.pats.resize(self.pats.len() + nodes.patterns.1 as usize, PatInfo::default());
+        self.init_offset.resize(self.init_offset.len() + nodes.field_inits.1 as usize, 0);
+
+        let index = self.fns.len() as u32;
+        self.fn_ids.insert((generic, type_args.clone()), index);
+        self.fns.push(FnInfo {
+            item,
+            shift,
+            generic: Some(generic),
+            type_args,
+            depth,
+            origin: if at >= self.prelude_start { self.fn_origin } else { at },
+            ret,
+            params,
+            slots: 0,
+            sret_slot: None,
+            scratch_slot: 0,
+            zero_slots: Vec::new(),
+        });
+        Ok(index)
     }
 
     /// A method the standard library defines in azoL for this type: an
@@ -2287,6 +2840,16 @@ impl<'a> Checker<'a> {
     fn library_method(&mut self, id: ExprId, base: ExprId, base_ty: Ty, name: Span, args: &[u32]) -> SResult<Ty> {
         let text = name.text(self.src);
         let Some(&index) = self.methods.get(&(base_ty, text)) else {
+            if let Some(&generic) = self.generic_methods.get(text) {
+                let receiver = self.generic_fns[generic as usize].params[0].0.clone();
+                let type_count = self.generic_fns[generic as usize].type_params.len();
+                if self.unify(&receiver, base_ty, &mut vec![None; type_count]) {
+                    let mut all = Vec::with_capacity(args.len() + 1);
+                    all.push(base);
+                    all.extend_from_slice(args);
+                    return self.call_generic(id, generic, text, &all, None, true);
+                }
+            }
             return err(name.start, format!("`{}` has no method `{text}`", self.ty_name(base_ty)));
         };
         let mut all = Vec::with_capacity(args.len() + 1);
@@ -2311,7 +2874,7 @@ impl<'a> Checker<'a> {
             return match text {
                 "len" => {
                     arity(0)?;
-                    self.expr_res[id as usize] = BUILTIN_LEN;
+                    self.expr_res[self.sh.e(id)] = BUILTIN_LEN;
                     Ok(Ty::I64)
                 }
                 "slice" => {
@@ -2319,8 +2882,8 @@ impl<'a> Checker<'a> {
                     self.expect(args[0], Ty::I64, What::Argument(1, "slice"))?;
                     self.expect(args[1], Ty::I64, What::Argument(2, "slice"))?;
                     // The bytes are copied into a string of their own.
-                    self.expr_tmp[id as usize] = self.temp(id, Ty::Str)?;
-                    self.expr_res[id as usize] = BUILTIN_STR_SLICE;
+                    self.expr_tmp[self.sh.e(id)] = self.temp(id, Ty::Str)?;
+                    self.expr_res[self.sh.e(id)] = BUILTIN_STR_SLICE;
                     Ok(Ty::Str)
                 }
                 _ => self.library_method(id, base, base_ty, name, args),
@@ -2333,7 +2896,7 @@ impl<'a> Checker<'a> {
         match text {
             "len" => {
                 arity(0)?;
-                self.expr_res[id as usize] = BUILTIN_LEN;
+                self.expr_res[self.sh.e(id)] = BUILTIN_LEN;
                 Ok(Ty::I64)
             }
             "push" | "pop" => {
@@ -2350,16 +2913,16 @@ impl<'a> Checker<'a> {
                     self.take(args[0]);
                     self.check_change(base, &place)?;
                     // The element waits here while the list makes room.
-                    self.expr_tmp[id as usize] = self.alloc(self.size_of(elem), pos)?;
-                    self.expr_res[id as usize] = BUILTIN_LIST_PUSH;
+                    self.expr_tmp[self.sh.e(id)] = self.alloc(self.size_of(elem), pos)?;
+                    self.expr_res[self.sh.e(id)] = BUILTIN_LIST_PUSH;
                     Ok(Ty::Unit)
                 } else {
                     self.check_change(base, &place)?;
                     if elem.is_aggregate() {
                         // The element leaves the list; this temporary owns it now.
-                        self.expr_tmp[id as usize] = self.temp(id, elem)?;
+                        self.expr_tmp[self.sh.e(id)] = self.temp(id, elem)?;
                     }
-                    self.expr_res[id as usize] = BUILTIN_LIST_POP;
+                    self.expr_res[self.sh.e(id)] = BUILTIN_LIST_POP;
                     Ok(elem)
                 }
             }
@@ -2893,6 +3456,13 @@ mod tests {
         assert_eq!(library_error("let s = \"a\"\nlet t = s.trim(1)").as_deref(), Some("`trim` takes 0 arguments but 1 were given"));
         assert_eq!(library_error("let xs = [1]\nlet t = xs.join(\",\")").as_deref(), Some("`List[i64]` has no method `join`"));
         assert_eq!(library_error("let s = \"a\"\nlet t = s.nothing()").as_deref(), Some("`str` has no method `nothing`"));
+        // Lists get generic methods, which fit any element type that can do what they need.
+        assert_eq!(library_error("let xs = [1]\nlet a: bool = xs.contains(1)\nlet b: Option[i64] = xs.first()\nlet c: List[i64] = xs.reversed()\nlet d: Option[str] = [\"a\"].last()\nlet e: List[List[i64]] = [xs].reversed()"), None);
+        assert_eq!(library_error("let xs = [1]\nlet a = xs.contains(\"a\")").as_deref(), Some("argument 1 of `contains` needs `i64` but this is `str`"));
+        assert_eq!(library_error("let xs = [1]\nlet a = xs.contains()").as_deref(), Some("`contains` takes 1 argument but 0 were given"));
+        assert_eq!(library_error("let xs = [1]\nlet a = xs.first(1)").as_deref(), Some("`first` takes 0 arguments but 1 were given"));
+        assert_eq!(library_error("let n = 1\nlet a = n.first()").as_deref(), Some("`i64` has no method `first`"));
+        assert_eq!(library_error("let xs = [[1]]\nlet a = xs.contains([1])").as_deref(), Some("lists cannot be compared with `==` yet (in `contains` with `T` = `List[i64]`)"));
         // The library's functions are methods only: their names stay free.
         assert_eq!(library_error("let t = str_find(\"a\", \"a\")").as_deref(), Some("unknown function `str_find`"));
         assert_eq!(library_error("let t = find(\"a\", \"a\")").as_deref(), Some("unknown function `find`"));
@@ -2904,9 +3474,82 @@ mod tests {
     }
 
     #[test]
+    fn generic_functions() {
+        let with = |functions: &str, body: &str| format!("{functions}\n{}", in_main(body));
+        let id = "fn id[T](x: T) -> T {\n return x\n}";
+        assert!(check_src(&with(id, "let a: i64 = id(1)\nlet b: str = id(\"x\")\nlet c: List[bool] = id([true])\nlet d: i64 = id(id(2))")).is_ok());
+        assert_eq!(error(&with(id, "let a = id()")), "`id` takes 1 argument but 0 were given");
+        assert_eq!(error(&with(id, "let a: bool = id(1)")), "expected `bool` but this is `i64`");
+        assert_eq!(error(&with(id, "let a = id(print(1))")), "this expression has no value to pass");
+        assert_eq!(error(&with(id, "let a = id")), "`id` is a function; call it with `id(...)`");
+        assert_eq!(error(&with("fn same[T](a: T, b: T) {\n}", "same(1, \"x\")")), "argument 2 of `same` needs `i64` but this is `str`");
+        assert_eq!(error(&with("fn head[T](xs: List[T]) {\n}", "head(1)")), "argument 1 of `head` needs `List[T]` but this is `i64`");
+        assert_eq!(error(&with("fn head[T](xs: List[T]) -> T {\n return xs[0]\n}", "let a: i64 = head([\"a\"])")), "expected `i64` but this is `str`");
+        // A type parameter no argument mentions comes from the expected type.
+        let none = "fn none[T]() -> Option[T] {\n return None\n}";
+        assert!(check_src(&with(none, "let a: Option[i64] = none()\nvar b: Option[str] = none()\nb = none()")).is_ok());
+        assert_eq!(error(&with(none, "let a = none()")), "cannot tell what `T` is in this call to `none`: no argument settles it; store the result in a variable with a type");
+        // Each use is checked with its own types, and mistakes name them.
+        let show = "fn show[T](x: T) {\n print(x)\n}";
+        assert!(check_src(&with(show, "show(1)\nshow(true)\nshow(\"x\")")).is_ok());
+        assert_eq!(error(&with(show, "show(1)\nshow([1])")), "`print` takes an `i64`, a `bool` or a `str` but this is `List[i64]` (in `show` with `T` = `List[i64]`)");
+        assert_eq!(error(&with("fn two[A, B](a: A, b: B) -> A {\n return b\n}", "two(1, true)")), "this function returns `i64` but this is `bool` (in `two` with `A` = `i64`, `B` = `bool`)");
+        assert!(check_src(&with("fn two[A, B](a: A, b: B) -> A {\n return b\n}", "two(1, 2)")).is_ok());
+        assert!(error(&with("fn grow[T](x: T) {\n grow([x])\n}", "grow(1)")).starts_with("`grow` is used with types that grow without end (in `grow` with `T` = `List[List["));
+        // `mut` parameters and the exclusivity rules work as in any function.
+        let add = "fn add[T](xs: mut List[T], x: T) {\n xs.push(x)\n}";
+        assert!(check_src(&with(add, "var xs = [1]\nadd(mut xs, 2)")).is_ok());
+        assert_eq!(error(&with(add, "var xs = [1]\nadd(xs, 2)")), "argument 1 of `add` can be changed by the function, so it must be written `mut <variable>`");
+        assert_eq!(error(&with(add, "let xs = [1]\nadd(mut xs, 2)")), "cannot pass `xs` as `mut`: declare it with `var` to make it changeable");
+        assert_eq!(error(&with(add, "var xs = [[1]]\nadd(mut xs, xs[0])")), "`xs` is passed twice in one call and one of the uses is `mut`; copy it into a variable first");
+        assert_eq!(error(&with(add, "var xs = [1]\nadd(mut xs, \"a\")")), "argument 2 of `add` needs `i64` but this is `str`");
+        assert_eq!(error(&with(add, "var xs = [1]\nfor x in xs {\n add(mut xs, x)\n}")), "cannot pass `xs` as `mut` while a loop is going through it");
+        // Declarations.
+        assert_eq!(error("fn f[T, T](x: T) {\n}\nfn main() {\n}"), "type parameter `T` is declared more than once");
+        assert_eq!(error("fn main[T]() {\n}"), "`main` cannot have type parameters");
+        assert_eq!(error("fn f[T](x: T) {\n}\nfn f(x: i64) {\n}\nfn main() {\n}"), "function `f` is defined more than once");
+        assert_eq!(error("fn f(x: i64) {\n}\nfn f[T](x: T) {\n}\nfn main() {\n}"), "function `f` is defined more than once");
+        assert_eq!(error("fn f[T](x: Missing) {\n}\nfn main() {\n}"), "unknown type `Missing`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`");
+        assert_eq!(error("fn print[T](x: T) {\n}\nfn main() {\n}"), "`print` is built in and cannot be redefined");
+        // The same types give the same function; new types give a new one.
+        let src = with(id, "let a = id(1)\nlet b = id(2)\nlet c = id(true)");
+        let tokens = lex(&src).unwrap();
+        let ast = parse(&src, &tokens).unwrap();
+        let prog = check(&ast, &src).unwrap();
+        assert_eq!(prog.fns.len(), 3);
+        assert_eq!(prog.fns.iter().filter(|f| f.generic.is_some()).map(|f| f.type_args.clone()).collect::<Vec<_>>(), vec![vec![Ty::I64], vec![Ty::Bool]]);
+    }
+
+    #[test]
+    fn generic_structs() {
+        let with = |body: &str| format!("struct Pair[A, B] {{\n first: A\n second: B\n}}\nstruct Stack[T] {{\n items: List[T]\n}}\n{}", in_main(body));
+        assert!(check_src(&with("let p = Pair { first: 1, second: \"x\" }\nlet q: Pair[i64, str] = p\nlet a: i64 = p.first\nlet b: str = q.second\nlet s: Stack[bool] = Stack { items: [] }\nlet t = Stack { items: [p] }\nlet u: Stack[Pair[i64, str]] = t")).is_ok());
+        assert_eq!(error(&with("let p = Pair { first: 1, second: \"x\" }\nlet q: Pair[str, i64] = p")), "expected `Pair[str, i64]` but this is `Pair[i64, str]`");
+        assert_eq!(error(&with("let p: Pair[i64, i64] = Pair { first: 1, second: \"x\" }")), "field `second` needs `i64` but this is `str`");
+        assert_eq!(error(&with("let p = Pair { first: 1 }")), "field `second` of `Pair` is missing");
+        assert_eq!(error(&with("let p = Pair { first: 1, second: 2, third: 3 }")), "struct `Pair` has no field `third`");
+        assert_eq!(error(&with("let p = Pair { first: 1, first: 2 }")), "field `first` is given more than once");
+        assert_eq!(error(&with("let s = Stack { items: [] }")), "cannot tell what this empty list holds; give the variable a type, as in `var xs: List[i64] = []`");
+        assert_eq!(error(&with("let s = Stack { items: 1 }")), "field `items` needs `List[T]` but this is `i64`");
+        assert_eq!(error(&with("let p = Pair { first: print(1), second: 2 }")), "this expression has no value to store");
+        assert_eq!(error(&format!("fn f(p: Pair) {{\n}}\n{}", with(""))), "`Pair` takes 2 type arguments, as in `Pair[i64, i64]`");
+        assert_eq!(error(&format!("fn f(p: Stack[i64, i64]) {{\n}}\n{}", with(""))), "`Stack` takes 1 type argument, as in `Stack[i64]`");
+        assert_eq!(error("struct S[T, T] {\n a: T\n}\nfn main() {\n}"), "type parameter `T` is declared more than once");
+        assert_eq!(error("struct S[T] {\n a: S[T]\n}\nfn main() {\n let s: S[i64] = S { a: 1 }\n}"), "struct `S[i64]` contains itself, so it would have no finite size");
+        assert_eq!(error("struct S[T] {\n a: S[List[T]]\n}\nfn main() {\n let s: Option[S[i64]] = None\n}"), "this type nests structs too deeply");
+        assert_eq!(error("struct Unused[T] {\n a: T\n}\nstruct P {\n x: i64\n}\nfn main() {\n let p = P { x: 1 }\n let q = p.y\n}"), "struct `P` has no field `y`");
+        // One type per combination of type arguments, laid out on its own.
+        let src = with("let a = Pair { first: 1, second: \"x\" }\nlet b = Pair { first: \"y\", second: [1] }\nlet c = Pair { first: 2, second: \"z\" }");
+        let tokens = lex(&src).unwrap();
+        let ast = parse(&src, &tokens).unwrap();
+        let prog = check(&ast, &src).unwrap();
+        let shapes: Vec<(String, u32, usize)> = prog.structs.iter().map(|s| (s.name.clone(), s.size, s.heap.len())).collect();
+        assert_eq!(shapes, vec![("Pair[i64, str]".to_string(), 4, 1), ("Pair[str, List[i64]]".to_string(), 6, 2)]);
+        assert_eq!(prog.structs[1].fields[1].offset, 3);
+    }
+
+    #[test]
     fn features_not_built_yet_are_reported_clearly() {
-        assert_eq!(error("fn f[T](a: T) {\n}\nfn main() {\n}"), "generic functions are not supported by `azol build` yet");
-        assert_eq!(error("struct Pair[T] {\n a: T\n}\nfn main() {\n}"), "generic structs are not supported by `azol build` yet");
         assert_eq!(error(&in_main("let a = 1.5")), "floating-point numbers are not supported by `azol build` yet");
         assert_eq!(error("fn f(a: i32) {\n}\nfn main() {\n}"), "unknown type `i32`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`");
     }

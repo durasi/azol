@@ -58,7 +58,7 @@ impl<'a> Dumper<'a> {
 
     fn item(&mut self, item: &Item) {
         match *item {
-            Item::Fn { name, generics, params, ret, body } => {
+            Item::Fn { name, generics, params, ret, body, .. } => {
                 let _ = write!(self.out, "fn {}", name.text(self.src));
                 self.generics(generics);
                 self.out.push('(');

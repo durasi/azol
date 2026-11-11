@@ -1,0 +1,67 @@
+// expect-exit: 0
+// expect-line: true
+// expect-line: false
+// expect-line: true
+// expect-line: false
+// expect-line: bc
+// expect-line: 1
+// expect-line: none
+// expect-line: 321
+// expect-line: bc,a
+// expect-line: 2
+// expect-line: 0
+// expect-line: true
+// expect-line: 3
+// expect-line: 6
+
+// The list methods of the standard library, which are generic functions
+// written in azoL.
+
+fn show(found: Option[str]) {
+    match found {
+        Some(text) => print(text)
+        None => print("none")
+    }
+}
+
+fn main() {
+    let numbers = [1, 2, 3]
+    print(numbers.contains(2))
+    print(numbers.contains(9))
+    let names = ["a", "b" + "c"]
+    print(names.contains("bc"))
+    print(names.contains("b"))
+    show(names.last())
+    match numbers.first() {
+        Some(n) => print(n)
+        None => print(0)
+    }
+    let empty: List[str] = []
+    show(empty.first())
+
+    var digits = 0
+    for n in numbers.reversed() {
+        digits = digits * 10 + n
+    }
+    print(digits)
+    print(names.reversed().join(","))
+    print(names.len())
+    print(empty.reversed().len())
+    print("a b c".split(" ").reversed().contains("a"))
+
+    // Lists of lists, and methods on what methods return.
+    let rows = [[1, 2], [3], [4, 5, 6]]
+    match rows.reversed().first() {
+        Some(row) => print(row.len())
+        None => print(0)
+    }
+    match rows.last() {
+        Some(row) => {
+            match row.last() {
+                Some(n) => print(n)
+                None => print(0)
+            }
+        }
+        None => print(0)
+    }
+}

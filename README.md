@@ -91,6 +91,19 @@ Leave out the `None` arm and the program does not compile:
 
     error: this `match` does not handle `None`; add an arm for it or a final `_ =>` arm
 
+Code that works for any type is written once. The compiler works out the types at each call and builds a version for each:
+
+    struct Stack[T] {
+        items: List[T]
+    }
+
+    fn pop[T](stack: mut Stack[T]) -> Option[T] {
+        if stack.items.len() == 0 {
+            return None
+        }
+        return Some(stack.items.pop())
+    }
+
 ## Why azoL
 
 **Builds that feel instant.** About 7 million lines per second, from source text to signed executable. A change is running before your finger leaves the key.
@@ -151,6 +164,8 @@ That is roughly 210 times faster than the full Rust build, and 110 times faster 
 - structs, including structs inside structs
 - `List[T]` for any `T`, including lists of lists and lists of structs: `push`, `pop`, `len`, indexing
 - enums whose variants carry values, with type parameters if you want them, and recursive ones through a list
+- generic functions and structs: `fn pop[T](stack: mut Stack[T]) -> Option[T]`, with the types worked out at each call
+- list methods `contains`, `first`, `last` and `reversed`
 - `Option[T]` and `Result[T, E]` built in: `Some`, `None`, `Ok`, `Err`
 - `match` on enums, numbers, booleans and text, checked to cover every case
 - functions and recursion, read-only parameters and `mut` parameters
@@ -162,7 +177,7 @@ That is roughly 210 times faster than the full Rust build, and 110 times faster 
 - automatic memory management with no garbage collector
 - compile errors that point at the exact place and say what to do
 
-It is young. azoL targets Apple Silicon Macs only, has only a first, small standard library, and is missing generic functions and structs, patterns inside patterns, floating-point numbers and modules. Integer overflow currently wraps. Do not build anything you depend on with it yet.
+It is young. azoL targets Apple Silicon Macs only, has only a first, small standard library, and is missing interfaces (a generic function is simply checked for each set of types it is used with), patterns inside patterns, floating-point numbers and modules. Integer overflow currently wraps. Do not build anything you depend on with it yet.
 
 ## Try it
 
@@ -179,7 +194,7 @@ A real command-line tool, written in azoL:
     ./target/release/azol build examples/wc.azl
     ./examples/wc README.md src/main.rs
 
-More to run: `examples/bank.azl`, `examples/tree.azl`, `examples/lists.azl`, `examples/structs.azl`, `examples/fib.azl`.
+More to run: `examples/generics.azl`, `examples/bank.azl`, `examples/tree.azl`, `examples/lists.azl`, `examples/structs.azl`, `examples/fib.azl`.
 
     azol build <file.azl>    compile to an executable
     azol parse <file.azl>    print the syntax tree
@@ -202,17 +217,16 @@ Five stages, each a plain pass over the previous one's output:
 4. **Code generator.** Syntax tree straight to ARM64 machine code in one pass.
 5. **Linker.** Lays out the Mach-O file, binds the system library imports, and computes the code signature macOS requires, hashing pages on several threads.
 
-The compiler is written in Rust with no dependencies, SHA-256 included. A small runtime for printing, files, growing lists and joining strings is written in assembly and embedded as machine code. The text methods of the standard library (`find`, `split`, `trim` and the rest) are written in azoL itself, in `src/prelude.azl`, and compiled with every program.
+The compiler is written in Rust with no dependencies, SHA-256 included. A small runtime for printing, files, growing lists and joining strings is written in assembly and embedded as machine code. The text and list methods of the standard library (`find`, `split`, `trim`, `reversed` and the rest) are written in azoL itself, in `src/prelude.azl`, and compiled with every program.
 
 **How it is tested.** Besides unit tests for every stage, each test program is executed on an emulated ARM64 CPU with a checking heap. The heap reports any buffer that is leaked, freed twice, used after being freed or overrun by a single byte, and it moves a buffer every time it grows so that stale pointers cannot hide. Every test program must come out clean. On a Mac the same programs also run natively against the real system allocator.
 
 ## Roadmap
 
-1. Generic functions and structs
-2. Skipping copies the compiler can prove unnecessary
-3. An optimizing release mode, to close the run-time gap
-4. Linux and x86-64
-5. **The azoL compiler written in azoL.** Rust is scaffolding; the goal is to remove it.
+1. Skipping copies the compiler can prove unnecessary
+2. An optimizing release mode, to close the run-time gap
+3. Linux and x86-64
+4. **The azoL compiler written in azoL.** Rust is scaffolding; the goal is to remove it.
 
 ## Name
 

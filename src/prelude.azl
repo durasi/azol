@@ -173,3 +173,38 @@ fn list_join(parts: List[str], separator: str) -> str {
     }
     return out
 }
+
+// Whether some item of `items` equals `wanted`.
+fn list_contains[T](items: List[T], wanted: T) -> bool {
+    for item in items {
+        if item == wanted {
+            return true
+        }
+    }
+    return false
+}
+
+fn list_first[T](items: List[T]) -> Option[T] {
+    if items.len() == 0 {
+        return None
+    }
+    return Some(items[0])
+}
+
+fn list_last[T](items: List[T]) -> Option[T] {
+    if items.len() == 0 {
+        return None
+    }
+    return Some(items[items.len() - 1])
+}
+
+// The items of `items` in the opposite order, as a new list.
+fn list_reversed[T](items: List[T]) -> List[T] {
+    var out: List[T] = []
+    var i = items.len()
+    while i > 0 {
+        i = i - 1
+        out.push(items[i])
+    }
+    return out
+}

@@ -168,6 +168,17 @@ pub struct FieldInit {
     pub value: ExprId,
 }
 
+/// The nodes one function is made of: where they start in each arena
+/// and how many there are. The parser creates a function's nodes one
+/// after another, so each is a single run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Nodes {
+    pub exprs: (u32, u32),
+    pub stmts: (u32, u32),
+    pub patterns: (u32, u32),
+    pub field_inits: (u32, u32),
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum Item {
     Fn {
@@ -179,6 +190,7 @@ pub enum Item {
         ret: Option<TypeId>,
         /// List of `StmtId`.
         body: List,
+        nodes: Nodes,
     },
     Struct {
         name: Span,
