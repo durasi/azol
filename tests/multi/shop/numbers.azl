@@ -1,0 +1,13 @@
+// Small helpers with numbers, used from both other files.
+
+fn sum(numbers: List[i64]) -> i64 {
+    var total = 0
+    for n in numbers {
+        total = total + n
+    }
+    return total
+}
+
+fn money(amount: i64) -> str {
+    return str(amount)
+}

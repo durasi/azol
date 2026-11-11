@@ -167,6 +167,7 @@ In loops azoL is level with optimized Rust; in code dominated by small function 
 ## What works today
 
 - `i64`, `bool` and `str`
+- bit operators `&`, `|`, `^`, `<<`, `>>`, and numbers written as `0x1F`, `0b1010` or a character such as `'a'`
 - text: `+`, `==`, `!=`, `len`, bytes with `text[i]`, `slice`, `find`, `contains`, `starts_with`, `ends_with`, `trim`, `split`, `lines`, `join`, `to_i64`, and `str(...)` and `chr(...)` to make text from numbers
 - structs, including structs inside structs
 - `List[T]` for any `T`, including lists of lists and lists of structs: `push`, `pop`, `len`, indexing
@@ -179,7 +180,7 @@ In loops azoL is level with optimized Rust; in code dominated by small function 
 - `let` (fixed) and `var` (changeable) variables
 - `if` / `else`, `while`, `for ... in`, `match`, `break`, `continue`
 - `print` for integers, booleans and text, `eprint` for standard error
-- files with `read_file` and `write_file`, which return a `Result` instead of failing silently
+- files with `read_file`, `write_file` and `set_executable`, which return a `Result` instead of failing silently
 - command-line arguments with `args()`, and `exit(code)`
 - automatic memory management with no garbage collector
 - compile errors that point at the exact place and say what to do
@@ -200,6 +201,8 @@ A real command-line tool, written in azoL:
 
     ./target/release/azol build examples/wc.azl
     ./examples/wc README.md src/main.rs
+
+A program can be spread over several files: `azol build main.azl shapes.azl -o app` compiles them as one, and they can use each other's declarations in any order.
 
 More to run: `examples/generics.azl`, `examples/bank.azl`, `examples/tree.azl`, `examples/lists.azl`, `examples/structs.azl`, `examples/fib.azl`.
 

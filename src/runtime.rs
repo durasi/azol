@@ -7,7 +7,7 @@
 //! linker rewrites.
 
 /// Functions imported from the system library, in GOT order.
-pub const IMPORTS: [&str; 15] = ["_write", "_exit", "_malloc", "_realloc", "_free", "_memcpy", "_memcmp", "_open", "_read", "_close", "___error", "_strerror", "_strlen", "__NSGetArgc", "__NSGetArgv"];
+pub const IMPORTS: [&str; 16] = ["_write", "_exit", "_malloc", "_realloc", "_free", "_memcpy", "_memcmp", "_open", "_read", "_close", "___error", "_strerror", "_strlen", "__NSGetArgc", "__NSGetArgv", "_chmod"];
 
 /// Text the runtime prints. `RUNTIME_DATA_OFFSETS[n]` is where item `n`
 /// starts; program string literals are placed after it.
@@ -38,6 +38,7 @@ pub const ARGS: u32 = 333;
 pub const READ_FILE: u32 = 436;
 pub const WRITE_FILE: u32 = 523;
 pub const STR_APPEND: u32 = 583;
+pub const SET_EXECUTABLE: u32 = 645;
 
 pub enum RuntimeReloc {
     /// Three words: load the import's address and call it.
@@ -46,7 +47,7 @@ pub enum RuntimeReloc {
     Data { at: u32, data: u32, reg: u32 },
 }
 
-pub const RUNTIME_RELOCS: [RuntimeReloc; 57] = [
+pub const RUNTIME_RELOCS: [RuntimeReloc; 58] = [
     RuntimeReloc::Import { at: 21, import: 0 },
     RuntimeReloc::Data { at: 27, data: 1, reg: 0 },
     RuntimeReloc::Data { at: 31, data: 2, reg: 0 },
@@ -104,9 +105,10 @@ pub const RUNTIME_RELOCS: [RuntimeReloc; 57] = [
     RuntimeReloc::Import { at: 619, import: 2 },
     RuntimeReloc::Import { at: 627, import: 5 },
     RuntimeReloc::Import { at: 636, import: 5 },
+    RuntimeReloc::Import { at: 652, import: 15 },
 ];
 
-pub const RUNTIME: [u32; 645] = [
+pub const RUNTIME: [u32; 669] = [
     0xA9BC7BFD, //   0: stp x29, x30, [sp, #-0x40]!
     0x910003FD, //   1: mov x29, sp
     0x9100FFE9, //   2: add x9, sp, #0x3f
@@ -752,4 +754,28 @@ pub const RUNTIME: [u32; 645] = [
     0xA94153F3, // 642: ldp x19, x20, [sp, #0x10]
     0xA8C47BFD, // 643: ldp x29, x30, [sp], #0x40
     0xD65F03C0, // 644: ret 
+    0xA9BE7BFD, // 645: stp x29, x30, [sp, #-0x20]!
+    0x910003FD, // 646: mov x29, sp
+    0xA90153F3, // 647: stp x19, x20, [sp, #0x10]
+    0xAA0803F3, // 648: mov x19, x8
+    0x97FFFEF0, // 649: bl #0x5e4
+    0xAA0003F4, // 650: mov x20, x0
+    0xD2803DA1, // 651: mov x1, #0x1ed
+    0xD42201E0, // 652: brk #0x100f
+    0xD503201F, // 653: nop 
+    0xD503201F, // 654: nop 
+    0x340000E0, // 655: cbz w0, #0xa58
+    0xAA1303E0, // 656: mov x0, x19
+    0x97FFFEFF, // 657: bl #0x640
+    0xAA1403E0, // 658: mov x0, x20
+    0x97FFFDD7, // 659: bl #0x1a8
+    0xD2800020, // 660: mov x0, #1
+    0x14000005, // 661: b #0xa68
+    0xAA1403E0, // 662: mov x0, x20
+    0x97FFFDD3, // 663: bl #0x1a8
+    0xF900027F, // 664: str xzr, [x19]
+    0xD2800000, // 665: mov x0, #0
+    0xA94153F3, // 666: ldp x19, x20, [sp, #0x10]
+    0xA8C27BFD, // 667: ldp x29, x30, [sp], #0x20
+    0xD65F03C0, // 668: ret 
 ];

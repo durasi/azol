@@ -43,6 +43,27 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
                 }
                 keyword(&bytes[start..i])
             }
+            b'0' if i + 1 < n && matches!(bytes[i + 1], b'x' | b'b') => {
+                // `0x1F` and `0b1010`, with `_` allowed between digits.
+                let hex = bytes[i + 1] == b'x';
+                i += 2;
+                let mut digits = 0;
+                while i < n && (bytes[i] == b'_' || if hex { bytes[i].is_ascii_hexdigit() } else { matches!(bytes[i], b'0' | b'1') }) {
+                    digits += (bytes[i] != b'_') as usize;
+                    i += 1;
+                }
+                if digits == 0 || (i < n && is_ident_continue(bytes[i])) {
+                    return Err(LexError {
+                        message: if hex {
+                            "a hexadecimal number is `0x` followed by the digits 0-9 and a-f, as in `0x1F`"
+                        } else {
+                            "a binary number is `0b` followed by the digits 0 and 1, as in `0b1010`"
+                        },
+                        offset: start as u32,
+                    });
+                }
+                TokenKind::Int
+            }
             b'0'..=b'9' => {
                 i += 1;
                 while i < n && (bytes[i].is_ascii_digit() || bytes[i] == b'_') {
@@ -94,6 +115,35 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
                 }
                 TokenKind::Str
             }
+            b'\'' => {
+                // A character literal is a number: the byte it names.
+                let len = match bytes.get(i + 1) {
+                    Some(b'\\') => match bytes.get(i + 2) {
+                        Some(b'n' | b't' | b'r' | b'0' | b'\\' | b'\'' | b'"') => 2,
+                        _ => {
+                            return Err(LexError {
+                                message: "unknown escape sequence in character literal",
+                                offset: start as u32,
+                            });
+                        }
+                    },
+                    Some(&c) if (0x20..0x7F).contains(&c) && c != b'\'' => 1,
+                    _ => {
+                        return Err(LexError {
+                            message: "a character literal holds one ASCII character, as in `'a'`",
+                            offset: start as u32,
+                        });
+                    }
+                };
+                if bytes.get(i + 1 + len) != Some(&b'\'') {
+                    return Err(LexError {
+                        message: "a character literal holds one ASCII character, as in `'a'`",
+                        offset: start as u32,
+                    });
+                }
+                i += len + 2;
+                TokenKind::Int
+            }
             b'/' => {
                 if i + 1 < n && bytes[i + 1] == b'/' {
                     i += 2;
@@ -119,6 +169,15 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
             b'%' => single(&mut i, TokenKind::Percent),
             b'-' => pair(bytes, &mut i, b'>', TokenKind::Arrow, TokenKind::Minus),
             b'!' => pair(bytes, &mut i, b'=', TokenKind::NotEq, TokenKind::Bang),
+            b'^' => single(&mut i, TokenKind::Caret),
+            b'<' if i + 1 < n && bytes[i + 1] == b'<' => {
+                i += 2;
+                TokenKind::Shl
+            }
+            b'>' if i + 1 < n && bytes[i + 1] == b'>' => {
+                i += 2;
+                TokenKind::Shr
+            }
             b'<' => pair(bytes, &mut i, b'=', TokenKind::LtEq, TokenKind::Lt),
             b'>' => pair(bytes, &mut i, b'=', TokenKind::GtEq, TokenKind::Gt),
             b'=' => {
@@ -133,28 +192,8 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
                     TokenKind::Assign
                 }
             }
-            b'&' => {
-                if i + 1 < n && bytes[i + 1] == b'&' {
-                    i += 2;
-                    TokenKind::AndAnd
-                } else {
-                    return Err(LexError {
-                        message: "unexpected character '&' (did you mean '&&'?)",
-                        offset: start as u32,
-                    });
-                }
-            }
-            b'|' => {
-                if i + 1 < n && bytes[i + 1] == b'|' {
-                    i += 2;
-                    TokenKind::OrOr
-                } else {
-                    return Err(LexError {
-                        message: "unexpected character '|' (did you mean '||'?)",
-                        offset: start as u32,
-                    });
-                }
-            }
+            b'&' => pair(bytes, &mut i, b'&', TokenKind::AndAnd, TokenKind::Amp),
+            b'|' => pair(bytes, &mut i, b'|', TokenKind::OrOr, TokenKind::Pipe),
             _ => {
                 return Err(LexError {
                     message: "unexpected character",
@@ -329,7 +368,44 @@ mod tests {
     }
 
     #[test]
-    fn single_ampersand_is_rejected() {
-        assert!(lex("a & b").is_err());
+    fn bit_operators() {
+        assert_eq!(
+            kinds("a & b | c ^ d << 1 >> 2 && e || f <= g >= h < i > j"),
+            vec![
+                K::Ident, K::Amp, K::Ident, K::Pipe, K::Ident, K::Caret, K::Ident, K::Shl, K::Int, K::Shr, K::Int,
+                K::AndAnd, K::Ident, K::OrOr, K::Ident, K::LtEq, K::Ident, K::GtEq, K::Ident, K::Lt, K::Ident, K::Gt,
+                K::Ident, K::Eof
+            ]
+        );
+        assert_eq!(kinds("a<<b>>c"), vec![K::Ident, K::Shl, K::Ident, K::Shr, K::Ident, K::Eof]);
+    }
+
+    #[test]
+    fn hexadecimal_and_binary_numbers() {
+        let src = "0x1F 0XFF 0xFFFF_FFFF 0b1010_0001 0 0b0 07";
+        let tokens = lex(src).unwrap();
+        let texts: Vec<&str> = tokens.iter().map(|t| t.text(src)).collect();
+        // `0X` is not a prefix: it is the number 0 and then a name.
+        assert_eq!(texts, ["0x1F", "0", "XFF", "0xFFFF_FFFF", "0b1010_0001", "0", "0b0", "07", ""]);
+        assert!(tokens[..7].iter().enumerate().all(|(i, t)| (t.kind == K::Int) == (i != 2)));
+        for bad in ["0x", "0b", "0x_", "0xG", "0b2", "0b102", "0x1Fz", "0b1_x"] {
+            assert!(lex(bad).is_err(), "{bad} should be rejected");
+        }
+        assert_eq!(lex("0b12").unwrap_err().message, "a binary number is `0b` followed by the digits 0 and 1, as in `0b1010`");
+        assert_eq!(lex("0xZ").unwrap_err().message, "a hexadecimal number is `0x` followed by the digits 0-9 and a-f, as in `0x1F`");
+    }
+
+    #[test]
+    fn character_literals() {
+        let src = r#"'a' ' ' '\n' '\'' '"' '\"' '\\' '\0' '~'"#;
+        let tokens = lex(src).unwrap();
+        assert_eq!(tokens.len(), 10);
+        assert!(tokens[..9].iter().all(|t| t.kind == K::Int));
+        assert_eq!(tokens[3].text(src), r"'\''");
+        for bad in ["'", "''", "'ab'", "'a", "'\\q'", "'\\'", "'\u{e7}'", "'\n'", "'\t'"] {
+            assert!(lex(bad).is_err(), "{bad:?} should be rejected");
+        }
+        assert_eq!(lex("'ab'").unwrap_err().message, "a character literal holds one ASCII character, as in `'a'`");
+        assert_eq!(lex(r"'\q'").unwrap_err().message, "unknown escape sequence in character literal");
     }
 }

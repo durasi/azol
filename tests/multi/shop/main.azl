@@ -1,0 +1,29 @@
+// expect-exit: 3
+// expect-line: 2 items
+// expect-line: tea: 450
+// expect-line: mug: 1200
+// expect-line: total 1650
+// expect-line: no such item: jam
+
+// A program in three files. This one uses what the other two declare,
+// and they use each other and a function declared here.
+
+fn label(item: Item) -> str {
+    return item.name + ": " + money(item.price)
+}
+
+fn main() -> i64 {
+    var stock = empty_stock()
+    add(mut stock, "tea", 450)
+    add(mut stock, "mug", 1200)
+    print(str(stock.items.len()) + " items")
+    for item in stock.items {
+        print(label(item))
+    }
+    print("total " + money(total(stock)))
+    match find(stock, "jam") {
+        Found(item) => print(label(item))
+        Missing(name) => print("no such item: " + name)
+    }
+    return stock.items.len() + 1
+}

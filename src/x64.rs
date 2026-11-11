@@ -18,7 +18,8 @@ use crate::runtime_x64 as runtime;
 use crate::sema::{
     idle_slot, Program, Shift, Ty, APPEND, BUILTIN_ARGS, BUILTIN_CHR, BUILTIN_EPRINT, BUILTIN_EXIT, BUILTIN_LEN,
     BUILTIN_LIST_POP, BUILTIN_LIST_PUSH, BUILTIN_PRINT_BOOL, BUILTIN_PRINT_I64, BUILTIN_PRINT_STR, BUILTIN_READ_FILE,
-    BUILTIN_STR_FROM_BOOL, BUILTIN_STR_FROM_I64, BUILTIN_STR_SLICE, BUILTIN_VARIANT, BUILTIN_WRITE_FILE, BY_REF,
+    BUILTIN_SET_EXECUTABLE, BUILTIN_STR_FROM_BOOL, BUILTIN_STR_FROM_I64, BUILTIN_STR_SLICE, BUILTIN_VARIANT,
+    BUILTIN_WRITE_FILE, BY_REF,
     COPIED, FIRST_BUILTIN, IN_PLACE, PAT_BIND, PAT_LITERAL, PAT_VARIANT, VARIANT,
 };
 use std::collections::HashMap;
@@ -71,6 +72,9 @@ const ADD: u8 = 0x01;
 const SUB: u8 = 0x29;
 const CMP: u8 = 0x39;
 const TEST: u8 = 0x85;
+const AND: u8 = 0x21;
+const OR: u8 = 0x09;
+const XOR: u8 = 0x31;
 
 // The same with a constant: the `/n` of `81 /n id`.
 const ADD_I: u8 = 0;
@@ -261,7 +265,7 @@ impl<'a> Gen<'a> {
         self.byte(0xC0 | (src & 7) << 3 | (dst & 7));
     }
 
-    /// `op dst, src` for `ADD`, `SUB`, `CMP` and `TEST`.
+    /// `op dst, src` for `ADD`, `SUB`, `CMP`, `TEST`, `AND`, `OR` and `XOR`.
     fn op(&mut self, op: u8, dst: u8, src: u8) {
         self.rex(src, dst);
         self.byte(op);
@@ -1510,6 +1514,18 @@ impl<'a> Gen<'a> {
                 self.mov(RAX, RCX);
             }
             BinOp::Mul => self.imul(RAX, RCX),
+            BinOp::BitAnd => self.op(AND, RAX, RCX),
+            BinOp::BitOr => self.op(OR, RAX, RCX),
+            BinOp::BitXor => self.op(XOR, RAX, RCX),
+            BinOp::Shl | BinOp::Shr => {
+                // xchg rax, rcx: the value belongs in rax, the count in cl.
+                // The processor uses the low 6 bits of the count.
+                self.byte(0x48);
+                self.byte(0x91);
+                self.byte(0x48);
+                self.byte(0xD3);
+                self.byte(if op == BinOp::Shl { 0xE0 } else { 0xF8 }); // shl rax, cl / sar rax, cl
+            }
             BinOp::Div | BinOp::Rem => {
                 // xchg rax, rcx: the dividend belongs in rax
                 self.byte(0x48);
@@ -1547,7 +1563,10 @@ impl<'a> Gen<'a> {
     /// Whether argument `i` of the call target travels as an address.
     fn arg_by_ref(&self, target: u32, i: usize) -> bool {
         if target >= FIRST_BUILTIN {
-            matches!(target, BUILTIN_PRINT_STR | BUILTIN_EPRINT | BUILTIN_READ_FILE | BUILTIN_WRITE_FILE)
+            matches!(
+                target,
+                BUILTIN_PRINT_STR | BUILTIN_EPRINT | BUILTIN_READ_FILE | BUILTIN_WRITE_FILE | BUILTIN_SET_EXECUTABLE
+            )
         } else {
             self.prog.fns[target as usize].params[i].by_ref
         }
@@ -1605,11 +1624,15 @@ impl<'a> Gen<'a> {
                     _ => runtime::ARGS,
                 });
             }
-            BUILTIN_READ_FILE | BUILTIN_WRITE_FILE => {
+            BUILTIN_READ_FILE | BUILTIN_WRITE_FILE | BUILTIN_SET_EXECUTABLE => {
                 // The routine fills in what the `Result` holds and says
                 // which variant it is: 0 for `Ok`, 1 for `Err`.
                 self.frame_address(ARGS[count], tmp + 1);
-                self.runtime(if target == BUILTIN_READ_FILE { runtime::READ_FILE } else { runtime::WRITE_FILE });
+                self.runtime(match target {
+                    BUILTIN_READ_FILE => runtime::READ_FILE,
+                    BUILTIN_WRITE_FILE => runtime::WRITE_FILE,
+                    _ => runtime::SET_EXECUTABLE,
+                });
                 self.op_imm(ADD_I, RAX, 1); // the tag
                 self.store_slot(tmp, RAX);
             }
@@ -1701,7 +1724,7 @@ mod tests {
     const NAMES: [&str; runtime::ENTRY_COUNT] = [
         "print_i64", "print_bool", "print_str", "div_zero", "index_fail", "pop_empty", "alloc", "free", "list_push",
         "list_clone", "drop", "str_concat", "str_eq", "str_from_i64", "str_from_bool", "eprint_str", "exit",
-        "str_slice", "chr", "args", "read_file", "write_file", "str_append",
+        "str_slice", "chr", "args", "read_file", "write_file", "str_append", "set_executable",
     ];
 
     /// Compiles a program the way `azol build` does, up to machine code.
@@ -1815,6 +1838,12 @@ mod tests {
             assert_eq!(g.code, expected, "{what}");
             g.code.clear();
         };
+        g.op(AND, RAX, RCX);
+        check(&mut g, &[0x48, 0x21, 0xC8], "and rax, rcx");
+        g.op(OR, RAX, RCX);
+        check(&mut g, &[0x48, 0x09, 0xC8], "or rax, rcx");
+        g.op(XOR, RAX, RCX);
+        check(&mut g, &[0x48, 0x31, 0xC8], "xor rax, rcx");
         g.load_mem(RAX, RBP, -8);
         check(&mut g, &[0x48, 0x8B, 0x45, 0xF8], "mov rax, [rbp-8]");
         g.load_mem(R9, RAX, 16);

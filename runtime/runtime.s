@@ -6,7 +6,7 @@
 //   brk #(0x2000 + 32 * data + reg); nop    load the address of runtime text
 // Imports: 0 write, 1 exit, 2 malloc, 3 realloc, 4 free, 5 memcpy, 6 memcmp,
 //          7 open, 8 read, 9 close, 10 __error, 11 strerror, 12 strlen,
-//          13 _NSGetArgc, 14 _NSGetArgv.
+//          13 _NSGetArgc, 14 _NSGetArgv, 15 chmod.
 // Text:    0 newline, 1 "true", 2 "false", 3-8 the panic messages,
 //          9 the 256 one-byte strings `chr` hands out.
 .text
@@ -15,7 +15,7 @@
 .globl _rt_index_fail, _rt_pop_empty, _rt_alloc, _rt_free, _rt_list_push, _rt_list_clone
 .globl _rt_drop, _rt_str_concat, _rt_str_eq, _rt_str_from_i64, _rt_str_from_bool
 .globl _rt_eprint_str, _rt_exit, _rt_str_slice, _rt_chr, _rt_args, _rt_read_file, _rt_write_file
-.globl _rt_str_append
+.globl _rt_str_append, _rt_set_executable
 
 // x0 = number. Prints it and a newline.
 _rt_print_i64:
@@ -814,4 +814,36 @@ _rt_str_append:
     ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #64
 34:
+    ret
+
+// x0 = address of a string naming a file, x8 = address of three slots.
+// Makes the file runnable: readable and runnable by all, writable by the
+// owner. Returns 0 in x0 and 0 in the first slot, or 1 in x0 and a
+// description of what went wrong as a string in the slots.
+_rt_set_executable:
+    stp x29, x30, [sp, #-32]!
+    mov x29, sp
+    stp x19, x20, [sp, #16]
+    mov x19, x8
+    bl _rt_c_path
+    mov x20, x0
+    mov x1, #0x1ed
+    brk #0x100f
+    nop
+    nop
+    cbz w0, 35f
+    mov x0, x19
+    bl _rt_os_error
+    mov x0, x20
+    bl _rt_free
+    mov x0, #1
+    b 36f
+35:
+    mov x0, x20
+    bl _rt_free
+    str xzr, [x19]
+    mov x0, #0
+36:
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #32
     ret

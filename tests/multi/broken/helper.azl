@@ -1,0 +1,6 @@
+// The mistake is on line 5 of this file: a number is added to text.
+
+fn double(n: i64) -> i64 {
+    let text = "n"
+    return n + text
+}

@@ -15,7 +15,7 @@ MEMORY = 0x40000000
 ENTRIES = [
     "print_i64", "print_bool", "print_str", "div_zero", "index_fail", "pop_empty", "alloc", "free", "list_push",
     "list_clone", "drop", "str_concat", "str_eq", "str_from_i64", "str_from_bool", "eprint_str", "exit", "str_slice",
-    "chr", "args", "read_file", "write_file", "str_append",
+    "chr", "args", "read_file", "write_file", "str_append", "set_executable",
 ]
 FLAGS = [
     # General-purpose registers only: no vector instructions, so the code

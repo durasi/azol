@@ -28,6 +28,8 @@ Usage:
     azol parse --time <file.azl>     Lex and parse the file and report the speed only
     azol build <file.azl>            Compile to an executable next to the source file
     azol build <file.azl> -o <out>   Compile to the given output path
+    azol build <a.azl> <b.azl> ...   Compile several files as one program; the
+                                     executable is named after the first
     azol build --target <target> ... Compile for `aarch64-macos` or `x86_64-linux`
                                      instead of the machine the compiler runs on
     azol --version                   Print the version";
@@ -61,10 +63,10 @@ impl Target {
     }
 }
 
-/// Reads the arguments of `azol build`: one source file, and `-o` and
+/// Reads the arguments of `azol build`: the source files, and `-o` and
 /// `--target` with their values, in any order.
-fn build_arguments<'a>(args: &[&'a str]) -> Option<(&'a str, Option<&'a str>, Target)> {
-    let (mut path, mut out, mut target) = (None, None, Target::host());
+fn build_arguments<'a>(args: &[&'a str]) -> Option<(Vec<&'a str>, Option<&'a str>, Target)> {
+    let (mut paths, mut out, mut target) = (Vec::new(), None, Target::host());
     let mut rest = args.iter();
     while let Some(&arg) = rest.next() {
         match arg {
@@ -77,11 +79,14 @@ fn build_arguments<'a>(args: &[&'a str]) -> Option<(&'a str, Option<&'a str>, Ta
                 };
                 target = known;
             }
-            _ if path.is_none() && !arg.starts_with('-') => path = Some(arg),
+            _ if !arg.starts_with('-') => paths.push(arg),
             _ => return None,
         }
     }
-    Some((path?, out, target))
+    if paths.is_empty() {
+        return None;
+    }
+    Some((paths, out, target))
 }
 
 fn main() -> ExitCode {
@@ -98,7 +103,7 @@ fn main() -> ExitCode {
         ["parse", path] => run_parse(path, false),
         ["parse", "--time", path] => run_parse(path, true),
         ["build", rest @ ..] => match build_arguments(rest) {
-            Some((path, out, target)) => run_build(path, out, target),
+            Some((paths, out, target)) => run_build(&paths, out, target),
             None => {
                 eprintln!("{USAGE}");
                 ExitCode::from(2)
@@ -245,35 +250,88 @@ fn run_parse(path: &str, time_only: bool) -> ExitCode {
 /// The part of the standard library that is written in azoL.
 const PRELUDE: &str = include_str!("prelude.azl");
 
-fn run_build(path: &str, out: Option<&str>, target: Target) -> ExitCode {
+/// One source file of the program being built: its path, and where its
+/// text starts and how long it is in the one text that holds them all.
+struct SourceFile<'a> {
+    path: &'a str,
+    start: usize,
+    len: usize,
+}
+
+/// The file that position `offset` of the whole text falls in, and the
+/// position inside that file. A position right after a file's last
+/// character (where "end of file" is reported) still belongs to it.
+fn locate<'f, 'a>(files: &'f [SourceFile<'a>], offset: u32) -> (&'f SourceFile<'a>, u32) {
+    let offset = offset as usize;
+    let file = files.iter().find(|file| offset <= file.start + file.len).unwrap_or(&files[files.len() - 1]);
+    (file, (offset.max(file.start) - file.start) as u32)
+}
+
+/// Prints an error at `offset` of the whole text, naming the file it
+/// falls in and the line inside that file.
+fn report_in(files: &[SourceFile], src: &str, offset: u32, message: &str) {
+    let (file, at) = locate(files, offset);
+    report(file.path, &src[file.start..file.start + file.len], at, message);
+}
+
+fn run_build(paths: &[&str], out: Option<&str>, target: Target) -> ExitCode {
     let started = Instant::now();
+    let path = paths[0];
     let Some(mut src) = read_source(path) else {
         return ExitCode::FAILURE;
     };
-    // The standard library's source follows the program's in one text, so
-    // that every position in either is a plain offset. Only `user` is
-    // ever shown in a message.
-    let user_len = src.len();
-    let prelude_start = user_len + 1;
+    // All source files, and after them the standard library's source,
+    // follow each other in one text, so that every position in any of
+    // them is a plain offset. Each is lexed and parsed on its own: a
+    // mistake at the end of one file is never reported inside the next.
+    let mut files = vec![SourceFile { path, start: 0, len: src.len() }];
+    for &path in &paths[1..] {
+        let Some(more) = read_source(path) else {
+            return ExitCode::FAILURE;
+        };
+        src.push('\n');
+        files.push(SourceFile { path, start: src.len(), len: more.len() });
+        src.push_str(&more);
+    }
+    let prelude_start = src.len() + 1;
     src.push('\n');
     src.push_str(PRELUDE);
-    let user = &src[..user_len];
+    if src.len() > u32::MAX as usize {
+        eprintln!("error: the program is larger than 4 GB of source text");
+        return ExitCode::FAILURE;
+    }
     let read = started.elapsed().as_secs_f64();
 
-    let tokens = match lexer::lex(user) {
-        Ok(tokens) => tokens,
-        Err(err) => {
-            report(path, user, err.offset, err.message);
-            return ExitCode::FAILURE;
+    let mut ast = None;
+    for file in &files {
+        let text = &src[file.start..file.start + file.len];
+        let mut tokens = match lexer::lex(text) {
+            Ok(tokens) => tokens,
+            Err(err) => {
+                report(file.path, text, err.offset, err.message);
+                return ExitCode::FAILURE;
+            }
+        };
+        // Positions are offsets in the whole text. The first file starts
+        // at zero, so a program of one file pays nothing for this.
+        if file.start > 0 {
+            for token in &mut tokens {
+                token.start += file.start as u32;
+            }
         }
-    };
-    let ast = match parser::parse(&src, &tokens) {
-        Ok(ast) => ast,
-        Err(err) => {
-            report(path, user, err.offset, &err.message);
-            return ExitCode::FAILURE;
+        let parsed = match ast.take() {
+            None => parser::parse(&src, &tokens),
+            Some(ast) => parser::parse_into(ast, &src, &tokens),
+        };
+        match parsed {
+            Ok(parsed) => ast = Some(parsed),
+            Err(err) => {
+                report_in(&files, &src, err.offset, &err.message);
+                return ExitCode::FAILURE;
+            }
         }
-    };
+    }
+    let ast = ast.expect("there is at least one source file");
     let mut prelude_tokens = lexer::lex(&src[prelude_start..]).expect("the standard library has valid tokens");
     for token in &mut prelude_tokens {
         token.start += prelude_start as u32;
@@ -288,7 +346,7 @@ fn run_build(path: &str, out: Option<&str>, target: Target) -> ExitCode {
             return ExitCode::FAILURE;
         }
         Err(err) => {
-            report(path, user, err.offset, &err.message);
+            report_in(&files, &src, err.offset, &err.message);
             return ExitCode::FAILURE;
         }
     };
@@ -357,4 +415,47 @@ fn write_executable(path: &std::path::Path, image: &[u8]) -> std::io::Result<()>
         fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn positions_are_found_in_the_right_file() {
+        // "ab", "cde" and "" joined by newlines: a b \n c d e \n (empty)
+        let files = [
+            SourceFile { path: "one", start: 0, len: 2 },
+            SourceFile { path: "two", start: 3, len: 3 },
+            SourceFile { path: "three", start: 7, len: 0 },
+        ];
+        let at = |offset: u32| {
+            let (file, inside) = locate(&files, offset);
+            (file.path, inside)
+        };
+        assert_eq!(at(0), ("one", 0));
+        assert_eq!(at(1), ("one", 1));
+        // Right after the last character: the end of that file.
+        assert_eq!(at(2), ("one", 2));
+        assert_eq!(at(3), ("two", 0));
+        assert_eq!(at(5), ("two", 2));
+        assert_eq!(at(6), ("two", 3));
+        assert_eq!(at(7), ("three", 0));
+        // Past everything (never produced for a program's own text): the last file.
+        assert_eq!(at(40), ("three", 33));
+    }
+
+    #[test]
+    fn build_arguments_accept_several_files_in_any_order() {
+        let (paths, out, target) = build_arguments(&["a.azl", "-o", "out", "b.azl", "--target", "x86_64-linux", "c.azl"]).unwrap();
+        assert_eq!(paths, ["a.azl", "b.azl", "c.azl"]);
+        assert_eq!(out, Some("out"));
+        assert!(target == Target::X86_64Linux);
+        let (paths, out, _) = build_arguments(&["one.azl"]).unwrap();
+        assert_eq!((paths, out), (vec!["one.azl"], None));
+        assert!(build_arguments(&[]).is_none());
+        assert!(build_arguments(&["-o", "out"]).is_none());
+        assert!(build_arguments(&["a.azl", "-o"]).is_none());
+        assert!(build_arguments(&["a.azl", "--fast"]).is_none());
+    }
 }

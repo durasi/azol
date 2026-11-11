@@ -1,0 +1,47 @@
+// The stock of a shop: declared here, used from main.azl.
+
+struct Item {
+    name: str
+    price: i64
+}
+
+struct Stock {
+    items: List[Item]
+}
+
+enum Lookup {
+    Found(Item)
+    Missing(str)
+}
+
+fn empty_stock() -> Stock {
+    return Stock { items: [] }
+}
+
+fn add(stock: mut Stock, name: str, price: i64) {
+    stock.items.push(Item { name: name, price: price })
+}
+
+fn find(stock: Stock, name: str) -> Lookup {
+    for item in stock.items {
+        if item.name == name {
+            return Found(item)
+        }
+    }
+    return Missing(name)
+}
+
+fn total(stock: Stock) -> i64 {
+    return sum(prices(stock))
+}
+
+fn prices(stock: Stock) -> List[i64] {
+    var out: List[i64] = []
+    for item in stock.items {
+        // `label` lives in main.azl: files may refer to each other freely.
+        if label(item).len() > 0 {
+            out.push(item.price)
+        }
+    }
+    return out
+}

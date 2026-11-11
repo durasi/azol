@@ -563,11 +563,16 @@ impl<'a> Parser<'a> {
                 K::LtEq => (BinOp::LtEq, 3),
                 K::Gt => (BinOp::Gt, 3),
                 K::GtEq => (BinOp::GtEq, 3),
-                K::Plus => (BinOp::Add, 4),
-                K::Minus => (BinOp::Sub, 4),
-                K::Star => (BinOp::Mul, 5),
-                K::Slash => (BinOp::Div, 5),
-                K::Percent => (BinOp::Rem, 5),
+                K::Pipe => (BinOp::BitOr, 4),
+                K::Caret => (BinOp::BitXor, 5),
+                K::Amp => (BinOp::BitAnd, 6),
+                K::Shl => (BinOp::Shl, 7),
+                K::Shr => (BinOp::Shr, 7),
+                K::Plus => (BinOp::Add, 8),
+                K::Minus => (BinOp::Sub, 8),
+                K::Star => (BinOp::Mul, 9),
+                K::Slash => (BinOp::Div, 9),
+                K::Percent => (BinOp::Rem, 9),
                 _ => break,
             };
             if prec < min_prec {
@@ -789,6 +794,11 @@ pub fn describe(kind: TokenKind) -> &'static str {
         K::Bang => "`!`",
         K::AndAnd => "`&&`",
         K::OrOr => "`||`",
+        K::Amp => "`&`",
+        K::Pipe => "`|`",
+        K::Caret => "`^`",
+        K::Shl => "`<<`",
+        K::Shr => "`>>`",
         K::Newline => "end of line",
         K::Eof => "end of file",
     }
@@ -836,6 +846,26 @@ mod tests {
     fn logic_and_comparison_precedence() {
         assert_eq!(body("x = !a && b || c"), "x = (|| (&& (not a) b) c)");
         assert_eq!(body("x = a + 1 < b * 2 && c != d"), "x = (&& (< (+ a 1) (* b 2)) (!= c d))");
+    }
+
+    #[test]
+    fn bit_operator_precedence() {
+        // Tightest first: `* / %`, `+ -`, `<< >>`, `&`, `^`, `|`, comparisons.
+        assert_eq!(body("x = a | b ^ c & d << e + f * g"), "x = (| a (^ b (& c (<< d (+ e (* f g))))))");
+        assert_eq!(body("x = a * b + c << d & e ^ f | g"), "x = (| (^ (& (<< (+ (* a b) c) d) e) f) g)");
+        assert_eq!(body("x = a & 0xFF == b | 'c'"), "x = (== (& a 0xFF) (| b 'c'))");
+        assert_eq!(body("x = a << 1 >> 2 << 3"), "x = (<< (>> (<< a 1) 2) 3)");
+        assert_eq!(body("x = a & b & c | d | e"), "x = (| (| (& (& a b) c) d) e)");
+        assert_eq!(body("x = a < b << 1 && c | d != 0 || !e"), "x = (|| (&& (< a (<< b 1)) (!= (| c d) 0)) (not e))");
+        assert_eq!(body("x = -a << b"), "x = (<< (neg a) b)");
+        // A line continues after a trailing operator, as with the others.
+        assert_eq!(body("x = a |\n b &\n c <<\n d ^\n e >>\n f"), "x = (| a (^ (& b (<< c d)) (>> e f)))");
+    }
+
+    #[test]
+    fn number_and_character_literals_in_patterns() {
+        let out = body("match v {\n0x1F => a()\n-0b11 => b()\n'x' => c()\n'\\n' => d()\n_ => e()\n}");
+        assert_eq!(out, "match v\n  0x1F =>\n    (call a)\n  -0b11 =>\n    (call b)\n  'x' =>\n    (call c)\n  '\\n' =>\n    (call d)\n  _ =>\n    (call e)");
     }
 
     #[test]

@@ -10,6 +10,8 @@
 //! it directly, and its writable memory is at `MEMORY`. Its routines use
 //! the System V calling convention.
 
+#![allow(dead_code)]
+
 /// Ids of the routines, shared with the code generator.
 pub const PRINT_I64: u32 = 0;
 pub const PRINT_BOOL: u32 = 1;
@@ -34,8 +36,9 @@ pub const ARGS: u32 = 19;
 pub const READ_FILE: u32 = 20;
 pub const WRITE_FILE: u32 = 21;
 pub const STR_APPEND: u32 = 22;
+pub const SET_EXECUTABLE: u32 = 23;
 /// Number of routines.
-pub const ENTRY_COUNT: usize = 23;
+pub const ENTRY_COUNT: usize = 24;
 
 /// Address the executable file is mapped at.
 pub const BASE: u64 = 0x400000;
@@ -43,9 +46,9 @@ pub const BASE: u64 = 0x400000;
 pub const TEXT_OFFSET: u64 = 0x100;
 /// The runtime's code and constant data. The program's code goes right
 /// after it, starting with a jump to the program's `main`.
-pub const TEXT: &[u8; 8576] = include_bytes!("../runtime/linux_x64/runtime.bin");
+pub const TEXT: &[u8; 8896] = include_bytes!("../runtime/linux_x64/runtime.bin");
 /// Offset in `TEXT` of each routine, indexed by its id.
-pub const ENTRIES: [u32; ENTRY_COUNT] = [784, 1024, 1296, 1616, 1696, 1712, 368, 704, 1728, 2416, 2608, 2688, 3072, 3136, 3456, 1424, 1552, 3520, 3792, 4384, 4688, 6048, 3856];
+pub const ENTRIES: [u32; ENTRY_COUNT] = [784, 1024, 1296, 1616, 1696, 1712, 368, 704, 1728, 2416, 2608, 2688, 3072, 3136, 3456, 1424, 1552, 3520, 3792, 4384, 4688, 6048, 3856, 6560];
 /// Offset in `TEXT` of the code the system starts the process at.
 pub const START: u32 = 0;
 /// Address and size of the runtime's writable memory, which must start

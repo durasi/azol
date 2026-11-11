@@ -1,0 +1,2 @@
+fn helper() -> i64 {
+    return 1

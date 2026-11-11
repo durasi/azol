@@ -49,6 +49,12 @@ pub enum BinOp {
     Mul,
     Div,
     Rem,
+    BitAnd,
+    BitOr,
+    BitXor,
+    /// Shifts use the low 6 bits of the count; `>>` keeps the sign.
+    Shl,
+    Shr,
 }
 
 impl BinOp {
@@ -67,6 +73,11 @@ impl BinOp {
             BinOp::Mul => "*",
             BinOp::Div => "/",
             BinOp::Rem => "%",
+            BinOp::BitAnd => "&",
+            BinOp::BitOr => "|",
+            BinOp::BitXor => "^",
+            BinOp::Shl => "<<",
+            BinOp::Shr => ">>",
         }
     }
 }

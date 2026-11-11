@@ -1,0 +1,3 @@
+fn extra() -> i64 {
+    return 2
+}

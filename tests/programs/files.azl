@@ -15,6 +15,10 @@
 // expect-line: 196608
 // expect-line: 196608
 // expect-line: true
+// expect-line: 0
+// expect-line: 0
+// expect-line: still here
+// expect-line: No such file or directory
 // expect-line: 1
 // expect-line: true
 
@@ -78,6 +82,18 @@ fn main() {
         }
         Err(problem) => print(problem)
     }
+    write_file(path, "")
+
+    // A file is made runnable; doing it twice is fine and leaves the
+    // contents alone. A file that is not there cannot be.
+    write_file(path, "still here")
+    written(set_executable(path))
+    written(set_executable(path))
+    match read_file(path) {
+        Ok(text) => print(text)
+        Err(problem) => print(problem)
+    }
+    written(set_executable("/tmp/azol_no_such_file"))
     write_file(path, "")
 
     let arguments = args()

@@ -1,0 +1,256 @@
+// expect-exit: 0
+// expect-line: 8
+// expect-line: 14
+// expect-line: 6
+// expect-line: 48
+// expect-line: 3
+// expect-line: -4
+// expect-line: -1
+// expect-line: -16
+// expect-line: 248
+// expect-line: -7
+// expect-line: 0
+// expect-line: 7
+// expect-line: 1
+// expect-line: 2
+// expect-line: -9223372036854775808
+// expect-line: 1
+// expect-line: 2
+// expect-line: 9223372036854775807
+// expect-line: 4611686018427387903
+// expect-line: 0
+// expect-line: 9223372036854775807
+// expect-line: 4611686018427387903
+// expect-line: -9223372036854775808
+// expect-line: 1
+// expect-line: 2
+// expect-line: -9223372036854775808
+// expect-line: -8
+// expect-line: -4
+// expect-line: 0
+// expect-line: 24
+// expect-line: 32
+// expect-line: 6
+// expect-line: 3
+// expect-line: 3
+// expect-line: 4
+// expect-line: 4
+// expect-line: 3
+// expect-line: 3
+// expect-line: 21
+// expect-line: 31
+// expect-line: 255
+// expect-line: 4294967295
+// expect-line: 161
+// expect-line: 9223372036854775807
+// expect-line: -1
+// expect-line: -9223372036854775808
+// expect-line: -1
+// expect-line: 0
+// expect-line: 0
+// expect-line: 97
+// expect-line: 66
+// expect-line: 10
+// expect-line: 9
+// expect-line: 13
+// expect-line: 0
+// expect-line: 92
+// expect-line: 39
+// expect-line: 34
+// expect-line: 32
+// expect-line: 126
+// expect-line: 25
+// expect-line: 120
+// expect-line: 86
+// expect-line: 43981
+// expect-line: true
+// expect-line: true
+// expect-line: false
+// expect-line: true
+// expect-line: -6615550055289275125
+// expect-line: -3750763034362895579
+// expect-line: 300286872
+// expect-line: 0
+// expect-line: 8
+// expect-line: 64
+// expect-line: 2
+// expect-line: 3
+// expect-line: 878082066
+// expect-line: 16909060
+// expect-line: 3
+// expect-line: 1
+// expect-line: 2
+// expect-line: 3
+// expect-line: 3
+// expect-line: 0
+// expect-line: 1
+// expect-line: 668
+
+// Bit operators, shifts, and numbers written in hexadecimal, in binary
+// and as characters.
+
+fn fnv(text: str) -> i64 {
+    var hash = 0xcbf2_9ce4_8422_2325
+    var i = 0
+    while i < text.len() {
+        hash = (hash ^ text[i]) * 0x100_0000_01b3
+        i = i + 1
+    }
+    return hash
+}
+
+fn adler(text: str) -> i64 {
+    var low = 1
+    var high = 0
+    var i = 0
+    while i < text.len() {
+        low = (low + text[i]) % 65521
+        high = (high + low) % 65521
+        i = i + 1
+    }
+    return high << 16 | low
+}
+
+// The number of bits that are set, also for negative numbers.
+fn ones(value: i64) -> i64 {
+    var count = 0
+    var bit = 0
+    while bit < 64 {
+        count = count + (value >> bit & 1)
+        bit = bit + 1
+    }
+    return count
+}
+
+// A 32-bit rotation, done in 64-bit numbers with a mask.
+fn rotate(value: i64, by: i64) -> i64 {
+    return (value << by | value >> 32 - by) & 0xFFFF_FFFF
+}
+
+fn pack(a: i64, b: i64, c: i64, d: i64) -> i64 {
+    return a << 24 | b << 16 | c << 8 | d
+}
+
+fn byte_of(word: i64, index: i64) -> i64 {
+    return word >> (3 - index) * 8 & 0xFF
+}
+
+fn kind(c: i64) -> i64 {
+    match c {
+        'a' => return 1
+        'A' => return 1
+        0x37 => return 2
+        ' ' => return 3
+        '\n' => return 3
+        0b0 => return 4
+        _ => return 0
+    }
+}
+
+fn mixed(n: i64) -> i64 {
+    var acc = 0
+    var i = 0
+    while i < n {
+        acc = acc << 3 ^ i | i & 1
+        i = i + 1
+    }
+    return acc
+}
+
+fn main() {
+    let a = 0b1100
+    let b = 0b1010
+    let neg = 0 - 8
+    let big = 0x7FFF_FFFF_FFFF_FFFF
+    let one = 1
+    let sixty_three = 63
+    let sixty_four = 64
+    let sixty_five = 65
+    let minus_one = 0 - 1
+    print(a & b)
+    print(a | b)
+    print(a ^ b)
+    print(a << 2)
+    print(a >> 2)
+    print(neg >> 1)
+    print(neg >> 63)
+    print(neg << 1)
+    print(neg & 0xFF)
+    print(neg | 1)
+    print(neg ^ neg)
+    print(neg ^ -1)
+    print(1 << 0)
+    print(1 << 1)
+    print(1 << 63)
+    print(1 << 64)
+    print(1 << 65)
+    print(big >> 0)
+    print(big >> 1)
+    print(big >> 63)
+    print(big >> 64)
+    print(big >> 65)
+    print(one << sixty_three)
+    print(one << sixty_four)
+    print(one << sixty_five)
+    print(one << minus_one)
+    print(neg >> sixty_four)
+    print(neg >> sixty_five)
+    print(big >> minus_one)
+    print(1 + 2 << 3)
+    print(1 << 2 + 3)
+    print(6 & 3 << 1)
+    print(1 | 2 & 3)
+    print(1 ^ 3 & 2)
+    print(4 | 1 ^ 5)
+    print(2 * 3 & 5)
+    print(7 - 1 >> 1)
+    print(0xF0 >> 4 & 0x3)
+    print(1 << 4 | 1 << 2 | 1)
+    print(0x1F)
+    print(0xff)
+    print(0xFFFF_FFFF)
+    print(0b1010_0001)
+    print(0x7FFF_FFFF_FFFF_FFFF)
+    print(0xFFFF_FFFF_FFFF_FFFF)
+    print(0x8000_0000_0000_0000)
+    print(0b1111111111111111111111111111111111111111111111111111111111111111)
+    print(0x0)
+    print(0b0)
+    print('a')
+    print('A' + 1)
+    print('\n')
+    print('\t')
+    print('\r')
+    print('\0')
+    print('\\')
+    print('\'')
+    print('"')
+    print(' ')
+    print('~')
+    print('z' - 'a')
+    print(0x1234_5678 & 0xFF)
+    print(0x1234_5678 >> 8 & 0xFF)
+    print(0xAB << 8 | 0xCD)
+    print(a & b == 8)
+    print(1 << 3 > 7 && 1 | 2 == 3)
+    print(0xFF ^ 0x0F != 0xF0)
+    print('a' < 'b')
+    print(fnv("hello"))
+    print(fnv(""))
+    print(adler("Wikipedia"))
+    print(ones(0))
+    print(ones(255))
+    print(ones(-1))
+    print(ones(0x8000_0000_0000_0001))
+    print(rotate(0x8000_0001, 1))
+    print(rotate(0x1234_5678, 8))
+    print(pack(1, 2, 3, 4))
+    print(byte_of(0x0102_0304, 2))
+    print(kind('a'))
+    print(kind('7'))
+    print(kind(' '))
+    print(kind('\n'))
+    print(kind('+'))
+    print(kind(0x41))
+    print(mixed(5))
+}

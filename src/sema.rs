@@ -80,11 +80,13 @@ pub const BUILTIN_EXIT: u32 = u32::MAX - 13;
 pub const BUILTIN_EPRINT: u32 = u32::MAX - 14;
 /// `slice(start, end)` of a string.
 pub const BUILTIN_STR_SLICE: u32 = u32::MAX - 15;
+pub const BUILTIN_SET_EXECUTABLE: u32 = u32::MAX - 16;
 /// Resolutions at or above this value are built-ins.
-pub const FIRST_BUILTIN: u32 = u32::MAX - 15;
+pub const FIRST_BUILTIN: u32 = u32::MAX - 16;
 
 /// Names of the built-in functions; a program cannot define these.
-const BUILTIN_FUNCTIONS: [&str; 8] = ["print", "eprint", "str", "chr", "args", "read_file", "write_file", "exit"];
+const BUILTIN_FUNCTIONS: [&str; 9] =
+    ["print", "eprint", "str", "chr", "args", "read_file", "write_file", "set_executable", "exit"];
 /// Where the built-in `Result` sits among the enum declarations.
 const RESULT: u32 = 1;
 /// Set in the resolution of a name whose stack slot holds a pointer.
@@ -699,6 +701,40 @@ pub fn check_with_prelude<'a>(ast: &'a Ast, src: &'a str, prelude_start: u32) ->
         data: c.data,
         strings: c.strings,
     })
+}
+
+/// The value of a number that is not written in decimal: `0x1F`,
+/// `0b1010` or a character such as `'a'` or `'\n'`. The outer `None`
+/// means the text is a decimal number; the inner one that it needs more
+/// than 64 bits. All 64 bits may be used, so `0xFFFF_FFFF_FFFF_FFFF` is
+/// the `i64` with every bit set, which is -1.
+fn special_literal(text: &str) -> Option<Option<i64>> {
+    let bytes = text.as_bytes();
+    if bytes[0] == b'\'' {
+        // The lexer accepted only one ASCII character or one of these escapes.
+        return Some(Some(match (bytes[1], bytes[2]) {
+            (b'\\', b'n') => b'\n',
+            (b'\\', b't') => b'\t',
+            (b'\\', b'r') => b'\r',
+            (b'\\', b'0') => 0,
+            (b'\\', other) => other,
+            (plain, _) => plain,
+        } as i64));
+    }
+    let bits_per_digit = match bytes.get(1) {
+        Some(b'x') if bytes[0] == b'0' => 4,
+        Some(b'b') if bytes[0] == b'0' => 1,
+        _ => return None,
+    };
+    let mut value: u64 = 0;
+    for &byte in bytes[2..].iter().filter(|&&b| b != b'_') {
+        if value >> (64 - bits_per_digit) != 0 {
+            return Some(None);
+        }
+        let digit = (byte as char).to_digit(16).expect("the lexer accepted only digits") as u64;
+        value = value << bits_per_digit | digit;
+    }
+    Some(Some(value as i64))
 }
 
 fn err<T>(offset: u32, message: impl Into<String>) -> SResult<T> {
@@ -2003,10 +2039,16 @@ impl<'a> Checker<'a> {
                         return err(pat_pos, format!("this pattern is a number but the `match` is on `{}`", self.ty_name(ty)));
                     }
                     let mut value: i128 = 0;
-                    for byte in digits.text(self.src).bytes().filter(|&b| b != b'_') {
-                        value = value * 10 + (byte - b'0') as i128;
-                        if value > 1 << 63 {
-                            break;
+                    match special_literal(digits.text(self.src)) {
+                        Some(Some(special)) => value = special as i128,
+                        Some(None) => return err(pat_pos, "this number does not fit in 64 bits"),
+                        None => {
+                            for byte in digits.text(self.src).bytes().filter(|&b| b != b'_') {
+                                value = value * 10 + (byte - b'0') as i128;
+                                if value > 1 << 63 {
+                                    break;
+                                }
+                            }
                         }
                     }
                     if negative {
@@ -2232,14 +2274,22 @@ impl<'a> Checker<'a> {
         let pos = self.ast.expr_pos[id as usize];
         match self.ast.exprs[id as usize] {
             Expr::Int(span) => {
-                let mut value: i64 = 0;
-                for byte in span.text(self.src).bytes().filter(|&b| b != b'_') {
-                    let digit = (byte - b'0') as i64;
-                    let Some(next) = value.checked_mul(10).and_then(|v| v.checked_add(digit)) else {
-                        return err(pos, "this number does not fit in `i64`");
-                    };
-                    value = next;
-                }
+                let text = span.text(self.src);
+                let value = match special_literal(text) {
+                    Some(Some(value)) => value,
+                    Some(None) => return err(pos, "this number does not fit in 64 bits"),
+                    None => {
+                        let mut value: i64 = 0;
+                        for byte in text.bytes().filter(|&b| b != b'_') {
+                            let digit = (byte - b'0') as i64;
+                            let Some(next) = value.checked_mul(10).and_then(|v| v.checked_add(digit)) else {
+                                return err(pos, "this number does not fit in `i64`");
+                            };
+                            value = next;
+                        }
+                        value
+                    }
+                };
                 self.expr_res[self.sh.e(id)] = self.ints.len() as u32;
                 self.ints.push(value);
                 Ok(Ty::I64)
@@ -2305,7 +2355,15 @@ impl<'a> Checker<'a> {
                         self.expr_tmp[self.sh.e(id)] = self.temp(id, Ty::Str)?;
                         Ok(Ty::Str)
                     }
-                    BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
+                    BinOp::Sub
+                    | BinOp::Mul
+                    | BinOp::Div
+                    | BinOp::Rem
+                    | BinOp::BitAnd
+                    | BinOp::BitOr
+                    | BinOp::BitXor
+                    | BinOp::Shl
+                    | BinOp::Shr => {
                         self.expect(lhs, Ty::I64, what)?;
                         self.expect(rhs, Ty::I64, what)?;
                         Ok(Ty::I64)
@@ -2727,6 +2785,7 @@ impl<'a> Checker<'a> {
             "args" => (&[], BUILTIN_ARGS),
             "read_file" => (&[Ty::Str], BUILTIN_READ_FILE),
             "write_file" => (&[Ty::Str, Ty::Str], BUILTIN_WRITE_FILE),
+            "set_executable" => (&[Ty::Str], BUILTIN_SET_EXECUTABLE),
             _ => unreachable!("`print` and `str` are handled by the caller"),
         };
         if arg_ids.len() != params.len() {
@@ -2745,7 +2804,8 @@ impl<'a> Checker<'a> {
             BUILTIN_ARGS => self.list_of(Ty::Str),
             // The text of the file, or what the system says went wrong.
             BUILTIN_READ_FILE => self.instance(RESULT, vec![Ty::Str, Ty::Str], pos)?,
-            // The number of bytes written, or what went wrong.
+            // The number of bytes written (0 for `set_executable`), or
+            // what went wrong.
             _ => self.instance(RESULT, vec![Ty::I64, Ty::Str], pos)?,
         };
         self.settle()?;
@@ -3611,7 +3671,13 @@ mod tests {
         assert_eq!(error(&in_main("exit(\"a\")")), "argument 1 of `exit` needs `i64` but this is `str`");
         assert_eq!(error(&in_main("let x = exit(1)")), "this expression has no value to store");
         assert_eq!(error(&in_main("let x = args")), "`args` is a function; call it with `args(...)`");
-        for name in ["print", "eprint", "str", "chr", "args", "read_file", "write_file", "exit"] {
+        assert!(check_src(&in_main("let r: Result[i64, str] = set_executable(\"a\")\nset_executable(\"b\" + \"c\")")).is_ok());
+        assert_eq!(error(&in_main("set_executable()")), "`set_executable` takes 1 argument but 0 were given");
+        assert_eq!(error(&in_main("set_executable(\"a\", \"b\")")), "`set_executable` takes 1 argument but 2 were given");
+        assert_eq!(error(&in_main("set_executable(7)")), "argument 1 of `set_executable` needs `str` but this is `i64`");
+        assert_eq!(error(&in_main("let r: Result[str, str] = set_executable(\"a\")")), "expected `Result[str, str]` but this is `Result[i64, str]`");
+        assert_eq!(error(&in_main("let f = set_executable")), "`set_executable` is a function; call it with `set_executable(...)`");
+        for name in ["print", "eprint", "str", "chr", "args", "read_file", "write_file", "set_executable", "exit"] {
             assert_eq!(error(&format!("fn {name}() {{\n}}\nfn main() {{\n}}")), format!("`{name}` is built in and cannot be redefined"));
         }
     }
@@ -3806,6 +3872,44 @@ mod tests {
         assert_eq!(flags("var s = \"a\"\nvar t = \"b\"\ns = t + s\ns = \"x\" + s\nt = s"), [APPEND, 0, 0, 0]);
         assert_eq!(flags("var xs = [\"a\"]\nxs[0] = xs[0] + \"b\""), [APPEND, 0]);
         assert_eq!(flags("var n = 1\nn = n + 1"), [APPEND, 0]);
+    }
+
+    #[test]
+    fn bit_operators_and_number_forms() {
+        assert!(check_src(&in_main("let a: i64 = 1 & 2 | 3 ^ 4 << 5 >> 6\nlet b: bool = a & 1 == 1 && a | 2 > 0\nvar c = 0xFF\nc = c << 'a' - 0b1")).is_ok());
+        assert_eq!(error(&in_main("let a = true & false")), "`&` needs `i64` but this is `bool`");
+        assert_eq!(error(&in_main("let a = 1 | true")), "`|` needs `i64` but this is `bool`");
+        assert_eq!(error(&in_main("let a = \"x\" ^ 1")), "`^` needs `i64` but this is `str`");
+        assert_eq!(error(&in_main("let a = 1 << \"x\"")), "`<<` needs `i64` but this is `str`");
+        assert_eq!(error(&in_main("let a = [1] >> 1")), "`>>` needs `i64` but this is `List[i64]`");
+        assert_eq!(error(&in_main("let a: bool = 1 & 1")), "expected `bool` but this is `i64`");
+        // `&` binds tighter than `==`, so this compares two numbers.
+        assert_eq!(error(&in_main("let a = 1 & 2 == true")), "`==` needs `i64` but this is `bool`");
+
+        let values = |body: &str| -> Vec<i64> {
+            let src = in_main(body);
+            let tokens = lex(&src).unwrap();
+            let ast = parse(&src, &tokens).unwrap();
+            check(&ast, &src).unwrap_or_else(|e| panic!("{}", e.message)).ints
+        };
+        assert_eq!(values("let a = 0x1F + 0xffff_FFFF + 0b1010_0001 + 0x0 + 0b0 + 12"), [31, 4294967295, 161, 0, 0, 12]);
+        assert_eq!(values("let a = 0x7FFF_FFFF_FFFF_FFFF"), [i64::MAX]);
+        assert_eq!(values("let a = 0xFFFF_FFFF_FFFF_FFFF + 0x8000_0000_0000_0000"), [-1, i64::MIN]);
+        assert_eq!(values("let a = 0b1111111111111111111111111111111111111111111111111111111111111111"), [-1]);
+        assert_eq!(values("let a = 0x0000_0000_0000_0000_0001"), [1]);
+        assert_eq!(values("let a = 'a' + ' ' + '~' + '\\n' + '\\t' + '\\r' + '\\0' + '\\\\' + '\\'' + '\"'"), [97, 32, 126, 10, 9, 13, 0, 92, 39, 34]);
+        assert_eq!(error(&in_main("let a = 0x1_0000_0000_0000_0000")), "this number does not fit in 64 bits");
+        assert_eq!(error(&in_main("let a = 0b10000000000000000000000000000000000000000000000000000000000000000")), "this number does not fit in 64 bits");
+        assert_eq!(error(&in_main("let a = 9223372036854775808")), "this number does not fit in `i64`");
+        assert_eq!(error(&in_main("let a: bool = 'a'")), "expected `bool` but this is `i64`");
+
+        // The same forms in patterns.
+        assert_eq!(values("match 3 {\n0x10 => {}\n-0x10 => {}\n0b11 => {}\n'a' => {}\n-'a' => {}\n0xFFFF_FFFF_FFFF_FFFF => {}\n_ => {}\n}"), [3, 16, -16, 3, 97, -97, -1]);
+        assert_eq!(error(&in_main("match 3 {\n16 => {}\n0x10 => {}\n_ => {}\n}")), "this arm can never run: `16` is already handled above");
+        assert_eq!(error(&in_main("match 3 {\n'a' => {}\n97 => {}\n_ => {}\n}")), "this arm can never run: `97` is already handled above");
+        assert_eq!(error(&in_main("match 3 {\n0x1_0000_0000_0000_0000 => {}\n_ => {}\n}")), "this number does not fit in 64 bits");
+        assert_eq!(error(&in_main("match 3 {\n-0x8000_0000_0000_0000 => {}\n_ => {}\n}")), "this number does not fit in `i64`");
+        assert_eq!(error(&in_main("match true {\n'a' => {}\n_ => {}\n}")), "this pattern is a number but the `match` is on `bool`");
     }
 
     #[test]

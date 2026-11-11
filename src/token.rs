@@ -53,6 +53,11 @@ pub enum TokenKind {
     Bang,
     AndAnd,
     OrOr,
+    Amp,
+    Pipe,
+    Caret,
+    Shl,
+    Shr,
 
     Newline,
     Eof,

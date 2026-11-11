@@ -34,6 +34,7 @@ enum {
     SYS_mmap = 9,
     SYS_munmap = 11,
     SYS_mremap = 25,
+    SYS_chmod = 90,
     SYS_exit_group = 231,
 };
 
@@ -646,6 +647,21 @@ EXPORT i64 rt_write_file(const Buf *path, const Buf *text, void *out) {
     }
     syscall3(SYS_close, fd, 0, 0);
     *(i64 *)out = total;
+    return 0;
+}
+
+// Makes the file runnable: readable and runnable by all, writable by the
+// owner. Returns 0 and 0 in the first slot of `out`, or 1 and a
+// description of what went wrong as a string in `out`.
+EXPORT i64 rt_set_executable(const Buf *path, void *out) {
+    u8 *name = c_path(path);
+    i64 result = syscall3(SYS_chmod, (i64)name, 0755, 0);
+    release(name);
+    if (failed(result)) {
+        describe(-result, (Buf *)out);
+        return 1;
+    }
+    *(i64 *)out = 0;
     return 0;
 }
 

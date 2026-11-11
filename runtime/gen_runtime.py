@@ -10,7 +10,7 @@ import capstone, lief
 HERE = os.path.dirname(os.path.abspath(__file__))
 IMPORTS = [
     "_write", "_exit", "_malloc", "_realloc", "_free", "_memcpy", "_memcmp", "_open", "_read", "_close", "___error",
-    "_strerror", "_strlen", "__NSGetArgc", "__NSGetArgv",
+    "_strerror", "_strlen", "__NSGetArgc", "__NSGetArgv", "_chmod",
 ]
 TEXT = [
     (None, b"\n"),
@@ -27,7 +27,7 @@ TEXT = [
 ENTRIES = [
     "print_i64", "print_bool", "print_str", "div_zero", "index_fail", "pop_empty", "alloc", "free", "list_push",
     "list_clone", "drop", "str_concat", "str_eq", "str_from_i64", "str_from_bool", "eprint_str", "exit", "str_slice",
-    "chr", "args", "read_file", "write_file", "str_append",
+    "chr", "args", "read_file", "write_file", "str_append", "set_executable",
 ]
 
 source = open(os.path.join(HERE, "runtime.s")).read()

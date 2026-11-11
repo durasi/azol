@@ -20,7 +20,8 @@ use crate::runtime::{self, RuntimeReloc, RUNTIME, RUNTIME_DATA, RUNTIME_DATA_OFF
 use crate::sema::{
     idle_slot, Program, Shift, Ty, APPEND, BUILTIN_ARGS, BUILTIN_CHR, BUILTIN_EPRINT, BUILTIN_EXIT, BUILTIN_LEN, BUILTIN_LIST_POP,
     BUILTIN_LIST_PUSH, BUILTIN_PRINT_BOOL, BUILTIN_PRINT_I64, BUILTIN_PRINT_STR, BUILTIN_READ_FILE,
-    BUILTIN_STR_FROM_BOOL, BUILTIN_STR_FROM_I64, BUILTIN_STR_SLICE, BUILTIN_VARIANT, BUILTIN_WRITE_FILE, BY_REF,
+    BUILTIN_SET_EXECUTABLE, BUILTIN_STR_FROM_BOOL, BUILTIN_STR_FROM_I64, BUILTIN_STR_SLICE, BUILTIN_VARIANT,
+    BUILTIN_WRITE_FILE, BY_REF,
     COPIED, FIRST_BUILTIN, IN_PLACE, PAT_BIND, PAT_LITERAL, PAT_VARIANT, VARIANT,
 };
 use std::collections::HashMap;
@@ -132,6 +133,18 @@ enum Operands {
     /// The register holding the left one; the right one is this small
     /// constant.
     Constant(u32, u32),
+}
+
+/// `lsl to, from, #count`, with the low 6 bits of the count as when
+/// shifting by a register.
+fn lsl_imm(to: u32, from: u32, count: u32) -> u32 {
+    let count = count & 63;
+    0xD340_0000 | ((64 - count) & 63) << 16 | (63 - count) << 10 | from << 5 | to
+}
+
+/// `asr to, from, #count`, with the low 6 bits of the count.
+fn asr_imm(to: u32, from: u32, count: u32) -> u32 {
+    0x9340_FC00 | (count & 63) << 16 | from << 5 | to
 }
 
 /// `mov to, from`
@@ -1313,7 +1326,10 @@ impl<'a> Gen<'a> {
     /// Whether argument `i` of the call target travels as an address.
     fn arg_by_ref(&self, target: u32, i: usize) -> bool {
         if target >= FIRST_BUILTIN {
-            matches!(target, BUILTIN_PRINT_STR | BUILTIN_EPRINT | BUILTIN_READ_FILE | BUILTIN_WRITE_FILE)
+            matches!(
+                target,
+                BUILTIN_PRINT_STR | BUILTIN_EPRINT | BUILTIN_READ_FILE | BUILTIN_WRITE_FILE | BUILTIN_SET_EXECUTABLE
+            )
         } else {
             self.prog.fns[target as usize].params[i].by_ref
         }
@@ -1547,11 +1563,13 @@ impl<'a> Gen<'a> {
             self.emit(cset_x0(code) | dest);
             return;
         }
-        match self.operands(lhs, rhs, matches!(op, BinOp::Add | BinOp::Sub)) {
-            Operands::Constant(left, value) => {
-                // add dest, left, #value / sub dest, left, #value
-                self.emit(if op == BinOp::Add { 0x9100_0000 } else { 0xD100_0000 } | value << 10 | left << 5 | dest);
-            }
+        match self.operands(lhs, rhs, matches!(op, BinOp::Add | BinOp::Sub | BinOp::Shl | BinOp::Shr)) {
+            Operands::Constant(left, value) => self.emit(match op {
+                BinOp::Add => 0x9100_0000 | value << 10 | left << 5 | dest, // add dest, left, #value
+                BinOp::Sub => 0xD100_0000 | value << 10 | left << 5 | dest, // sub dest, left, #value
+                BinOp::Shl => lsl_imm(dest, left, value),
+                _ => asr_imm(dest, left, value),
+            }),
             Operands::Registers(left, right) => {
                 let both = right << 16 | left << 5;
                 // Dividing by a constant other than zero needs no check.
@@ -1563,6 +1581,12 @@ impl<'a> Gen<'a> {
                     BinOp::Add => self.emit(0x8B00_0000 | both | dest), // add dest, left, right
                     BinOp::Sub => self.emit(0xCB00_0000 | both | dest), // sub dest, left, right
                     BinOp::Mul => self.emit(0x9B00_7C00 | both | dest), // mul dest, left, right
+                    BinOp::BitAnd => self.emit(0x8A00_0000 | both | dest), // and dest, left, right
+                    BinOp::BitOr => self.emit(0xAA00_0000 | both | dest), // orr dest, left, right
+                    BinOp::BitXor => self.emit(0xCA00_0000 | both | dest), // eor dest, left, right
+                    // Shifts by a register use the low 6 bits of the count.
+                    BinOp::Shl => self.emit(0x9AC0_2000 | both | dest), // lsl dest, left, right
+                    BinOp::Shr => self.emit(0x9AC0_2800 | both | dest), // asr dest, left, right
                     BinOp::Div => {
                         if !safe {
                             self.trap_if_zero(right);
@@ -1661,12 +1685,16 @@ impl<'a> Gen<'a> {
                 self.frame_address(X8, self.prog.expr_tmp[self.sh.e(id)]);
                 self.runtime(if target == BUILTIN_CHR { runtime::CHR } else { runtime::ARGS });
             }
-            BUILTIN_READ_FILE | BUILTIN_WRITE_FILE => {
+            BUILTIN_READ_FILE | BUILTIN_WRITE_FILE | BUILTIN_SET_EXECUTABLE => {
                 // The routine fills in what the `Result` holds and says
                 // which variant it is: 0 for `Ok`, 1 for `Err`.
                 let tmp = self.prog.expr_tmp[self.sh.e(id)];
                 self.frame_address(X8, tmp + 1);
-                self.runtime(if target == BUILTIN_READ_FILE { runtime::READ_FILE } else { runtime::WRITE_FILE });
+                self.runtime(match target {
+                    BUILTIN_READ_FILE => runtime::READ_FILE,
+                    BUILTIN_WRITE_FILE => runtime::WRITE_FILE,
+                    _ => runtime::SET_EXECUTABLE,
+                });
                 self.emit(0x9100_0400); // add x0, x0, #1: the tag
                 self.emit(str(X0, FP, frame(tmp)));
             }
@@ -1801,6 +1829,20 @@ mod tests {
         assert_eq!(0xA980_7BFDu32 | ((496u32 / 8).wrapping_neg() & 0x7F) << 15, 0xA9A17BFD); // stp x29, x30, [sp, #-496]!
         assert_eq!(0xA8C0_7BFDu32 | (32 / 8) << 15, 0xA8C27BFD); // ldp x29, x30, [sp], #32
         assert_eq!(0xA8C0_7BFDu32 | (496 / 8) << 15, 0xA8DF7BFD); // ldp x29, x30, [sp], #496
+        assert_eq!(0x8A00_0000u32 | 20 << 16 | 19 << 5, 0x8A140260); // and x0, x19, x20
+        assert_eq!(0xAA00_0000u32 | 1 << 5 | 3, 0xAA000023); // orr x3, x1, x0
+        assert_eq!(0xCA00_0000u32 | 22 << 16 | 21, 0xCA160015); // eor x21, x0, x22
+        assert_eq!(0x9AC0_2000u32 | 1 << 5, 0x9AC02020); // lsl x0, x1, x0
+        assert_eq!(0x9AC0_2800u32 | 21 << 16 | 20 << 5 | 19, 0x9AD52A93); // asr x19, x20, x21
+        assert_eq!(lsl_imm(X0, 19, 0), 0xD340FE60);
+        assert_eq!(lsl_imm(X0, 19, 1), 0xD37FFA60);
+        assert_eq!(lsl_imm(5, X1, 63), 0xD3410025);
+        assert_eq!(lsl_imm(X0, X1, 36), 0xD35C6C20);
+        assert_eq!(lsl_imm(X0, X1, 100), 0xD35C6C20); // the low 6 bits of the count
+        assert_eq!(asr_imm(X0, 19, 0), 0x9340FE60);
+        assert_eq!(asr_imm(7, X1, 63), 0x937FFC27);
+        assert_eq!(asr_imm(X0, X1, 36), 0x9364FC20);
+        assert_eq!(asr_imm(X0, X1, 100), 0x9364FC20);
         assert_eq!(mov(X0, 19), 0xAA1303E0);
         assert_eq!(mov(19, X0), 0xAA0003F3);
         assert_eq!(mov(24, 3), 0xAA0303F8);
