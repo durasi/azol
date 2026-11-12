@@ -2,8 +2,7 @@
 """Assembles runtime.s and writes runtime.facts and runtime_data.bin.
 
 runtime.facts holds the machine code and where everything is in it, in the
-notation of the first compiler's tables (it is also written to
-../src/runtime.rs while that compiler's sources exist).
+notation the first compiler's tables used.
 compiler/gen_runtime_azl.py makes compiler/runtime_arm64.azl from it.
 
 Needs clang for arm64 macOS (for example `pip install ziglang`) and the
@@ -121,9 +120,6 @@ pub const RUNTIME: [u32; %d] = [
 )
 facts = os.path.join(HERE, "runtime.facts")
 open(facts, "w").write(out)
-# The same text is a module of the first compiler while its sources exist.
-if os.path.isdir(os.path.join(HERE, "..", "src")):
-    open(os.path.join(HERE, "..", "src", "runtime.rs"), "w").write(out)
 # The text alone, for the compiler written in azoL, which embeds it.
 open(os.path.join(HERE, "runtime_data.bin"), "wb").write(data)
 print("wrote runtime.facts and runtime_data.bin: %d words, %d relocations; now run compiler/gen_runtime_azl.py" % (len(words), len(relocs)))

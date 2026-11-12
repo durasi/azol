@@ -46,10 +46,10 @@ END = "<!-- gate:end -->"
 
 
 def find_azol(given):
-    for path in [given, os.path.join(ROOT, "azol"), os.path.join(ROOT, "target", "release", "azol")]:
+    for path in [given, os.path.join(ROOT, "azol")]:
         if path and os.path.isfile(path) and os.access(path, os.X_OK):
             return os.path.abspath(path)
-    sys.exit("gate: no azol executable found; build one (`sh build.sh` or `cargo build --release`) or pass --azol <path>")
+    sys.exit("gate: no azol executable found; build one with `sh build.sh` or pass --azol <path>")
 
 
 def programs(only):
@@ -251,7 +251,7 @@ def cpu_name():
 
 def main():
     parser = argparse.ArgumentParser(description="The gate: azoL against rustc -O on the benchmark suite.")
-    parser.add_argument("--azol", help="the azol executable (default: ./azol, then ./target/release/azol)")
+    parser.add_argument("--azol", help="the azol executable (default: ./azol)")
     parser.add_argument("--only", help="comma-separated program names")
     parser.add_argument("--list", action="store_true", help="list the programs and stop")
     parser.add_argument("--runs", type=int, default=10, help="timed runs per executable (default 10)")

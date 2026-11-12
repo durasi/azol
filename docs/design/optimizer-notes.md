@@ -293,3 +293,192 @@ Parsing is for tests only; the optimiser never reads text.
   `ir_add_block_param` moves a block's list to the end when another
   block got a parameter in between, so parameter positions held across
   such a call are stale; values are not.
+
+## Lowering (wave 1, second half)
+
+`compiler/opt/ir_lower.azl` (state, frame, copies, drop and clone
+helpers, the function driver), `ir_lower_stmt.azl` (statements, `for`,
+`match`) and `ir_lower_expr.azl` (places, expressions, calls, methods,
+`?`) turn what the checker hands out into IR for the whole language.
+`lw_program(mut lw, c, p)` fills `lw.m`. The walk follows
+`compiler/x64_gen.azl` construct by construct, including the order in
+which operands, indexes, receivers and assignment targets are
+evaluated.
+
+`compiler/opt/lower_tool_main.azl` is the tool `azol-lower` (built from
+the front end of the compiler and `compiler/opt`; the build line is at
+the top of the file): `emit` prints the IR of the whole program,
+standard library included; `run` interprets it with the program's own
+output, messages and exit code; `count`, `time` and `check` are for
+measuring.
+
+### How values are represented: through frame memory
+
+This is the largest difference from optimizer.md sections 3.6 and 3.8,
+which ask for scalar replacement and SSA construction at lowering.
+Lowering does **not** do that:
+
+- Every variable and every temporary, scalars included, lives in frame
+  memory at the slot the checker gave it (`fns[i].slots`, `expr_tmp`,
+  `stmt_slot`, `pat_slot`). The checker's layout is used, not ignored:
+  its tables of what to free and what to zero are all in slots.
+- One `frame` instruction per slot is made in the entry block (`b0`,
+  which holds nothing else and jumps to the body). At the end of each
+  function `lw_finish_frame` merges slots whose ranges overlap into one
+  frame object, turns the other slots into a `gep` from the object's
+  start, and gives every access the region `frame N` of its object. Two
+  different frame objects are therefore never reached through one
+  another, and `ir_regions_overlap` stays exact.
+- A parameter passed by reference (aggregates, `mut`) is an IR `ptr`
+  parameter used directly, with region `param K`; read-only ones have
+  effect `read`, `mut` ones all effects. A function that returns an
+  aggregate gets one more `ptr` parameter, the last, with region `ret`.
+- A name a pattern binds to a part of a matched value is the address of
+  that part, kept as a value; nothing is copied.
+- A list element is `gep buffer, index, bytes` with region
+  `buf(header's region)`; nothing is copied to the frame first, as
+  section 3.6 asks.
+- An enum value is its tag (variant + 1; 0 is "moved out or empty") in
+  slot 0 and the fields in the slots the checker laid out. Slots the
+  variant does not use are stored as zero when the value is built, so a
+  slot-wise copy never reads a byte that was not stored. `match` is a
+  chain of `eq` and `br` in the order of the arms, not a `switch`.
+- Loads and stores use the type of the slot: `ptr`, `i64`, `i64` for a
+  string or list header, `bool` for a `bool`, and `i64` for every slot
+  of an enum (its fields have no one type).
+- Facts M6 to M8 are not written as tags. They hold by construction in
+  what lowering emits.
+
+So the first pass the optimiser needs is promotion of frame slots to
+values (`sroa` of section 5.4, run first and on everything), and it is
+not optional: until it runs, loops keep their counters in memory. A
+scalar slot whose `frame` value is only ever used as the address of a
+load or store of one type promotes directly; the enum slots typed
+`i64` are the cases that need care.
+
+### Additions to `ir.azl` and `ir_interp.azl`
+
+Nothing that existed changed meaning. Added, each in a marked block:
+
+- `ir.azl`: runtime routines 11 to 30 (`IR_RT_COUNT` is 31):
+  `list_push`, `list_clone`, `drop`, `str_concat`, `str_eq_buf`,
+  `str_from_i64`, `str_from_bool`, `str_slice`, `chr`,
+  `str_append_buf`, `args`, `read_file`, `write_file`,
+  `set_executable`, `remove_file`, `rename_file`, `clock`,
+  `str_is_utf8`, `print_buf`, `eprint_buf`. They take what the real
+  runtime takes: the address of a three-slot header (pointer, length,
+  capacity; capacity 0 owns nothing). `ir_rt_real(id)` is the runtime's
+  own number of a routine, `ir_trap_real(kind)` that of a stop, and
+  `ir_rt_arg_fx(id, k)` what a routine does through argument `k`.
+  `ir_clear_func` empties an `IrFunc` and keeps the room of its lists.
+- `ir_interp.azl`: the 20 routines; the program's arguments
+  (`mach.arguments`); a modelled stack (`stack_limit`, 48 bytes per
+  call plus its frame objects; with `overflow_stops` running out is the
+  program's own `azol: stack overflow`, exit 1); `reuse_frames`, which
+  uses the frame objects of finished calls again so that long runs fit
+  in memory (a pointer into a dead frame is then not always caught).
+
+Helpers lowering emits as IR functions: `drop.<type>` and
+`clone.<type>` for types with nested owned parts, and `str.cmp(a, b)`
+(-1, 0, 1 by bytes) for `<` and the like on strings. A function is
+named `<name>.<index in the checker's list>`; the program starts at
+`main`. Stops are `br` to one shared block per kind that holds the
+`trap` alone. Blocks no path reaches are removed.
+
+### The proof
+
+`python3 tests/opt/run_opt_tests.py` (part 4):
+
+- 139 programs (all of tests/programs, tests/opt/lower, examples, bench
+  and bench/suite at small sizes, tests/multi in two orders and with
+  embedded files): `azol-lower run` gives the output, the messages and
+  the exit code of the executable, stops included; the emitted text
+  verifies; `ir-tool print` gives it back byte for byte. One more file
+  (examples/point.azl) has no `main`; both tools refuse it.
+- Stack overflow is modelled, not reproduced: the three programs that
+  run out of stack do so in the interpreter too, and 100,000 nested
+  calls still fit; the exact depth at which a program runs out differs.
+- The compiler itself (20,428 lines) lowers to 739 functions, verifies
+  and reads back. Interpreted, it builds examples/hello.azl (0.24 s)
+  and itself (7.5 s) into the same bytes `./azol` writes.
+- `python3 tests/fuzz/fuzz.py --lower <azol-lower>`: 15,400 programs,
+  no difference. (The first 50 seeds found one mistake, a constant
+  under `!` that became a number; it is tests/opt/lower/bool_constants.azl.)
+
+### Size and speed
+
+| Program | Lines | Functions | Instructions | Per line |
+|---|---|---|---|---|
+| the compiler | 20,428 | 739 | 105,689 | 5.2 |
+| bench/generated/big.azl | 44,004 | 6,001 | 205,006 | 4.7 |
+
+Lowering alone (`azol-lower time` less `azol-lower check`), best of 25:
+
+| Program | callgrind Ir | Ir per line | Wall | Lines per second |
+|---|---|---|---|---|
+| the compiler | 227 M | 11,100 | 32 ms | 640,000 |
+| big.azl | 479 M | 10,900 | 77 ms | 570,000 |
+
+Lexing, parsing and checking the same files take 133 M and 203 M. About
+40% of lowering is not lowering: `ir_add_func` copies the finished
+function (59 M for the compiler, byte by byte in the runtime's `copy`)
+and `truncate` empties the working lists one `pop` at a time (38 M).
+Before `ir_clear_func` the lists of every function grew from nothing
+and the cost was 413 M. A runtime `copy` that moves words, and a list
+`clear`, would each take a visible part of what is left.
+
+### What is redundant in the IR, and the pass that removes it
+
+Of the compiler's 105,689 instructions 29,696 are loads and 28,409
+stores; 20,256 and 22,097 of those are on frame objects.
+
+| Pattern | Pass |
+|---|---|
+| A scalar variable is a frame slot: `load`, compute, `store` on every use (loop counters, accumulators) | `sroa` (promotion to values, block parameters at joins) |
+| `x * x` loads `x` twice; a list's pointer and length are loaded again for each access | `gvn` with loads |
+| A struct literal is built in a temporary and copied slot by slot into the variable; a returned aggregate is built in a temporary and copied to `ret` | `sroa`, then `copyelide`; `dse` for the dead temporary |
+| The unused slots of an enum value are stored as zero and never read | `dse` |
+| An argument passed by reference is first copied to a temporary when it is not a place | `sroa` after `inline` |
+| `clone` of a value whose original is dropped right after | `copyelide` |
+| Bounds check before every element access, the length loaded again each time | `gvn`, `range`, `bce` |
+| `b0` holds only `frame`s and a jump; `if`, `while` and `match` leave blocks that only jump (981 in the compiler) | `simplify` |
+| `match` on a tag as a chain of `eq` and `br` | `simplify` (chain to `switch`) |
+| `!x` as `xor x, 1` feeding a `br`; `&&` and `\|\|` as a block parameter that feeds a `br` | `simplify` (branch threading) |
+| The inline fast path of `push` repeats per call site with its own loads of length and capacity | `gvn`, `licm` |
+| `gep p, 0, 1, K` followed by an access at offset 0 | `simplify` (fold into the offset) |
+| `drop.<type>` and `clone.<type>` called for small types | `inline` |
+
+### What the back end must know
+
+- Calls: arguments in order; an aggregate argument is a `ptr`; a
+  returned aggregate is written through the last `ptr` argument, and
+  such a function has no results. Scalars return as one result. `main`
+  returns its exit code or nothing (exit 0).
+- `callrt` routines 11 to 30 follow the real runtime's convention;
+  `ir_rt_real` maps them. `print_buf`, `eprint_buf`, `str_eq_buf` and
+  `str_append_buf` are the header-taking forms next to the first
+  half's pointer-and-length ones.
+- The file routines return 0 or 1 and write the payload themselves;
+  lowering stores the tag (result + 1) after the call.
+- `bool` in memory takes 8 bytes. String bytes are `u8` loads and
+  stores in a `buf` region.
+- Shifts use the low 6 bits of the count; `sdiv` and `srem` by -1 must
+  not fault (lowering emits no guard for -1, only the zero check).
+- A frame object can be large (the checker's limit on slots applies)
+  and the entry block has one `frame` per object plus `gep`s.
+
+### Doubts
+
+- Promotion is owed (above). Enum slots typed `i64` hold pointers and
+  `bool`s too; a pass that types values strictly must treat an enum
+  slot as raw bits.
+- Regions of `param K` for two by-reference parameters are distinct,
+  which is right only because the checker forbids passing overlapping
+  places when one is `mut` (M4/M5). Pattern-bound addresses carry the
+  region of the value they point into.
+- The interpreter with `reuse_frames` no longer catches every use of a
+  dead frame; the 139 programs also pass without it only as far as
+  memory allows, and that was not measured.
+- docs/language.md was not compared line by line; where the generator
+  and the text could differ, the generator was followed, and no
+  difference was noticed while reading it.

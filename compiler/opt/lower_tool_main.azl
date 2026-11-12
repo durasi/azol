@@ -1,0 +1,208 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// `azol-lower`: a checked program as intermediate form, from the
+// command line.
+//
+//     azol-lower emit <file.azl>...
+//         the text of the whole program, standard library included
+//     azol-lower run [--argv0 NAME] [--steps N] [--depth N] [--stack BYTES] <file.azl>... [-- arguments]
+//         lowers the program and runs it in the interpreter: the same
+//         output, the same messages and the same exit code as the
+//         executable `azol build` makes of it
+//     azol-lower count <file.azl>...
+//         how many functions, blocks and instructions the program became
+//     azol-lower time <file.azl>...
+//         lowers and prints nothing, for measuring from outside
+//     azol-lower check <file.azl>...
+//         reads and checks only: what `time` costs before lowering
+//
+// Exit codes: what the program exits with, for `run`; otherwise 0; 1
+// for a program with mistakes; 2 for a wrong command line; 3 when the
+// lowered program breaks a rule of the intermediate form or the
+// interpreter caught it doing something it must not.
+//
+// Built from the front end of the compiler and this folder:
+//
+//     azol build compiler/driver.azl compiler/token.azl compiler/lexer.azl compiler/ast.azl \
+//         compiler/parser.azl compiler/sema.azl compiler/sema_fn.azl compiler/embedded.azl \
+//         compiler/opt/ir.azl compiler/opt/ir_text.azl compiler/opt/ir_cfg.azl \
+//         compiler/opt/ir_verify.azl compiler/opt/ir_interp.azl compiler/opt/ir_lower.azl \
+//         compiler/opt/ir_lower_stmt.azl compiler/opt/ir_lower_expr.azl \
+//         compiler/opt/lower_tool_main.azl -o azol-lower
+
+fn lower_tool_usage() {
+    eprint("usage: azol-lower emit|count|time|check <file.azl>...")
+    eprint("       azol-lower run [--argv0 NAME] [--steps N] [--depth N] [--stack BYTES] <file.azl>... [-- arguments]")
+    exit(2)
+}
+
+fn lower_tool_number(text: str) -> i64 {
+    match text.to_i64() {
+        Some(n) => return n
+        None => lower_tool_usage()
+    }
+    return 0
+}
+
+// Reads, parses, checks and, with `lower`, lowers the files. Mistakes
+// in the program end the tool with exit code 1.
+fn lower_tool_program(files: List[str], lower: bool) -> Lower {
+    var src = ""
+    var starts: List[i64] = []
+    var lens: List[i64] = []
+    for path in files {
+        let text = read_or_exit(path)
+        if starts.len() > 0 {
+            src = src + "\n"
+        }
+        starts.push(src.len())
+        lens.push(text.len())
+        src = src + text
+    }
+    let prelude_start = src.len() + 1
+    src = src + "\n"
+    src = src + PRELUDE
+    var p = new_parser(src)
+    for k, start in starts {
+        let problem = parse_part(mut p, start, lens[k])
+        if problem.message.len() > 0 {
+            eprint("error: " + files[k] + ": offset " + str(problem.offset - start) + ": " + problem.message)
+            exit(1)
+        }
+    }
+    let problem = parse_part(mut p, prelude_start, PRELUDE.len())
+    if problem.message.len() > 0 {
+        eprint("error: the standard library does not parse: " + problem.message)
+        exit(1)
+    }
+    var c = new_checker(p, prelude_start)
+    c.file_starts = starts
+    c.file_paths = files
+    check_program(mut c, p)
+    if c.errors.len() > 0 {
+        for error in c.errors {
+            eprint("error: offset " + str(error.offset) + ": " + error.message)
+        }
+        exit(1)
+    }
+    var lw = lw_new()
+    if lower {
+        lw_program(mut lw, c, p)
+    }
+    // The whole state and not `lw.m` alone, which would be copied.
+    return lw
+}
+
+fn lower_tool_verify(m: IrModule) {
+    let problem = ir_verify_module(m)
+    if problem.len() > 0 {
+        eprint("ir-verify: " + problem)
+        exit(3)
+    }
+}
+
+fn main() {
+    let a = args()
+    if a.len() < 3 {
+        lower_tool_usage()
+    }
+    let command = a[1]
+    var files: List[str] = []
+    var arguments: List[str] = []
+    var argv0 = ""
+    var steps = 4000000000000
+    var depth = 1000000
+    // The stack Linux gives a program, less what the system puts on it.
+    var stack = 8380000
+    var i = 2
+    var after = false
+    while i < a.len() {
+        if after {
+            arguments.push(a[i])
+        } else if a[i] == "--" {
+            after = true
+        } else if a[i] == "--argv0" && i + 1 < a.len() {
+            argv0 = a[i + 1]
+            i = i + 1
+        } else if a[i] == "--steps" && i + 1 < a.len() {
+            steps = lower_tool_number(a[i + 1])
+            i = i + 1
+        } else if a[i] == "--stack" && i + 1 < a.len() {
+            stack = lower_tool_number(a[i + 1])
+            i = i + 1
+        } else if a[i] == "--depth" && i + 1 < a.len() {
+            depth = lower_tool_number(a[i + 1])
+            i = i + 1
+        } else {
+            files.push(a[i])
+        }
+        i = i + 1
+    }
+    if files.len() == 0 {
+        lower_tool_usage()
+    }
+    if argv0.len() == 0 {
+        argv0 = files[0]
+    }
+    let lw = lower_tool_program(files, command != "check")
+    if command == "time" || command == "check" {
+        return
+    }
+    if command == "count" {
+        var blocks = 0
+        var instructions = 0
+        for f in lw.m.funcs {
+            blocks = blocks + ir_block_count(f)
+            instructions = instructions + ir_instruction_count(f)
+        }
+        print("functions " + str(lw.m.funcs.len()) + " blocks " + str(blocks) + " instructions " + str(instructions))
+        return
+    }
+    if command == "emit" {
+        let text = ir_print_module(lw.m)
+        if text.len() > 0 {
+            print(text.slice(0, text.len() - 1))
+        }
+        lower_tool_verify(lw.m)
+        return
+    }
+    if command != "run" {
+        lower_tool_usage()
+    }
+    lower_tool_verify(lw.m)
+    var mach = irm_new(lw.m)
+    mach.step_limit = steps
+    mach.depth_limit = depth
+    mach.overflow_stops = true
+    mach.stack_limit = stack
+    mach.reuse_frames = true
+    mach.arguments = [argv0]
+    for argument in arguments {
+        mach.arguments.push(argument)
+    }
+    let at = ir_find_func(lw.m, "main")
+    if at < 0 {
+        eprint("error: there is no function `main`")
+        exit(1)
+    }
+    let none: List[i64] = []
+    let returned = irm_run(mut mach, lw.m, lw.m.funcs[at], none)
+    if mach.failed {
+        eprint(mach.message)
+        exit(3)
+    }
+    if mach.stopped {
+        if mach.stop_message.len() > 0 {
+            eprint(mach.stop_message)
+        }
+        exit(mach.exit_code)
+    }
+    let left = irm_live_blocks(mach)
+    if left != 0 {
+        eprint("ir-interp: " + str(left) + " blocks were never freed")
+        exit(3)
+    }
+    if returned.len() > 0 {
+        exit(returned[0] & 255)
+    }
+}

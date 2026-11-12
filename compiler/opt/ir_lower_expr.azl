@@ -1,0 +1,947 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Lowering, third part: places, memory helpers, expressions and calls.
+// See `ir_lower.azl`.
+
+// A list element or a part of one: the list, the index, and how many
+// bytes into the element the part starts.
+struct LwPath {
+    ok: bool
+    base: i64
+    index: i64
+    offset: i64
+}
+
+// What expression `id` is, with the name of a constant read as its
+// value.
+fn lw_kind(lw: Lower, c: Checker, id: i64) -> i64 {
+    let kind = lw.kinds[id]
+    if kind == LW_IDENT {
+        let aux = c.expr_aux[lw.sh_e + id]
+        if aux >= CONST_STR {
+            if aux == CONST_INT {
+                return LW_INT
+            }
+            if aux == CONST_STR {
+                return LW_STR
+            }
+            return LW_BOOL
+        }
+    }
+    return kind
+}
+
+// The value of a `bool` written in the program or named by a constant.
+fn lw_bool_value(lw: Lower, c: Checker, id: i64) -> i64 {
+    if lw.kinds[id] == LW_BOOL {
+        return lw.ea[id]
+    }
+    if c.expr_aux[lw.sh_e + id] == CONST_TRUE {
+        return 1
+    }
+    return 0
+}
+
+// The value of a number written in the program or named by a constant.
+fn lw_int_value(lw: Lower, c: Checker, id: i64) -> i64 {
+    return c.ints[c.expr_res[lw.sh_e + id]]
+}
+
+// How many slots a value of this type takes where it is kept: one for
+// a number or a `bool`.
+fn lw_slots_of(c: Checker, ty: i64) -> i64 {
+    if ty < 3 {
+        return 1
+    }
+    return ck_size_of(c, ty)
+}
+
+// ---- places -------------------------------------------------------------
+
+// The location of a variable or of a field path inside a variable, when
+// it is fixed at compile time: the slot, plus 4096 when the name stands
+// for an address, plus the offset times 8192. -1 for computed values
+// and for anything reached through a list index.
+fn lw_place(lw: Lower, c: Checker, id: i64) -> i64 {
+    let kind = lw.kinds[id]
+    if kind == LW_IDENT {
+        let at = lw.sh_e + id
+        if c.expr_aux[at] >= CONST_STR {
+            return -1
+        }
+        let res = c.expr_res[at]
+        if res == VARIANT {
+            // `None` and the like are values, not variables.
+            return -1
+        }
+        if res >= BY_REF {
+            return res - BY_REF + 4096
+        }
+        return res
+    }
+    if kind == LW_FIELD {
+        let place = lw_place(lw, c, lw.ea[id])
+        if place < 0 {
+            return -1
+        }
+        return place + c.expr_res[lw.sh_e + id] * 8192
+    }
+    return -1
+}
+
+// The address of a place, which holds `len` slots.
+fn lw_place_address(lw: mut Lower, place: i64, len: i64) -> LwAddr {
+    let slot = place & 4095
+    let offset = place >> 13
+    if (place & 4096) != 0 {
+        if slot < lw.nparams {
+            // A parameter that arrived as an address.
+            let reg = ir_region(mut lw.f, IR_REGION_PARAM, slot)
+            return LwAddr { p: slot, off: 8 * offset, reg: reg }
+        }
+        // A name a pattern bound to a part of the value matched.
+        return LwAddr { p: lw.ptr_p[slot], off: lw.ptr_off[slot] + 8 * offset, reg: lw.ptr_reg[slot] }
+    }
+    let at = lw_slot(mut lw, slot, offset + len)
+    return lw_add(at, 8 * offset)
+}
+
+// The frame slot of `id` when it is a whole local variable, or -1.
+fn lw_variable_slot(lw: Lower, c: Checker, id: i64) -> i64 {
+    if lw.kinds[id] != LW_IDENT {
+        return -1
+    }
+    let place = lw_place(lw, c, id)
+    if place < 0 || (place & 4096) != 0 {
+        return -1
+    }
+    return place & 4095
+}
+
+// When `id` is an element of a list or a part of one, however deep: the
+// list, the index, and how many bytes into the element the part starts.
+fn lw_element_path(lw: Lower, c: Checker, id: i64) -> LwPath {
+    var at = id
+    var offset = 0
+    var kind = lw.kinds[at]
+    while kind == LW_FIELD {
+        offset = offset + c.expr_res[lw.sh_e + at]
+        at = lw.ea[at]
+        kind = lw.kinds[at]
+    }
+    if kind == LW_INDEX && ty_is_list(c.expr_ty[lw.sh_e + lw.ea[at]]) {
+        return LwPath { ok: true, base: lw.ea[at], index: lw.eb[at], offset: 8 * offset }
+    }
+    return LwPath { ok: false, base: 0, index: 0, offset: 0 }
+}
+
+// Evaluates the index of `base[index]`, checks it against the length of
+// the list or string and gives the address of that element, which
+// takes `bytes` bytes. The index is evaluated first, then the list is
+// found, so that nothing runs between finding the buffer and using it.
+fn lw_element(lw: mut Lower, c: Checker, p: Parser, base: i64, index: i64, bytes: i64) -> LwAddr {
+    let place = lw_place(lw, c, base)
+    let at = lw_value(mut lw, c, p, index)
+    var header = LwAddr { p: 0, off: 0, reg: 0 }
+    if place >= 0 {
+        header = lw_place_address(mut lw, place, 3)
+    } else {
+        header = lw_address(mut lw, c, p, base)
+    }
+    let len = lw_load(mut lw, IR_I64, header, 8)
+    // An unsigned compare also rejects negatives.
+    let inside = lw_bin(mut lw, IR_ULT, at, len)
+    lw_check(mut lw, inside, IR_TRAP_INDEX)
+    let buffer = lw_load(mut lw, IR_PTR, header, 0)
+    let element = ir_gep(mut lw.f, lw.b, buffer, at, bytes, 0)
+    return LwAddr { p: element, off: 0, reg: lw_buf_region(mut lw, header.reg) }
+}
+
+// ---- memory helpers -----------------------------------------------------
+
+// Evaluates `value` into the frame at `slot`. An owning value that comes
+// from a variable is copied; a temporary's buffers move in.
+fn lw_store_value(lw: mut Lower, c: Checker, p: Parser, value: i64, slot: i64) {
+    let ty = c.expr_ty[lw.sh_e + value]
+    if ty >= 3 {
+        let from = lw_address(mut lw, c, p, value)
+        let to = lw_slot(mut lw, slot, ck_size_of(c, ty))
+        lw_copy(mut lw, c, to, from, ty)
+        if c.expr_moved[lw.sh_e + value] != 1 && ck_needs_drop(c, ty) {
+            lw_clone_frame(mut lw, c, slot, ty)
+        }
+        lw_moved_out(mut lw, c, value)
+        return
+    }
+    let source = lw_value(mut lw, c, p, value)
+    let to = lw_slot(mut lw, slot, 1)
+    lw_store(mut lw, lw_scalar_ty(ty), to, 0, source)
+}
+
+// Called after the value of `id` has been stored somewhere. When `id` is
+// a variable whose buffers the store took over, the variable is left
+// owning nothing, so that the end of its scope frees nothing.
+fn lw_moved_out(lw: mut Lower, c: Checker, id: i64) {
+    if c.expr_moved[lw.sh_e + id] != 1 {
+        return
+    }
+    let slot = lw_variable_slot(lw, c, id)
+    if slot >= 0 {
+        lw_zero_idle(mut lw, c, slot, c.expr_ty[lw.sh_e + id])
+    }
+}
+
+// Writes string literal number `index` into three frame slots.
+fn lw_string_value(lw: mut Lower, c: Checker, index: i64, slot: i64) {
+    // A string value is a pointer, a length and a capacity.
+    let at = lw_slot(mut lw, slot, 3)
+    let text = ir_addr(mut lw.f, lw.b, c.string_offsets[index])
+    lw_store(mut lw, IR_PTR, at, 0, text)
+    let len = lw_const(mut lw, c.string_lens[index])
+    lw_store(mut lw, IR_I64, at, 8, len)
+    // capacity 0: not owned
+    let zero = lw_const(mut lw, 0)
+    lw_store(mut lw, IR_I64, at, 16, zero)
+}
+
+// Stores zeros in the slots of the enum value at `at` that variant
+// `variant` does not use, so that the value is complete.
+fn lw_fill_enum(lw: mut Lower, c: Checker, at: LwAddr, index: i64, variant: i64) {
+    let size = c.enums[index].size
+    var used = false.filled(size)
+    used[0] = true
+    var field = 0
+    while field < c.enums[index].variants[variant].field_tys.len() {
+        let from = c.enums[index].variants[variant].field_offsets[field]
+        let len = lw_slots_of(c, c.enums[index].variants[variant].field_tys[field])
+        var k = 0
+        while k < len {
+            used[from + k] = true
+            k = k + 1
+        }
+        field = field + 1
+    }
+    var slot = 1
+    while slot < size {
+        if !used[slot] {
+            let zero = lw_const(mut lw, 0)
+            lw_store(mut lw, IR_I64, at, 8 * slot, zero)
+        }
+        slot = slot + 1
+    }
+}
+
+// Builds the enum value of expression `id` in its temporary and gives
+// the temporary's address. The arguments are a run in `Ast.lists`.
+fn lw_enum_value(lw: mut Lower, c: Checker, p: Parser, id: i64, args_start: i64, args_len: i64) -> LwAddr {
+    let index = ty_index(c.expr_ty[lw.sh_e + id])
+    let variant = c.expr_aux[lw.sh_e + id]
+    let tmp = c.expr_tmp[lw.sh_e + id]
+    var i = 0
+    while i < args_len {
+        let offset = c.enums[index].variants[variant].field_offsets[i]
+        lw_store_value(mut lw, c, p, p.ast.lists[args_start + i], tmp + offset)
+        i = i + 1
+    }
+    let at = lw_slot(mut lw, tmp, c.enums[index].size)
+    lw_fill_enum(mut lw, c, at, index, variant)
+    // The tag goes in last: until then the temporary counts as empty.
+    let tag = lw_const(mut lw, variant + 1)
+    lw_store(mut lw, IR_I64, at, 0, tag)
+    return at
+}
+
+// ---- expressions --------------------------------------------------------
+
+// Evaluates an expression for its effects, whatever its type.
+fn lw_eval(lw: mut Lower, c: Checker, p: Parser, id: i64) {
+    if c.expr_ty[lw.sh_e + id] >= 3 {
+        let at = lw_address(mut lw, c, p, id)
+    } else {
+        let value = lw_value(mut lw, c, p, id)
+    }
+}
+
+// The address of an aggregate value, or of any expression that names a
+// place. A computed aggregate is first stored in its own temporary.
+fn lw_address(lw: mut Lower, c: Checker, p: Parser, id: i64) -> LwAddr {
+    let ty = c.expr_ty[lw.sh_e + id]
+    let place = lw_place(lw, c, id)
+    if place >= 0 {
+        return lw_place_address(mut lw, place, lw_slots_of(c, ty))
+    }
+    let path = lw_element_path(lw, c, id)
+    if path.ok {
+        let slots = ck_size_of(c, c.lists[ty_index(c.expr_ty[lw.sh_e + path.base])])
+        let element = lw_element(mut lw, c, p, path.base, path.index, 8 * slots)
+        return lw_add(element, path.offset)
+    }
+    let kind = lw_kind(lw, c, id)
+    let tmp = c.expr_tmp[lw.sh_e + id]
+    if kind == LW_STR {
+        lw_string_value(mut lw, c, c.expr_res[lw.sh_e + id], tmp)
+        return lw_slot(mut lw, tmp, 3)
+    }
+    if kind == LW_IDENT {
+        return lw_enum_value(mut lw, c, p, id, 0, 0)
+    }
+    if kind == LW_BINARY {
+        // `a + b` on strings: a new string in this expression's temporary.
+        let left = lw_address(mut lw, c, p, lw.ea[id])
+        let left_at = lw_ptr(mut lw, left)
+        let right = lw_address(mut lw, c, p, lw.eb[id])
+        let right_at = lw_ptr(mut lw, right)
+        let out = lw_slot(mut lw, tmp, 3)
+        lw_rt(mut lw, IR_RT_STR_CONCAT, left_at, right_at, out.p, -1)
+        return out
+    }
+    if kind == LW_STRUCT {
+        let start = lw.eb[id]
+        let len = lw.ec[id]
+        var i = 0
+        while i < len {
+            let init_id = p.ast.lists[start + i]
+            lw_store_value(mut lw, c, p, p.ast.field_inits[init_id].value, tmp + c.init_offset[lw.sh_i + init_id])
+            i = i + 1
+        }
+        return lw_slot(mut lw, tmp, ck_size_of(c, ty))
+    }
+    if kind == LW_ARRAY {
+        return lw_list_literal(mut lw, c, p, id)
+    }
+    if kind == LW_TRY {
+        let value = lw_try(mut lw, c, p, id, lw.ea[id])
+        return lw_slot(mut lw, tmp, lw_slots_of(c, ty))
+    }
+    if kind == LW_CALL {
+        if c.expr_res[lw.sh_e + id] == BUILTIN_VARIANT {
+            return lw_enum_value(mut lw, c, p, id, lw.eb[id], lw.ec[id])
+        }
+        let value = lw_call(mut lw, c, p, id)
+        return lw_slot(mut lw, tmp, lw_slots_of(c, ty))
+    }
+    // A field of a computed value. An element of a list was handled
+    // above.
+    let whole = lw_address(mut lw, c, p, lw.ea[id])
+    return lw_add(whole, 8 * c.expr_res[lw.sh_e + id])
+}
+
+// `inner?`. When `inner` is an `Ok` or a `Some`, what it holds is the
+// value: a number or `bool` is given back, anything else is put in this
+// expression's temporary and -1 is given. Otherwise the function
+// returns the `Err` or the `None` here and now, after freeing what a
+// `return` at this point would free.
+fn lw_try(lw: mut Lower, c: Checker, p: Parser, id: i64, inner: i64) -> i64 {
+    let index = ty_index(c.expr_ty[lw.sh_e + inner])
+    let ret_index = ty_index(lw.ret)
+    let value_ty = c.enums[index].variants[0].field_tys[0]
+    let value_at = c.enums[index].variants[0].field_offsets[0]
+    // A temporary gives away what it holds and is left empty (tag 0);
+    // what a variable holds is copied.
+    let from_temp = (c.expr_aux[lw.sh_e + id] & 1) == 1
+    let start = c.expr_res[lw.sh_e + id]
+    let len = c.expr_aux[lw.sh_e + id] >> 1
+    let inner_tmp = c.expr_tmp[lw.sh_e + inner]
+    let from = lw_address(mut lw, c, p, inner)
+    // The tag of `Ok` and `Some`.
+    let tag = lw_load(mut lw, IR_I64, from, 0)
+    let one = lw_const(mut lw, 1)
+    let good = lw_bin(mut lw, IR_EQ, tag, one)
+    let ok = lw_block(mut lw)
+    let failed = lw_block(mut lw)
+    lw_br(mut lw, good, ok, failed)
+
+    lw.b = failed
+    let out = lw_sret(mut lw)
+    if c.enums[index].variants[1].field_tys.len() > 0 {
+        let error_ty = c.enums[index].variants[1].field_tys[0]
+        let error_at = c.enums[index].variants[1].field_offsets[0]
+        let error_to = c.enums[ret_index].variants[1].field_offsets[0]
+        lw_copy(mut lw, c, lw_add(out, 8 * error_to), lw_add(from, 8 * error_at), error_ty)
+        if ck_needs_drop(c, error_ty) {
+            if from_temp {
+                lw_zero_slot(mut lw, inner_tmp)
+            } else {
+                lw_clone_value(mut lw, c, lw_add(out, 8 * error_to), error_ty)
+            }
+        }
+    }
+    lw_fill_enum(mut lw, c, out, ret_index, 1)
+    let second = lw_const(mut lw, 2)
+    lw_store(mut lw, IR_I64, out, 0, second)
+    lw_drop_range(mut lw, c, start, len)
+    var k = lw.live_slots.len() - 1
+    while k >= 0 {
+        lw_drop_frame(mut lw, c, lw.live_slots[k], lw.live_tys[k])
+        k = k - 1
+    }
+    ir_ret(mut lw.f, lw.b, lw.none)
+
+    lw.b = ok
+    if !ty_is_aggregate(value_ty) {
+        return lw_load(mut lw, lw_scalar_ty(value_ty), from, 8 * value_at)
+    }
+    let tmp = c.expr_tmp[lw.sh_e + id]
+    let to = lw_slot(mut lw, tmp, ck_size_of(c, value_ty))
+    lw_copy(mut lw, c, to, lw_add(from, 8 * value_at), value_ty)
+    if ck_needs_drop(c, value_ty) {
+        if from_temp {
+            lw_zero_slot(mut lw, inner_tmp)
+        } else {
+            lw_clone_frame(mut lw, c, tmp, value_ty)
+        }
+    }
+    return -1
+}
+
+fn lw_list_literal(lw: mut Lower, c: Checker, p: Parser, id: i64) -> LwAddr {
+    let tmp = c.expr_tmp[lw.sh_e + id]
+    let start = lw.eb[id]
+    let count = lw.ec[id]
+    let at = lw_slot(mut lw, tmp, 3)
+    if count == 0 {
+        let zero = lw_const(mut lw, 0)
+        lw_store(mut lw, IR_PTR, at, 0, zero)
+        lw_store(mut lw, IR_I64, at, 8, zero)
+        lw_store(mut lw, IR_I64, at, 16, zero)
+        return at
+    }
+    let elem = c.expr_ty[lw.sh_e + p.ast.lists[start]]
+    let elem_size = lw_slots_of(c, elem)
+    let bytes = lw_const(mut lw, count * elem_size * 8)
+    let made = lw_rt(mut lw, IR_RT_ALLOC, bytes, -1, -1, -1)
+    let buffer = lw.f.ins_res[made]
+    lw_store(mut lw, IR_PTR, at, 0, buffer)
+    let inside = lw_buf_region(mut lw, at.reg)
+    var i = 0
+    while i < count {
+        let item = p.ast.lists[start + i]
+        let to = LwAddr { p: buffer, off: 8 * i * elem_size, reg: inside }
+        let item_ty = c.expr_ty[lw.sh_e + item]
+        if item_ty >= 3 {
+            let from = lw_address(mut lw, c, p, item)
+            lw_copy(mut lw, c, to, from, item_ty)
+            if c.expr_moved[lw.sh_e + item] != 1 && ck_needs_drop(c, item_ty) {
+                // The element was copied from a variable: give the copy
+                // in the list buffers of its own.
+                lw_clone_value(mut lw, c, to, item_ty)
+            }
+            lw_moved_out(mut lw, c, item)
+        } else {
+            let value = lw_value(mut lw, c, p, item)
+            lw_store(mut lw, lw_scalar_ty(item_ty), to, 0, value)
+        }
+        i = i + 1
+    }
+    let n = lw_const(mut lw, count)
+    lw_store(mut lw, IR_I64, at, 8, n)
+    lw_store(mut lw, IR_I64, at, 16, n)
+    return at
+}
+
+// A number or a `bool`, as an operand: a value or a constant. -1 for a
+// call that gives nothing.
+fn lw_value(lw: mut Lower, c: Checker, p: Parser, id: i64) -> i64 {
+    let kind = lw_kind(lw, c, id)
+    let ty = c.expr_ty[lw.sh_e + id]
+    if kind == LW_TRY {
+        return lw_try(mut lw, c, p, id, lw.ea[id])
+    }
+    if kind == LW_INT {
+        let number = lw_int_value(lw, c, id)
+        return lw_const(mut lw, number)
+    }
+    if kind == LW_BOOL {
+        let truth = lw_bool_value(lw, c, id)
+        return lw_const(mut lw, truth)
+    }
+    if kind == LW_INDEX && c.expr_ty[lw.sh_e + lw.ea[id]] == TY_STR {
+        // A byte of a string, checked like a list index.
+        let at = lw_element(mut lw, c, p, lw.ea[id], lw.eb[id], 1)
+        return lw_load(mut lw, IR_U8, at, 0)
+    }
+    if kind == LW_IDENT || kind == LW_FIELD || kind == LW_INDEX {
+        // A variable, a field, a list element or a part of one, read
+        // where it is; or a field of a computed value.
+        let at = lw_address(mut lw, c, p, id)
+        return lw_load(mut lw, lw_scalar_ty(ty), at, 0)
+    }
+    if kind == LW_UNARY {
+        let operand = lw_value(mut lw, c, p, lw.ea[id])
+        if lw.ec[id] == 0 {
+            return ir_unary(mut lw.f, lw.b, IR_NEG, operand)
+        }
+        if ir_is_const(operand) {
+            // `xor` of two constants would be a number, not a `bool`.
+            let flipped = 1 - ir_const_value(lw.f, operand)
+            return lw_const(mut lw, flipped)
+        }
+        let one = lw_const(mut lw, 1)
+        return lw_bin(mut lw, IR_XOR, operand, one)
+    }
+    if kind == LW_BINARY {
+        return lw_binary(mut lw, c, p, lw.ec[id], lw.ea[id], lw.eb[id])
+    }
+    // A call: the checker rejected everything else that is not a scalar.
+    return lw_call(mut lw, c, p, id)
+}
+
+// A `bool` as a number, 0 or 1.
+fn lw_bool_as_number(lw: mut Lower, value: i64) -> i64 {
+    let one = lw_const(mut lw, 1)
+    let zero = lw_const(mut lw, 0)
+    return ir_select(mut lw.f, lw.b, value, one, zero)
+}
+
+fn lw_binary(lw: mut Lower, c: Checker, p: Parser, op: i64, lhs: i64, rhs: i64) -> i64 {
+    if op == LW_AND || op == LW_OR {
+        // Short circuit: the left value is the result when it decides.
+        let left = lw_value(mut lw, c, p, lhs)
+        let right_at = lw_block(mut lw)
+        let after = lw_block(mut lw)
+        let result = ir_add_block_param(mut lw.f, after, IR_BOOL)
+        if op == LW_AND {
+            ir_br(mut lw.f, lw.b, left, right_at, lw.none, after, [left])
+        } else {
+            ir_br(mut lw.f, lw.b, left, after, [left], right_at, lw.none)
+        }
+        lw.b = right_at
+        let right = lw_value(mut lw, c, p, rhs)
+        ir_jump(mut lw.f, lw.b, after, [right])
+        lw.b = after
+        return result
+    }
+    let ty = c.expr_ty[lw.sh_e + lhs]
+    if ty_is_enum(ty) {
+        // `==` and `!=` on enums without values compare the tags. The
+        // left tag is read before the right side is computed.
+        let left = lw_address(mut lw, c, p, lhs)
+        let left_tag = lw_load(mut lw, IR_I64, left, 0)
+        let right = lw_address(mut lw, c, p, rhs)
+        let right_tag = lw_load(mut lw, IR_I64, right, 0)
+        if op == LW_EQ {
+            return lw_bin(mut lw, IR_EQ, left_tag, right_tag)
+        }
+        return lw_bin(mut lw, IR_NE, left_tag, right_tag)
+    }
+    if ty == TY_STR {
+        let left = lw_address(mut lw, c, p, lhs)
+        let left_at = lw_ptr(mut lw, left)
+        let right = lw_address(mut lw, c, p, rhs)
+        let right_at = lw_ptr(mut lw, right)
+        if op == LW_EQ || op == LW_NE {
+            // `==` and `!=` on strings compare the bytes.
+            let call = lw_rt(mut lw, IR_RT_STR_EQ_BUF, left_at, right_at, -1, -1)
+            let same = lw.f.ins_res[call]
+            if op == LW_EQ {
+                return same
+            }
+            let one = lw_const(mut lw, 1)
+            return lw_bin(mut lw, IR_XOR, same, one)
+        }
+        // The orderings: by the bytes, the shorter of two that start
+        // the same first.
+        lw.need_str_cmp = true
+        let call = ir_call(mut lw.f, lw.b, "str.cmp", [left_at, right_at], [IR_I64])
+        let order = lw.f.ins_res[call]
+        let zero = lw_const(mut lw, 0)
+        return lw_bin(mut lw, lw_compare_op(op), order, zero)
+    }
+    // Numbers and `bool`s: the left one first.
+    var left = lw_value(mut lw, c, p, lhs)
+    var right = lw_value(mut lw, c, p, rhs)
+    let compare = lw_compare_op(op)
+    if compare >= 0 {
+        if ty == TY_BOOL && op != LW_EQ && op != LW_NE {
+            left = lw_bool_as_number(mut lw, left)
+            right = lw_bool_as_number(mut lw, right)
+        }
+        return lw_bin(mut lw, compare, left, right)
+    }
+    if op == LW_DIV || op == LW_REM {
+        // Dividing by a constant other than zero needs no check.
+        var checked = true
+        if lw_kind(lw, c, rhs) == LW_INT {
+            checked = lw_int_value(lw, c, rhs) == 0
+        }
+        if checked {
+            let zero = lw_const(mut lw, 0)
+            let fine = lw_bin(mut lw, IR_NE, right, zero)
+            lw_check(mut lw, fine, IR_TRAP_DIVIDE)
+        }
+        // Dividing the smallest number by -1 gives the number itself,
+        // with remainder 0: `sdiv` and `srem` say so.
+        if op == LW_DIV {
+            return lw_bin(mut lw, IR_SDIV, left, right)
+        }
+        return lw_bin(mut lw, IR_SREM, left, right)
+    }
+    if op == LW_ADD {
+        return lw_bin(mut lw, IR_ADD, left, right)
+    }
+    if op == LW_SUB {
+        return lw_bin(mut lw, IR_SUB, left, right)
+    }
+    if op == LW_MUL {
+        return lw_bin(mut lw, IR_MUL, left, right)
+    }
+    if op == LW_BITAND {
+        return lw_bin(mut lw, IR_AND, left, right)
+    }
+    if op == LW_BITOR {
+        return lw_bin(mut lw, IR_OR, left, right)
+    }
+    if op == LW_BITXOR {
+        return lw_bin(mut lw, IR_XOR, left, right)
+    }
+    if op == LW_SHL {
+        return lw_bin(mut lw, IR_SHL, left, right)
+    }
+    // `>>` keeps the sign.
+    return lw_bin(mut lw, IR_SAR, left, right)
+}
+
+// The comparison of two numbers that `op` asks for, or -1.
+fn lw_compare_op(op: i64) -> i64 {
+    if op == LW_EQ {
+        return IR_EQ
+    }
+    if op == LW_NE {
+        return IR_NE
+    }
+    if op == LW_LT {
+        return IR_SLT
+    }
+    if op == LW_LE {
+        return IR_SLE
+    }
+    if op == LW_GT {
+        return IR_SGT
+    }
+    if op == LW_GE {
+        return IR_SGE
+    }
+    return -1
+}
+
+// ---- calls --------------------------------------------------------------
+
+// Whether argument `i` of the call target travels as an address.
+fn lw_arg_by_ref(c: Checker, target: i64, i: i64) -> bool {
+    if target >= BUILTIN_STR_IS_UTF8 {
+        return target == BUILTIN_PRINT_STR || target == BUILTIN_EPRINT || target == BUILTIN_READ_FILE ||
+            target == BUILTIN_WRITE_FILE || target == BUILTIN_SET_EXECUTABLE || target == BUILTIN_REMOVE_FILE ||
+            target == BUILTIN_RENAME_FILE || target == BUILTIN_STR_IS_UTF8
+    }
+    return c.fns[target].param_by_ref[i]
+}
+
+// Calls a function or a built-in. A number or `bool` it gives is the
+// result; -1 when it gives nothing, or a value that is not a number,
+// which is then in the call's temporary.
+fn lw_call(lw: mut Lower, c: Checker, p: Parser, id: i64) -> i64 {
+    let target = c.expr_res[lw.sh_e + id]
+    let callee = lw.ea[id]
+    let args_start = lw.eb[id]
+    let args_len = lw.ec[id]
+    // In `value.method(...)` the value is the receiver.
+    var receiver = -1
+    if lw.kinds[callee] == LW_FIELD {
+        receiver = lw.ea[callee]
+    }
+    if target == BUILTIN_STR_PUSH || target == BUILTIN_STR_SET {
+        lw_byte_method(mut lw, c, p, id, target, receiver)
+        return -1
+    }
+    if target == BUILTIN_LEN || target == BUILTIN_LIST_PUSH || target == BUILTIN_LIST_POP || target == BUILTIN_STR_SLICE {
+        return lw_list_method(mut lw, c, p, id, target, receiver)
+    }
+    // A method the standard library writes in azoL is a function whose
+    // first argument is the receiver. Arguments are evaluated in the
+    // order written.
+    var first = 0
+    if receiver >= 0 {
+        first = 1
+    }
+    let count = first + args_len
+    var arguments: List[i64] = []
+    var i = 0
+    while i < count {
+        var arg = receiver
+        if i >= first {
+            arg = p.ast.lists[args_start + i - first]
+        }
+        if lw.kinds[arg] == LW_MUTARG {
+            let at = lw_address(mut lw, c, p, lw.ea[arg])
+            arguments.push(lw_ptr(mut lw, at))
+        } else if lw_arg_by_ref(c, target, i) {
+            let at = lw_address(mut lw, c, p, arg)
+            arguments.push(lw_ptr(mut lw, at))
+        } else {
+            arguments.push(lw_value(mut lw, c, p, arg))
+        }
+        i = i + 1
+    }
+    let ty = c.expr_ty[lw.sh_e + id]
+    let tmp = c.expr_tmp[lw.sh_e + id]
+    if target < BUILTIN_STR_IS_UTF8 {
+        var gives: List[i64] = []
+        if ty >= 3 {
+            // The callee writes its result where the last argument
+            // points.
+            let out = lw_slot(mut lw, tmp, ck_size_of(c, ty))
+            arguments.push(out.p)
+        } else if ty != TY_UNIT {
+            gives.push(lw_scalar_ty(ty))
+        }
+        let call = ir_call(mut lw.f, lw.b, lw.names[target], arguments, gives)
+        return lw.f.ins_res[call]
+    }
+    if target == BUILTIN_PRINT_I64 {
+        lw_rt(mut lw, IR_RT_PRINT_I64, arguments[0], -1, -1, -1)
+        return -1
+    }
+    if target == BUILTIN_PRINT_BOOL {
+        lw_rt(mut lw, IR_RT_PRINT_BOOL, arguments[0], -1, -1, -1)
+        return -1
+    }
+    if target == BUILTIN_PRINT_STR {
+        lw_rt(mut lw, IR_RT_PRINT_BUF, arguments[0], -1, -1, -1)
+        return -1
+    }
+    if target == BUILTIN_EPRINT {
+        lw_rt(mut lw, IR_RT_EPRINT_BUF, arguments[0], -1, -1, -1)
+        return -1
+    }
+    if target == BUILTIN_EXIT {
+        lw_rt(mut lw, IR_RT_EXIT, arguments[0], -1, -1, -1)
+        return -1
+    }
+    if target == BUILTIN_CLOCK {
+        let call = lw_rt(mut lw, IR_RT_CLOCK, -1, -1, -1, -1)
+        return lw.f.ins_res[call]
+    }
+    if target == BUILTIN_STR_IS_UTF8 {
+        let call = lw_rt(mut lw, IR_RT_STR_IS_UTF8, arguments[0], -1, -1, -1)
+        return lw.f.ins_res[call]
+    }
+    if target == BUILTIN_READ_FILE || target == BUILTIN_WRITE_FILE || target == BUILTIN_SET_EXECUTABLE ||
+        target == BUILTIN_REMOVE_FILE || target == BUILTIN_RENAME_FILE {
+        // The routine fills in what the `Result` holds and says which
+        // variant it is: 0 for `Ok`, 1 for `Err`. The slots it leaves
+        // alone are zero.
+        let size = ck_size_of(c, ty)
+        let result = lw_slot(mut lw, tmp, size)
+        var slot = 1
+        while slot < size {
+            let zero = lw_const(mut lw, 0)
+            lw_store(mut lw, IR_I64, result, 8 * slot, zero)
+            slot = slot + 1
+        }
+        let out = lw_ptr(mut lw, lw_add(result, 8))
+        var call = 0
+        if target == BUILTIN_READ_FILE {
+            call = lw_rt(mut lw, IR_RT_READ_FILE, arguments[0], out, -1, -1)
+        } else if target == BUILTIN_WRITE_FILE {
+            call = lw_rt(mut lw, IR_RT_WRITE_FILE, arguments[0], arguments[1], out, -1)
+        } else if target == BUILTIN_REMOVE_FILE {
+            call = lw_rt(mut lw, IR_RT_REMOVE_FILE, arguments[0], out, -1, -1)
+        } else if target == BUILTIN_RENAME_FILE {
+            call = lw_rt(mut lw, IR_RT_RENAME_FILE, arguments[0], arguments[1], out, -1)
+        } else {
+            call = lw_rt(mut lw, IR_RT_SET_EXECUTABLE, arguments[0], out, -1, -1)
+        }
+        // the tag
+        let one = lw_const(mut lw, 1)
+        let tag = lw_bin(mut lw, IR_ADD, lw.f.ins_res[call], one)
+        lw_store(mut lw, IR_I64, result, 0, tag)
+        return -1
+    }
+    let out = lw_slot(mut lw, tmp, 3)
+    if target == BUILTIN_STR_FROM_I64 {
+        lw_rt(mut lw, IR_RT_STR_FROM_I64, arguments[0], out.p, -1, -1)
+    } else if target == BUILTIN_STR_FROM_BOOL {
+        lw_rt(mut lw, IR_RT_STR_FROM_BOOL, arguments[0], out.p, -1, -1)
+    } else if target == BUILTIN_CHR {
+        lw_rt(mut lw, IR_RT_CHR, arguments[0], out.p, -1, -1)
+    } else {
+        lw_rt(mut lw, IR_RT_ARGS, out.p, -1, -1, -1)
+    }
+    return -1
+}
+
+// Makes `byte` a string of one byte in the frame slots from `tmp` (the
+// byte, then pointer, length and capacity 0) and gives its address.
+fn lw_one_byte_string(lw: mut Lower, tmp: i64, byte: i64) -> i64 {
+    let holder = lw_slot(mut lw, tmp, 1)
+    lw_store(mut lw, IR_I64, holder, 0, byte)
+    let text = lw_slot(mut lw, tmp + 1, 3)
+    lw_store(mut lw, IR_PTR, text, 0, holder.p)
+    let one = lw_const(mut lw, 1)
+    lw_store(mut lw, IR_I64, text, 8, one)
+    let zero = lw_const(mut lw, 0)
+    lw_store(mut lw, IR_I64, text, 16, zero)
+    return text.p
+}
+
+// `s.push(byte)` and `s.set(index, byte)` on a string. The numbers are
+// worked out first; the byte is stored right here when the string owns
+// a buffer with room, and the runtime is asked only to give it one.
+fn lw_byte_method(lw: mut Lower, c: Checker, p: Parser, id: i64, method: i64, base: i64) {
+    let args_start = lw.eb[id]
+    let tmp = c.expr_tmp[lw.sh_e + id]
+    var index = -1
+    if method == BUILTIN_STR_SET {
+        index = lw_value(mut lw, c, p, p.ast.lists[args_start])
+    }
+    var byte = -1
+    if method == BUILTIN_STR_SET {
+        byte = lw_value(mut lw, c, p, p.ast.lists[args_start + 1])
+    } else {
+        byte = lw_value(mut lw, c, p, p.ast.lists[args_start])
+    }
+    let dest = lw_address(mut lw, c, p, base)
+    let dest_at = lw_ptr(mut lw, dest)
+    let bytes = lw_buf_region(mut lw, dest.reg)
+    if method == BUILTIN_STR_PUSH {
+        let len = lw_load(mut lw, IR_I64, dest, 8)
+        let cap = lw_load(mut lw, IR_I64, dest, 16)
+        let has_room = lw_bin(mut lw, IR_ULT, len, cap)
+        let quick = lw_block(mut lw)
+        let grow = lw_block(mut lw)
+        let done = lw_block(mut lw)
+        lw_br(mut lw, has_room, quick, grow)
+        lw.b = quick
+        let buffer = lw_load(mut lw, IR_PTR, dest, 0)
+        let at = ir_gep(mut lw.f, lw.b, buffer, len, 1, 0)
+        ir_store(mut lw.f, lw.b, IR_U8, at, 0, byte, bytes)
+        let one = lw_const(mut lw, 1)
+        let longer = lw_bin(mut lw, IR_ADD, len, one)
+        lw_store(mut lw, IR_I64, dest, 8, longer)
+        lw_jump(mut lw, done)
+        lw.b = grow
+        let text = lw_one_byte_string(mut lw, tmp, byte)
+        lw_rt(mut lw, IR_RT_STR_APPEND_BUF, dest_at, text, -1, -1)
+        lw_jump(mut lw, done)
+        lw.b = done
+        return
+    }
+    let len = lw_load(mut lw, IR_I64, dest, 8)
+    // unsigned: also rejects negatives
+    let inside = lw_bin(mut lw, IR_ULT, index, len)
+    lw_check(mut lw, inside, IR_TRAP_INDEX)
+    let cap = lw_load(mut lw, IR_I64, dest, 16)
+    let zero = lw_const(mut lw, 0)
+    let owned = lw_bin(mut lw, IR_NE, cap, zero)
+    let put = lw_block(mut lw)
+    let take = lw_block(mut lw)
+    lw_br(mut lw, owned, put, take)
+    // The bytes live in the executable: adding one byte makes the
+    // runtime copy them into a buffer the string owns, and the length
+    // is then put back.
+    lw.b = take
+    let text = lw_one_byte_string(mut lw, tmp, byte)
+    lw_rt(mut lw, IR_RT_STR_APPEND_BUF, dest_at, text, -1, -1)
+    let grown = lw_load(mut lw, IR_I64, dest, 8)
+    let one = lw_const(mut lw, 1)
+    let back = lw_bin(mut lw, IR_SUB, grown, one)
+    lw_store(mut lw, IR_I64, dest, 8, back)
+    lw_jump(mut lw, put)
+    lw.b = put
+    let buffer = lw_load(mut lw, IR_PTR, dest, 0)
+    let at = ir_gep(mut lw.f, lw.b, buffer, index, 1, 0)
+    ir_store(mut lw.f, lw.b, IR_U8, at, 0, byte, bytes)
+}
+
+// `len`, `push`, `pop` and `slice`. Gives a number, or -1.
+fn lw_list_method(lw: mut Lower, c: Checker, p: Parser, id: i64, method: i64, base: i64) -> i64 {
+    let args_start = lw.eb[id]
+    if method == BUILTIN_LEN {
+        // Lists and strings keep their length in the same place.
+        let header = lw_address(mut lw, c, p, base)
+        return lw_load(mut lw, IR_I64, header, 8)
+    }
+    let tmp = c.expr_tmp[lw.sh_e + id]
+    if method == BUILTIN_STR_SLICE {
+        // The bounds are evaluated first, so that nothing runs between
+        // finding the string and reading it.
+        let start = lw_value(mut lw, c, p, p.ast.lists[args_start])
+        let end = lw_value(mut lw, c, p, p.ast.lists[args_start + 1])
+        let text = lw_address(mut lw, c, p, base)
+        let text_at = lw_ptr(mut lw, text)
+        let out = lw_slot(mut lw, tmp, 3)
+        lw_rt(mut lw, IR_RT_STR_SLICE, text_at, start, end, out.p)
+        return -1
+    }
+    let elem = c.lists[ty_index(c.expr_ty[lw.sh_e + base])]
+    let elem_size = lw_slots_of(c, elem)
+    if method == BUILTIN_LIST_PUSH {
+        // The element is copied aside first: it may live in this very
+        // list, whose buffer can move while it grows.
+        let arg = p.ast.lists[args_start]
+        let aside = lw_slot(mut lw, tmp, elem_size)
+        var value = -1
+        if elem >= 3 {
+            let from = lw_address(mut lw, c, p, arg)
+            lw_copy(mut lw, c, aside, from, elem)
+            if c.expr_moved[lw.sh_e + arg] != 1 && ck_needs_drop(c, elem) {
+                lw_clone_frame(mut lw, c, tmp, elem)
+            }
+            lw_moved_out(mut lw, c, arg)
+        } else {
+            value = lw_value(mut lw, c, p, arg)
+        }
+        let list = lw_address(mut lw, c, p, base)
+        let list_at = lw_ptr(mut lw, list)
+        let bytes = lw_const(mut lw, elem_size * 8)
+        let done = lw_block(mut lw)
+        if elem < 3 || elem_size <= LW_INLINE_PUSH {
+            // A value this small goes straight into a list that has
+            // room; the runtime is only called to make room.
+            let len = lw_load(mut lw, IR_I64, list, 8)
+            let cap = lw_load(mut lw, IR_I64, list, 16)
+            let has_room = lw_bin(mut lw, IR_ULT, len, cap)
+            let quick = lw_block(mut lw)
+            let full = lw_block(mut lw)
+            lw_br(mut lw, has_room, quick, full)
+            lw.b = quick
+            let buffer = lw_load(mut lw, IR_PTR, list, 0)
+            let element = ir_gep(mut lw.f, lw.b, buffer, len, elem_size * 8, 0)
+            let to = LwAddr { p: element, off: 0, reg: lw_buf_region(mut lw, list.reg) }
+            if elem >= 3 {
+                lw_copy(mut lw, c, to, aside, elem)
+            } else {
+                lw_store(mut lw, lw_scalar_ty(elem), to, 0, value)
+            }
+            let one = lw_const(mut lw, 1)
+            let longer = lw_bin(mut lw, IR_ADD, len, one)
+            lw_store(mut lw, IR_I64, list, 8, longer)
+            lw_jump(mut lw, done)
+            lw.b = full
+        }
+        if elem < 3 {
+            lw_store(mut lw, lw_scalar_ty(elem), aside, 0, value)
+        }
+        lw_rt(mut lw, IR_RT_LIST_PUSH, list_at, aside.p, bytes, -1)
+        lw_jump(mut lw, done)
+        lw.b = done
+        return -1
+    }
+    let list = lw_address(mut lw, c, p, base)
+    let len = lw_load(mut lw, IR_I64, list, 8)
+    let zero = lw_const(mut lw, 0)
+    let some = lw_bin(mut lw, IR_NE, len, zero)
+    lw_check(mut lw, some, IR_TRAP_POP)
+    let one = lw_const(mut lw, 1)
+    let shorter = lw_bin(mut lw, IR_SUB, len, one)
+    lw_store(mut lw, IR_I64, list, 8, shorter)
+    let buffer = lw_load(mut lw, IR_PTR, list, 0)
+    let element = ir_gep(mut lw.f, lw.b, buffer, shorter, elem_size * 8, 0)
+    let from = LwAddr { p: element, off: 0, reg: lw_buf_region(mut lw, list.reg) }
+    if elem >= 3 {
+        let out = lw_slot(mut lw, tmp, elem_size)
+        lw_copy(mut lw, c, out, from, elem)
+        return -1
+    }
+    return lw_load(mut lw, lw_scalar_ty(elem), from, 0)
+}

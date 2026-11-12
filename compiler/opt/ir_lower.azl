@@ -1,0 +1,1055 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Lowering: from the checked program (`Checker` and the tree) to the
+// intermediate form of `ir.azl`, one function at a time. It is the only
+// bridge between the language and the optimiser, so it follows the
+// tree-walking generators (`x64_gen.azl` is the reference) step by step:
+// the same order of evaluation, the same copies, moves and frees, the
+// same checks with the same messages. Where the generator leaves a
+// value in rax, a function here gives an operand; where it leaves an
+// address in rax, a function here gives an `LwAddr`.
+//
+// This file holds the state, the frame, the helpers that copy and free
+// values, and the functions and their helpers. `ir_lower_stmt.azl`
+// lowers statements, `ir_lower_expr.azl` expressions.
+//
+// How a program looks afterwards:
+//
+// - A function of the program is a function of the same parameters:
+//   an `i64` or a `bool` travels as itself, anything else and every
+//   `mut` parameter as an address (`ptr`). A function that returns a
+//   list, a string, a struct or an enum takes one more parameter, last:
+//   the address its result is written to (region `ret`), and returns
+//   nothing. `main` is called `main`; every other function is its name,
+//   a dot and its number among the checker's functions (`area.7`).
+// - Variables and temporaries live in frame objects. The checker gave
+//   every one of them a run of 8-byte slots; all slot ranges the
+//   function uses are collected, ranges that overlap become one frame
+//   object, and so two variables never share an object unless the
+//   checker made them share slots. A later pass turns objects whose
+//   address is not needed into values (`sroa`).
+// - A parameter that arrives as a value is stored in its slot on entry.
+//   A name bound by a pattern to a part of the value matched is an
+//   address; it is kept as a value, not in the frame.
+// - Every value in memory is complete: an enum value is written with
+//   zeros in the slots its variant does not use, so that copying a
+//   value slot by slot never reads bytes that were never stored.
+// - The helpers that free and copy a type whose values own other
+//   values are functions too: `drop.T` and `clone.T`, with the type's
+//   number for `T`. `str.cmp` orders two strings.
+//
+// Regions: a variable is `frame N`; what a parameter points to is
+// `param K`; a buffer is `buf(R)` for the region `R` its three slots
+// are in; text of the program is reached through a `buf` as well. A
+// read-only parameter has the effect `read` only, a `mut` one all.
+
+// What an expression is, as `lw_read_tree` writes it down.
+const LW_INT = 0
+const LW_FLOAT = 1
+const LW_STR = 2
+const LW_BOOL = 3
+const LW_IDENT = 4
+const LW_UNARY = 5
+const LW_BINARY = 6
+const LW_CALL = 7
+const LW_MUTARG = 8
+const LW_FIELD = 9
+const LW_INDEX = 10
+const LW_STRUCT = 11
+const LW_ARRAY = 12
+const LW_TRY = 13
+
+const LW_OR = 0
+const LW_AND = 1
+const LW_EQ = 2
+const LW_NE = 3
+const LW_LT = 4
+const LW_LE = 5
+const LW_GT = 6
+const LW_GE = 7
+const LW_ADD = 8
+const LW_SUB = 9
+const LW_MUL = 10
+const LW_DIV = 11
+const LW_REM = 12
+const LW_BITAND = 13
+const LW_BITOR = 14
+const LW_BITXOR = 15
+const LW_SHL = 16
+const LW_SHR = 17
+
+// The largest element, in slots, that `push` copies into a list with
+// room without calling the runtime: as in the generators.
+const LW_INLINE_PUSH = 8
+
+// An address: the value `p`, `off` bytes further on, in region `reg`.
+struct LwAddr {
+    p: i64
+    off: i64
+    reg: i64
+}
+
+struct Lower {
+    // The tree as numbers, per expression.
+    kinds: List[i64]
+    ea: List[i64]
+    eb: List[i64]
+    ec: List[i64]
+    m: IrModule
+    // The name of every function of the checker, by its number.
+    names: List[str]
+    // The function being lowered, the block instructions go to, and the
+    // block that holds its `frame` instructions.
+    f: IrFunc
+    b: i64
+    entry: i64
+    sh_e: i64
+    sh_s: i64
+    sh_p: i64
+    sh_i: i64
+    ret: i64
+    // The parameter a result that is not a number is written through,
+    // or -1.
+    sret: i64
+    nparams: i64
+    // Local variables that own buffers and are in scope.
+    live_slots: List[i64]
+    live_tys: List[i64]
+    // The loops being lowered, innermost last: how many owning locals
+    // were alive on entry, and where `break` and `continue` go.
+    loop_live: List[i64]
+    loop_break: List[i64]
+    loop_continue: List[i64]
+    // Names bound to an address by a pattern, per slot.
+    ptr_p: List[i64]
+    ptr_off: List[i64]
+    ptr_reg: List[i64]
+    // The frame: for every slot an address was asked for, the value of
+    // its `frame` instruction (or -1) and the longest run of slots
+    // asked for from there; and those slots in the order of asking.
+    slot_val: List[i64]
+    slot_len: List[i64]
+    slots_used: List[i64]
+    // The block of every kind of stop, or -1.
+    trap_blk: List[i64]
+    // The helpers to write: a type, and 1 to copy or 0 to free.
+    glue_tys: List[i64]
+    glue_copies: List[i64]
+    glue_ids: IntMap
+    need_str_cmp: bool
+    // The type of every slot of a type, once worked out: `st_len`
+    // entries of `st_tys` from `st_start`, found through `st_ids`.
+    st_ids: IntMap
+    st_start: List[i64]
+    st_len: List[i64]
+    st_tys: List[i64]
+    // An empty list, for calls that take one.
+    none: List[i64]
+}
+
+fn lw_binop_code(op: BinOp) -> i64 {
+    match op {
+        BinOr => return LW_OR
+        BinAnd => return LW_AND
+        BinEq => return LW_EQ
+        BinNotEq => return LW_NE
+        BinLt => return LW_LT
+        BinLtEq => return LW_LE
+        BinGt => return LW_GT
+        BinGtEq => return LW_GE
+        BinAdd => return LW_ADD
+        BinSub => return LW_SUB
+        BinMul => return LW_MUL
+        BinDiv => return LW_DIV
+        BinRem => return LW_REM
+        BinBitAnd => return LW_BITAND
+        BinBitOr => return LW_BITOR
+        BinBitXor => return LW_BITXOR
+        BinShl => return LW_SHL
+        BinShr => return LW_SHR
+    }
+}
+
+// Reads the tree into `kinds`, `ea`, `eb` and `ec`.
+fn lw_read_tree(lw: mut Lower, p: Parser) {
+    for expr in p.ast.exprs {
+        var kind = LW_INT
+        var a = 0
+        var b = 0
+        var c = 0
+        match expr {
+            ExprInt(_) => {}
+            ExprFloat(_) => kind = LW_FLOAT
+            ExprStr(_) => kind = LW_STR
+            ExprBool(value) => {
+                kind = LW_BOOL
+                if value {
+                    a = 1
+                }
+            }
+            ExprIdent(_) => kind = LW_IDENT
+            ExprUnary(op, operand) => {
+                kind = LW_UNARY
+                a = operand
+                if op == OpNot {
+                    c = 1
+                }
+            }
+            ExprBinary(op, lhs, rhs) => {
+                kind = LW_BINARY
+                a = lhs
+                b = rhs
+                c = lw_binop_code(op)
+            }
+            ExprCall(callee, args) => {
+                kind = LW_CALL
+                a = callee
+                b = args.start
+                c = args.len
+            }
+            ExprMutArg(inner) => {
+                kind = LW_MUTARG
+                a = inner
+            }
+            ExprTry(inner) => {
+                kind = LW_TRY
+                a = inner
+            }
+            ExprField(base, _) => {
+                kind = LW_FIELD
+                a = base
+            }
+            ExprIndex(base, index) => {
+                kind = LW_INDEX
+                a = base
+                b = index
+            }
+            ExprStructLit(_, fields) => {
+                kind = LW_STRUCT
+                b = fields.start
+                c = fields.len
+            }
+            ExprArrayLit(items) => {
+                kind = LW_ARRAY
+                b = items.start
+                c = items.len
+            }
+        }
+        lw.kinds.push(kind)
+        lw.ea.push(a)
+        lw.eb.push(b)
+        lw.ec.push(c)
+    }
+}
+
+fn lw_new() -> Lower {
+    return Lower {
+        kinds: [],
+        ea: [],
+        eb: [],
+        ec: [],
+        m: ir_new_module(),
+        names: [],
+        f: ir_new_func(""),
+        b: 0,
+        entry: 0,
+        sh_e: 0,
+        sh_s: 0,
+        sh_p: 0,
+        sh_i: 0,
+        ret: TY_UNIT,
+        sret: -1,
+        nparams: 0,
+        live_slots: [],
+        live_tys: [],
+        loop_live: [],
+        loop_break: [],
+        loop_continue: [],
+        ptr_p: [],
+        ptr_off: [],
+        ptr_reg: [],
+        slot_val: [],
+        slot_len: [],
+        slots_used: [],
+        trap_blk: [],
+        glue_tys: [],
+        glue_copies: [],
+        glue_ids: new_int_map(),
+        need_str_cmp: false,
+        st_ids: new_int_map(),
+        st_start: [],
+        st_len: [],
+        st_tys: [],
+        none: []
+    }
+}
+
+// ---- small helpers ------------------------------------------------------
+
+// The type a number or `bool` of the language has as a value.
+fn lw_scalar_ty(ty: i64) -> i64 {
+    if ty == TY_BOOL {
+        return IR_BOOL
+    }
+    return IR_I64
+}
+
+fn lw_const(lw: mut Lower, n: i64) -> i64 {
+    return ir_const(mut lw.f, n)
+}
+
+fn lw_bin(lw: mut Lower, op: i64, x: i64, y: i64) -> i64 {
+    return ir_binary(mut lw.f, lw.b, op, x, y)
+}
+
+fn lw_block(lw: mut Lower) -> i64 {
+    return ir_add_block(mut lw.f)
+}
+
+// Ends the current block with a jump to `target`.
+fn lw_jump(lw: mut Lower, target: i64) {
+    ir_jump(mut lw.f, lw.b, target, lw.none)
+}
+
+// Ends the current block: to `taken` when `cond` is true, otherwise to
+// `other`.
+fn lw_br(lw: mut Lower, cond: i64, taken: i64, other: i64) {
+    ir_br(mut lw.f, lw.b, cond, taken, lw.none, other, lw.none)
+}
+
+// A runtime routine with up to four arguments; -1 for "no argument".
+// Gives the instruction.
+fn lw_rt(lw: mut Lower, routine: i64, a: i64, b: i64, c: i64, d: i64) -> i64 {
+    var arguments: List[i64] = []
+    if a != -1 {
+        arguments.push(a)
+    }
+    if b != -1 {
+        arguments.push(b)
+    }
+    if c != -1 {
+        arguments.push(c)
+    }
+    if d != -1 {
+        arguments.push(d)
+    }
+    return ir_callrt(mut lw.f, lw.b, routine, arguments)
+}
+
+fn lw_load(lw: mut Lower, ty: i64, at: LwAddr, more: i64) -> i64 {
+    return ir_load(mut lw.f, lw.b, ty, at.p, at.off + more, at.reg)
+}
+
+fn lw_store(lw: mut Lower, ty: i64, at: LwAddr, more: i64, value: i64) {
+    ir_store(mut lw.f, lw.b, ty, at.p, at.off + more, value, at.reg)
+}
+
+// The address as one value.
+fn lw_ptr(lw: mut Lower, at: LwAddr) -> i64 {
+    if at.off == 0 {
+        return at.p
+    }
+    let zero = lw_const(mut lw, 0)
+    return ir_gep(mut lw.f, lw.b, at.p, zero, 1, at.off)
+}
+
+// The address `bytes` further on.
+fn lw_add(at: LwAddr, bytes: i64) -> LwAddr {
+    return LwAddr { p: at.p, off: at.off + bytes, reg: at.reg }
+}
+
+// The region of the buffer whose three slots are in region `reg`.
+fn lw_buf_region(lw: mut Lower, reg: i64) -> i64 {
+    return ir_region(mut lw.f, IR_REGION_BUF, reg)
+}
+
+// The block that stops the program in the way `kind` says.
+fn lw_trap_block(lw: mut Lower, kind: i64) -> i64 {
+    if lw.trap_blk[kind] < 0 {
+        let block = lw_block(mut lw)
+        ir_trap(mut lw.f, block, kind)
+        lw.trap_blk[kind] = block
+    }
+    return lw.trap_blk[kind]
+}
+
+// Goes on only when `ok` is true; otherwise the program stops.
+fn lw_check(lw: mut Lower, ok: i64, kind: i64) {
+    let stop = lw_trap_block(mut lw, kind)
+    let on = lw_block(mut lw)
+    lw_br(mut lw, ok, on, stop)
+    lw.b = on
+}
+
+// ---- the frame ----------------------------------------------------------
+
+// The address of frame slot `slot`, as the start of a run of `len`
+// slots. The `frame` instruction sits in the entry block, so one per
+// slot serves the whole function; which frame object it is in is
+// settled by `lw_finish_frame`.
+fn lw_slot(lw: mut Lower, slot: i64, len: i64) -> LwAddr {
+    while lw.slot_val.len() <= slot {
+        lw.slot_val.push(-1)
+        lw.slot_len.push(0)
+    }
+    if lw.slot_val[slot] < 0 {
+        lw.slot_val[slot] = ir_frame(mut lw.f, lw.entry, slot)
+        lw.slots_used.push(slot)
+    }
+    if len > lw.slot_len[slot] {
+        lw.slot_len[slot] = len
+    }
+    let reg = ir_region(mut lw.f, IR_REGION_FRAME, slot)
+    return LwAddr { p: lw.slot_val[slot], off: 0, reg: reg }
+}
+
+// Turns the slots the function used into frame objects: ranges that
+// overlap become one object. The `frame` instructions, which named
+// slots until now, get their object, or become the address of a place
+// inside one; regions follow.
+fn lw_finish_frame(lw: mut Lower) {
+    // The slots in rising order.
+    var order = lw.slots_used
+    var i = 1
+    while i < order.len() {
+        let slot = order[i]
+        var k = i
+        while k > 0 && order[k - 1] > slot {
+            order[k] = order[k - 1]
+            k = k - 1
+        }
+        order[k] = slot
+        i = i + 1
+    }
+    // The object of each slot, and where the object starts.
+    var object = 0.filled(lw.slot_val.len())
+    var base = 0.filled(lw.slot_val.len())
+    var start = 0
+    var end = 0
+    var current = -1
+    i = 0
+    while i < order.len() {
+        let slot = order[i]
+        if current < 0 || slot >= end {
+            if current >= 0 {
+                lw.f.frames[current] = 8 * (end - start)
+            }
+            current = ir_add_frame(mut lw.f, 0)
+            start = slot
+            end = slot
+        }
+        if slot + lw.slot_len[slot] > end {
+            end = slot + lw.slot_len[slot]
+        }
+        object[slot] = current
+        base[slot] = start
+        i = i + 1
+    }
+    if current >= 0 {
+        lw.f.frames[current] = 8 * (end - start)
+    }
+    // The entry block again, objects first: every other slot of an
+    // object is an address inside it.
+    i = 0
+    while i < order.len() {
+        let ins = lw.f.val_ins[lw.slot_val[order[i]]]
+        ir_unlink(mut lw.f, ins)
+        i = i + 1
+    }
+    i = 0
+    while i < order.len() {
+        let slot = order[i]
+        let ins = lw.f.val_ins[lw.slot_val[slot]]
+        if base[slot] == slot {
+            lw.f.ins_imm[ins] = object[slot]
+        } else {
+            lw.f.ins_op[ins] = IR_GEP
+            lw.f.ins_a[ins] = lw.slot_val[base[slot]]
+            lw.f.ins_b[ins] = lw_const(mut lw, 0)
+            lw.f.ins_imm[ins] = 8 * (slot - base[slot])
+            lw.f.ins_imm2[ins] = 1
+        }
+        ir_link_end(mut lw.f, lw.entry, ins)
+        i = i + 1
+    }
+    // Regions: a frame region named a slot; two slots of one object are
+    // one region, and so are the buffers owned from them.
+    var kinds: List[i64] = []
+    var ns: List[i64] = []
+    var renamed: List[i64] = []
+    var r = 0
+    while r < lw.f.reg_kind.len() {
+        let kind = lw.f.reg_kind[r]
+        var n = lw.f.reg_n[r]
+        if kind == IR_REGION_FRAME {
+            n = object[n]
+        } else if kind == IR_REGION_BUF {
+            n = renamed[n]
+        }
+        var found = -1
+        var k = 0
+        while k < kinds.len() {
+            if kinds[k] == kind && ns[k] == n {
+                found = k
+            }
+            k = k + 1
+        }
+        if found < 0 {
+            found = kinds.len()
+            kinds.push(kind)
+            ns.push(n)
+        }
+        renamed.push(found)
+        r = r + 1
+    }
+    lw.f.reg_kind = kinds
+    lw.f.reg_n = ns
+    var ins = 0
+    while ins < lw.f.ins_reg.len() {
+        if lw.f.ins_reg[ins] >= 0 {
+            lw.f.ins_reg[ins] = renamed[lw.f.ins_reg[ins]]
+        }
+        ins = ins + 1
+    }
+}
+
+// Removes the blocks nothing reaches: what follows a `return`, and the
+// stops no check needed after all.
+fn lw_remove_dead_blocks(lw: mut Lower) {
+    var reached = false.filled(lw.f.blk_first.len())
+    var work: List[i64] = [lw.entry]
+    reached[lw.entry] = true
+    while work.len() > 0 {
+        let b = work.pop()
+        let last = lw.f.blk_last[b]
+        if last >= 0 {
+            var e = lw.f.ins_es[last]
+            let end = e + lw.f.ins_en[last]
+            while e < end {
+                let to = lw.f.edge_blk[e]
+                if !reached[to] {
+                    reached[to] = true
+                    work.push(to)
+                }
+                e = e + 1
+            }
+        }
+    }
+    var kept: List[i64] = []
+    var at = 0
+    while at < lw.f.order.len() {
+        let b = lw.f.order[at]
+        if reached[b] {
+            kept.push(b)
+        } else {
+            var ins = lw.f.blk_first[b]
+            while ins >= 0 {
+                let next = lw.f.ins_next[ins]
+                ir_remove(mut lw.f, ins)
+                ins = next
+            }
+            var k = 0
+            while k < lw.f.blk_pn[b] {
+                let v = lw.f.bparams[lw.f.blk_ps[b] + k]
+                lw.f.val_ty[v] = -1
+                lw.f.val_blk[v] = -1
+                k = k + 1
+            }
+            lw.f.blk_pn[b] = 0
+            lw.f.blk_live[b] = false
+        }
+        at = at + 1
+    }
+    lw.f.order = kept
+}
+
+// ---- types --------------------------------------------------------------
+
+// Works out the type of every slot of a value of type `ty` and gives
+// its place in `st_start`. A buffer's address is a `ptr`, a `bool` a
+// `bool`; the slots after an enum's tag hold different things in
+// different variants and are plain `i64`.
+fn lw_slot_types(lw: mut Lower, c: Checker, ty: i64) -> i64 {
+    let known = int_map_get(lw.st_ids, ty)
+    if known >= 0 {
+        return known
+    }
+    var tys: List[i64] = []
+    if ty == TY_BOOL {
+        tys.push(IR_BOOL)
+    } else if ty == TY_I64 {
+        tys.push(IR_I64)
+    } else if ty == TY_STR || ty_is_list(ty) {
+        tys.push(IR_PTR)
+        tys.push(IR_I64)
+        tys.push(IR_I64)
+    } else if ty_is_enum(ty) {
+        var i = 0
+        while i < c.enums[ty_index(ty)].size {
+            tys.push(IR_I64)
+            i = i + 1
+        }
+    } else if ty_is_struct(ty) {
+        let index = ty_index(ty)
+        var i = 0
+        while i < c.structs[index].size {
+            tys.push(IR_I64)
+            i = i + 1
+        }
+        var field = 0
+        while field < c.structs[index].field_tys.len() {
+            let inner = lw_slot_types(mut lw, c, c.structs[index].field_tys[field])
+            let offset = c.structs[index].field_offsets[field]
+            var k = 0
+            while k < lw.st_len[inner] {
+                tys[offset + k] = lw.st_tys[lw.st_start[inner] + k]
+                k = k + 1
+            }
+            field = field + 1
+        }
+    }
+    let id = lw.st_start.len()
+    lw.st_start.push(lw.st_tys.len())
+    lw.st_len.push(tys.len())
+    for slot_ty in tys {
+        lw.st_tys.push(slot_ty)
+    }
+    int_map_set(mut lw.st_ids, ty, id)
+    return id
+}
+
+// Copies a value of type `ty`, slot by slot.
+fn lw_copy(lw: mut Lower, c: Checker, to: LwAddr, from: LwAddr, ty: i64) {
+    let id = lw_slot_types(mut lw, c, ty)
+    let start = lw.st_start[id]
+    let len = lw.st_len[id]
+    var i = 0
+    while i < len {
+        let slot_ty = lw.st_tys[start + i]
+        let value = lw_load(mut lw, slot_ty, from, 8 * i)
+        lw_store(mut lw, slot_ty, to, 8 * i, value)
+        i = i + 1
+    }
+}
+
+// ---- ownership ----------------------------------------------------------
+
+// The number of the helper that frees (or copies) a `ty`, asking for it
+// to be written if this is its first use.
+fn lw_glue(lw: mut Lower, ty: i64, copy: bool) -> str {
+    var key = ty * 2
+    var name = "drop."
+    if copy {
+        key = key + 1
+        name = "clone."
+    }
+    if int_map_get(lw.glue_ids, key) < 0 {
+        int_map_set(mut lw.glue_ids, key, lw.glue_tys.len())
+        lw.glue_tys.push(ty)
+        lw.glue_copies.push(key & 1)
+    }
+    return name + str(ty)
+}
+
+// Calls a helper with the one address it takes.
+fn lw_call_glue(lw: mut Lower, name: str, p: i64) {
+    ir_call(mut lw.f, lw.b, name, [p], lw.none)
+}
+
+// Frees everything owned by the value at `at`.
+fn lw_drop_value(lw: mut Lower, c: Checker, at: LwAddr, ty: i64) {
+    let p = lw_ptr(mut lw, at)
+    if ty == TY_STR {
+        lw_rt(mut lw, IR_RT_DROP, p, -1, -1, -1)
+    } else if ty_is_list(ty) && !ck_needs_drop(c, c.lists[ty_index(ty)]) {
+        lw_rt(mut lw, IR_RT_DROP, p, -1, -1, -1)
+    } else {
+        let name = lw_glue(mut lw, ty, false)
+        lw_call_glue(mut lw, name, p)
+    }
+}
+
+// The value at `at` was copied bit by bit from another owner. Gives it
+// buffers of its own, all the way down.
+fn lw_clone_value(lw: mut Lower, c: Checker, at: LwAddr, ty: i64) {
+    let p = lw_ptr(mut lw, at)
+    if ty == TY_STR {
+        let one = lw_const(mut lw, 1)
+        lw_rt(mut lw, IR_RT_LIST_CLONE, p, one, -1, -1)
+    } else if ty_is_list(ty) && !ck_needs_drop(c, c.lists[ty_index(ty)]) {
+        let bytes = lw_const(mut lw, ck_size_of(c, c.lists[ty_index(ty)]) * 8)
+        lw_rt(mut lw, IR_RT_LIST_CLONE, p, bytes, -1, -1)
+    } else {
+        let name = lw_glue(mut lw, ty, true)
+        lw_call_glue(mut lw, name, p)
+    }
+}
+
+// Frees everything owned by the value in frame slot `slot`.
+fn lw_drop_frame(lw: mut Lower, c: Checker, slot: i64, ty: i64) {
+    let at = lw_slot(mut lw, slot, ck_size_of(c, ty))
+    lw_drop_value(mut lw, c, at, ty)
+}
+
+fn lw_clone_frame(lw: mut Lower, c: Checker, slot: i64, ty: i64) {
+    let at = lw_slot(mut lw, slot, ck_size_of(c, ty))
+    lw_clone_value(mut lw, c, at, ty)
+}
+
+// Stores a zero in frame slot `slot`.
+fn lw_zero_slot(lw: mut Lower, slot: i64) {
+    let at = lw_slot(mut lw, slot, 1)
+    let zero = lw_const(mut lw, 0)
+    lw_store(mut lw, IR_I64, at, 0, zero)
+}
+
+// Zeroes, for every list, string and owning enum directly inside the
+// value of type `ty` at `slot`, the slot that says "this owns nothing".
+fn lw_zero_idle(lw: mut Lower, c: Checker, slot: i64, ty: i64) {
+    let owned = ck_owned_count(c, ty)
+    if owned == 0 {
+        return
+    }
+    let at = lw_slot(mut lw, slot, ck_size_of(c, ty))
+    var k = 0
+    while k < owned {
+        let zero = lw_const(mut lw, 0)
+        lw_store(mut lw, IR_I64, at, 8 * (ck_owned_offset(c, ty, k) + idle_slot(ck_owned_ty(c, ty, k))), zero)
+        k = k + 1
+    }
+}
+
+// Frees the owning locals declared since `from`, newest first, without
+// forgetting them: used on every way out of a scope.
+fn lw_drop_live_from(lw: mut Lower, c: Checker, from: i64) {
+    var i = lw.live_slots.len() - 1
+    while i >= from {
+        let slot = lw.live_slots[i]
+        let ty = lw.live_tys[i]
+        lw_drop_frame(mut lw, c, slot, ty)
+        i = i - 1
+    }
+}
+
+// Frees the temporaries listed in `drops[start .. start + len]`.
+fn lw_drop_range(lw: mut Lower, c: Checker, start: i64, len: i64) {
+    var i = start
+    while i < start + len {
+        let slot = c.drop_slots[i]
+        let ty = c.drop_tys[i]
+        lw_drop_frame(mut lw, c, slot, ty)
+        // Inside a loop the same temporary is freed again, and it may
+        // not have been refilled: a zero capacity or tag marks it empty.
+        lw_zero_idle(mut lw, c, slot, ty)
+        i = i + 1
+    }
+}
+
+// Frees the temporaries of statement `id`.
+fn lw_drop_temps(lw: mut Lower, c: Checker, id: i64) {
+    lw_drop_range(mut lw, c, c.stmt_drops_start[lw.sh_s + id], c.stmt_drops_len[lw.sh_s + id])
+}
+
+// ---- functions ----------------------------------------------------------
+
+// Starts a new function: an entry block for the `frame` instructions
+// and a first block for everything else.
+fn lw_begin(lw: mut Lower, name: str) {
+    // The one `IrFunc` every function is built in: see `ir_clear_func`.
+    ir_clear_func(mut lw.f, name)
+    lw.entry = lw_block(mut lw)
+    lw.b = lw_block(mut lw)
+    lw.slot_val.truncate(0)
+    lw.slot_len.truncate(0)
+    lw.slots_used.truncate(0)
+    lw.trap_blk.truncate(0)
+    var kind = 0
+    while kind < IR_TRAP_COUNT {
+        lw.trap_blk.push(-1)
+        kind = kind + 1
+    }
+    lw.live_slots.truncate(0)
+    lw.live_tys.truncate(0)
+    lw.loop_live.truncate(0)
+    lw.loop_break.truncate(0)
+    lw.loop_continue.truncate(0)
+    lw.sret = -1
+}
+
+// Finishes the function and adds it to the module.
+fn lw_end(lw: mut Lower) {
+    lw_finish_frame(mut lw)
+    // The entry block leads to the first block made after it.
+    ir_jump(mut lw.f, lw.entry, lw.entry + 1, lw.none)
+    lw_remove_dead_blocks(mut lw)
+    ir_add_func(mut lw.m, lw.f)
+}
+
+// The name a function of the program has in the module.
+fn lw_function_name(c: Checker, p: Parser, index: i64) -> str {
+    var name = "f"
+    match p.ast.items[c.fns[index].item] {
+        ItemFn(span, _, _, _, _, _) => name = p.src.slice(span.start, span.start + span.len)
+        _ => {}
+    }
+    if index == c.main {
+        return name
+    }
+    return name + "." + str(index)
+}
+
+fn lw_function(lw: mut Lower, c: Checker, p: Parser, index: i64) {
+    match p.ast.items[c.fns[index].item] {
+        ItemFn(_, _, _, _, body, _) => lw_function_body(mut lw, c, p, index, body)
+        _ => {}
+    }
+}
+
+fn lw_function_body(lw: mut Lower, c: Checker, p: Parser, index: i64, body: IdRange) {
+    let name = lw.names[index]
+    lw_begin(mut lw, name)
+    lw.sh_e = c.fns[index].sh_e
+    lw.sh_s = c.fns[index].sh_s
+    lw.sh_p = c.fns[index].sh_p
+    lw.sh_i = c.fns[index].sh_i
+    lw.ret = c.fns[index].ret
+    let params = c.fns[index].param_tys.len()
+    lw.nparams = params
+    var i = 0
+    while i < params {
+        if c.fns[index].param_by_ref[i] {
+            var fx = IR_FX_READ
+            if c.fns[index].param_mutable[i] {
+                fx = IR_FX_ALL
+            }
+            ir_add_param(mut lw.f, IR_PTR, fx)
+        } else {
+            ir_add_param(mut lw.f, lw_scalar_ty(c.fns[index].param_tys[i]), 0)
+        }
+        i = i + 1
+    }
+    if ty_is_aggregate(lw.ret) {
+        lw.sret = ir_add_param(mut lw.f, IR_PTR, IR_FX_ALL)
+    } else if lw.ret != TY_UNIT {
+        lw.f.ret_ty.push(lw_scalar_ty(lw.ret))
+    }
+    // A parameter that arrives as a value moves to its slot; one that
+    // arrives as an address never changes and is used as it is.
+    i = 0
+    while i < params {
+        if !c.fns[index].param_by_ref[i] {
+            let at = lw_slot(mut lw, i, 1)
+            lw_store(mut lw, lw_scalar_ty(c.fns[index].param_tys[i]), at, 0, i)
+        }
+        i = i + 1
+    }
+    // A temporary may be freed without having been filled, when the
+    // expression that fills it was skipped. Null makes that harmless.
+    i = 0
+    while i < c.fns[index].zero_slots.len() {
+        lw_zero_slot(mut lw, c.fns[index].zero_slots[i])
+        i = i + 1
+    }
+    lw_stmts(mut lw, c, p, body)
+    if lw.ret == TY_UNIT {
+        ir_ret(mut lw.f, lw.b, lw.none)
+    } else {
+        // The checker proved every path returns; this is not reached.
+        let stop = lw_trap_block(mut lw, IR_TRAP_INTERNAL)
+        lw_jump(mut lw, stop)
+    }
+    lw_end(mut lw)
+}
+
+// Writes the helper that frees or copies a `ty`: a function of the
+// value's address.
+fn lw_glue_function(lw: mut Lower, c: Checker, ty: i64, copy: bool) {
+    var name = "drop."
+    if copy {
+        name = "clone."
+    }
+    lw_begin(mut lw, name + str(ty))
+    let p = ir_add_param(mut lw.f, IR_PTR, IR_FX_ALL)
+    let reg = ir_region(mut lw.f, IR_REGION_PARAM, 0)
+    let value = LwAddr { p: p, off: 0, reg: reg }
+    if ty_is_struct(ty) {
+        // Handle each owning part directly inside the struct.
+        let index = ty_index(ty)
+        var k = 0
+        while k < c.structs[index].heap_tys.len() {
+            let part = lw_add(value, 8 * c.structs[index].heap_offsets[k])
+            lw_glue_part(mut lw, c, part, c.structs[index].heap_tys[k], copy)
+            k = k + 1
+        }
+    } else if ty_is_list(ty) {
+        // A list whose elements own something: visit every element.
+        let elem = c.lists[ty_index(ty)]
+        let elem_bytes = ck_size_of(c, elem) * 8
+        if copy {
+            // First a private buffer holding the same bits.
+            let bytes = lw_const(mut lw, elem_bytes)
+            lw_rt(mut lw, IR_RT_LIST_CLONE, p, bytes, -1, -1)
+        }
+        let cap = lw_load(mut lw, IR_I64, value, 16)
+        let zero = lw_const(mut lw, 0)
+        let owns = lw_bin(mut lw, IR_NE, cap, zero)
+        let walk = lw_block(mut lw)
+        let done = lw_block(mut lw)
+        lw_br(mut lw, owns, walk, done)
+        lw.b = walk
+        let buffer = lw_load(mut lw, IR_PTR, value, 0)
+        let len = lw_load(mut lw, IR_I64, value, 8)
+        // The loop: the number of elements already visited.
+        let top = lw_block(mut lw)
+        let at = ir_add_block_param(mut lw.f, top, IR_I64)
+        let first = lw_const(mut lw, 0)
+        ir_jump(mut lw.f, lw.b, top, [first])
+        lw.b = top
+        let more = lw_bin(mut lw, IR_SLT, at, len)
+        let visit = lw_block(mut lw)
+        let finished = lw_block(mut lw)
+        lw_br(mut lw, more, visit, finished)
+        lw.b = visit
+        let element = ir_gep(mut lw.f, lw.b, buffer, at, elem_bytes, 0)
+        let inner = lw_buf_region(mut lw, reg)
+        lw_glue_part(mut lw, c, LwAddr { p: element, off: 0, reg: inner }, elem, copy)
+        let one = lw_const(mut lw, 1)
+        let next = lw_bin(mut lw, IR_ADD, at, one)
+        ir_jump(mut lw.f, lw.b, top, [next])
+        lw.b = finished
+        if !copy {
+            lw_rt(mut lw, IR_RT_FREE, buffer, -1, -1, -1)
+        }
+        lw_jump(mut lw, done)
+        lw.b = done
+    } else {
+        // Only the variant the value is in owns anything, so the tag
+        // selects what to visit.
+        let index = ty_index(ty)
+        let tag = lw_load(mut lw, IR_I64, value, 0)
+        let done = lw_block(mut lw)
+        var variant = 0
+        while variant < c.enums[index].variants.len() {
+            let owned = c.enums[index].variants[variant].heap_tys.len()
+            if owned > 0 {
+                let want = lw_const(mut lw, variant + 1)
+                let is_it = lw_bin(mut lw, IR_EQ, tag, want)
+                let visit = lw_block(mut lw)
+                let next = lw_block(mut lw)
+                lw_br(mut lw, is_it, visit, next)
+                lw.b = visit
+                var k = 0
+                while k < owned {
+                    let part = lw_add(value, 8 * c.enums[index].variants[variant].heap_offsets[k])
+                    lw_glue_part(mut lw, c, part, c.enums[index].variants[variant].heap_tys[k], copy)
+                    k = k + 1
+                }
+                lw_jump(mut lw, done)
+                lw.b = next
+            }
+            variant = variant + 1
+        }
+        lw_jump(mut lw, done)
+        lw.b = done
+    }
+    ir_ret(mut lw.f, lw.b, lw.none)
+    lw_end(mut lw)
+}
+
+fn lw_glue_part(lw: mut Lower, c: Checker, at: LwAddr, ty: i64, copy: bool) {
+    if copy {
+        lw_clone_value(mut lw, c, at, ty)
+    } else {
+        lw_drop_value(mut lw, c, at, ty)
+    }
+}
+
+// Writes `str.cmp(a, b)`: -1, 0 or 1 as the string at `a` comes before,
+// is equal to or comes after the one at `b`. The bytes are compared as
+// numbers from 0 to 255 up to the first difference; when one string is
+// the start of the other, the shorter one comes first.
+fn lw_str_cmp_function(lw: mut Lower) {
+    lw_begin(mut lw, "str.cmp")
+    let a = ir_add_param(mut lw.f, IR_PTR, IR_FX_READ)
+    let b = ir_add_param(mut lw.f, IR_PTR, IR_FX_READ)
+    lw.f.ret_ty.push(IR_I64)
+    let first = LwAddr { p: a, off: 0, reg: ir_region(mut lw.f, IR_REGION_PARAM, 0) }
+    let second = LwAddr { p: b, off: 0, reg: ir_region(mut lw.f, IR_REGION_PARAM, 1) }
+    let first_bytes = lw_load(mut lw, IR_PTR, first, 0)
+    let first_len = lw_load(mut lw, IR_I64, first, 8)
+    let second_bytes = lw_load(mut lw, IR_PTR, second, 0)
+    let second_len = lw_load(mut lw, IR_I64, second, 8)
+    let shorter = lw_bin(mut lw, IR_SLT, first_len, second_len)
+    let common = ir_select(mut lw.f, lw.b, shorter, first_len, second_len)
+    let top = lw_block(mut lw)
+    let at = ir_add_block_param(mut lw.f, top, IR_I64)
+    let zero = lw_const(mut lw, 0)
+    ir_jump(mut lw.f, lw.b, top, [zero])
+    lw.b = top
+    let more = lw_bin(mut lw, IR_SLT, at, common)
+    let look = lw_block(mut lw)
+    let lengths = lw_block(mut lw)
+    lw_br(mut lw, more, look, lengths)
+    lw.b = look
+    let first_at = ir_gep(mut lw.f, lw.b, first_bytes, at, 1, 0)
+    let first_bytes = lw_buf_region(mut lw, first.reg)
+    let x = ir_load(mut lw.f, lw.b, IR_U8, first_at, 0, first_bytes)
+    let second_at = ir_gep(mut lw.f, lw.b, second_bytes, at, 1, 0)
+    let second_bytes = lw_buf_region(mut lw, second.reg)
+    let y = ir_load(mut lw.f, lw.b, IR_U8, second_at, 0, second_bytes)
+    let same = lw_bin(mut lw, IR_EQ, x, y)
+    let on = lw_block(mut lw)
+    let differ = lw_block(mut lw)
+    lw_br(mut lw, same, on, differ)
+    lw.b = on
+    let one = lw_const(mut lw, 1)
+    let next = lw_bin(mut lw, IR_ADD, at, one)
+    ir_jump(mut lw.f, lw.b, top, [next])
+    lw.b = differ
+    lw_ret_order(mut lw, x, y)
+    lw.b = lengths
+    lw_ret_order(mut lw, first_len, second_len)
+    lw_end(mut lw)
+}
+
+// Returns -1, 0 or 1 as `x` is below, equal to or above `y`.
+fn lw_ret_order(lw: mut Lower, x: i64, y: i64) {
+    let below = lw_bin(mut lw, IR_SLT, x, y)
+    let above = lw_bin(mut lw, IR_SGT, x, y)
+    let one = lw_const(mut lw, 1)
+    let zero = lw_const(mut lw, 0)
+    let high = ir_select(mut lw.f, lw.b, above, one, zero)
+    let minus = lw_const(mut lw, -1)
+    let result = ir_select(mut lw.f, lw.b, below, minus, high)
+    ir_ret(mut lw.f, lw.b, [result])
+}
+
+// Lowers the whole program. Afterwards `lw.m` holds every function of
+// the checker, the helpers they need, and the program's text as data;
+// the function to start with is `main`.
+fn lw_program(lw: mut Lower, c: Checker, p: Parser) {
+    lw_read_tree(mut lw, p)
+    lw.m.data = c.data
+    var index = 0
+    while index < c.fns.len() {
+        lw.names.push(lw_function_name(c, p, index))
+        index = index + 1
+    }
+    index = 0
+    while index < c.fns.len() {
+        lw_function(mut lw, c, p, index)
+        index = index + 1
+    }
+    // Then the helpers that free and copy nested values. Writing one
+    // can ask for another, so the list grows while it is walked.
+    var next = 0
+    while next < lw.glue_tys.len() {
+        let ty = lw.glue_tys[next]
+        let copy = lw.glue_copies[next] == 1
+        lw_glue_function(mut lw, c, ty, copy)
+        next = next + 1
+    }
+    if lw.need_str_cmp {
+        lw_str_cmp_function(mut lw)
+    }
+}

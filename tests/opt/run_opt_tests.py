@@ -5,7 +5,7 @@
     python3 tests/opt/run_opt_tests.py [--azol PATH] [--random N] [--seed S] [--keep]
 
 It builds `ir-tool` from compiler/opt with the given azoL compiler
-(default: ./azol, then ./target/release/azol), and then:
+(default: ./azol), and then:
 
 1. Runs every `tests/opt/*.ir` file as its header comments say:
 
@@ -33,11 +33,29 @@ It builds `ir-tool` from compiler/opt with the given azoL compiler
    the same functions gives. Then damages the texts at random and checks
    that the tool never crashes or hangs on them.
 
+4. Builds `azol-lower` (compiler/opt/lower_tool_main.azl: the checker
+   and the lowering stage) and, for every program of tests/programs,
+   examples, bench and bench/suite (at sizes an interpreter gets
+   through), tests/opt/lower and the programs of several files in
+   tests/multi, checks
+   that `azol-lower run` prints, reports and exits exactly as the
+   executable `azol build` makes of the same files; that the text
+   `azol-lower emit` prints passes the verifier; and that `ir-tool
+   print` gives that text back byte for byte. Programs with
+   `// expect-` comments must also do what those say. Then the same
+   for the compiler: its lowered form, interpreted, must build
+   examples/hello.azl and the compiler itself into the very bytes the
+   given `azol` writes (so give it a compiler built from this tree,
+   as `sh build.sh` leaves in ./azol). `--no-lower`
+   leaves this part out; `--lower-only` runs nothing else.
+
 Only the Python standard library is used.
 """
 
+import concurrent.futures
 import os
 import random
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -56,7 +74,7 @@ def wrap(n):
 def find_azol(argv):
     if "--azol" in argv:
         return argv[argv.index("--azol") + 1]
-    for candidate in ("azol", os.path.join("target", "release", "azol")):
+    for candidate in ("azol",):
         path = os.path.join(ROOT, candidate)
         if os.path.exists(path):
             return path
@@ -674,6 +692,185 @@ def builder_test(azol, folder, problems):
         problems.append("the builder test prints something else than tests/opt/builder.expected (exit %r); see %s" % (code, got))
 
 
+# ---- lowering whole programs --------------------------------------------------
+
+FRONT = ["driver.azl", "token.azl", "lexer.azl", "ast.azl", "parser.azl", "sema.azl", "sema_fn.azl", "embedded.azl"]
+LOWER = ["ir.azl", "ir_text.azl", "ir_cfg.azl", "ir_verify.azl", "ir_interp.azl", "ir_lower.azl", "ir_lower_stmt.azl", "ir_lower_expr.azl", "lower_tool_main.azl"]
+
+# The benchmarks without a `SMALL` switch, and the edits that make them
+# small enough to interpret: (old text, new text), each found once.
+SHRINK = {
+    "append.azl": [("i < 3000000", "i < 30000"), ("n < 300000", "n < 3000")],
+    "fib40.azl": [("fib(40)", "fib(24)")],
+    "loops.azl": [("let size = 5000", "let size = 300")],
+    "particles.azl": [("round < 50000", "round < 40")],
+    "sieve.azl": [("let limit = 20000000", "let limit = 200000")],
+    "sort.azl": [("let count = 2000000", "let count = 20000")],
+    "tree.azl": [("build(18, round)", "build(9, round)")],
+    "words.azl": [("n < 400000", "n < 6000")],
+}
+
+
+def lower_programs(folder, problems):
+    """(label, files, expectation or None) for every program to compare."""
+    programs = []
+
+    def expected(path):
+        with open(path, encoding="utf-8") as handle:
+            source = handle.read()
+
+        def values(key):
+            prefix = "// %s:" % key
+            found = [line[len(prefix):] for line in source.split("\n") if line.startswith(prefix)]
+            return [text[1:] if text.startswith(" ") else text for text in found]
+
+        if not values("expect-exit"):
+            return None
+        rows = values("expect-line")
+        output = "".join(row + "\n" for row in rows) if rows else "".join(part + "\n" for part in " ".join(values("expect-output")).split())
+        errors = values("expect-stderr")
+        return int(values("expect-exit")[0]), output.encode(), (errors[0] + "\n").encode() if errors else None
+
+    for part in ("tests/programs", "tests/opt/lower", "examples"):
+        for name in sorted(os.listdir(os.path.join(ROOT, part))):
+            if name.endswith(".azl"):
+                path = os.path.join(ROOT, part, name)
+                programs.append((part + "/" + name, [path], expected(path)))
+    for part, switch in (("bench", False), ("bench/suite", True)):
+        for name in sorted(os.listdir(os.path.join(ROOT, part))):
+            if not name.endswith(".azl"):
+                continue
+            with open(os.path.join(ROOT, part, name), encoding="utf-8") as handle:
+                source = handle.read()
+            edits = [("const SMALL = false", "const SMALL = true")] if switch else SHRINK.get(name, [])
+            for old, new in edits:
+                if source.count(old) != 1:
+                    problems.append("lowering: %s/%s no longer holds `%s` once; correct the test's list of sizes" % (part, name, old))
+                source = source.replace(old, new)
+            small = os.path.join(folder, part.replace("/", "-") + "-" + name)
+            with open(small, "w", encoding="utf-8") as handle:
+                handle.write(source)
+            programs.append((part + "/" + name, [small], None))
+    multi = os.path.join(ROOT, "tests", "multi")
+    for label, order in (("shop", ["shop/main.azl", "shop/stock.azl", "shop/numbers.azl"]), ("shop, another order", ["shop/numbers.azl", "shop/stock.azl", "shop/main.azl"]),
+                         ("embed", ["embed/main.azl", "embed/parts/words.azl"])):
+        files = [os.path.join(multi, name) for name in order]
+        main = [path for path in files if path.endswith("main.azl")][0]
+        programs.append(("tests/multi: " + label, files, expected(main)))
+    return programs
+
+
+def lower_one(azol, lower, binary, folder, at, label, files, want):
+    """Compares one program as an executable and as interpreted IR.
+    Returns (what was compared or None, problems)."""
+    exe = os.path.join(folder, "exe%d" % at)
+    done = subprocess.run([azol, "build", *files, "-o", exe], capture_output=True)
+    if done.returncode != 0:
+        # Not a whole program (no `main`): the tool must refuse it too.
+        code, _, _ = tool(lower, "emit", *files)
+        return None, [] if code == 1 else ["lowering %s: `azol build` refuses it but `azol-lower emit` exits with %r" % (label, code)]
+    found = []
+    work = os.path.join(folder, "run%d" % at)
+    results = []
+    for kind, command in (("exe", [exe]), ("ir", ["sh", "-c", 'ulimit -s unlimited 2>/dev/null; exec "$@"', "sh", lower, "run", "--argv0", exe, *files])):
+        # Each run starts in a folder of its own: programs write files.
+        if os.path.isdir(work):
+            shutil.rmtree(work)
+        os.mkdir(work)
+        try:
+            ran = subprocess.run(command, capture_output=True, timeout=900, cwd=work)
+            results.append((ran.returncode, ran.stdout, ran.stderr))
+        except subprocess.TimeoutExpired:
+            results.append((None, b"", b"(no answer in time)"))
+    shutil.rmtree(work)
+    real, lowered = results
+    if real != lowered:
+        found.append("lowering %s: the executable gives exit %r, %r, %r; the interpreted IR gives exit %r, %r, %r" %
+                     (label, real[0], real[1][-200:], real[2][-200:], lowered[0], lowered[1][-200:], lowered[2][-300:]))
+    if want is not None and (lowered[0] != want[0] or lowered[1] != want[1] or (want[2] is not None and lowered[2] != want[2])):
+        found.append("lowering %s: the interpreted IR does not do what the `// expect-` comments say (exit %r, %r)" % (label, lowered[0], lowered[2][-300:]))
+    code, text, err = tool(lower, "emit", *files)
+    if code != 0:
+        found.append("lowering %s: `emit` exits with %r: %r" % (label, code, err[-300:]))
+        return "run", found
+    emitted = os.path.join(folder, "emit%d.ir" % at)
+    with open(emitted, "wb") as handle:
+        handle.write(text)
+    code, out, err = tool(binary, "verify", emitted)
+    if code != 0 or out != b"ok\n":
+        found.append("lowering %s: the emitted text does not verify: %r" % (label, err[-300:]))
+    code, out, err = tool(binary, "print", emitted)
+    if code != 0 or out != text:
+        found.append("lowering %s: `ir-tool print` does not give the emitted text back (exit %r, %r)" % (label, code, err[-300:]))
+    os.unlink(emitted)
+    os.unlink(exe)
+    return "run", found
+
+
+def lower_tests(azol, binary, problems):
+    folder = tempfile.mkdtemp(prefix="azol-lower-")
+    lower = os.path.join(folder, "azol-lower")
+    build(azol, [os.path.join(ROOT, "compiler", name) for name in FRONT] + LOWER, lower)
+    programs = lower_programs(folder, problems)
+    compared = 0
+    refused = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 2) as pool:
+        jobs = [pool.submit(lower_one, azol, lower, binary, folder, at, label, files, want) for at, (label, files, want) in enumerate(programs)]
+        for job in jobs:
+            what, found = job.result()
+            problems.extend(found)
+            if what is None:
+                refused += 1
+            else:
+                compared += 1
+    lower_compiler(azol, lower, binary, folder, problems)
+    if not problems:
+        shutil.rmtree(folder)
+    return compared, refused
+
+
+def lower_compiler(azol, lower, binary, folder, problems):
+    """The compiler itself: lowered, verified, read back, and then run in
+    the interpreter to build a small program and to build itself. What
+    it writes must be, byte for byte, what `azol` writes."""
+    import platform
+    host = {("Linux", "x86_64"): "host_x86_64_linux.azl", ("Linux", "aarch64"): "host_aarch64_linux.azl", ("Darwin", "arm64"): "host_aarch64_macos.azl"}.get((platform.system(), platform.machine()))
+    if host is None:
+        return
+    with open(os.path.join(ROOT, "compiler", "SOURCES"), encoding="utf-8") as handle:
+        sources = [os.path.join(ROOT, "compiler", line.strip()) for line in handle if line.strip() and not line.startswith("#")]
+    sources.append(os.path.join(ROOT, "compiler", host))
+    code, text, err = tool(lower, "emit", *sources)
+    if code != 0:
+        problems.append("lowering the compiler: `emit` exits with %r: %r" % (code, err[-300:]))
+        return
+    emitted = os.path.join(folder, "compiler.ir")
+    with open(emitted, "wb") as handle:
+        handle.write(text)
+    code, out, err = tool(binary, "verify", emitted)
+    if code != 0:
+        problems.append("lowering the compiler: the emitted text does not verify: %r" % err[-300:])
+    code, out, err = tool(binary, "print", emitted)
+    if code != 0 or out != text:
+        problems.append("lowering the compiler: `ir-tool print` does not give the emitted text back")
+    hello = os.path.join(ROOT, "examples", "hello.azl")
+    for label, files in (("examples/hello.azl", [hello]), ("itself", sources)):
+        real = os.path.join(folder, "built-real")
+        interpreted = os.path.join(folder, "built-interpreted")
+        done = subprocess.run([azol, "build", *files, "-o", real], capture_output=True)
+        try:
+            ran = subprocess.run(["sh", "-c", 'ulimit -s unlimited 2>/dev/null; exec "$@"', "sh", lower, "run", *sources, "--", "build", *files, "-o", interpreted], capture_output=True, timeout=900)
+        except subprocess.TimeoutExpired:
+            problems.append("the lowered compiler, interpreted, does not finish building %s" % label)
+            continue
+        if done.returncode != 0 or ran.returncode != 0:
+            problems.append("the lowered compiler, interpreted, building %s: exit %r (azol: %r), %r" % (label, ran.returncode, done.returncode, ran.stderr[-300:]))
+            continue
+        with open(real, "rb") as first, open(interpreted, "rb") as second:
+            if first.read() != second.read():
+                problems.append("the lowered compiler, interpreted, builds %s differently from %s" % (label, azol))
+
+
 def main():
     argv = sys.argv[1:]
     azol = find_azol(argv)
@@ -684,18 +881,23 @@ def main():
     build(azol, SOURCES, binary)
     problems = []
     checks = 0
-    files = sorted(name for name in os.listdir(HERE) if name.endswith(".ir"))
-    for name in files:
-        checks += check_file(binary, os.path.join(HERE, name), problems)
-    print("%d files, %d checks" % (len(files), checks))
-    builder_test(azol, folder, problems)
-    print("the builder test")
-    passes = pass_tests(azol, binary, folder, problems)
-    if passes:
-        print("%d cases of the example pass" % passes)
-    if total > 0:
-        made, count, stops, damaged = random_tests(binary, total, seed, folder, problems)
-        print("%d random functions in %d files (%d stop by a division by zero), %d damaged texts" % (made, count, stops, damaged))
+    if "--lower-only" not in argv:
+        files = sorted(name for name in os.listdir(HERE) if name.endswith(".ir"))
+        for name in files:
+            checks += check_file(binary, os.path.join(HERE, name), problems)
+        print("%d files, %d checks" % (len(files), checks))
+        builder_test(azol, folder, problems)
+        print("the builder test")
+        passes = pass_tests(azol, binary, folder, problems)
+        if passes:
+            print("%d cases of the example pass" % passes)
+        if total > 0:
+            made, count, stops, damaged = random_tests(binary, total, seed, folder, problems)
+            print("%d random functions in %d files (%d stop by a division by zero), %d damaged texts" % (made, count, stops, damaged))
+    if "--no-lower" not in argv:
+        compared, refused = lower_tests(azol, binary, problems)
+        print("%d whole programs lowered: interpreted like their executables, verified, printed and read back (%d more are not programs)" % (compared, refused))
+        print("the compiler lowered: verified, read back, and interpreted it builds examples/hello.azl and itself as azol does")
     for problem in problems:
         print("FAIL " + problem)
     if problems:

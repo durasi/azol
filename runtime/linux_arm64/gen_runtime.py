@@ -2,8 +2,7 @@
 """Compiles runtime.c and writes runtime.bin and runtime.facts.
 
 runtime.facts says where everything is in runtime.bin, in the notation of
-the first compiler's tables (it is also written to
-../../src/runtime_linux_arm64.rs while that compiler's sources exist).
+the first compiler's tables.
 compiler/gen_runtime_azl.py makes compiler/runtime_arm64.azl from it and
 from ../runtime.facts.
 
@@ -109,7 +108,4 @@ pub const MEMORY_SIZE: u64 = %d;
     offset("_start"), MEMORY, memory_size,
 )
 open(os.path.join(HERE, "runtime.facts"), "w").write(out)
-# The same text is a module of the first compiler while its sources exist.
-if os.path.isdir(os.path.join(HERE, "..", "..", "src")):
-    open(os.path.join(HERE, "..", "..", "src", "runtime_linux_arm64.rs"), "w").write(out)
 print("wrote runtime.bin (%d bytes) and runtime.facts; writable memory %d bytes; now run compiler/gen_runtime_azl.py" % (len(code), memory_size))

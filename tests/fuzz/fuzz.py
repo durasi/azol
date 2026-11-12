@@ -3265,6 +3265,24 @@ class Runner:
             return label + '-stack-unbalanced'
         return None
 
+    # The `azol-lower` tool to run every program with as well, or None.
+    lower = None
+    ran_lower = 0
+
+    def lowered(self, path, want, info):
+        self.ran_lower += 1
+        try:
+            p = subprocess.run(['sh', '-c', 'ulimit -s unlimited 2>/dev/null; exec "$@"', 'sh', self.lower, 'run', path], capture_output=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            info['lower'] = (b'', b'', 'timeout')
+            return 'lower-hang'
+        info['lower'] = (p.stdout, p.stderr, p.returncode)
+        if p.returncode < 0:
+            return 'lower-crash (signal %d)' % -p.returncode
+        if info['lower'] != want:
+            return 'lower-mismatch'
+        return None
+
     def build(self, src, out, target):
         try:
             p = subprocess.run([self.azol, 'build', '--target', target, src, '-o', out], capture_output=True, timeout=60)
@@ -3312,6 +3330,12 @@ class Runner:
         if got != want:
             return 'x64-mismatch', info
         self.checked += 1
+        if self.lower:
+            # --lower: the same program as intermediate form (compiler/opt),
+            # verified and run in its interpreter.
+            kind = self.lowered(path, want, info)
+            if kind:
+                return kind, info
         if prog.native_only:
             return None, info
         if self.arm:
@@ -3606,6 +3630,7 @@ def main():
     ap.add_argument('--max-findings', type=int, default=40, help='stop after this many findings')
     ap.add_argument('--show', type=int, help='print the program of one seed and stop')
     ap.add_argument('--only', type=int, help='run the program of one seed and print what happened')
+    ap.add_argument('--lower', help='an `azol-lower` executable (compiler/opt/lower_tool_main.azl): also lower every program and run it in the IR interpreter')
     ap.add_argument('--quiet', action='store_true')
     a = ap.parse_args()
 
@@ -3619,6 +3644,7 @@ def main():
     if not a.no_arm and a.linux_arm_every:
         load_linux_emulator()
     runner = Runner(a.azol, arm=have_emu, linux_every=a.linux_arm_every)
+    runner.lower = a.lower
     if a.only is not None:
         try:
             prog, _ = generate(a.only)
@@ -3632,6 +3658,8 @@ def main():
             print('=== x86_64-linux\n' + show_result(info.get('x64')))
             print('=== aarch64-macos\n' + show_result(info.get('arm64')))
             print('=== aarch64-linux\n' + show_result(info.get('linux-arm64')))
+            if a.lower:
+                print('=== lowered\n' + show_result(info.get('lower')))
             print(info.get('compiler', ''))
         return 0 if kind in (None, 'skip') else 1
 
@@ -3680,6 +3708,8 @@ def main():
     print()
     print('programs run: %d (x86_64-linux: %d, aarch64-macos under the emulator: %d, aarch64-linux under the emulator: %d), skipped: %d, seeds %d..%d, %.0f s'
           % (ran, runner.ran_x64, runner.ran_arm, runner.ran_linux_arm, skipped, a.seed, seed - 1, took))
+    if a.lower:
+        print('lowered and interpreted: %d' % runner.ran_lower)
     print('programs that ended in a predicted run-time stop or wrote to stderr: %d' % stops)
     if broken:
         print('programs the oracle rejected (generator bugs): %d' % broken)

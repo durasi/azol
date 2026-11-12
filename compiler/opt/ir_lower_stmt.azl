@@ -1,0 +1,500 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Lowering, second part: statements. See `ir_lower.azl`.
+
+// Lowers the statements of a block and frees the owning locals declared
+// in it.
+fn lw_stmts(lw: mut Lower, c: Checker, p: Parser, body: IdRange) {
+    let outer = lw.live_slots.len()
+    var i = 0
+    while i < body.len {
+        lw_stmt(mut lw, c, p, p.ast.lists[body.start + i])
+        i = i + 1
+    }
+    if lw.live_slots.len() > outer {
+        lw_drop_live_from(mut lw, c, outer)
+        while lw.live_slots.len() > outer {
+            let slot = lw.live_slots.pop()
+            let ty = lw.live_tys.pop()
+        }
+    }
+}
+
+fn lw_stmt(lw: mut Lower, c: Checker, p: Parser, id: i64) {
+    match p.ast.stmts[id] {
+        StmtLet(_, _, _, value) => {
+            let slot = c.stmt_slot[lw.sh_s + id]
+            let ty = c.expr_ty[lw.sh_e + value]
+            lw_store_value(mut lw, c, p, value, slot)
+            lw_drop_temps(mut lw, c, id)
+            if ck_needs_drop(c, ty) {
+                lw.live_slots.push(slot)
+                lw.live_tys.push(ty)
+            }
+        }
+        StmtAssign(target, value) => {
+            lw_assign(mut lw, c, p, id, target, value)
+            lw_drop_temps(mut lw, c, id)
+        }
+        StmtExpr(expr) => {
+            lw_eval(mut lw, c, p, expr)
+            lw_drop_temps(mut lw, c, id)
+        }
+        StmtReturn(value) => lw_return(mut lw, c, p, id, value)
+        StmtIf(cond, then_block, else_branch) => {
+            let then_at = lw_block(mut lw)
+            let else_at = lw_block(mut lw)
+            lw_test(mut lw, c, p, id, cond, then_at, else_at)
+            lw.b = then_at
+            lw_stmts(mut lw, c, p, then_block)
+            match else_branch {
+                ElseNone => {
+                    lw_jump(mut lw, else_at)
+                    lw.b = else_at
+                }
+                ElseBlock(body) => {
+                    let after = lw_block(mut lw)
+                    lw_jump(mut lw, after)
+                    lw.b = else_at
+                    lw_stmts(mut lw, c, p, body)
+                    lw_jump(mut lw, after)
+                    lw.b = after
+                }
+                ElseIf(next) => {
+                    let after = lw_block(mut lw)
+                    lw_jump(mut lw, after)
+                    lw.b = else_at
+                    lw_stmt(mut lw, c, p, next)
+                    lw_jump(mut lw, after)
+                    lw.b = after
+                }
+            }
+        }
+        StmtWhile(cond, body) => {
+            // The test is made before every round.
+            let test = lw_block(mut lw)
+            let round = lw_block(mut lw)
+            let after = lw_block(mut lw)
+            lw_jump(mut lw, test)
+            lw.b = test
+            lw_test(mut lw, c, p, id, cond, round, after)
+            lw.b = round
+            lw.loop_live.push(lw.live_slots.len())
+            lw.loop_break.push(after)
+            lw.loop_continue.push(test)
+            lw_stmts(mut lw, c, p, body)
+            lw_leave_loop(mut lw)
+            lw_jump(mut lw, test)
+            lw.b = after
+        }
+        StmtFor(index, _, iter, body) => lw_for(mut lw, c, p, id, index.len > 0, iter, body)
+        StmtBreak => {
+            let live = lw.loop_live[lw.loop_live.len() - 1]
+            lw_drop_live_from(mut lw, c, live)
+            lw_jump(mut lw, lw.loop_break[lw.loop_break.len() - 1])
+            // What follows is not reached.
+            lw.b = lw_block(mut lw)
+        }
+        StmtContinue => {
+            let live = lw.loop_live[lw.loop_live.len() - 1]
+            lw_drop_live_from(mut lw, c, live)
+            lw_jump(mut lw, lw.loop_continue[lw.loop_continue.len() - 1])
+            lw.b = lw_block(mut lw)
+        }
+        StmtMatch(scrutinee, arms) => lw_match(mut lw, c, p, id, scrutinee, arms)
+    }
+}
+
+fn lw_leave_loop(lw: mut Lower) {
+    let live = lw.loop_live.pop()
+    let after = lw.loop_break.pop()
+    let again = lw.loop_continue.pop()
+}
+
+// The test of an `if` or `while`: goes to `yes` when the condition is
+// true and to `no` when it is false. Temporaries of the condition are
+// freed before either way is taken.
+fn lw_test(lw: mut Lower, c: Checker, p: Parser, id: i64, cond: i64, yes: i64, no: i64) {
+    if c.stmt_drops_len[lw.sh_s + id] == 0 {
+        lw_branch(mut lw, c, p, cond, yes, no)
+        return
+    }
+    let value = lw_value(mut lw, c, p, cond)
+    lw_drop_temps(mut lw, c, id)
+    lw_br(mut lw, value, yes, no)
+}
+
+// Goes to `yes` when `cond` is true and to `no` when it is false,
+// without making a `bool` first where that can be avoided: `&&`, `||`
+// and `!` become jumps themselves. The parts are evaluated exactly as
+// far and in the same order as for the value.
+fn lw_branch(lw: mut Lower, c: Checker, p: Parser, cond: i64, yes: i64, no: i64) {
+    let kind = lw_kind(lw, c, cond)
+    if kind == LW_BOOL {
+        if lw_bool_value(lw, c, cond) == 1 {
+            lw_jump(mut lw, yes)
+        } else {
+            lw_jump(mut lw, no)
+        }
+        return
+    }
+    if kind == LW_UNARY && lw.ec[cond] == 1 {
+        lw_branch(mut lw, c, p, lw.ea[cond], no, yes)
+        return
+    }
+    if kind == LW_BINARY {
+        let op = lw.ec[cond]
+        if op == LW_AND {
+            let right = lw_block(mut lw)
+            lw_branch(mut lw, c, p, lw.ea[cond], right, no)
+            lw.b = right
+            lw_branch(mut lw, c, p, lw.eb[cond], yes, no)
+            return
+        }
+        if op == LW_OR {
+            let right = lw_block(mut lw)
+            lw_branch(mut lw, c, p, lw.ea[cond], yes, right)
+            lw.b = right
+            lw_branch(mut lw, c, p, lw.eb[cond], yes, no)
+            return
+        }
+    }
+    let value = lw_value(mut lw, c, p, cond)
+    lw_br(mut lw, value, yes, no)
+}
+
+fn lw_assign(lw: mut Lower, c: Checker, p: Parser, id: i64, target: i64, value: i64) {
+    if c.stmt_flag[lw.sh_s + id] == APPEND {
+        // `s = s + more`: the new text is added to `s` in place. It is
+        // computed first; only then is `s` looked at.
+        let more = lw_address(mut lw, c, p, lw.eb[value])
+        let more_at = lw_ptr(mut lw, more)
+        let dest = lw_address(mut lw, c, p, target)
+        let dest_at = lw_ptr(mut lw, dest)
+        lw_rt(mut lw, IR_RT_STR_APPEND_BUF, dest_at, more_at, -1, -1)
+        return
+    }
+    let ty = c.expr_ty[lw.sh_e + target]
+    let place = lw_place(lw, c, target)
+    if ty < 3 {
+        // A number or a `bool`: the value first, then where it goes.
+        let source = lw_value(mut lw, c, p, value)
+        var to = LwAddr { p: 0, off: 0, reg: 0 }
+        if place >= 0 {
+            to = lw_place_address(mut lw, place, 1)
+        } else {
+            to = lw_address(mut lw, c, p, target)
+        }
+        lw_store(mut lw, lw_scalar_ty(ty), to, 0, source)
+        return
+    }
+
+    let size = ck_size_of(c, ty)
+    let owning = ck_needs_drop(c, ty)
+    if place >= 0 && !owning {
+        // Plain data into a fixed place: copy straight across.
+        let from = lw_address(mut lw, c, p, value)
+        let to = lw_place_address(mut lw, place, size)
+        lw_copy(mut lw, c, to, from, ty)
+        return
+    }
+
+    // First get the new value into a frame area this statement owns:
+    // the temporary that computed it, or a fresh copy of a variable.
+    let from = lw_address(mut lw, c, p, value)
+    var source = 0
+    if c.expr_moved[lw.sh_e + value] == 1 {
+        // A variable that is not used again: its value moves straight
+        // out of its own slots.
+        source = lw_variable_slot(lw, c, value)
+        if source < 0 {
+            source = c.expr_tmp[lw.sh_e + value]
+        }
+    } else {
+        let scratch = c.stmt_slot[lw.sh_s + id]
+        let aside = lw_slot(mut lw, scratch, size)
+        lw_copy(mut lw, c, aside, from, ty)
+        if owning {
+            lw_clone_frame(mut lw, c, scratch, ty)
+        }
+        source = scratch
+    }
+    // Then find the target, free what it holds and move the value in.
+    let to = lw_address(mut lw, c, p, target)
+    if owning {
+        lw_drop_value(mut lw, c, to, ty)
+    }
+    let moved = lw_slot(mut lw, source, size)
+    lw_copy(mut lw, c, to, moved, ty)
+    lw_moved_out(mut lw, c, value)
+}
+
+fn lw_return(lw: mut Lower, c: Checker, p: Parser, id: i64, value: i64) {
+    // A local that is returned whole hands its buffers to the caller
+    // and so must not be freed here.
+    var moved_local = -1
+    var result = -1
+    if value >= 0 {
+        let ty = c.expr_ty[lw.sh_e + value]
+        if ty >= 3 {
+            let from = lw_address(mut lw, c, p, value)
+            let to = lw_sret(mut lw)
+            lw_copy(mut lw, c, to, from, ty)
+            if ck_needs_drop(c, ty) {
+                if c.expr_moved[lw.sh_e + value] != 1 {
+                    lw_clone_value(mut lw, c, to, ty)
+                } else if lw_kind(lw, c, value) == LW_IDENT {
+                    let place = lw_place(lw, c, value)
+                    if place >= 0 {
+                        moved_local = place & 4095
+                    }
+                }
+            }
+        } else {
+            result = lw_value(mut lw, c, p, value)
+        }
+    }
+    lw_drop_temps(mut lw, c, id)
+    var i = lw.live_slots.len() - 1
+    while i >= 0 {
+        let slot = lw.live_slots[i]
+        let ty = lw.live_tys[i]
+        if slot != moved_local {
+            lw_drop_frame(mut lw, c, slot, ty)
+        }
+        i = i - 1
+    }
+    if result != -1 {
+        ir_ret(mut lw.f, lw.b, [result])
+    } else {
+        ir_ret(mut lw.f, lw.b, lw.none)
+    }
+    // What follows is not reached.
+    lw.b = lw_block(mut lw)
+}
+
+// Where the function's result goes when it is not a number.
+fn lw_sret(lw: mut Lower) -> LwAddr {
+    let reg = ir_region(mut lw.f, IR_REGION_RET, 0)
+    return LwAddr { p: lw.sret, off: 0, reg: reg }
+}
+
+fn lw_for(lw: mut Lower, c: Checker, p: Parser, id: i64, has_index: bool, iter: i64, body: IdRange) {
+    let list_ty = c.expr_ty[lw.sh_e + iter]
+    let elem = c.lists[ty_index(list_ty)]
+    let elem_size = ck_size_of(c, elem)
+    let base = c.stmt_slot[lw.sh_s + id]
+    let position = base
+    let own_list = base + 1
+    let item_slot = base + 4
+    let index_slot = item_slot + elem_size
+    let flag = c.stmt_flag[lw.sh_s + id]
+    let in_place = flag == IN_PLACE
+
+    if !in_place {
+        // The loop owns the list: a temporary it takes over, or its own
+        // copy of a list that is part of a temporary.
+        let from = lw_address(mut lw, c, p, iter)
+        let own = lw_slot(mut lw, own_list, 3)
+        lw_copy(mut lw, c, own, from, list_ty)
+        if flag == COPIED {
+            lw_clone_frame(mut lw, c, own_list, list_ty)
+        }
+    }
+    lw_drop_temps(mut lw, c, id)
+    if !in_place {
+        lw.live_slots.push(own_list)
+        lw.live_tys.push(list_ty)
+    }
+    lw_zero_slot(mut lw, position)
+
+    // The test is made before every round. It finds the list again
+    // each time, as the generators do: a list that is looked at where
+    // it is may be reached through an index that the body changes.
+    let test = lw_block(mut lw)
+    let round = lw_block(mut lw)
+    let step = lw_block(mut lw)
+    let after = lw_block(mut lw)
+    lw_jump(mut lw, test)
+    lw.b = test
+    var header = LwAddr { p: 0, off: 0, reg: 0 }
+    if !in_place {
+        header = lw_slot(mut lw, own_list, 3)
+    } else {
+        header = lw_address(mut lw, c, p, iter)
+    }
+    let position_at = lw_slot(mut lw, position, 1)
+    let at = lw_load(mut lw, IR_I64, position_at, 0)
+    let len = lw_load(mut lw, IR_I64, header, 8)
+    let more = lw_bin(mut lw, IR_ULT, at, len)
+    lw_br(mut lw, more, round, after)
+
+    lw.b = round
+    if has_index {
+        let index_at = lw_slot(mut lw, index_slot, 1)
+        lw_store(mut lw, IR_I64, index_at, 0, at)
+    }
+    let buffer = lw_load(mut lw, IR_PTR, header, 0)
+    let element = ir_gep(mut lw.f, lw.b, buffer, at, 8 * elem_size, 0)
+    let item = lw_slot(mut lw, item_slot, elem_size)
+    let inside = lw_buf_region(mut lw, header.reg)
+    lw_copy(mut lw, c, item, LwAddr { p: element, off: 0, reg: inside }, elem)
+
+    lw.loop_live.push(lw.live_slots.len())
+    lw.loop_break.push(after)
+    lw.loop_continue.push(step)
+    lw_stmts(mut lw, c, p, body)
+    lw_leave_loop(mut lw)
+    lw_jump(mut lw, step)
+
+    lw.b = step
+    let position_again = lw_slot(mut lw, position, 1)
+    let before = lw_load(mut lw, IR_I64, position_again, 0)
+    let one = lw_const(mut lw, 1)
+    let next = lw_bin(mut lw, IR_ADD, before, one)
+    lw_store(mut lw, IR_I64, position_again, 0, next)
+    lw_jump(mut lw, test)
+
+    lw.b = after
+    if !in_place {
+        let slot = lw.live_slots.pop()
+        let ty = lw.live_tys.pop()
+        lw_drop_frame(mut lw, c, own_list, list_ty)
+    }
+}
+
+fn lw_match(lw: mut Lower, c: Checker, p: Parser, id: i64, scrutinee: i64, arms: IdRange) {
+    let ty = c.expr_ty[lw.sh_e + scrutinee]
+    let base = c.stmt_slot[lw.sh_s + id]
+    let aggregate = ty >= 3
+    // The value being matched: a number or `bool` itself, the address
+    // of anything else.
+    var owned = false
+    var number = -1
+    var value = LwAddr { p: 0, off: 0, reg: 0 }
+    if !aggregate {
+        number = lw_value(mut lw, c, p, scrutinee)
+    } else {
+        value = lw_address(mut lw, c, p, scrutinee)
+        let flag = c.stmt_flag[lw.sh_s + id]
+        if flag != IN_PLACE {
+            // The statement owns the value: a temporary it takes over,
+            // or its own copy of a part of a temporary.
+            let own = lw_slot(mut lw, base + 1, ck_size_of(c, ty))
+            lw_copy(mut lw, c, own, value, ty)
+            if ck_needs_drop(c, ty) {
+                if flag == COPIED {
+                    lw_clone_frame(mut lw, c, base + 1, ty)
+                }
+                owned = true
+            }
+            value = own
+        }
+    }
+    lw_drop_temps(mut lw, c, id)
+    if owned {
+        lw.live_slots.push(base + 1)
+        lw.live_tys.push(ty)
+    }
+
+    let after = lw_block(mut lw)
+    var i = 0
+    while i < arms.len {
+        let arm_id = p.ast.lists[arms.start + i]
+        let pattern = p.ast.arms[arm_id].pattern
+        let pat = lw.sh_p + pattern
+        let kind = c.pat_kind[pat]
+        let res = c.pat_res[pat]
+        // The checker proved that the arms cover every case, so when
+        // the last arm is reached it matches: no test needed.
+        let test = i + 1 < arms.len
+        // A failed test goes on to the next arm.
+        var next = -1
+        if kind == PAT_VARIANT {
+            if test {
+                let tag = lw_load(mut lw, IR_I64, value, 0)
+                let want = lw_const(mut lw, res + 1)
+                let is_it = lw_bin(mut lw, IR_EQ, tag, want)
+                let body = lw_block(mut lw)
+                next = lw_block(mut lw)
+                lw_br(mut lw, is_it, body, next)
+                lw.b = body
+            }
+            match p.ast.patterns[pattern] {
+                PatVariant(_, args) => {
+                    var k = 0
+                    while k < args.len {
+                        let sub = lw.sh_p + p.ast.lists[args.start + k]
+                        if c.pat_kind[sub] == PAT_BIND {
+                            // The name stands for the field where it is.
+                            lw_bind(mut lw, c.pat_slot[sub], lw_add(value, 8 * c.pat_res[sub]))
+                        }
+                        k = k + 1
+                    }
+                }
+                _ => {}
+            }
+        } else if kind == PAT_LITERAL {
+            if test {
+                var is_it = -1
+                if ty == TY_I64 {
+                    let want = lw_const(mut lw, c.ints[res])
+                    is_it = lw_bin(mut lw, IR_EQ, number, want)
+                } else if ty == TY_BOOL {
+                    let want = lw_const(mut lw, res)
+                    is_it = lw_bin(mut lw, IR_EQ, number, want)
+                } else {
+                    let slot = c.pat_slot[pat]
+                    lw_string_value(mut lw, c, res, slot)
+                    let text = lw_slot(mut lw, slot, 3)
+                    let left = lw_ptr(mut lw, value)
+                    let call = lw_rt(mut lw, IR_RT_STR_EQ_BUF, left, text.p, -1, -1)
+                    is_it = lw.f.ins_res[call]
+                }
+                let body = lw_block(mut lw)
+                next = lw_block(mut lw)
+                lw_br(mut lw, is_it, body, next)
+                lw.b = body
+            }
+        } else if kind == PAT_BIND {
+            // The whole value under a name: a number or `bool` is
+            // copied, anything else is referred to where it is.
+            if aggregate {
+                lw_bind(mut lw, c.pat_slot[pat], value)
+            } else {
+                let to = lw_slot(mut lw, c.pat_slot[pat], 1)
+                lw_store(mut lw, lw_scalar_ty(ty), to, 0, number)
+            }
+        }
+        lw_stmts(mut lw, c, p, p.ast.arms[arm_id].body)
+        lw_jump(mut lw, after)
+        if next >= 0 {
+            lw.b = next
+        } else {
+            // Nothing comes after an arm that always matches.
+            lw.b = lw_block(mut lw)
+        }
+        i = i + 1
+    }
+    // No arm matched: the checker proved this is not reached.
+    lw_jump(mut lw, after)
+    lw.b = after
+    if owned {
+        let slot = lw.live_slots.pop()
+        let live_ty = lw.live_tys.pop()
+        lw_drop_frame(mut lw, c, base + 1, ty)
+    }
+}
+
+// Remembers that the name in frame slot `slot` stands for the address
+// `at`.
+fn lw_bind(lw: mut Lower, slot: i64, at: LwAddr) {
+    while lw.ptr_p.len() <= slot {
+        lw.ptr_p.push(-1)
+        lw.ptr_off.push(0)
+        lw.ptr_reg.push(0)
+    }
+    lw.ptr_p[slot] = at.p
+    lw.ptr_off[slot] = at.off
+    lw.ptr_reg[slot] = at.reg
+}

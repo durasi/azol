@@ -126,7 +126,7 @@ These are what a critic will check, so every program keeps to them.
     python3 bench/gate.py --readme          only the block between the gate markers
 
 It needs Python 3, `rustc` and an `azol` executable (`./azol`, else
-`./target/release/azol`, else `--azol`). It runs unchanged on macOS and
+`--azol`). It runs unchanged on macOS and
 Linux. Exit code: 0 pass, 1 fail, 2 no verdict.
 
 ## Adding a program

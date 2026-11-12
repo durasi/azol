@@ -1,9 +1,9 @@
 // Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
 
 // The table of error codes, the usage text and the version, as the
-// compiler written in azoL needs them. Generated from `src/diag.rs`,
-// `src/main.rs` and `Cargo.toml` by `compiler/gen_tables_azl.py`; do
-// not edit it by hand.
+// compiler written in azoL needs them. This is the table: edit it
+// here. `docs/errors.md` is written from it by `azol explain --markdown`;
+// `sh test.sh` fails when that file is stale.
 
 const VERSION = "0.1.0"
 

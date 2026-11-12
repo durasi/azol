@@ -1,0 +1,28 @@
+// `!` on a `bool` that is a constant must stay a `bool` in the
+// intermediate form: as an argument, in a condition and when printed.
+// expect-exit: 0
+// expect-line: false
+// expect-line: true
+// expect-line: false
+// expect-line: true
+// expect-line: true
+// expect-line: yes
+const ON = true
+
+fn pick(flag: bool, other: bool) -> bool {
+    if flag {
+        return other
+    }
+    return !other
+}
+
+fn main() {
+    print(!true)
+    print(pick(!false, true || false))
+    print(true && false)
+    print(ON != false)
+    print(pick(!ON, !true))
+    if !(ON && !ON) {
+        print("yes")
+    }
+}

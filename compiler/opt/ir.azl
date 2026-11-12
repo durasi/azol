@@ -302,7 +302,49 @@ const IR_RT_EPRINT_STR = 7
 const IR_RT_STR_EQ = 8
 const IR_RT_STR_APPEND = 9
 const IR_RT_EXIT = 10
-const IR_RT_COUNT = 11
+// Added by the lowering stage: the routines of the real runtimes, each
+// with exactly the arguments the runtime's routine takes (a string or a
+// list travels as the address of its three slots: pointer, length,
+// capacity), so that a back end calls them without a wrapper.
+// `ir_rt_real` gives the runtime's own number for a routine.
+//
+//   list_push(list, element, bytes)     one more element, copied from `element`
+//   list_clone(value, bytes)            gives `value` a buffer of its own
+//   drop(value)                         frees the buffer `value` owns, if any
+//   str_concat(a, b, out)               a new string in `out`
+//   str_eq_buf(a, b) -> bool
+//   str_from_i64(n, out)  str_from_bool(b, out)  chr(code, out)
+//   str_slice(s, start, end, out)       stops with `slice out of range`
+//   str_append_buf(dest, src)           `src` added to `dest` in place
+//   args(out)                           the command line as a list of strings
+//   read_file(path, out) -> i64         0 and the text, or 1 and what went wrong
+//   write_file(path, text, out) -> i64  0 and a number, or 1 and what went wrong
+//   set_executable(path, out) -> i64  remove_file(path, out) -> i64
+//   rename_file(from, to, out) -> i64
+//   clock() -> i64                      nanoseconds
+//   str_is_utf8(s) -> bool
+//   print_buf(s)  eprint_buf(s)         a line on standard output or error
+const IR_RT_LIST_PUSH = 11
+const IR_RT_LIST_CLONE = 12
+const IR_RT_DROP = 13
+const IR_RT_STR_CONCAT = 14
+const IR_RT_STR_EQ_BUF = 15
+const IR_RT_STR_FROM_I64 = 16
+const IR_RT_STR_FROM_BOOL = 17
+const IR_RT_STR_SLICE = 18
+const IR_RT_CHR = 19
+const IR_RT_STR_APPEND_BUF = 20
+const IR_RT_ARGS = 21
+const IR_RT_READ_FILE = 22
+const IR_RT_WRITE_FILE = 23
+const IR_RT_SET_EXECUTABLE = 24
+const IR_RT_REMOVE_FILE = 25
+const IR_RT_RENAME_FILE = 26
+const IR_RT_CLOCK = 27
+const IR_RT_STR_IS_UTF8 = 28
+const IR_RT_PRINT_BUF = 29
+const IR_RT_EPRINT_BUF = 30
+const IR_RT_COUNT = 31
 
 fn ir_rt_name(id: i64) -> str {
     match id {
@@ -317,6 +359,26 @@ fn ir_rt_name(id: i64) -> str {
         8 => return "str_eq"
         9 => return "str_append"
         10 => return "exit"
+        11 => return "list_push"
+        12 => return "list_clone"
+        13 => return "drop"
+        14 => return "str_concat"
+        15 => return "str_eq_buf"
+        16 => return "str_from_i64"
+        17 => return "str_from_bool"
+        18 => return "str_slice"
+        19 => return "chr"
+        20 => return "str_append_buf"
+        21 => return "args"
+        22 => return "read_file"
+        23 => return "write_file"
+        24 => return "set_executable"
+        25 => return "remove_file"
+        26 => return "rename_file"
+        27 => return "clock"
+        28 => return "str_is_utf8"
+        29 => return "print_buf"
+        30 => return "eprint_buf"
         _ => return "?"
     }
 }
@@ -336,6 +398,25 @@ fn ir_rt_args(id: i64) -> str {
         8 => return "pipi"
         9 => return "piipi"
         10 => return "i"
+        11 => return "ppi"
+        12 => return "pi"
+        13 => return "p"
+        14 => return "ppp"
+        15 => return "pp"
+        16 => return "ip"
+        17 => return "bp"
+        18 => return "piip"
+        19 => return "ip"
+        20 => return "pp"
+        21 => return "p"
+        22 => return "pp"
+        23 => return "ppp"
+        24 => return "pp"
+        25 => return "pp"
+        26 => return "ppp"
+        28 => return "p"
+        29 => return "p"
+        30 => return "p"
         _ => return ""
     }
 }
@@ -347,23 +428,128 @@ fn ir_rt_results(id: i64) -> str {
         1 => return "p"
         8 => return "b"
         9 => return "pii"
+        15 => return "b"
+        22 => return "i"
+        23 => return "i"
+        24 => return "i"
+        25 => return "i"
+        26 => return "i"
+        27 => return "i"
+        28 => return "b"
         _ => return ""
     }
+}
+
+// The number the real runtimes give the routine (`RT_PRINT_I64` and so
+// on in `compiler/runtime_x64.azl`), or -1 for one that exists only
+// here and that a back end writes out itself: `realloc`, `memcpy`,
+// `print_str`, `eprint_str`, `str_eq` and `str_append`, which take a
+// string as separate values.
+fn ir_rt_real(id: i64) -> i64 {
+    match id {
+        0 => return 6
+        2 => return 7
+        4 => return 0
+        5 => return 1
+        10 => return 16
+        11 => return 8
+        12 => return 9
+        13 => return 10
+        14 => return 11
+        15 => return 12
+        16 => return 13
+        17 => return 14
+        18 => return 17
+        19 => return 18
+        20 => return 22
+        21 => return 19
+        22 => return 20
+        23 => return 21
+        24 => return 23
+        25 => return 24
+        26 => return 25
+        27 => return 26
+        28 => return 27
+        29 => return 2
+        30 => return 15
+        _ => return -1
+    }
+}
+
+// The runtime routine that a stop of this kind calls (`RT_INDEX_FAIL`,
+// `RT_DIV_ZERO`, `RT_POP_EMPTY`), or -1: the other kinds only happen
+// inside routines.
+fn ir_trap_real(kind: i64) -> i64 {
+    match kind {
+        0 => return 4
+        1 => return 3
+        2 => return 5
+        _ => return -1
+    }
+}
+
+// What a routine does through argument `k` when that is an address:
+// IR_FX_* bits, in the sense of a parameter's effects. `out` arguments
+// are written; a list or string that grows is resized.
+fn ir_rt_arg_fx(id: i64, k: i64) -> i64 {
+    if id == IR_RT_LIST_PUSH {
+        if k == 0 {
+            return IR_FX_READ | IR_FX_WRITE | IR_FX_WRITEBUF | IR_FX_RESIZE
+        }
+        return IR_FX_READ
+    }
+    if id == IR_RT_LIST_CLONE {
+        return IR_FX_READ | IR_FX_WRITE
+    }
+    if id == IR_RT_DROP {
+        return IR_FX_READ | IR_FX_FREE
+    }
+    if id == IR_RT_STR_APPEND_BUF {
+        if k == 0 {
+            return IR_FX_READ | IR_FX_WRITE | IR_FX_WRITEBUF | IR_FX_RESIZE
+        }
+        return IR_FX_READ
+    }
+    if id == IR_RT_ARGS {
+        return IR_FX_WRITE
+    }
+    if id >= IR_RT_STR_CONCAT && id <= IR_RT_RENAME_FILE {
+        // The last argument is `out`, except for `str_eq_buf`.
+        if id != IR_RT_STR_EQ_BUF && k == ir_rt_args(id).len() - 1 {
+            return IR_FX_WRITE
+        }
+        return IR_FX_READ
+    }
+    if id >= IR_RT_STR_IS_UTF8 {
+        return IR_FX_READ
+    }
+    // The first eleven take buffers, not values with headers.
+    return IR_FX_READ | IR_FX_WRITE
 }
 
 // Whether a call of the routine can be seen from outside the program:
 // it prints, or ends the program. A check may not move across one.
 fn ir_rt_has_output(id: i64) -> bool {
+    if id >= IR_RT_WRITE_FILE && id <= IR_RT_RENAME_FILE || id >= IR_RT_PRINT_BUF {
+        return true
+    }
     return id >= IR_RT_PRINT_I64 && id <= IR_RT_EPRINT_STR || id == IR_RT_EXIT
 }
 
 // Whether the routine can stop the program (out of memory, `exit`).
 fn ir_rt_can_stop(id: i64) -> bool {
+    if id >= IR_RT_LIST_PUSH {
+        // Everything that may need memory, and the two with a check.
+        return id != IR_RT_DROP && id != IR_RT_STR_EQ_BUF && id != IR_RT_STR_FROM_BOOL && id < IR_RT_CLOCK
+    }
     return id == IR_RT_ALLOC || id == IR_RT_REALLOC || id == IR_RT_STR_APPEND || id == IR_RT_EXIT
 }
 
 // Whether the routine changes the allocator's state (region `rt`).
 fn ir_rt_touches_rt(id: i64) -> bool {
+    if id >= IR_RT_LIST_PUSH {
+        return id != IR_RT_STR_EQ_BUF && id != IR_RT_STR_FROM_BOOL && id != IR_RT_CHR && id < IR_RT_CLOCK
+    }
     return id <= IR_RT_FREE || id == IR_RT_STR_APPEND
 }
 
@@ -1236,4 +1422,56 @@ fn ir_value_count(f: IrFunc) -> i64 {
 
 fn ir_instruction_count(f: IrFunc) -> i64 {
     return f.ins_op.len()
+}
+
+// ---- added by the lowering stage ----------------------------------------
+
+// Makes `f` an empty function called `name` again, keeping the room its
+// lists already have. A stage that builds many functions one after the
+// other in the same `IrFunc` and hands each to `ir_add_func`, which
+// copies it, never grows a list twice.
+fn ir_clear_func(f: mut IrFunc, name: str) {
+    f.name = name
+    f.param_count = 0
+    f.param_fx.truncate(0)
+    f.ret_ty.truncate(0)
+    f.frames.truncate(0)
+    f.val_ty.truncate(0)
+    f.val_ins.truncate(0)
+    f.val_blk.truncate(0)
+    f.consts.truncate(0)
+    f.ins_op.truncate(0)
+    f.ins_ty.truncate(0)
+    f.ins_a.truncate(0)
+    f.ins_b.truncate(0)
+    f.ins_c.truncate(0)
+    f.ins_imm.truncate(0)
+    f.ins_imm2.truncate(0)
+    f.ins_reg.truncate(0)
+    f.ins_res.truncate(0)
+    f.ins_rs.truncate(0)
+    f.ins_rn.truncate(0)
+    f.ins_as.truncate(0)
+    f.ins_an.truncate(0)
+    f.ins_es.truncate(0)
+    f.ins_en.truncate(0)
+    f.ins_blk.truncate(0)
+    f.ins_prev.truncate(0)
+    f.ins_next.truncate(0)
+    f.results.truncate(0)
+    f.args.truncate(0)
+    f.edge_blk.truncate(0)
+    f.edge_key.truncate(0)
+    f.edge_as.truncate(0)
+    f.edge_an.truncate(0)
+    f.blk_first.truncate(0)
+    f.blk_last.truncate(0)
+    f.blk_ps.truncate(0)
+    f.blk_pn.truncate(0)
+    f.blk_live.truncate(0)
+    f.bparams.truncate(0)
+    f.order.truncate(0)
+    f.reg_kind.truncate(0)
+    f.reg_n.truncate(0)
+    f.callees.truncate(0)
 }

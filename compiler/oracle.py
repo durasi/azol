@@ -4,9 +4,8 @@ compare against, and the list of the compiler's source files.
 
 The oracle is a compiler that is taken to be right: the one before the
 change that is being checked. Every script takes `--oracle <path>`. Without
-it the oracle is `target/release/azol` if that exists (the first compiler,
-written in Rust, while its sources are in the repository), else the
-checked-in compiler for this machine under `bootstrap/`.
+it the oracle is the checked-in compiler for this machine under
+`bootstrap/`.
 """
 import os, platform, sys
 
@@ -31,15 +30,14 @@ def seed(target=None):
 
 
 def path():
-    """The oracle: `--oracle <path>`, else the Rust-built compiler, else the seed."""
+    """The oracle: `--oracle <path>`, else the seed."""
     arguments = sys.argv[1:]
     if "--oracle" in arguments:
         at = arguments.index("--oracle")
         if at + 1 >= len(arguments):
             sys.exit("--oracle needs the path of a compiler")
         return os.path.abspath(arguments[at + 1])
-    rust = os.path.join(ROOT, "target", "release", "azol")
-    return rust if os.path.exists(rust) else seed()
+    return seed()
 
 
 def missing():
@@ -56,9 +54,4 @@ def sources(target):
 
 def generators():
     """The generator scripts whose output must not be stale, with what each needs."""
-    found = [os.path.join(HERE, "gen_runtime_azl.py")]
-    # The table of error codes is generated only while the first
-    # compiler's sources, which hold it, are in the repository.
-    if os.path.exists(os.path.join(ROOT, "src", "diag.rs")):
-        found.append(os.path.join(HERE, "gen_tables_azl.py"))
-    return found
+    return [os.path.join(HERE, "gen_runtime_azl.py")]

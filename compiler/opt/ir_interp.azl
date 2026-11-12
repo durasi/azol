@@ -76,9 +76,37 @@ struct IrMachine {
     stopped: bool
     exit_code: i64
     stop_message: str
+    // Added by the lowering stage, for running whole programs; see the
+    // end of this file. How deep calls may nest, and whether going
+    // deeper is the program's own stop (`azol: stack overflow`) and not
+    // a mistake.
+    depth_limit: i64
+    overflow_stops: bool
+    // A model of the stack of the real program: every call takes its
+    // frame objects and `IRM_CALL_BYTES` more, and a program that
+    // would hold more than `stack_limit` bytes has run out. 0: no
+    // limit.
+    stack_limit: i64
+    stack_used: i64
+    // Whether the frame objects of calls that returned are used again
+    // for later calls. A whole program makes too many calls to keep
+    // them all; the price is that a pointer into a dead frame is no
+    // longer always caught.
+    reuse_frames: bool
+    spare_objects: List[i64]
+    zeros: str
+    // The command line `args` hands out.
+    arguments: List[str]
+    // Text the runtime owns and programs only read: the 256 one-byte
+    // strings of `chr`, `true` and `false`. 0 until first needed.
+    chr_table: i64
+    true_text: i64
+    false_text: i64
 }
 
 const IRM_MAX_DEPTH = 4000
+// What a call takes of the modelled stack besides its frame objects.
+const IRM_CALL_BYTES = 48
 
 fn irm_new(m: IrModule) -> IrMachine {
     var funcs: Map[i64] = new_map()
@@ -105,7 +133,18 @@ fn irm_new(m: IrModule) -> IrMachine {
         message: "",
         stopped: false,
         exit_code: 0,
-        stop_message: ""
+        stop_message: "",
+        depth_limit: IRM_MAX_DEPTH,
+        overflow_stops: false,
+        stack_limit: 0,
+        stack_used: 0,
+        reuse_frames: false,
+        spare_objects: [],
+        zeros: "",
+        arguments: [],
+        chr_table: 0,
+        true_text: 0,
+        false_text: 0
     }
 }
 
@@ -119,6 +158,14 @@ fn irm_fail(mach: mut IrMachine, message: str) {
 // Whether the run is over, one way or the other.
 fn irm_done(mach: IrMachine) -> bool {
     return mach.failed || mach.stopped
+}
+
+// `bytes` zero bytes.
+fn irm_blank(mach: mut IrMachine, bytes: i64) -> str {
+    while mach.zeros.len() < bytes {
+        mach.zeros.push(0)
+    }
+    return mach.zeros.slice(0, bytes)
 }
 
 fn irm_new_object(mach: mut IrMachine, bytes: i64, kind: i64) -> i64 {
@@ -509,7 +556,7 @@ fn irm_callrt(mach: mut IrMachine, routine: i64, x: List[i64], out: mut List[i64
         mach.stopped = true
         mach.exit_code = x[0] & 255
     } else {
-        irm_fail(mut mach, "the runtime routine `" + ir_rt_name(routine) + "` is not known to the interpreter")
+        irm_callrt_real(mut mach, routine, x, mut out)
     }
 }
 
@@ -522,11 +569,23 @@ fn irm_run(mach: mut IrMachine, m: IrModule, f: IrFunc, arguments: List[i64]) ->
         irm_fail(mut mach, "`" + f.name + "` takes " + str(f.param_count) + " arguments, not " + str(arguments.len()))
         return returned
     }
-    if mach.depth >= IRM_MAX_DEPTH {
-        irm_fail(mut mach, "calls nested more than " + str(IRM_MAX_DEPTH) + " deep")
+    var cost = IRM_CALL_BYTES
+    for bytes in f.frames {
+        cost = cost + bytes
+    }
+    let too_much = mach.stack_limit > 0 && mach.stack_used + cost > mach.stack_limit
+    if mach.depth >= mach.depth_limit || too_much {
+        if mach.overflow_stops {
+            mach.stopped = true
+            mach.exit_code = 1
+            mach.stop_message = "azol: stack overflow"
+        } else {
+            irm_fail(mut mach, "calls nested more than " + str(mach.depth_limit) + " deep")
+        }
         return returned
     }
     mach.depth = mach.depth + 1
+    mach.stack_used = mach.stack_used + cost
     var vals = 0.filled(f.val_ty.len())
     var k = 0
     while k < arguments.len() {
@@ -535,7 +594,15 @@ fn irm_run(mach: mut IrMachine, m: IrModule, f: IrFunc, arguments: List[i64]) ->
     }
     var frames: List[i64] = []
     for bytes in f.frames {
-        frames.push(irm_new_object(mut mach, bytes, IRM_FRAME))
+        if mach.reuse_frames && mach.spare_objects.len() > 0 {
+            let object = mach.spare_objects.pop()
+            mach.obj_kind[object] = IRM_FRAME
+            mach.obj_bytes[object] = irm_blank(mut mach, bytes)
+            mach.obj_stored[object] = irm_blank(mut mach, bytes)
+            frames.push(object << 32)
+        } else {
+            frames.push(irm_new_object(mut mach, bytes, IRM_FRAME))
+        }
     }
     var passed: List[i64] = []
     var ins = f.blk_first[f.order[0]]
@@ -707,7 +774,11 @@ fn irm_run(mach: mut IrMachine, m: IrModule, f: IrFunc, arguments: List[i64]) ->
         mach.obj_kind[object >> 32] = IRM_FREED
         mach.obj_bytes[object >> 32] = ""
         mach.obj_stored[object >> 32] = ""
+        if mach.reuse_frames {
+            mach.spare_objects.push(object >> 32)
+        }
     }
+    mach.stack_used = mach.stack_used - cost
     mach.depth = mach.depth - 1
     return returned
 }
@@ -721,4 +792,337 @@ fn irm_live_blocks(mach: IrMachine) -> i64 {
         }
     }
     return count
+}
+
+// ---- the routines of the real runtimes ----------------------------------------
+//
+// Added by the lowering stage. These take what `runtime/linux_x64/runtime.c`
+// takes: a string or a list is the address of three slots (pointer,
+// length, capacity), and capacity 0 means "owns no memory". They do
+// what the runtime does, in the interpreter's memory.
+
+// A new object that programs can only read, holding `text`.
+fn irm_static(mach: mut IrMachine, text: str) -> i64 {
+    var stored = ""
+    var i = 0
+    while i < text.len() {
+        stored.push(1)
+        i = i + 1
+    }
+    mach.obj_bytes.push(text)
+    mach.obj_stored.push(stored)
+    mach.obj_kind.push(IRM_DATA)
+    return mach.obj_kind.len() - 1 << 32
+}
+
+// Copies `n` bytes as they are: a byte that was never stored stays
+// "never stored" in the copy.
+fn irm_copy_raw(mach: mut IrMachine, to: i64, from: i64, n: i64) {
+    if n <= 0 {
+        return
+    }
+    let source = irm_object(mut mach, from, n, "a read")
+    if source < 0 {
+        return
+    }
+    let target = irm_object(mut mach, to, n, "a write")
+    if target < 0 {
+        return
+    }
+    if mach.obj_kind[target] == IRM_DATA {
+        irm_fail(mut mach, "a write to the read-only data")
+        return
+    }
+    let from_at = from & 4294967295
+    let to_at = to & 4294967295
+    var i = 0
+    while i < n {
+        mach.obj_bytes[target].set(to_at + i, mach.obj_bytes[source][from_at + i])
+        mach.obj_stored[target].set(to_at + i, mach.obj_stored[source][from_at + i])
+        i = i + 1
+    }
+}
+
+// The three slots of the string or list at `p`.
+fn irm_set_buf(mach: mut IrMachine, p: i64, pointer: i64, len: i64, cap: i64) {
+    irm_store(mut mach, p, 8, pointer)
+    irm_store(mut mach, p + 8, 8, len)
+    irm_store(mut mach, p + 16, 8, cap)
+}
+
+// The bytes of the string whose three slots are at `p`.
+fn irm_buf_text(mach: mut IrMachine, p: i64) -> str {
+    let pointer = irm_load(mut mach, p, 8)
+    let len = irm_load(mut mach, p + 8, 8)
+    if mach.failed {
+        return ""
+    }
+    return irm_text(mut mach, pointer, len)
+}
+
+// Makes the string at `out` a new one that owns a copy of `text`.
+fn irm_owned(mach: mut IrMachine, out: i64, text: str) {
+    if text.len() == 0 {
+        irm_set_buf(mut mach, out, 0, 0, 0)
+        return
+    }
+    let fresh = irm_alloc(mut mach, text.len())
+    if mach.failed {
+        return
+    }
+    irm_put_text(mut mach, fresh, text)
+    irm_set_buf(mut mach, out, fresh, text.len(), text.len())
+}
+
+// Makes the string at `out` text that nobody owns.
+fn irm_fixed(mach: mut IrMachine, out: i64, text: str) {
+    let at = irm_static(mut mach, text)
+    irm_set_buf(mut mach, out, at, text.len(), 0)
+}
+
+fn irm_stop(mach: mut IrMachine, message: str) {
+    mach.stopped = true
+    mach.exit_code = 1
+    mach.stop_message = message
+}
+
+// What a routine that changes a file hands back.
+fn irm_answer(mach: mut IrMachine, result: Result[i64, str], out_at: i64, out: mut List[i64]) {
+    match result {
+        Ok(n) => {
+            irm_store(mut mach, out_at, 8, n)
+            out.push(0)
+        }
+        Err(why) => {
+            irm_fixed(mut mach, out_at, why)
+            out.push(1)
+        }
+    }
+}
+
+fn irm_callrt_real(mach: mut IrMachine, routine: i64, x: List[i64], out: mut List[i64]) {
+    if routine == IR_RT_LIST_PUSH {
+        // list, element, bytes
+        let list = x[0]
+        let bytes = x[2]
+        var pointer = irm_load(mut mach, list, 8)
+        let len = irm_load(mut mach, list + 8, 8)
+        let cap = irm_load(mut mach, list + 16, 8)
+        if mach.failed {
+            return
+        }
+        if len >= cap {
+            var room = 4
+            if cap != 0 {
+                room = cap * 2
+            }
+            let fresh = irm_alloc(mut mach, room * bytes)
+            if mach.failed {
+                return
+            }
+            if cap != 0 {
+                irm_copy_raw(mut mach, fresh, pointer, len * bytes)
+                irm_free(mut mach, pointer)
+            }
+            pointer = fresh
+            irm_store(mut mach, list, 8, pointer)
+            irm_store(mut mach, list + 16, 8, room)
+        }
+        irm_copy_raw(mut mach, pointer + len * bytes, x[1], bytes)
+        irm_store(mut mach, list + 8, 8, len + 1)
+    } else if routine == IR_RT_LIST_CLONE {
+        // value, bytes of one element
+        let value = x[0]
+        let cap = irm_load(mut mach, value + 16, 8)
+        if mach.failed || cap == 0 {
+            return
+        }
+        let pointer = irm_load(mut mach, value, 8)
+        let len = irm_load(mut mach, value + 8, 8)
+        let bytes = len * x[1]
+        irm_store(mut mach, value + 16, 8, len)
+        if bytes == 0 {
+            irm_store(mut mach, value, 8, 0)
+            return
+        }
+        let fresh = irm_alloc(mut mach, bytes)
+        if mach.failed {
+            return
+        }
+        irm_copy_raw(mut mach, fresh, pointer, bytes)
+        irm_store(mut mach, value, 8, fresh)
+    } else if routine == IR_RT_DROP {
+        let cap = irm_load(mut mach, x[0] + 16, 8)
+        if !mach.failed && cap != 0 {
+            let pointer = irm_load(mut mach, x[0], 8)
+            irm_free(mut mach, pointer)
+        }
+    } else if routine == IR_RT_STR_CONCAT {
+        let first = irm_buf_text(mut mach, x[0])
+        let second = irm_buf_text(mut mach, x[1])
+        if !mach.failed {
+            var both = first
+            both = both + second
+            irm_owned(mut mach, x[2], both)
+        }
+    } else if routine == IR_RT_STR_EQ_BUF {
+        let first = irm_buf_text(mut mach, x[0])
+        let second = irm_buf_text(mut mach, x[1])
+        out.push(irm_bool(first == second))
+    } else if routine == IR_RT_STR_FROM_I64 {
+        irm_owned(mut mach, x[1], str(x[0]))
+    } else if routine == IR_RT_STR_FROM_BOOL {
+        if x[0] != 0 {
+            if mach.true_text == 0 {
+                mach.true_text = irm_static(mut mach, "true")
+            }
+            irm_set_buf(mut mach, x[1], mach.true_text, 4, 0)
+        } else {
+            if mach.false_text == 0 {
+                mach.false_text = irm_static(mut mach, "false")
+            }
+            irm_set_buf(mut mach, x[1], mach.false_text, 5, 0)
+        }
+    } else if routine == IR_RT_STR_SLICE {
+        // s, start, end, out
+        let pointer = irm_load(mut mach, x[0], 8)
+        let len = irm_load(mut mach, x[0] + 8, 8)
+        if mach.failed {
+            return
+        }
+        // Unsigned, so that negative numbers are refused too.
+        if irm_unsigned_less(len, x[2]) || irm_unsigned_less(x[2], x[1]) {
+            irm_stop(mut mach, "azol: slice out of range")
+            return
+        }
+        let part = irm_text(mut mach, pointer + x[1], x[2] - x[1])
+        if !mach.failed {
+            irm_owned(mut mach, x[3], part)
+        }
+    } else if routine == IR_RT_CHR {
+        if irm_unsigned_less(255, x[0]) {
+            irm_stop(mut mach, "azol: chr needs a number from 0 to 255")
+            return
+        }
+        if mach.chr_table == 0 {
+            var table = ""
+            var code = 0
+            while code < 256 {
+                table.push(code)
+                code = code + 1
+            }
+            mach.chr_table = irm_static(mut mach, table)
+        }
+        irm_set_buf(mut mach, x[1], mach.chr_table + x[0], 1, 0)
+    } else if routine == IR_RT_STR_APPEND_BUF {
+        // dest, src
+        let dest = x[0]
+        let added = irm_load(mut mach, x[1] + 8, 8)
+        if mach.failed || added == 0 {
+            return
+        }
+        var from = irm_load(mut mach, x[1], 8)
+        var pointer = irm_load(mut mach, dest, 8)
+        let old_len = irm_load(mut mach, dest + 8, 8)
+        let cap = irm_load(mut mach, dest + 16, 8)
+        if mach.failed {
+            return
+        }
+        // The text to add may sit in the buffer that is about to move.
+        let own = cap != 0 && from == pointer
+        let len = old_len + added
+        if len > cap {
+            var room = cap * 2
+            if room < len {
+                room = len
+            }
+            if room < 16 {
+                room = 16
+            }
+            let fresh = irm_alloc(mut mach, room)
+            if mach.failed {
+                return
+            }
+            irm_copy_raw(mut mach, fresh, pointer, old_len)
+            if cap != 0 {
+                irm_free(mut mach, pointer)
+            }
+            if own {
+                from = fresh
+            }
+            pointer = fresh
+            irm_store(mut mach, dest, 8, pointer)
+            irm_store(mut mach, dest + 16, 8, room)
+        }
+        irm_copy_raw(mut mach, pointer + old_len, from, added)
+        irm_store(mut mach, dest + 8, 8, len)
+    } else if routine == IR_RT_ARGS {
+        let count = mach.arguments.len()
+        if count == 0 {
+            irm_set_buf(mut mach, x[0], 0, 0, 0)
+            return
+        }
+        let items = irm_alloc(mut mach, count * 24)
+        var i = 0
+        while i < count && !mach.failed {
+            let text = mach.arguments[i]
+            irm_fixed(mut mach, items + i * 24, text)
+            i = i + 1
+        }
+        irm_set_buf(mut mach, x[0], items, count, count)
+    } else if routine == IR_RT_READ_FILE {
+        let path = irm_buf_text(mut mach, x[0])
+        if mach.failed {
+            return
+        }
+        match read_file(path) {
+            Ok(text) => {
+                irm_owned(mut mach, x[1], text)
+                out.push(0)
+            }
+            Err(why) => {
+                irm_fixed(mut mach, x[1], why)
+                out.push(1)
+            }
+        }
+    } else if routine == IR_RT_WRITE_FILE {
+        let path = irm_buf_text(mut mach, x[0])
+        let text = irm_buf_text(mut mach, x[1])
+        if !mach.failed {
+            irm_answer(mut mach, write_file(path, text), x[2], mut out)
+        }
+    } else if routine == IR_RT_SET_EXECUTABLE {
+        let path = irm_buf_text(mut mach, x[0])
+        if !mach.failed {
+            irm_answer(mut mach, set_executable(path), x[1], mut out)
+        }
+    } else if routine == IR_RT_REMOVE_FILE {
+        let path = irm_buf_text(mut mach, x[0])
+        if !mach.failed {
+            irm_answer(mut mach, remove_file(path), x[1], mut out)
+        }
+    } else if routine == IR_RT_RENAME_FILE {
+        let from = irm_buf_text(mut mach, x[0])
+        let to = irm_buf_text(mut mach, x[1])
+        if !mach.failed {
+            irm_answer(mut mach, rename_file(from, to), x[2], mut out)
+        }
+    } else if routine == IR_RT_CLOCK {
+        out.push(clock())
+    } else if routine == IR_RT_STR_IS_UTF8 {
+        let text = irm_buf_text(mut mach, x[0])
+        out.push(irm_bool(text.is_utf8()))
+    } else if routine == IR_RT_PRINT_BUF {
+        let text = irm_buf_text(mut mach, x[0])
+        if !mach.failed {
+            print(text)
+        }
+    } else if routine == IR_RT_EPRINT_BUF {
+        let text = irm_buf_text(mut mach, x[0])
+        if !mach.failed {
+            eprint(text)
+        }
+    } else {
+        irm_fail(mut mach, "the runtime routine `" + ir_rt_name(routine) + "` is not known to the interpreter")
+    }
 }

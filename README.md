@@ -361,8 +361,6 @@ The compiler has no dependencies, SHA-256 included. A small runtime for printing
 
 ## Self-hosting
 
-> **Temporary note.** The Rust sources under `src/` are kept until this build is confirmed on macOS; they are not used by `build.sh`.
-
 The compiler is written in azoL: about 20,000 lines in [`compiler/`](compiler/) for the lexer, parser, checker, the ARM64 and x86-64 code generators, the three linkers, the diagnostics, the formatter and the command line, plus the part of the standard library that is azoL in [`lib/prelude.azl`](lib/prelude.azl). It builds itself.
 
 - **Where it starts.** A compiler cannot build itself from nothing. [`bootstrap/`](bootstrap/) holds one ready-made compiler for each target, about 0.7 MB each, built from these same sources; [`bootstrap/README.md`](bootstrap/README.md) gives their hashes and how to make them again.
