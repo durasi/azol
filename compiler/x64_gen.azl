@@ -1,0 +1,2324 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The x86-64 code generator, second part: statements, memory helpers
+// and expressions. See `x64.azl`.
+
+// ---- statements -------------------------------------------------------
+
+fn x_stmt(g: mut Gen, c: Checker, p: Parser, id: i64) {
+    // Storing a number or a `bool` changes no list, and an `if` stores
+    // nothing itself: what is known about indices carries over those.
+    // Every other statement starts and ends knowing nothing.
+    var keeps = false
+    match p.ast.stmts[id] {
+        StmtLet(_, _, _, value) => keeps = c.expr_ty[g.sh_e + value] < 3
+        StmtAssign(target, _) => keeps = c.expr_ty[g.sh_e + target] < 3
+        StmtIf(_, _, _) => keeps = true
+        _ => {}
+    }
+    if !keeps {
+        x_forget(mut g)
+    }
+    x_stmt_inner(mut g, c, p, id)
+    if !keeps {
+        x_forget(mut g)
+    }
+}
+
+// Patches the jumps of the innermost loop that were added to `continues`
+// and takes them off the list.
+fn x_patch_continues(g: mut Gen) {
+    let from = g.loop_continues[g.loop_continues.len() - 1]
+    var i = from
+    while i < g.continues.len() {
+        let at = g.continues[i]
+        x_patch(mut g, at)
+        i = i + 1
+    }
+    while g.continues.len() > from {
+        let at = g.continues.pop()
+    }
+}
+
+// The same for `breaks`; this also ends the loop.
+fn x_patch_breaks(g: mut Gen) {
+    let from = g.loop_breaks.pop()
+    var i = from
+    while i < g.breaks.len() {
+        let at = g.breaks[i]
+        x_patch(mut g, at)
+        i = i + 1
+    }
+    while g.breaks.len() > from {
+        let at = g.breaks.pop()
+    }
+    let continues = g.loop_continues.pop()
+    let live = g.loop_live.pop()
+}
+
+fn x_enter_loop(g: mut Gen) {
+    g.loop_live.push(g.live_slots.len())
+    g.loop_breaks.push(g.breaks.len())
+    g.loop_continues.push(g.continues.len())
+}
+
+fn x_stmt_inner(g: mut Gen, c: Checker, p: Parser, id: i64) {
+    match p.ast.stmts[id] {
+        StmtLet(_, _, _, value) => {
+            let slot = c.stmt_slot[g.sh_s + id]
+            let ty = c.expr_ty[g.sh_e + value]
+            x_store(mut g, c, p, value, slot)
+            x_drop_temps(mut g, c, id, false)
+            if ck_needs_drop(c, ty) {
+                g.live_slots.push(slot)
+                g.live_tys.push(ty)
+            }
+        }
+        StmtAssign(target, value) => {
+            x_assign(mut g, c, p, id, target, value)
+            x_drop_temps(mut g, c, id, false)
+        }
+        StmtExpr(expr) => {
+            x_eval(mut g, c, p, expr)
+            x_drop_temps(mut g, c, id, false)
+        }
+        StmtReturn(value) => x_return_stmt(mut g, c, p, id, value)
+        StmtIf(cond, then_block, else_branch) => {
+            let skip_then = g.jumps.len()
+            x_test(mut g, c, p, id, cond, false)
+            x_block(mut g, c, p, then_block)
+            match else_branch {
+                ElseNone => x_patch_from(mut g, skip_then)
+                ElseBlock(body) => {
+                    let skip_else = x_jump(mut g)
+                    x_patch_from(mut g, skip_then)
+                    x_block(mut g, c, p, body)
+                    x_patch(mut g, skip_else)
+                }
+                ElseIf(next) => {
+                    let skip_else = x_jump(mut g)
+                    x_patch_from(mut g, skip_then)
+                    x_stmt(mut g, c, p, next)
+                    x_patch(mut g, skip_else)
+                }
+            }
+        }
+        StmtWhile(cond, body) => {
+            // The test sits below the body, so that going round takes
+            // one jump. A test that leaves nothing to free is written a
+            // second time above the loop, to get in; any other is
+            // reached by a jump.
+            let plain = c.stmt_drops_len[g.sh_s + id] == 0
+            let exits = g.jumps.len()
+            var enter = -1
+            if plain {
+                x_test(mut g, c, p, id, cond, false)
+            } else {
+                enter = x_jump(mut g)
+            }
+            // The code below is reached again from its own end.
+            x_forget(mut g)
+            let top = g.code.len()
+            x_enter_loop(mut g)
+            x_block(mut g, c, p, body)
+            x_patch_continues(mut g)
+            if enter >= 0 {
+                x_patch(mut g, enter)
+            }
+            let again = g.jumps.len()
+            x_test(mut g, c, p, id, cond, true)
+            var i = again
+            while i < g.jumps.len() {
+                let at = g.jumps[i]
+                x_patch_to(mut g, at, top)
+                i = i + 1
+            }
+            while g.jumps.len() > again {
+                let at = g.jumps.pop()
+            }
+            x_patch_from(mut g, exits)
+            x_patch_breaks(mut g)
+        }
+        StmtFor(has_index, _, _, iter, body) => x_for_stmt(mut g, c, p, id, has_index, iter, body)
+        StmtBreak => {
+            let live = g.loop_live[g.loop_live.len() - 1]
+            x_drop_live_from(mut g, c, live)
+            let at = x_jump(mut g)
+            g.breaks.push(at)
+        }
+        StmtContinue => {
+            let live = g.loop_live[g.loop_live.len() - 1]
+            x_drop_live_from(mut g, c, live)
+            let at = x_jump(mut g)
+            g.continues.push(at)
+        }
+        StmtMatch(scrutinee, arms) => x_match_stmt(mut g, c, p, id, scrutinee, arms)
+    }
+}
+
+// Generates the test of an `if` or `while`: code that jumps when the
+// condition is `when` and runs on otherwise. The jumps are added to
+// `jumps` for the caller to patch.
+fn x_test(g: mut Gen, c: Checker, p: Parser, id: i64, cond: i64, when: bool) {
+    if c.stmt_drops_len[g.sh_s + id] == 0 {
+        x_branch(mut g, c, p, cond, when)
+        return
+    }
+    // The temporaries are freed before either way is taken.
+    x_value(mut g, c, p, cond)
+    x_drop_temps(mut g, c, id, true)
+    x_op(mut g, X_TEST, RAX, RAX)
+    var cc = CC_E
+    if when {
+        cc = CC_NE
+    }
+    let at = x_jump_if(mut g, cc)
+    g.jumps.push(at)
+}
+
+// Generates code that jumps when `cond` is `when` and runs on otherwise,
+// without making a `bool` first where that can be avoided: a comparison
+// jumps on its flags, and `&&`, `||` and `!` become jumps themselves.
+// The parts are evaluated exactly as far and in the same order as for
+// the value.
+fn x_branch(g: mut Gen, c: Checker, p: Parser, cond: i64, when: bool) {
+    let kind = x_kind(g, c, cond)
+    if kind == K_BOOL {
+        if (x_bool_value(g, c, cond) == 1) == when {
+            let at = x_jump(mut g)
+            g.jumps.push(at)
+        }
+        return
+    }
+    if kind == K_UNARY && g.ec[cond] == 1 {
+        x_branch(mut g, c, p, g.ea[cond], !when)
+        return
+    }
+    if kind == K_BINARY {
+        let op = g.ec[cond]
+        let lhs = g.ea[cond]
+        let rhs = g.eb[cond]
+        if op == OP_AND || op == OP_OR {
+            // `&&` is false as soon as one side is, `||` true.
+            let decides = op == OP_OR
+            if when == decides {
+                x_branch(mut g, c, p, lhs, when)
+                x_branch(mut g, c, p, rhs, when)
+            } else {
+                // The left side alone can settle it the other way: then
+                // the right side is skipped.
+                let skip = g.jumps.len()
+                x_branch(mut g, c, p, lhs, decides)
+                let rest = g.jumps.len()
+                x_branch(mut g, c, p, rhs, when)
+                // The left side's jumps land here, past the right side;
+                // the right side's stay for the caller.
+                var i = skip
+                while i < rest {
+                    let at = g.jumps[i]
+                    x_patch(mut g, at)
+                    i = i + 1
+                }
+                let total = g.jumps.len()
+                i = rest
+                while i < total {
+                    g.jumps[skip + i - rest] = g.jumps[i]
+                    i = i + 1
+                }
+                i = skip
+                while i < rest {
+                    let at = g.jumps.pop()
+                    i = i + 1
+                }
+            }
+            return
+        }
+        let cc = x_comparison(op)
+        let ty = c.expr_ty[g.sh_e + lhs]
+        if cc >= 0 && (ty == TY_I64 || ty == TY_BOOL) {
+            x_compare_flags(mut g, c, p, lhs, rhs)
+            var taken = cc ^ 1
+            if when {
+                taken = cc
+            }
+            let at = x_jump_if(mut g, taken)
+            g.jumps.push(at)
+            return
+        }
+    }
+    let reg = x_in_register(g, c, cond)
+    if reg >= 0 {
+        x_op(mut g, X_TEST, reg, reg)
+    } else if x_in_memory(g, c, cond) {
+        // A `bool` in memory is tested where it is.
+        let at = x_memory(mut g, c, p, cond)
+        x_cmp_at_imm(mut g, at, 0)
+    } else {
+        x_value(mut g, c, p, cond)
+        x_op(mut g, X_TEST, RAX, RAX)
+    }
+    var cc = CC_E
+    if when {
+        cc = CC_NE
+    }
+    let at = x_jump_if(mut g, cc)
+    g.jumps.push(at)
+}
+
+// Completes the jumps added to `jumps` since it had `from` entries to
+// come here.
+fn x_patch_from(g: mut Gen, from: i64) {
+    var i = from
+    while i < g.jumps.len() {
+        let at = g.jumps[i]
+        x_patch(mut g, at)
+        i = i + 1
+    }
+    while g.jumps.len() > from {
+        let at = g.jumps.pop()
+    }
+}
+
+fn x_assign(g: mut Gen, c: Checker, p: Parser, id: i64, target: i64, value: i64) {
+    if c.stmt_flag[g.sh_s + id] == APPEND {
+        // `s = s + more`: the new text is added to `s` in place. It is
+        // computed first; only then is `s` looked at.
+        x_address(mut g, c, p, g.eb[value])
+        let place = x_place(g, c, target)
+        if place >= 0 {
+            // A variable is found without disturbing anything.
+            x_mov(mut g, RSI, RAX)
+            x_place_address_in(mut g, place, RDI)
+        } else {
+            x_push(mut g)
+            x_address(mut g, c, p, target)
+            x_mov(mut g, RDI, RAX)
+            x_pop(mut g, RSI)
+        }
+        x_runtime(mut g, RT_STR_APPEND)
+        return
+    }
+    let ty = c.expr_ty[g.sh_e + target]
+    let place = x_place(g, c, target)
+    if ty < 3 {
+        if place >= 0 {
+            let reg = x_register(g, place)
+            if reg >= 0 {
+                x_value_in(mut g, c, p, value, reg)
+                return
+            }
+        } else {
+            let path = x_element_path(g, c, target)
+            if path.ok {
+                x_assign_element(mut g, c, p, path, value)
+                return
+            }
+        }
+        let source = x_source(mut g, c, p, value)
+        if place >= 0 && (place & 4096) != 0 {
+            let pointer = x_pointer(mut g, place, R8)
+            x_store_mem(mut g, pointer, 8 * (place >> 13), source)
+        } else if place >= 0 {
+            x_store_slot(mut g, (place & 4095) + (place >> 13), source)
+        } else {
+            if source != RAX {
+                x_mov(mut g, RAX, source)
+            }
+            // The target is a list element: its address is only known
+            // once the index has been evaluated.
+            x_push(mut g)
+            x_address(mut g, c, p, target)
+            x_mov(mut g, R8, RAX)
+            x_pop(mut g, RAX)
+            x_store_mem(mut g, R8, 0, RAX)
+        }
+        return
+    }
+
+    let size = ck_size_of(c, ty)
+    let owning = ck_needs_drop(c, ty)
+    if place >= 0 && !owning {
+        // Plain data into a fixed place: copy straight across.
+        x_address(mut g, c, p, value)
+        if (place & 4096) != 0 {
+            let pointer = x_pointer(mut g, place, R8)
+            if pointer != R8 {
+                x_mov(mut g, R8, pointer)
+            }
+            x_copy_to_pointer(mut g, place >> 13, size)
+        } else {
+            x_copy_to_frame(mut g, (place & 4095) + (place >> 13), size)
+        }
+        return
+    }
+
+    // First get the new value into a frame area this statement owns: the
+    // temporary that computed it, or a fresh copy of a variable.
+    x_address(mut g, c, p, value)
+    var source = 0
+    if c.expr_moved[g.sh_e + value] == 1 {
+        // A variable that is not used again: its value moves straight
+        // out of its own slots.
+        source = x_variable_slot(g, c, value)
+        if source < 0 {
+            source = c.expr_tmp[g.sh_e + value]
+        }
+    } else {
+        let scratch = c.stmt_slot[g.sh_s + id]
+        x_copy_to_frame(mut g, scratch, size)
+        if owning {
+            x_clone_frame(mut g, c, scratch, ty)
+        }
+        source = scratch
+    }
+    // Then find the target, free what it holds and move the value in.
+    x_address(mut g, c, p, target)
+    let scratch_slot = g.scratch_slot
+    x_store_slot(mut g, scratch_slot, RAX)
+    if owning {
+        x_drop_pointer(mut g, c, scratch_slot, ty)
+    }
+    x_frame_address(mut g, RAX, source)
+    x_load(mut g, R8, scratch_slot)
+    x_copy_to_pointer(mut g, 0, size)
+    x_moved_out(mut g, c, value)
+}
+
+// Stores a number or `bool` in `base[index]`, or in the part of that
+// element `offset` bytes in. The value is computed first, then the index.
+fn x_assign_element(g: mut Gen, c: Checker, p: Parser, path: XPath, value: i64) {
+    // A constant goes into the store instruction itself.
+    let kind = x_kind(g, c, value)
+    var is_constant = false
+    var constant = 0
+    if kind == K_BOOL {
+        is_constant = true
+        constant = x_bool_value(g, c, value)
+    } else if x_is_small_constant(g, c, value) {
+        is_constant = true
+        constant = x_int_value(g, c, value)
+    }
+    // A variable in a register is stored from there.
+    let register = x_in_register(g, c, value)
+    let waits = !is_constant && register < 0 && !x_index_keeps_rax(g, c, path.base, path.index)
+    if !is_constant && register < 0 {
+        x_value(mut g, c, p, value)
+        if waits {
+            x_push(mut g)
+        }
+    }
+    let at = x_element(mut g, c, p, path.base, path.index)
+    if is_constant {
+        x_store_imm_at(mut g, at, path.offset, constant)
+    } else {
+        if waits {
+            x_pop(mut g, RAX)
+        }
+        if register >= 0 {
+            x_store_at(mut g, at, path.offset, register)
+        } else {
+            x_store_at(mut g, at, path.offset, RAX)
+        }
+    }
+}
+
+fn x_return_stmt(g: mut Gen, c: Checker, p: Parser, id: i64, value: i64) {
+    // A local that is returned whole hands its buffers to the caller and
+    // so must not be freed here.
+    var moved_local = -1
+    var scalar = false
+    if value >= 0 {
+        let ty = c.expr_ty[g.sh_e + value]
+        if ty >= 3 {
+            let slot = g.sret_slot
+            x_address(mut g, c, p, value)
+            x_load(mut g, R8, slot)
+            x_copy_to_pointer(mut g, 0, ck_size_of(c, ty))
+            if ck_needs_drop(c, ty) {
+                if c.expr_moved[g.sh_e + value] != 1 {
+                    x_clone_pointer(mut g, c, slot, ty)
+                } else if x_kind(g, c, value) == K_IDENT {
+                    let place = x_place(g, c, value)
+                    if place >= 0 {
+                        moved_local = place & 4095
+                    }
+                }
+            }
+        } else {
+            x_value(mut g, c, p, value)
+            scalar = true
+        }
+    }
+    let frees_something = c.stmt_drops_len[g.sh_s + id] > 0 || g.live_slots.len() > 0
+    if scalar && frees_something {
+        x_push(mut g)
+    }
+    x_drop_temps(mut g, c, id, false)
+    var i = g.live_slots.len() - 1
+    while i >= 0 {
+        let slot = g.live_slots[i]
+        let ty = g.live_tys[i]
+        if slot != moved_local {
+            x_drop_frame(mut g, c, slot, ty)
+        }
+        i = i - 1
+    }
+    if scalar {
+        if frees_something {
+            x_pop(mut g, RAX)
+        }
+    } else {
+        // Nothing, or an aggregate written through the result address:
+        // `main` still hands back exit code 0.
+        x_mov_imm(mut g, RAX, 0)
+    }
+    x_function_epilogue(mut g)
+}
+
+fn x_for_stmt(g: mut Gen, c: Checker, p: Parser, id: i64, has_index: bool, iter: i64, body: IdRange) {
+    let list_ty = c.expr_ty[g.sh_e + iter]
+    let elem_size = ck_size_of(c, c.lists[ty_index(list_ty)])
+    let base = c.stmt_slot[g.sh_s + id]
+    let position = base
+    let own_list = base + 1
+    let item_slot = base + 4
+    let index_slot = item_slot + elem_size
+    let flag = c.stmt_flag[g.sh_s + id]
+    let in_place = flag == IN_PLACE
+
+    if !in_place {
+        // The loop owns the list: a temporary it takes over, or its own
+        // copy of a list that is part of a temporary.
+        x_address(mut g, c, p, iter)
+        x_copy_to_frame(mut g, own_list, 3)
+        if flag == COPIED {
+            x_clone_frame(mut g, c, own_list, list_ty)
+        }
+    }
+    x_drop_temps(mut g, c, id, false)
+    if !in_place {
+        g.live_slots.push(own_list)
+        g.live_tys.push(list_ty)
+    }
+    x_zero_slot(mut g, position)
+
+    // The test is written twice, above the loop to get in and below the
+    // body to go round: one jump for each round. Both leave the position
+    // in rcx and say where the list's three slots are.
+    let found = x_for_test(mut g, c, p, in_place, iter, own_list, position)
+    let header = found & 15
+    let disp = found >> 4
+    let exit = x_jump_if(mut g, CC_AE)
+    x_forget(mut g)
+    let top = g.code.len()
+    if has_index {
+        x_store_slot(mut g, index_slot, RCX)
+    }
+    // buffer
+    x_load_mem(mut g, R8, header, disp)
+    let at = x_scaled(mut g, RCX, elem_size)
+    var i = 0
+    while i < elem_size {
+        x_load_index(mut g, R9, R8, at, 3, 8 * i)
+        x_store_slot(mut g, item_slot + i, R9)
+        i = i + 1
+    }
+
+    x_enter_loop(mut g)
+    x_block(mut g, c, p, body)
+    x_patch_continues(mut g)
+    let step = 8 * position - g.frame_bytes
+    x_op_mem_imm(mut g, ADD_I, RBP, step, 1)
+    let again = x_for_test(mut g, c, p, in_place, iter, own_list, position)
+    let round = x_jump_if(mut g, CC_B)
+    x_patch_to(mut g, round, top)
+    x_patch(mut g, exit)
+    x_patch_breaks(mut g)
+    if !in_place {
+        let slot = g.live_slots.pop()
+        let ty = g.live_tys.pop()
+        x_drop_frame(mut g, c, own_list, list_ty)
+    }
+}
+
+// Compares the position of a `for` loop, which it leaves in rcx, with
+// the length of the list, and returns where the list's three slots are:
+// the displacement times 16 plus the register.
+fn x_for_test(g: mut Gen, c: Checker, p: Parser, in_place: bool, iter: i64, own_list: i64, position: i64) -> i64 {
+    var found = 0
+    if !in_place {
+        found = (8 * own_list - g.frame_bytes) * 16 + RBP
+    } else {
+        let place = x_place(g, c, iter)
+        if place >= 0 {
+            found = x_header(mut g, place, RAX)
+        } else {
+            x_address(mut g, c, p, iter)
+            found = RAX
+        }
+    }
+    x_load(mut g, RCX, position)
+    x_cmp_mem(mut g, RCX, found & 15, (found >> 4) + 8)
+    return found
+}
+
+fn x_match_stmt(g: mut Gen, c: Checker, p: Parser, id: i64, scrutinee: i64, arms: IdRange) {
+    let ty = c.expr_ty[g.sh_e + scrutinee]
+    let base = c.stmt_slot[g.sh_s + id]
+    let aggregate = ty >= 3
+    // Slot `base` keeps the value being matched: a number or `bool`
+    // itself, the address of anything else.
+    var owned = false
+    if !aggregate {
+        x_value(mut g, c, p, scrutinee)
+    } else {
+        x_address(mut g, c, p, scrutinee)
+        let flag = c.stmt_flag[g.sh_s + id]
+        if flag != IN_PLACE {
+            // The statement owns the value: a temporary it takes over,
+            // or its own copy of a part of a temporary.
+            let own = base + 1
+            x_copy_to_frame(mut g, own, ck_size_of(c, ty))
+            if ck_needs_drop(c, ty) {
+                if flag == COPIED {
+                    x_clone_frame(mut g, c, own, ty)
+                }
+                owned = true
+            }
+            x_frame_address(mut g, RAX, own)
+        }
+    }
+    x_store_slot(mut g, base, RAX)
+    x_drop_temps(mut g, c, id, false)
+    if owned {
+        g.live_slots.push(base + 1)
+        g.live_tys.push(ty)
+    }
+
+    var ends: List[i64] = []
+    var i = 0
+    while i < arms.len {
+        let arm_id = p.ast.lists[arms.start + i]
+        let pattern = p.ast.arms[arm_id].pattern
+        let pat = g.sh_p + pattern
+        let kind = c.pat_kind[pat]
+        let res = c.pat_res[pat]
+        // The checker proved that the arms cover every case, so when the
+        // last arm is reached it matches: no test needed.
+        let test = i + 1 < arms.len
+        // A failed test jumps to the next arm.
+        var next = -1
+        if kind == PAT_VARIANT {
+            if test {
+                x_load(mut g, R8, base)
+                // tag
+                x_load_mem(mut g, R8, R8, 0)
+                x_op_imm(mut g, CMP_I, R8, res + 1)
+                next = x_jump_if(mut g, CC_NE)
+            }
+            match p.ast.patterns[pattern] {
+                PatVariant(_, args) => {
+                    var k = 0
+                    while k < args.len {
+                        let sub = g.sh_p + p.ast.lists[args.start + k]
+                        if c.pat_kind[sub] == PAT_BIND {
+                            // The name stands for the field where it is.
+                            x_load(mut g, R8, base)
+                            x_lea(mut g, R8, R8, 8 * c.pat_res[sub])
+                            x_store_slot(mut g, c.pat_slot[sub], R8)
+                        }
+                        k = k + 1
+                    }
+                }
+                _ => {}
+            }
+        } else if kind == PAT_LITERAL {
+            if test {
+                if ty == TY_I64 {
+                    x_load(mut g, RCX, base)
+                    x_mov_imm(mut g, RAX, c.ints[res])
+                    x_op(mut g, X_CMP, RCX, RAX)
+                    next = x_jump_if(mut g, CC_NE)
+                } else if ty == TY_BOOL {
+                    x_load(mut g, RAX, base)
+                    x_op(mut g, X_TEST, RAX, RAX)
+                    // `true` is skipped when the value is zero, `false`
+                    // when it is not.
+                    if res == 0 {
+                        next = x_jump_if(mut g, CC_NE)
+                    } else {
+                        next = x_jump_if(mut g, CC_E)
+                    }
+                } else {
+                    let slot = c.pat_slot[pat]
+                    x_string_value(mut g, c, res, slot)
+                    x_load(mut g, RDI, base)
+                    x_frame_address(mut g, RSI, slot)
+                    x_runtime(mut g, RT_STR_EQ)
+                    x_op(mut g, X_TEST, RAX, RAX)
+                    next = x_jump_if(mut g, CC_E)
+                }
+            }
+        } else if kind == PAT_BIND {
+            // The whole value under a name: a number or `bool` is copied,
+            // anything else is referred to where it is.
+            x_load(mut g, R8, base)
+            x_store_slot(mut g, c.pat_slot[pat], R8)
+        }
+        x_block(mut g, c, p, p.ast.arms[arm_id].body)
+        if test {
+            ends.push(x_jump(mut g))
+        }
+        if next >= 0 {
+            x_patch(mut g, next)
+        }
+        i = i + 1
+    }
+    for at in ends {
+        x_patch(mut g, at)
+    }
+    if owned {
+        let slot = g.live_slots.pop()
+        let live_ty = g.live_tys.pop()
+        x_drop_frame(mut g, c, base + 1, ty)
+    }
+}
+
+// ---- memory helpers ---------------------------------------------------
+
+// Evaluates `value` into the frame at `slot`. An owning value that comes
+// from a variable is copied; a temporary's buffers move in.
+fn x_store(g: mut Gen, c: Checker, p: Parser, value: i64, slot: i64) {
+    let ty = c.expr_ty[g.sh_e + value]
+    if ty >= 3 {
+        x_address(mut g, c, p, value)
+        x_copy_to_frame(mut g, slot, ck_size_of(c, ty))
+        if c.expr_moved[g.sh_e + value] != 1 && ck_needs_drop(c, ty) {
+            x_clone_frame(mut g, c, slot, ty)
+        }
+        x_moved_out(mut g, c, value)
+        return
+    }
+    let reg = x_slot_register(g, slot)
+    if reg >= 0 {
+        x_value_in(mut g, c, p, value, reg)
+    } else {
+        let source = x_source(mut g, c, p, value)
+        x_store_slot(mut g, slot, source)
+    }
+}
+
+// Evaluates a number or `bool` that is about to be stored and returns
+// the register it is in: the one the variable lives in, or rax.
+fn x_source(g: mut Gen, c: Checker, p: Parser, value: i64) -> i64 {
+    let reg = x_in_register(g, c, value)
+    if reg >= 0 {
+        return reg
+    }
+    x_value(mut g, c, p, value)
+    return RAX
+}
+
+// The frame slot of `id` when it is a whole local variable, or -1.
+fn x_variable_slot(g: Gen, c: Checker, id: i64) -> i64 {
+    if g.kinds[id] != K_IDENT {
+        return -1
+    }
+    let place = x_place(g, c, id)
+    if place < 0 || (place & 4096) != 0 {
+        return -1
+    }
+    return place & 4095
+}
+
+// Called after the value of `id` has been stored somewhere. When `id` is
+// a variable whose buffers the store took over, the variable is left
+// owning nothing, so that the end of its scope frees nothing.
+fn x_moved_out(g: mut Gen, c: Checker, id: i64) {
+    if c.expr_moved[g.sh_e + id] != 1 {
+        return
+    }
+    let slot = x_variable_slot(g, c, id)
+    if slot >= 0 {
+        x_zero_idle(mut g, c, slot, c.expr_ty[g.sh_e + id])
+    }
+}
+
+// Writes string literal number `index` into three frame slots.
+fn x_string_value(g: mut Gen, c: Checker, index: i64, slot: i64) {
+    // A string value is a pointer, a length and a capacity.
+    // lea rax, [rip + data]
+    g.code.push(0x48)
+    g.code.push(0x8D)
+    g.code.push(0x05)
+    x_imm32(mut g, 0)
+    g.data_refs.push(Fixup { field: g.code.len() - 4, value: c.string_offsets[index] })
+    x_store_slot(mut g, slot, RAX)
+    x_mov_imm(mut g, RAX, c.string_lens[index])
+    x_store_slot(mut g, slot + 1, RAX)
+    // capacity 0: not owned
+    x_zero_slot(mut g, slot + 2)
+}
+
+// Builds the enum value of expression `id` in its temporary and leaves
+// the temporary's address in rax. The arguments are a run in `Ast.lists`.
+fn x_enum_value(g: mut Gen, c: Checker, p: Parser, id: i64, args_start: i64, args_len: i64) {
+    let index = ty_index(c.expr_ty[g.sh_e + id])
+    let variant = c.expr_aux[g.sh_e + id]
+    let tmp = c.expr_tmp[g.sh_e + id]
+    var i = 0
+    while i < args_len {
+        let offset = c.enums[index].variants[variant].field_offsets[i]
+        x_store(mut g, c, p, p.ast.lists[args_start + i], tmp + offset)
+        i = i + 1
+    }
+    // The tag goes in last: until then the temporary counts as empty.
+    x_mov_imm(mut g, RAX, variant + 1)
+    x_store_slot(mut g, tmp, RAX)
+    x_frame_address(mut g, RAX, tmp)
+}
+
+// Copies `size` slots from the address in rax into the frame.
+fn x_copy_to_frame(g: mut Gen, slot: i64, size: i64) {
+    var i = 0
+    while i < size {
+        x_load_mem(mut g, R9, RAX, 8 * i)
+        x_store_slot(mut g, slot + i, R9)
+        i = i + 1
+    }
+}
+
+// Copies `size` slots from the address in rax to `offset` slots past the
+// address in r8.
+fn x_copy_to_pointer(g: mut Gen, offset: i64, size: i64) {
+    var i = 0
+    while i < size {
+        x_load_mem(mut g, R9, RAX, 8 * i)
+        x_store_mem(mut g, R8, 8 * (offset + i), R9)
+        i = i + 1
+    }
+}
+
+// Prepares the address of element `index` of a buffer whose elements
+// take `elem_size` slots: it is the buffer plus the returned register
+// times 8. One slot needs no instruction at all; other sizes are worked
+// out in rcx, the only register this changes.
+fn x_scaled(g: mut Gen, index: i64, elem_size: i64) -> i64 {
+    if elem_size == 1 {
+        return index
+    }
+    if elem_size == 2 {
+        x_lea_index(mut g, RCX, index, index, 0, 0)
+    } else if elem_size == 3 {
+        x_lea_index(mut g, RCX, index, index, 1, 0)
+    } else if elem_size == 4 {
+        x_lea_scaled(mut g, RCX, index, 2)
+    } else if elem_size == 5 {
+        x_lea_index(mut g, RCX, index, index, 2, 0)
+    } else if elem_size == 8 {
+        x_lea_scaled(mut g, RCX, index, 3)
+    } else if elem_size == 9 {
+        x_lea_index(mut g, RCX, index, index, 3, 0)
+    } else {
+        x_imul_imm(mut g, RCX, index, elem_size)
+    }
+    return RCX
+}
+
+// When `id` is an element of a list or a part of one, however deep: the
+// list, the index, and how many bytes into the element the part starts.
+fn x_element_path(g: Gen, c: Checker, id: i64) -> XPath {
+    var at = id
+    var offset = 0
+    var kind = g.kinds[at]
+    while kind == K_FIELD {
+        offset = offset + c.expr_res[g.sh_e + at]
+        at = g.ea[at]
+        kind = g.kinds[at]
+    }
+    if kind == K_INDEX && ty_is_list(c.expr_ty[g.sh_e + g.ea[at]]) {
+        return XPath { ok: true, base: g.ea[at], index: g.eb[at], offset: 8 * offset }
+    }
+    return XPath { ok: false, base: 0, index: 0, offset: 0 }
+}
+
+// True when `id` is an element of a list or a part of one.
+fn x_is_element(g: Gen, c: Checker, id: i64) -> bool {
+    var at = id
+    var kind = g.kinds[at]
+    while kind == K_FIELD {
+        at = g.ea[at]
+        kind = g.kinds[at]
+    }
+    return kind == K_INDEX && ty_is_list(c.expr_ty[g.sh_e + g.ea[at]])
+}
+
+// How many slots an element of the list `base` takes.
+fn x_element_slots(g: Gen, c: Checker, base: i64) -> i64 {
+    return ck_size_of(c, c.lists[ty_index(c.expr_ty[g.sh_e + base])])
+}
+
+// Evaluates the index of `base[index]` and checks it against the length
+// of the list or string, then leaves the buffer in r8 and returns the
+// register that holds the index: the one it lives in, or rcx. The index
+// is evaluated first, so that nothing runs between finding the buffer
+// and using it.
+fn x_checked_index(g: mut Gen, c: Checker, p: Parser, base: i64, index: i64) -> i64 {
+    let place = x_place(g, c, base)
+    var at = x_in_register(g, c, index)
+    if at < 0 {
+        if place >= 0 && x_is_simple(g, c, index) {
+            x_load_simple(mut g, c, index, RCX)
+        } else {
+            x_value(mut g, c, p, index)
+            if place >= 0 {
+                x_mov(mut g, RCX, RAX)
+            } else {
+                x_push(mut g)
+            }
+        }
+        at = RCX
+    }
+    var header = RAX
+    var disp = 0
+    if place >= 0 {
+        let found = x_header(mut g, place, R8)
+        header = found & 15
+        disp = found >> 4
+    } else {
+        x_address(mut g, c, p, base)
+        if at == RCX {
+            x_pop(mut g, RCX)
+        }
+    }
+    // length
+    x_cmp_mem(mut g, at, header, disp + 8)
+    // An unsigned compare also rejects negatives.
+    x_runtime_unless(mut g, CC_B, RT_INDEX_FAIL)
+    // buffer
+    x_load_mem(mut g, R8, header, disp)
+    return at
+}
+
+// Checks the index of `base[index]` and returns where that element of
+// the list is. Uses rcx, r8 and r10 besides what the index and the list
+// take to evaluate.
+fn x_element(g: mut Gen, c: Checker, p: Parser, base: i64, index: i64) -> XMem {
+    let slots = x_element_slots(g, c, base)
+    return x_indexed(mut g, c, p, base, index, slots, 3)
+}
+
+// The index of `base[index]` as it can be remembered, or -1. Constants
+// are kept small enough for any offset made from them to fit in an
+// instruction; a negative one is left to fail its check.
+fn x_index_key(g: Gen, c: Checker, index: i64, slots: i64) -> i64 {
+    let reg = x_in_register(g, c, index)
+    if reg >= 0 {
+        return reg
+    }
+    if slots < 256 && x_kind(g, c, index) == K_INT {
+        let value = x_int_value(g, c, index)
+        if value >= 0 && value < 1048576 {
+            return 16 + value
+        }
+    }
+    return -1
+}
+
+// Checks the index of `base[index]` against the length and returns where
+// the element is. An element takes `slots` slots; one of a single slot
+// is `1 << shift` bytes (a list's number, a string's byte).
+//
+// When the list or string is in a fixed place and the index is a
+// variable in a register or a small constant, a check made before on
+// every path here is not made again, and r10 is reused when it still
+// holds the buffer or the element's address.
+fn x_indexed(g: mut Gen, c: Checker, p: Parser, base: i64, index: i64, slots: i64, shift: i64) -> XMem {
+    let place = x_place(g, c, base)
+    var at = -1
+    if place >= 0 {
+        at = x_index_key(g, c, index, slots)
+    }
+    if at < 0 {
+        let reg = x_checked_index(mut g, c, p, base, index)
+        if slots == 1 {
+            return XMem { base: R8, index: reg, scale: shift, disp: 0 }
+        }
+        let scaled = x_scaled(mut g, reg, slots)
+        return XMem { base: R8, index: scaled, scale: 3, disp: 0 }
+    }
+    // An element of several slots is used through its address; of any
+    // other only the buffer is kept, which serves every index.
+    let whole = slots != 1 && at < 16
+    var wanted = -1
+    if whole {
+        wanted = at
+    }
+    var known = false
+    var i = 0
+    while i < g.known_len {
+        if g.known_places[i] == place && g.known_ats[i] == at {
+            known = true
+        }
+        i = i + 1
+    }
+    let held = g.held_ok && g.held_place == place && g.held_at == wanted
+    if !known || !held {
+        let found = x_header(mut g, place, R8)
+        let header = found & 15
+        let disp = found >> 4
+        if !known {
+            // An unsigned compare also rejects negatives.
+            if at < 16 {
+                x_cmp_mem(mut g, at, header, disp + 8)
+                x_runtime_unless(mut g, CC_B, RT_INDEX_FAIL)
+            } else {
+                x_op_mem_imm(mut g, CMP_I, header, disp + 8, at - 16)
+                x_runtime_unless(mut g, CC_A, RT_INDEX_FAIL)
+            }
+            if g.known_len == KNOWN {
+                i = 1
+                while i < KNOWN {
+                    g.known_places[i - 1] = g.known_places[i]
+                    g.known_ats[i - 1] = g.known_ats[i]
+                    g.known_since[i - 1] = g.known_since[i]
+                    i = i + 1
+                }
+                g.known_len = KNOWN - 1
+            }
+            let n = g.known_len
+            g.known_places[n] = place
+            g.known_ats[n] = at
+            g.known_since[n] = g.code.len()
+            g.known_len = n + 1
+        }
+        if !held {
+            if whole {
+                x_load_mem(mut g, R8, header, disp)
+                let scaled = x_scaled(mut g, at, slots)
+                x_lea_index(mut g, R10, R8, scaled, 3, 0)
+            } else {
+                x_load_mem(mut g, R10, header, disp)
+            }
+            g.held_ok = true
+            g.held_place = place
+            g.held_at = wanted
+            g.held_since = g.code.len()
+        }
+    }
+    if whole {
+        return XMem { base: R10, index: -1, scale: 0, disp: 0 }
+    }
+    if at < 16 {
+        return XMem { base: R10, index: at, scale: shift, disp: 0 }
+    }
+    return XMem { base: R10, index: -1, scale: 0, disp: (at - 16) * (slots << shift) }
+}
+
+// True when the number or `bool` `id` sits in memory where an
+// instruction can use it directly: a variable in the frame or behind an
+// address, or a list element whose index takes no work.
+fn x_in_memory(g: Gen, c: Checker, id: i64) -> bool {
+    let kind = g.kinds[id]
+    if kind != K_IDENT && kind != K_FIELD && kind != K_INDEX {
+        return false
+    }
+    if c.expr_ty[g.sh_e + id] >= 3 {
+        return false
+    }
+    if kind == K_IDENT && c.expr_aux[g.sh_e + id] >= CONST_STR {
+        return false
+    }
+    let place = x_place(g, c, id)
+    if place >= 0 {
+        return x_register(g, place) < 0
+    }
+    let path = x_element_path(g, c, id)
+    return path.ok && x_index_keeps_rax(g, c, path.base, path.index)
+}
+
+// Where a value that is `x_in_memory` sits. For a list element this
+// checks the index. Changes no register but rcx, r8 and r10.
+fn x_memory(g: mut Gen, c: Checker, p: Parser, id: i64) -> XMem {
+    let place = x_place(g, c, id)
+    if place >= 0 {
+        let found = x_header(mut g, place, R8)
+        return XMem { base: found & 15, index: -1, scale: 0, disp: found >> 4 }
+    }
+    let path = x_element_path(g, c, id)
+    var at = x_element(mut g, c, p, path.base, path.index)
+    at.disp = at.disp + path.offset
+    return at
+}
+
+// True when `id` is a list element whose index is the variable in
+// register `reg`.
+fn x_indexed_by(g: Gen, c: Checker, id: i64, reg: i64) -> bool {
+    let path = x_element_path(g, c, id)
+    return path.ok && x_in_register(g, c, path.index) == reg
+}
+
+// True when `x_indexed` leaves rax alone for these two.
+fn x_index_keeps_rax(g: Gen, c: Checker, base: i64, index: i64) -> bool {
+    if x_place(g, c, base) < 0 {
+        return false
+    }
+    return x_in_register(g, c, index) >= 0 || x_is_simple(g, c, index)
+}
+
+// The location of a variable or of a field path inside a variable, when
+// it is fixed at compile time: the slot, plus 4096 when the slot holds
+// an address, plus the offset times 8192. -1 for computed values and for
+// anything reached through a list index.
+fn x_place(g: Gen, c: Checker, id: i64) -> i64 {
+    let kind = g.kinds[id]
+    if kind == K_IDENT {
+        let at = g.sh_e + id
+        if c.expr_aux[at] >= CONST_STR {
+            return -1
+        }
+        let res = c.expr_res[at]
+        if res == VARIANT {
+            // `None` and the like are values, not variables.
+            return -1
+        }
+        if res >= BY_REF {
+            return res - BY_REF + 4096
+        }
+        return res
+    }
+    if kind == K_FIELD {
+        let place = x_place(g, c, g.ea[id])
+        if place < 0 {
+            return -1
+        }
+        return place + c.expr_res[g.sh_e + id] * 8192
+    }
+    return -1
+}
+
+// Leaves the address of a place in `reg`, using no other register.
+fn x_place_address_in(g: mut Gen, place: i64, reg: i64) {
+    if (place & 4096) != 0 {
+        let pointer = x_pointer(mut g, place, reg)
+        let offset = place >> 13
+        if offset > 0 {
+            x_lea(mut g, reg, pointer, 8 * offset)
+        } else if pointer != reg {
+            x_mov(mut g, reg, pointer)
+        }
+    } else {
+        x_frame_address(mut g, reg, (place & 4095) + (place >> 13))
+    }
+}
+
+// ---- expressions ------------------------------------------------------
+
+// Evaluates an expression for its effects, whatever its type.
+fn x_eval(g: mut Gen, c: Checker, p: Parser, id: i64) {
+    if c.expr_ty[g.sh_e + id] >= 3 {
+        x_address(mut g, c, p, id)
+    } else {
+        x_value(mut g, c, p, id)
+    }
+}
+
+// Generates code that leaves in rax the address of an aggregate value,
+// or of any expression that names a place. A computed aggregate is
+// first stored in its own temporary.
+fn x_address(g: mut Gen, c: Checker, p: Parser, id: i64) {
+    let place = x_place(g, c, id)
+    if place >= 0 {
+        x_place_address_in(mut g, place, RAX)
+        return
+    }
+    let path = x_element_path(g, c, id)
+    if path.ok {
+        let at = x_element(mut g, c, p, path.base, path.index)
+        x_lea_at(mut g, RAX, at, path.offset)
+        return
+    }
+    let kind = x_kind(g, c, id)
+    let tmp = c.expr_tmp[g.sh_e + id]
+    if kind == K_STR {
+        x_string_value(mut g, c, c.expr_res[g.sh_e + id], tmp)
+        x_frame_address(mut g, RAX, tmp)
+    } else if kind == K_IDENT {
+        x_enum_value(mut g, c, p, id, 0, 0)
+    } else if kind == K_BINARY {
+        // `a + b` on strings: a new string in this expression's temporary.
+        x_address(mut g, c, p, g.ea[id])
+        x_push(mut g)
+        x_address(mut g, c, p, g.eb[id])
+        x_mov(mut g, RSI, RAX)
+        x_pop(mut g, RDI)
+        x_frame_address(mut g, RDX, tmp)
+        x_runtime(mut g, RT_STR_CONCAT)
+        x_frame_address(mut g, RAX, tmp)
+    } else if kind == K_STRUCT {
+        let start = g.eb[id]
+        let len = g.ec[id]
+        var i = 0
+        while i < len {
+            let init_id = p.ast.lists[start + i]
+            x_store(mut g, c, p, p.ast.field_inits[init_id].value, tmp + c.init_offset[g.sh_i + init_id])
+            i = i + 1
+        }
+        x_frame_address(mut g, RAX, tmp)
+    } else if kind == K_ARRAY {
+        x_list_literal(mut g, c, p, id)
+    } else if kind == K_TRY {
+        x_try_expr(mut g, c, p, id, g.ea[id])
+    } else if kind == K_CALL {
+        if c.expr_res[g.sh_e + id] == BUILTIN_VARIANT {
+            x_enum_value(mut g, c, p, id, g.eb[id], g.ec[id])
+        } else {
+            x_call(mut g, c, p, id)
+            x_frame_address(mut g, RAX, tmp)
+        }
+    } else {
+        // A field of a computed value. An element of a list was handled
+        // above.
+        x_address(mut g, c, p, g.ea[id])
+        let offset = c.expr_res[g.sh_e + id]
+        if offset > 0 {
+            x_lea(mut g, RAX, RAX, 8 * offset)
+        }
+    }
+}
+
+// `inner?`. When `inner` is an `Ok` or a `Some`, what it holds is the
+// value: a number or `bool` in rax, anything else in this expression's
+// temporary with its address in rax. Otherwise the function returns the
+// `Err` or the `None` here and now, after freeing what a `return` at
+// this point would free.
+fn x_try_expr(g: mut Gen, c: Checker, p: Parser, id: i64, inner: i64) {
+    let index = ty_index(c.expr_ty[g.sh_e + inner])
+    let ret_index = ty_index(g.ret)
+    let value_ty = c.enums[index].variants[0].field_tys[0]
+    let value_at = c.enums[index].variants[0].field_offsets[0]
+    // A temporary gives away what it holds and is left empty (tag 0);
+    // what a variable holds is copied.
+    let from_temp = (c.expr_aux[g.sh_e + id] & 1) == 1
+    let start = c.expr_res[g.sh_e + id]
+    let len = c.expr_aux[g.sh_e + id] >> 1
+    let inner_tmp = c.expr_tmp[g.sh_e + inner]
+    x_address(mut g, c, p, inner)
+    // The tag of `Ok` and `Some`.
+    x_op_mem_imm(mut g, CMP_I, RAX, 0, 1)
+    let ok = x_jump_if(mut g, CC_E)
+
+    x_load(mut g, R8, g.sret_slot)
+    if c.enums[index].variants[1].field_tys.len() > 0 {
+        let error_ty = c.enums[index].variants[1].field_tys[0]
+        let error_at = c.enums[index].variants[1].field_offsets[0]
+        let error_to = c.enums[ret_index].variants[1].field_offsets[0]
+        let size = ck_size_of(c, error_ty)
+        var i = 0
+        while i < size {
+            x_load_mem(mut g, RCX, RAX, (error_at + i) * 8)
+            x_store_mem(mut g, R8, (error_to + i) * 8, RCX)
+            i = i + 1
+        }
+        x_store_imm(mut g, R8, 0, 2)
+        if ck_needs_drop(c, error_ty) {
+            if from_temp {
+                x_zero_slot(mut g, inner_tmp)
+            } else {
+                x_lea(mut g, RDI, R8, error_to * 8)
+                x_clone_value(mut g, c, error_ty)
+            }
+        }
+    } else {
+        x_store_imm(mut g, R8, 0, 2)
+    }
+    x_drop_range(mut g, c, start, len, false)
+    var k = g.live_slots.len() - 1
+    while k >= 0 {
+        x_drop_frame(mut g, c, g.live_slots[k], g.live_tys[k])
+        k = k - 1
+    }
+    x_mov_imm(mut g, RAX, 0)
+    // Leaving also takes off what the unfinished statement parked on the
+    // stack.
+    x_function_epilogue(mut g)
+
+    x_patch(mut g, ok)
+    if !ty_is_aggregate(value_ty) {
+        x_load_mem(mut g, RAX, RAX, value_at * 8)
+        return
+    }
+    let tmp = c.expr_tmp[g.sh_e + id]
+    x_lea(mut g, RAX, RAX, value_at * 8)
+    x_copy_to_frame(mut g, tmp, ck_size_of(c, value_ty))
+    if ck_needs_drop(c, value_ty) {
+        if from_temp {
+            x_zero_slot(mut g, inner_tmp)
+        } else {
+            x_clone_frame(mut g, c, tmp, value_ty)
+        }
+    }
+    x_frame_address(mut g, RAX, tmp)
+}
+
+fn x_list_literal(g: mut Gen, c: Checker, p: Parser, id: i64) {
+    let tmp = c.expr_tmp[g.sh_e + id]
+    let start = g.eb[id]
+    let count = g.ec[id]
+    if count == 0 {
+        x_zero_slot(mut g, tmp)
+        x_zero_slot(mut g, tmp + 1)
+        x_zero_slot(mut g, tmp + 2)
+        x_frame_address(mut g, RAX, tmp)
+        return
+    }
+    let elem = c.expr_ty[g.sh_e + p.ast.lists[start]]
+    let elem_size = ck_size_of(c, elem)
+    x_mov_imm(mut g, RDI, count * elem_size * 8)
+    x_runtime(mut g, RT_ALLOC)
+    x_store_slot(mut g, tmp, RAX)
+    var i = 0
+    while i < count {
+        let item = p.ast.lists[start + i]
+        let offset = i * elem_size
+        x_eval(mut g, c, p, item)
+        x_load(mut g, R8, tmp)
+        if c.expr_ty[g.sh_e + item] >= 3 {
+            x_copy_to_pointer(mut g, offset, elem_size)
+            let item_ty = c.expr_ty[g.sh_e + item]
+            if c.expr_moved[g.sh_e + item] != 1 && ck_needs_drop(c, item_ty) {
+                // The element was copied from a variable: give the copy
+                // in the list buffers of its own.
+                x_load(mut g, RDI, tmp)
+                x_lea(mut g, RDI, RDI, 8 * offset)
+                x_clone_value(mut g, c, item_ty)
+            }
+            x_moved_out(mut g, c, item)
+        } else {
+            x_store_mem(mut g, R8, 8 * offset, RAX)
+        }
+        i = i + 1
+    }
+    x_mov_imm(mut g, RAX, count)
+    // length
+    x_store_slot(mut g, tmp + 1, RAX)
+    // capacity
+    x_store_slot(mut g, tmp + 2, RAX)
+    x_frame_address(mut g, RAX, tmp)
+}
+
+// True for a number or `bool` that one or two instructions can load into
+// any register without disturbing rax: a constant, a variable, a field
+// of a variable.
+fn x_is_simple(g: Gen, c: Checker, id: i64) -> bool {
+    let kind = g.kinds[id]
+    if kind == K_INT || kind == K_BOOL {
+        return true
+    }
+    if kind == K_IDENT {
+        let aux = c.expr_aux[g.sh_e + id]
+        if aux >= CONST_STR {
+            return aux != CONST_STR
+        }
+    } else if kind != K_FIELD {
+        return false
+    }
+    return c.expr_ty[g.sh_e + id] < 3 && x_place(g, c, id) >= 0
+}
+
+// Loads a simple value into `reg`, using no other register.
+fn x_load_simple(g: mut Gen, c: Checker, id: i64, reg: i64) {
+    let kind = x_kind(g, c, id)
+    if kind == K_INT {
+        let value = x_int_value(g, c, id)
+        x_mov_imm(mut g, reg, value)
+        return
+    }
+    if kind == K_BOOL {
+        let value = x_bool_value(g, c, id)
+        x_mov_imm(mut g, reg, value)
+        return
+    }
+    let place = x_place(g, c, id)
+    if (place & 4096) != 0 {
+        // The pointer passes through the same register.
+        let pointer = x_pointer(mut g, place, reg)
+        x_load_mem(mut g, reg, pointer, 8 * (place >> 13))
+        return
+    }
+    let home = x_register(g, place)
+    if home >= 0 {
+        if home != reg {
+            x_mov(mut g, reg, home)
+        }
+    } else {
+        x_load(mut g, reg, (place & 4095) + (place >> 13))
+    }
+}
+
+// True when `id` is a number written in the program (or a constant
+// naming one) that fits in an instruction.
+fn x_is_small_constant(g: Gen, c: Checker, id: i64) -> bool {
+    if x_kind(g, c, id) != K_INT {
+        return false
+    }
+    let value = c.ints[c.expr_res[g.sh_e + id]]
+    return value >= -2147483648 && value <= 2147483647
+}
+
+// Evaluates both operands of an operation on numbers, left one first,
+// and says where they ended up: the register holding the left one, and
+// the right one. A variable that lives in a register is used where it
+// is. `constants` allows a small constant on the right to stay inside
+// the instruction, and a value in memory to stay there. Besides variable
+// registers, only rax, rcx and the park registers are ever returned.
+fn x_operands(g: mut Gen, c: Checker, p: Parser, lhs: i64, rhs: i64, constants: bool) -> XOps {
+    var left = x_in_register(g, c, lhs)
+    if constants {
+        if x_is_small_constant(g, c, rhs) {
+            if left < 0 {
+                x_value(mut g, c, p, lhs)
+                left = RAX
+            }
+            return XOps { left: left, kind: RIGHT_CONSTANT, value: x_int_value(g, c, rhs), mem: x_no_mem() }
+        }
+        if x_in_memory(g, c, rhs) {
+            // Finding it leaves rax and the waiting operands alone.
+            if left < 0 {
+                x_value(mut g, c, p, lhs)
+                left = RAX
+            }
+            let at = x_memory(mut g, c, p, rhs)
+            return XOps { left: left, kind: RIGHT_MEM, value: 0, mem: at }
+        }
+    }
+    let right = x_in_register(g, c, rhs)
+    if left >= 0 && right >= 0 {
+        return XOps { left: left, kind: RIGHT_REG, value: right, mem: x_no_mem() }
+    }
+    if left >= 0 {
+        x_value(mut g, c, p, rhs)
+        return XOps { left: left, kind: RIGHT_REG, value: RAX, mem: x_no_mem() }
+    }
+    if right >= 0 {
+        x_value(mut g, c, p, lhs)
+        return XOps { left: RAX, kind: RIGHT_REG, value: right, mem: x_no_mem() }
+    }
+    let simple = x_is_simple(g, c, rhs)
+    if !simple && g.parked < 4 && x_fits(g, c, rhs, 4 - g.parked - 1) {
+        // The right one needs no call: the left one waits in a register
+        // of its own, where it is computed.
+        let park = x_park(g.parked)
+        x_value_in(mut g, c, p, lhs, park)
+        g.parked = g.parked + 1
+        x_value(mut g, c, p, rhs)
+        g.parked = g.parked - 1
+        return XOps { left: park, kind: RIGHT_REG, value: RAX, mem: x_no_mem() }
+    }
+    x_value(mut g, c, p, lhs)
+    if simple {
+        // Nothing runs in between, so the left one can wait in rcx.
+        x_mov(mut g, RCX, RAX)
+        x_load_simple(mut g, c, rhs, RAX)
+    } else {
+        // The right one may call: the left one waits in the frame.
+        let at = x_wait_slot(mut g)
+        x_store_at(mut g, at, 0, RAX)
+        x_value(mut g, c, p, rhs)
+        g.waiting = g.waiting - 1
+        if constants {
+            return XOps { left: RAX, kind: RIGHT_WAITING, value: 0, mem: at }
+        }
+        x_load_at(mut g, RCX, at, 0)
+    }
+    return XOps { left: RCX, kind: RIGHT_REG, value: RAX, mem: x_no_mem() }
+}
+
+// True when `x_value` computes the number or `bool` `id` with no call
+// and nothing on the stack, in rax, rcx, rdx, r8, r10 and at most `free`
+// of the park registers. Whatever is not known to be that simple is
+// refused.
+fn x_fits(g: Gen, c: Checker, id: i64, free: i64) -> bool {
+    let kind = x_kind(g, c, id)
+    if kind == K_INT || kind == K_BOOL {
+        return true
+    }
+    if kind == K_IDENT {
+        return x_is_simple(g, c, id)
+    }
+    if kind == K_INDEX && c.expr_ty[g.sh_e + g.ea[id]] == TY_STR {
+        return x_place(g, c, g.ea[id]) >= 0 && x_fits(g, c, g.eb[id], free)
+    }
+    if kind == K_FIELD || kind == K_INDEX {
+        if x_is_simple(g, c, id) {
+            return true
+        }
+        let path = x_element_path(g, c, id)
+        return path.ok && c.expr_ty[g.sh_e + id] < 3 && x_place(g, c, path.base) >= 0 && x_fits(g, c, path.index, free)
+    }
+    if kind == K_UNARY {
+        return x_fits(g, c, g.ea[id], free)
+    }
+    if kind == K_BINARY {
+        let ty = c.expr_ty[g.sh_e + g.ea[id]]
+        return (ty == TY_I64 || ty == TY_BOOL) && free > 0 && x_fits(g, c, g.ea[id], free) && x_fits(g, c, g.eb[id], free - 1)
+    }
+    if kind == K_CALL && c.expr_res[g.sh_e + id] == BUILTIN_LEN {
+        let callee = g.ea[id]
+        return g.kinds[callee] == K_FIELD && x_place(g, c, g.ea[callee]) >= 0
+    }
+    return false
+}
+
+// Compares two numbers or `bool`s and leaves the result in the flags.
+fn x_compare_flags(g: mut Gen, c: Checker, p: Parser, lhs: i64, rhs: i64) {
+    // A variable in a register is compared with a length, or with a
+    // variable in the frame, where that sits in memory.
+    let left = x_in_register(g, c, lhs)
+    if left >= 0 {
+        if g.kinds[rhs] == K_CALL && c.expr_res[g.sh_e + rhs] == BUILTIN_LEN {
+            let callee = g.ea[rhs]
+            if g.kinds[callee] == K_FIELD {
+                let place = x_place(g, c, g.ea[callee])
+                if place >= 0 {
+                    let found = x_header(mut g, place, RAX)
+                    x_cmp_mem(mut g, left, found & 15, (found >> 4) + 8)
+                    return
+                }
+            }
+        }
+    } else if x_in_memory(g, c, lhs) {
+        // A value in memory is compared where it is.
+        if x_is_small_constant(g, c, rhs) {
+            let at = x_memory(mut g, c, p, lhs)
+            let value = x_int_value(g, c, rhs)
+            x_cmp_at_imm(mut g, at, value)
+            return
+        }
+        let right = x_in_register(g, c, rhs)
+        if right >= 0 {
+            let at = x_memory(mut g, c, p, lhs)
+            x_cmp_at_reg(mut g, at, right)
+            return
+        }
+    }
+    let ops = x_operands(mut g, c, p, lhs, rhs, true)
+    if ops.kind == RIGHT_CONSTANT {
+        if ops.value == 0 {
+            // Against zero, `test` sets the same flags in fewer bytes.
+            x_op(mut g, X_TEST, ops.left, ops.left)
+        } else {
+            x_op_imm(mut g, CMP_I, ops.left, ops.value)
+        }
+    } else if ops.kind == RIGHT_REG {
+        x_op(mut g, X_CMP, ops.left, ops.value)
+    } else if ops.kind == RIGHT_MEM {
+        x_op_at(mut g, X_CMP, ops.left, ops.mem)
+    } else {
+        x_cmp_at_reg(mut g, ops.mem, RAX)
+    }
+}
+
+// `setcc al` for condition `cc`, then `movzx eax, al`.
+fn x_set_flag(g: mut Gen, cc: i64) {
+    g.code.push(0x0F)
+    g.code.push(0x90 | cc)
+    g.code.push(0xC0)
+    g.code.push(0x0F)
+    g.code.push(0xB6)
+    g.code.push(0xC0)
+}
+
+// Generates code that leaves a scalar value in rax.
+fn x_value(g: mut Gen, c: Checker, p: Parser, id: i64) {
+    let kind = x_kind(g, c, id)
+    if kind == K_TRY {
+        x_try_expr(mut g, c, p, id, g.ea[id])
+        return
+    }
+    if kind == K_INT {
+        let value = x_int_value(g, c, id)
+        x_mov_imm(mut g, RAX, value)
+        return
+    }
+    if kind == K_BOOL {
+        let value = x_bool_value(g, c, id)
+        x_mov_imm(mut g, RAX, value)
+        return
+    }
+    if kind == K_INDEX && c.expr_ty[g.sh_e + g.ea[id]] == TY_STR {
+        // A byte of a string, checked like a list index.
+        let at = x_indexed(mut g, c, p, g.ea[id], g.eb[id], 1, 0)
+        x_load_byte(mut g, at)
+        return
+    }
+    if kind == K_IDENT || kind == K_FIELD || kind == K_INDEX {
+        let place = x_place(g, c, id)
+        if place >= 0 {
+            if (place & 4096) != 0 {
+                let pointer = x_pointer(mut g, place, RAX)
+                x_load_mem(mut g, RAX, pointer, 8 * (place >> 13))
+                return
+            }
+            let reg = x_register(g, place)
+            if reg >= 0 {
+                x_mov(mut g, RAX, reg)
+            } else {
+                x_load(mut g, RAX, (place & 4095) + (place >> 13))
+            }
+            return
+        }
+        let path = x_element_path(g, c, id)
+        if path.ok {
+            // A list element or a part of one, read where it is.
+            let at = x_element(mut g, c, p, path.base, path.index)
+            x_load_at(mut g, RAX, at, path.offset)
+        } else {
+            // A field of a computed value.
+            x_address(mut g, c, p, id)
+            x_load_mem(mut g, RAX, RAX, 0)
+        }
+        return
+    }
+    if kind == K_UNARY {
+        x_value(mut g, c, p, g.ea[id])
+        if g.ec[id] == 0 {
+            // neg rax
+            g.code.push(0x48)
+            g.code.push(0xF7)
+            g.code.push(0xD8)
+        } else {
+            x_op_imm(mut g, XOR_I, RAX, 1)
+        }
+        return
+    }
+    if kind == K_BINARY {
+        let op = g.ec[id]
+        let lhs = g.ea[id]
+        let rhs = g.eb[id]
+        if op == OP_AND || op == OP_OR {
+            // Short circuit: the left value is the result when it decides.
+            x_value(mut g, c, p, lhs)
+            x_op(mut g, X_TEST, RAX, RAX)
+            var cc = CC_E
+            if op == OP_OR {
+                cc = CC_NE
+            }
+            let skip = x_jump_if(mut g, cc)
+            x_value(mut g, c, p, rhs)
+            x_patch(mut g, skip)
+            return
+        }
+        let ty = c.expr_ty[g.sh_e + lhs]
+        if ty_is_enum(ty) {
+            // `==` and `!=` on enums without values compare the tags.
+            // The left tag is read before the right side is computed.
+            x_address(mut g, c, p, lhs)
+            x_load_mem(mut g, RAX, RAX, 0)
+            x_push(mut g)
+            x_address(mut g, c, p, rhs)
+            x_load_mem(mut g, RAX, RAX, 0)
+            x_pop(mut g, RCX)
+            x_op(mut g, X_CMP, RCX, RAX)
+            // setcc al; movzx rax, al
+            g.code.push(0x0F)
+            if op == OP_EQ {
+                g.code.push(0x90 | CC_E)
+            } else {
+                g.code.push(0x90 | CC_NE)
+            }
+            g.code.push(0xC0)
+            g.code.push(0x48)
+            g.code.push(0x0F)
+            g.code.push(0xB6)
+            g.code.push(0xC0)
+            return
+        }
+        if ty == TY_STR {
+            // `==` and `!=` on strings compare the bytes.
+            x_address(mut g, c, p, lhs)
+            x_push(mut g)
+            x_address(mut g, c, p, rhs)
+            x_mov(mut g, RSI, RAX)
+            x_pop(mut g, RDI)
+            x_runtime(mut g, RT_STR_EQ)
+            if op == OP_NE {
+                x_op_imm(mut g, XOR_I, RAX, 1)
+            }
+            return
+        }
+        x_binary(mut g, c, p, op, lhs, rhs, RAX)
+        return
+    }
+    // A call: the checker rejected everything else that is not a scalar.
+    x_call(mut g, c, p, id)
+}
+
+// Generates an operation on two numbers or `bool`s, with the result in
+// `dest`: rax, or the register of the variable it is stored in.
+fn x_binary(g: mut Gen, c: Checker, p: Parser, op: i64, lhs_in: i64, rhs_in: i64, dest: i64) {
+    let cc = x_comparison(op)
+    if cc >= 0 {
+        x_compare_flags(mut g, c, p, lhs_in, rhs_in)
+        x_set_flag(mut g, cc)
+        if dest != RAX {
+            x_mov(mut g, dest, RAX)
+        }
+        return
+    }
+    if op == OP_SHL || op == OP_SHR {
+        let right = op == OP_SHR
+        // The processor uses the low 6 bits of the count.
+        if x_kind(g, c, rhs_in) == K_INT {
+            let count = x_int_value(g, c, rhs_in)
+            var left = x_in_register(g, c, lhs_in)
+            if left < 0 {
+                x_value(mut g, c, p, lhs_in)
+                left = RAX
+            }
+            if left != dest {
+                x_mov(mut g, dest, left)
+            }
+            x_shift_imm(mut g, dest, right, count & 63)
+            return
+        }
+        let ops = x_operands(mut g, c, p, lhs_in, rhs_in, false)
+        var left = ops.left
+        // The count belongs in cl.
+        if left == RCX {
+            // Then the count is in rax: swap the two.
+            g.code.push(0x48)
+            // xchg rax, rcx
+            g.code.push(0x91)
+            left = RAX
+        } else if ops.value != RCX {
+            x_mov(mut g, RCX, ops.value)
+        }
+        if left != dest {
+            x_mov(mut g, dest, left)
+        }
+        x_shift_cl(mut g, dest, right)
+        return
+    }
+    if op == OP_DIV || op == OP_REM {
+        let literal = x_kind(g, c, rhs_in) == K_INT
+        var by = 0
+        if literal {
+            by = x_int_value(g, c, rhs_in)
+            if by != 0 && by != 1 && by != -1 && by != 1 << 63 {
+                x_divide_by_constant(mut g, c, p, op, lhs_in, by, dest)
+                return
+            }
+        }
+        let ops = x_operands(mut g, c, p, lhs_in, rhs_in, false)
+        let left = ops.left
+        let right = ops.value
+        // The dividend belongs in rax; the divisor goes to rcx, out of
+        // the way of rax and rdx.
+        if right == RAX {
+            if left == RCX {
+                g.code.push(0x48)
+                // xchg rax, rcx
+                g.code.push(0x91)
+            } else {
+                x_mov(mut g, RCX, RAX)
+                x_mov(mut g, RAX, left)
+            }
+        } else {
+            x_mov(mut g, RCX, right)
+            if left != RAX {
+                x_mov(mut g, RAX, left)
+            }
+        }
+        // Dividing by a constant other than zero needs no check.
+        if !literal || by == 0 {
+            x_op(mut g, X_TEST, RCX, RCX)
+            x_runtime_unless(mut g, CC_NE, RT_DIV_ZERO)
+        }
+        // The processor refuses to divide the smallest number by -1.
+        // Dividing by -1 is negating, with remainder 0, and negating
+        // wraps around like every other operation. A constant divisor
+        // other than -1 cannot hit that case.
+        var done = -1
+        if !literal || by == -1 {
+            x_op_imm(mut g, CMP_I, RCX, -1)
+            let ordinary = x_jump_if(mut g, CC_NE)
+            if op == OP_DIV {
+                x_neg(mut g, RAX)
+            } else {
+                x_mov_imm(mut g, RAX, 0)
+            }
+            if op == OP_REM {
+                // The ordinary path leaves the result in rdx.
+                x_mov(mut g, RDX, RAX)
+            }
+            done = x_jump(mut g)
+            x_patch(mut g, ordinary)
+        }
+        g.code.push(0x48)
+        // cqo: sign-extend rax into rdx
+        g.code.push(0x99)
+        g.code.push(0x48)
+        g.code.push(0xF7)
+        // idiv rcx
+        g.code.push(0xF9)
+        if done >= 0 {
+            x_patch(mut g, done)
+        }
+        var result = RAX
+        if op == OP_REM {
+            result = RDX
+        }
+        if result != dest {
+            x_mov(mut g, dest, result)
+        }
+        return
+    }
+    // `+ - * & | ^`
+    var lhs = lhs_in
+    var rhs = rhs_in
+    if x_is_small_constant(g, c, lhs) && !x_is_small_constant(g, c, rhs) {
+        if op == OP_SUB {
+            // constant - right = -right + constant
+            let constant = x_int_value(g, c, lhs)
+            x_value_in(mut g, c, p, rhs, dest)
+            x_neg(mut g, dest)
+            if constant != 0 {
+                x_op_imm(mut g, ADD_I, dest, constant)
+            }
+            return
+        }
+        // The other operations give the same either way round, and a
+        // constant has nothing to evaluate.
+        lhs = rhs_in
+        rhs = lhs_in
+    }
+    // When the right side is at hand and has nothing to do with the
+    // result register, the left side is computed there directly. rax,
+    // rcx, r8 and r10 are excluded: finding the right side in memory may
+    // use them.
+    let small = x_is_small_constant(g, c, rhs)
+    let right_reg = x_in_register(g, c, rhs)
+    var at_hand = small || (right_reg >= 0 && right_reg != dest)
+    if !at_hand {
+        at_hand = x_in_memory(g, c, rhs) && !x_indexed_by(g, c, rhs, dest)
+    }
+    if at_hand && dest != RAX && dest != RCX && dest != R8 && dest != R10 && x_in_register(g, c, lhs) < 0 {
+        x_value_in(mut g, c, p, lhs, dest)
+        if small {
+            let right = XOps { left: dest, kind: RIGHT_CONSTANT, value: x_int_value(g, c, rhs), mem: x_no_mem() }
+            x_combine(mut g, op, dest, right)
+        } else if right_reg >= 0 {
+            let right = XOps { left: dest, kind: RIGHT_REG, value: right_reg, mem: x_no_mem() }
+            x_combine(mut g, op, dest, right)
+        } else {
+            let at = x_memory(mut g, c, p, rhs)
+            let right = XOps { left: dest, kind: RIGHT_MEM, value: 0, mem: at }
+            x_combine(mut g, op, dest, right)
+        }
+        return
+    }
+    let ops = x_operands(mut g, c, p, lhs, rhs, true)
+    x_combine(mut g, op, dest, ops)
+}
+
+// `dest = left op right` for `+ - * & | ^`, with the operands where
+// `x_operands` left them.
+fn x_combine(g: mut Gen, op: i64, dest: i64, ops: XOps) {
+    let left = ops.left
+    if ops.kind == RIGHT_CONSTANT {
+        let value = ops.value
+        if op == OP_MUL {
+            // Small factors are one address calculation.
+            if value == 2 {
+                x_lea_index(mut g, dest, left, left, 0, 0)
+            } else if value == 3 {
+                x_lea_index(mut g, dest, left, left, 1, 0)
+            } else if value == 4 {
+                x_lea_scaled(mut g, dest, left, 2)
+            } else if value == 5 {
+                x_lea_index(mut g, dest, left, left, 2, 0)
+            } else if value == 8 {
+                x_lea_scaled(mut g, dest, left, 3)
+            } else if value == 9 {
+                x_lea_index(mut g, dest, left, left, 3, 0)
+            } else {
+                x_imul_imm(mut g, dest, left, value)
+            }
+            return
+        }
+        if left != dest {
+            // Adding into another register is one address calculation.
+            if op == OP_ADD {
+                x_lea(mut g, dest, left, value)
+                return
+            }
+            if op == OP_SUB && value != -2147483648 {
+                x_lea(mut g, dest, left, 0 - value)
+                return
+            }
+            x_mov(mut g, dest, left)
+        }
+        var code = XOR_I
+        if op == OP_ADD {
+            code = ADD_I
+        } else if op == OP_SUB {
+            code = SUB_I
+        } else if op == OP_BITAND {
+            code = AND_I
+        } else if op == OP_BITOR {
+            code = OR_I
+        }
+        x_op_imm(mut g, code, dest, value)
+        return
+    }
+    if ops.kind == RIGHT_REG {
+        let right = ops.value
+        if right == dest && left != dest {
+            // The right operand already sits in the result register:
+            // combine the left one into it.
+            if op == OP_SUB {
+                // left - right = -right + left
+                x_neg(mut g, dest)
+                x_op(mut g, X_ADD, dest, left)
+            } else if op == OP_MUL {
+                x_imul(mut g, dest, left)
+            } else {
+                x_op(mut g, x_opcode(op), dest, left)
+            }
+            return
+        }
+        if left != dest {
+            if op == OP_ADD {
+                x_lea_index(mut g, dest, left, right, 0, 0)
+                return
+            }
+            x_mov(mut g, dest, left)
+        }
+        if op == OP_MUL {
+            x_imul(mut g, dest, right)
+        } else {
+            x_op(mut g, x_opcode(op), dest, right)
+        }
+        return
+    }
+    if ops.kind == RIGHT_MEM {
+        // The address must not be made with the register the left
+        // operand is about to be moved to: then the work is done in rax,
+        // which no address uses.
+        var target = dest
+        if left != dest && (ops.mem.base == dest || ops.mem.index == dest) {
+            target = RAX
+        }
+        if left != target {
+            x_mov(mut g, target, left)
+        }
+        if op == OP_MUL {
+            x_imul_at(mut g, target, ops.mem)
+        } else {
+            x_op_at(mut g, x_opcode(op), target, ops.mem)
+        }
+        if target != dest {
+            x_mov(mut g, dest, target)
+        }
+        return
+    }
+    // rax holds the right operand, memory the left one.
+    if op == OP_SUB {
+        // left - right = -right + left
+        x_neg(mut g, RAX)
+        x_op_at(mut g, X_ADD, RAX, ops.mem)
+    } else if op == OP_MUL {
+        x_imul_at(mut g, RAX, ops.mem)
+    } else {
+        x_op_at(mut g, x_opcode(op), RAX, ops.mem)
+    }
+    if dest != RAX {
+        x_mov(mut g, dest, RAX)
+    }
+}
+
+// Divides by a constant without the processor's slow division: the
+// quotient is the high half of a multiplication by a "magic" number,
+// shifted and corrected by one for negative results (the method in
+// Hacker's Delight, chapter 10). The remainder follows from it.
+fn x_divide_by_constant(g: mut Gen, c: Checker, p: Parser, op: i64, lhs: i64, by: i64, dest: i64) {
+    var left = x_in_register(g, c, lhs)
+    if left < 0 {
+        x_value(mut g, c, p, lhs)
+        left = RAX
+    }
+    let magic = x_magic(mut g, by)
+    let shift = g.magic_shift
+    // rax and rdx take the product. The dividend is kept: in the
+    // register its variable lives in, or else in rcx.
+    var dividend = left
+    if left == RAX {
+        x_mov(mut g, RCX, RAX)
+        dividend = RCX
+    } else {
+        x_mov(mut g, RAX, left)
+    }
+    x_mov_imm(mut g, R8, magic)
+    g.code.push(0x49)
+    g.code.push(0xF7)
+    // imul r8: rdx:rax = rax * r8
+    g.code.push(0xE8)
+    if by > 0 && magic < 0 {
+        x_op(mut g, X_ADD, RDX, dividend)
+    } else if by < 0 && magic > 0 {
+        x_op(mut g, X_SUB, RDX, dividend)
+    }
+    if shift > 0 {
+        x_shift_imm(mut g, RDX, true, shift)
+    }
+    // Add one when the result is negative: its sign bit, as a number.
+    x_mov(mut g, RAX, RDX)
+    g.code.push(0x48)
+    g.code.push(0xC1)
+    g.code.push(0xE8)
+    // shr rax, 63
+    g.code.push(63)
+    x_op(mut g, X_ADD, RDX, RAX)
+    if op == OP_DIV {
+        if dest != RDX {
+            x_mov(mut g, dest, RDX)
+        }
+        return
+    }
+    // remainder = dividend - quotient * divisor
+    if by >= -2147483648 && by <= 2147483647 {
+        x_imul_imm(mut g, RDX, RDX, by)
+    } else {
+        x_mov_imm(mut g, R8, by)
+        x_imul(mut g, RDX, R8)
+    }
+    if dest == RDX {
+        // dividend - product = -product + dividend
+        x_neg(mut g, RDX)
+        x_op(mut g, X_ADD, RDX, dividend)
+    } else if dividend == RCX {
+        x_op(mut g, X_SUB, RCX, RDX)
+        if dest != RCX {
+            x_mov(mut g, dest, RCX)
+        }
+    } else {
+        // The variable itself must stay as it is, unless it is the one
+        // being assigned.
+        if dest != dividend {
+            x_mov(mut g, dest, dividend)
+        }
+        x_op(mut g, X_SUB, dest, RDX)
+    }
+}
+
+// The two-operand instruction for an operator that has one.
+fn x_opcode(op: i64) -> i64 {
+    if op == OP_ADD {
+        return X_ADD
+    }
+    if op == OP_SUB {
+        return X_SUB
+    }
+    if op == OP_BITAND {
+        return X_AND
+    }
+    if op == OP_BITOR {
+        return X_OR
+    }
+    return X_XOR
+}
+
+// Generates code that leaves a number or `bool` in register `dest`: a
+// register a variable lives in, or the one an argument travels in.
+// Arithmetic and simple values are computed there directly.
+fn x_value_in(g: mut Gen, c: Checker, p: Parser, id: i64, dest: i64) {
+    if dest == RAX {
+        x_value(mut g, c, p, id)
+        return
+    }
+    if x_is_simple(g, c, id) {
+        x_load_simple(mut g, c, id, dest)
+        return
+    }
+    // A list element is read straight into the register, unless finding
+    // the element needs that register.
+    if dest != RCX && dest != R8 && dest != R10 && x_in_memory(g, c, id) {
+        let at = x_memory(mut g, c, p, id)
+        x_load_at(mut g, dest, at, 0)
+        return
+    }
+    if g.kinds[id] == K_BINARY {
+        let op = g.ec[id]
+        let lhs = g.ea[id]
+        // A shift by a variable needs rcx for the count.
+        let shift_in_rcx = (op == OP_SHL || op == OP_SHR) && dest == RCX
+        let ty = c.expr_ty[g.sh_e + lhs]
+        if !shift_in_rcx && op != OP_AND && op != OP_OR && (ty == TY_I64 || ty == TY_BOOL) {
+            x_binary(mut g, c, p, op, lhs, g.eb[id], dest)
+            return
+        }
+    }
+    x_value(mut g, c, p, id)
+    x_mov(mut g, dest, RAX)
+}
+
+// True when an argument can be put in its register directly: a simple
+// value, or the address of a variable or a part of one.
+fn x_is_simple_arg(g: Gen, c: Checker, arg: i64, by_ref: bool) -> bool {
+    if g.kinds[arg] == K_MUTARG {
+        return x_place(g, c, g.ea[arg]) >= 0
+    }
+    if by_ref {
+        return x_place(g, c, arg) >= 0
+    }
+    return x_is_simple(g, c, arg)
+}
+
+fn x_load_simple_arg(g: mut Gen, c: Checker, arg: i64, by_ref: bool, reg: i64) {
+    if g.kinds[arg] == K_MUTARG {
+        let place = x_place(g, c, g.ea[arg])
+        x_place_address_in(mut g, place, reg)
+    } else if by_ref {
+        let place = x_place(g, c, arg)
+        x_place_address_in(mut g, place, reg)
+    } else {
+        x_load_simple(mut g, c, arg, reg)
+    }
+}
+
+// Whether argument `i` of the call target travels as an address.
+fn x_arg_by_ref(c: Checker, target: i64, i: i64) -> bool {
+    if target >= FIRST_BUILTIN {
+        return target == BUILTIN_PRINT_STR || target == BUILTIN_EPRINT || target == BUILTIN_READ_FILE ||
+            target == BUILTIN_WRITE_FILE || target == BUILTIN_SET_EXECUTABLE
+    }
+    return c.fns[target].param_by_ref[i]
+}
+
+// Calls a function or a built-in. A scalar result is left in rax; an
+// aggregate result is written to the call's temporary.
+fn x_call(g: mut Gen, c: Checker, p: Parser, id: i64) {
+    let target = c.expr_res[g.sh_e + id]
+    let callee = g.ea[id]
+    let args_start = g.eb[id]
+    let args_len = g.ec[id]
+    // In `value.method(...)` the value is the receiver.
+    var receiver = -1
+    if g.kinds[callee] == K_FIELD {
+        receiver = g.ea[callee]
+    }
+    if target == BUILTIN_LEN || target == BUILTIN_LIST_PUSH || target == BUILTIN_LIST_POP || target == BUILTIN_STR_SLICE {
+        x_list_method(mut g, c, p, id, target, receiver)
+        return
+    }
+    // A method the standard library writes in azoL is a function whose
+    // first argument is the receiver. Arguments are evaluated in the
+    // order written. Those up to the last one that needs real work wait
+    // on the stack; the simple ones after it go straight into their
+    // registers.
+    var first = 0
+    if receiver >= 0 {
+        first = 1
+    }
+    let count = first + args_len
+    var worked = 0
+    var i = 0
+    while i < count {
+        var arg = receiver
+        if i >= first {
+            arg = p.ast.lists[args_start + i - first]
+        }
+        if !x_is_simple_arg(g, c, arg, x_arg_by_ref(c, target, i)) {
+            worked = i + 1
+        }
+        i = i + 1
+    }
+    i = 0
+    while i < count {
+        var arg = receiver
+        if i >= first {
+            arg = p.ast.lists[args_start + i - first]
+        }
+        let by_ref = x_arg_by_ref(c, target, i)
+        if i >= worked {
+            x_load_simple_arg(mut g, c, arg, by_ref, x_arg(i))
+        } else {
+            let last = i + 1 == worked
+            let is_mut = g.kinds[arg] == K_MUTARG
+            if is_mut {
+                x_address(mut g, c, p, g.ea[arg])
+            } else if by_ref {
+                x_address(mut g, c, p, arg)
+            } else if last {
+                // The last of them is computed where it travels.
+                x_value_in(mut g, c, p, arg, x_arg(i))
+            } else {
+                x_value(mut g, c, p, arg)
+            }
+            if !last {
+                x_push(mut g)
+            } else {
+                // An address is still in rax: move it into place. Then
+                // bring the earlier ones back.
+                if by_ref || is_mut {
+                    x_mov(mut g, x_arg(i), RAX)
+                }
+                var earlier = i - 1
+                while earlier >= 0 {
+                    x_pop(mut g, x_arg(earlier))
+                    earlier = earlier - 1
+                }
+            }
+        }
+        i = i + 1
+    }
+    // Where a result that is not a number goes: the runtime takes that
+    // address as one more argument, azoL functions in rax.
+    let tmp = c.expr_tmp[g.sh_e + id]
+    if target < FIRST_BUILTIN {
+        if c.expr_ty[g.sh_e + id] >= 3 {
+            // The callee writes its result where rax points.
+            x_frame_address(mut g, RAX, tmp)
+        }
+        let at = x_call_field(mut g)
+        g.call_ats.push(at)
+        g.call_targets.push(target)
+    } else if target == BUILTIN_PRINT_I64 {
+        x_runtime(mut g, RT_PRINT_I64)
+    } else if target == BUILTIN_PRINT_BOOL {
+        x_runtime(mut g, RT_PRINT_BOOL)
+    } else if target == BUILTIN_PRINT_STR {
+        x_runtime(mut g, RT_PRINT_STR)
+    } else if target == BUILTIN_EPRINT {
+        x_runtime(mut g, RT_EPRINT_STR)
+    } else if target == BUILTIN_EXIT {
+        x_runtime(mut g, RT_EXIT)
+    } else if target == BUILTIN_READ_FILE || target == BUILTIN_WRITE_FILE || target == BUILTIN_SET_EXECUTABLE {
+        // The routine fills in what the `Result` holds and says which
+        // variant it is: 0 for `Ok`, 1 for `Err`.
+        x_frame_address(mut g, x_arg(count), tmp + 1)
+        if target == BUILTIN_READ_FILE {
+            x_runtime(mut g, RT_READ_FILE)
+        } else if target == BUILTIN_WRITE_FILE {
+            x_runtime(mut g, RT_WRITE_FILE)
+        } else {
+            x_runtime(mut g, RT_SET_EXECUTABLE)
+        }
+        // the tag
+        x_op_imm(mut g, ADD_I, RAX, 1)
+        x_store_slot(mut g, tmp, RAX)
+    } else {
+        x_frame_address(mut g, x_arg(count), tmp)
+        if target == BUILTIN_STR_FROM_I64 {
+            x_runtime(mut g, RT_STR_FROM_I64)
+        } else if target == BUILTIN_STR_FROM_BOOL {
+            x_runtime(mut g, RT_STR_FROM_BOOL)
+        } else if target == BUILTIN_CHR {
+            x_runtime(mut g, RT_CHR)
+        } else {
+            x_runtime(mut g, RT_ARGS)
+        }
+    }
+}
+
+fn x_list_method(g: mut Gen, c: Checker, p: Parser, id: i64, method: i64, base: i64) {
+    let args_start = g.eb[id]
+    if method == BUILTIN_LEN {
+        // Lists and strings keep their length in the same place.
+        let place = x_place(g, c, base)
+        if place >= 0 {
+            let found = x_header(mut g, place, RAX)
+            x_load_mem(mut g, RAX, found & 15, (found >> 4) + 8)
+        } else {
+            x_address(mut g, c, p, base)
+            x_load_mem(mut g, RAX, RAX, 8)
+        }
+        return
+    }
+    let tmp = c.expr_tmp[g.sh_e + id]
+    if method == BUILTIN_STR_SLICE {
+        // The bounds are evaluated first, so that nothing runs between
+        // finding the string and reading it.
+        x_value(mut g, c, p, p.ast.lists[args_start])
+        x_push(mut g)
+        x_value(mut g, c, p, p.ast.lists[args_start + 1])
+        x_push(mut g)
+        x_address(mut g, c, p, base)
+        x_mov(mut g, RDI, RAX)
+        x_pop(mut g, RDX)
+        x_pop(mut g, RSI)
+        x_frame_address(mut g, RCX, tmp)
+        x_runtime(mut g, RT_STR_SLICE)
+        return
+    }
+    let elem = c.lists[ty_index(c.expr_ty[g.sh_e + base])]
+    let elem_size = ck_size_of(c, elem)
+    if method == BUILTIN_LIST_PUSH {
+        // The element is copied aside first: it may live in this very
+        // list, whose buffer can move while it grows.
+        let arg = p.ast.lists[args_start]
+        if elem >= 3 {
+            x_address(mut g, c, p, arg)
+            x_copy_to_frame(mut g, tmp, elem_size)
+            if c.expr_moved[g.sh_e + arg] != 1 && ck_needs_drop(c, elem) {
+                x_clone_frame(mut g, c, tmp, elem)
+            }
+            x_moved_out(mut g, c, arg)
+        } else {
+            x_value(mut g, c, p, arg)
+        }
+        // A number or `bool` goes straight into a list that has room;
+        // the runtime is only called to make room.
+        var done = -1
+        if elem < 3 {
+            let place = x_place(g, c, base)
+            if place >= 0 {
+                let found = x_header(mut g, place, R10)
+                let header = found & 15
+                let disp = found >> 4
+                // length
+                x_load_mem(mut g, R8, header, disp + 8)
+                // capacity
+                x_cmp_mem(mut g, R8, header, disp + 16)
+                let full = x_jump_if(mut g, CC_AE)
+                // buffer
+                x_load_mem(mut g, R9, header, disp)
+                x_store_index(mut g, R9, R8, 3, 0, RAX)
+                x_op_mem_imm(mut g, ADD_I, header, disp + 8, 1)
+                done = x_jump(mut g)
+                x_patch(mut g, full)
+            }
+            x_store_slot(mut g, tmp, RAX)
+        }
+        x_address(mut g, c, p, base)
+        x_mov(mut g, RDI, RAX)
+        x_frame_address(mut g, RSI, tmp)
+        x_mov_imm(mut g, RDX, elem_size * 8)
+        x_runtime(mut g, RT_LIST_PUSH)
+        if done >= 0 {
+            x_patch(mut g, done)
+        }
+        // The list is longer now and may have moved.
+        x_forget(mut g)
+        return
+    }
+    x_address(mut g, c, p, base)
+    // length
+    x_load_mem(mut g, R8, RAX, 8)
+    x_op(mut g, X_TEST, R8, R8)
+    x_runtime_unless(mut g, CC_NE, RT_POP_EMPTY)
+    x_op_imm(mut g, SUB_I, R8, 1)
+    x_store_mem(mut g, RAX, 8, R8)
+    // The list is shorter now.
+    x_forget(mut g)
+    // buffer
+    x_load_mem(mut g, R9, RAX, 0)
+    let at = x_scaled(mut g, R8, elem_size)
+    if elem >= 3 {
+        x_lea_index(mut g, RAX, R9, at, 3, 0)
+        x_copy_to_frame(mut g, tmp, elem_size)
+    } else {
+        x_load_index(mut g, RAX, R9, at, 3, 0)
+    }
+}

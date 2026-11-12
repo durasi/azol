@@ -1,0 +1,91 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// azol-sema: the checker written in azoL, as a tool.
+//
+//     azol-sema <prelude.azl> <file.azl>...
+//
+// It writes what `azol sema-dump <file.azl>...` writes: every table the
+// checker hands to the code generators, or the problems it found, so
+// the two checkers can be compared program by program. The first
+// argument is the standard library's azoL source (`src/prelude.azl`),
+// which the Rust compiler carries inside itself. With `--time` first,
+// the work is done and nothing is printed, for measuring from outside.
+
+fn main() -> i64 {
+    let arguments = args()
+    var first = 1
+    var quiet = false
+    if arguments.len() > 1 && arguments[1] == "--time" {
+        quiet = true
+        first = 2
+    }
+    if arguments.len() < first + 2 {
+        eprint("usage: azol-sema [--time] <prelude.azl> <file.azl>...")
+        return 2
+    }
+    let prelude = read_or_exit(arguments[first])
+    // All source files, and after them the standard library's source,
+    // follow each other in one text, so that every position in any of
+    // them is a plain offset.
+    var src = ""
+    var starts: List[i64] = []
+    var lens: List[i64] = []
+    var at = first + 1
+    while at < arguments.len() {
+        let text = read_or_exit(arguments[at])
+        if starts.len() > 0 {
+            src = src + "\n"
+        }
+        starts.push(src.len())
+        lens.push(text.len())
+        src = src + text
+        at = at + 1
+    }
+    let prelude_start = src.len() + 1
+    src = src + "\n"
+    src = src + prelude
+
+    // Each file is lexed and parsed on its own, and every file with a
+    // mistake reports its first one. After a mistake the tree is of no
+    // use any more; the files that follow are still parsed.
+    var p = new_parser(src)
+    var problems: List[str] = []
+    for k, start in starts {
+        let problem = parse_part(mut p, start, lens[k])
+        if problem.message.len() > 0 {
+            problems.push("syntax " + str(problem.offset) + " " + problem.message)
+            p = new_parser(src)
+        }
+    }
+    if problems.len() > 0 {
+        print(problems.join("\n"))
+        return 1
+    }
+    let problem = parse_part(mut p, prelude_start, prelude.len())
+    if problem.message.len() > 0 {
+        eprint("error: the standard library does not parse: syntax " + str(problem.offset) + " " + problem.message)
+        return 1
+    }
+
+    var c = new_checker(p, prelude_start)
+    check_program(mut c, p)
+    if c.errors.len() > 0 {
+        var out = ""
+        for error in c.errors {
+            out = out + "error " + str(error.offset) + " "
+            if error.expr < 0 {
+                out = out + "-"
+            } else {
+                out = out + str(error.expr)
+            }
+            out = out + " " + error.message + "\n"
+        }
+        print(out.slice(0, out.len() - 1))
+        return 1
+    }
+    if !quiet {
+        let text = dump_program(c)
+        print(text.slice(0, text.len() - 1))
+    }
+    return 0
+}

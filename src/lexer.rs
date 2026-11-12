@@ -170,6 +170,7 @@ pub fn lex(src: &str) -> Result<Vec<Token>, LexError> {
             b'-' => pair(bytes, &mut i, b'>', TokenKind::Arrow, TokenKind::Minus),
             b'!' => pair(bytes, &mut i, b'=', TokenKind::NotEq, TokenKind::Bang),
             b'^' => single(&mut i, TokenKind::Caret),
+            b'?' => single(&mut i, TokenKind::Question),
             b'<' if i + 1 < n && bytes[i + 1] == b'<' => {
                 i += 2;
                 TokenKind::Shl

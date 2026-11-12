@@ -142,7 +142,7 @@ A block may be written on one line when it holds one statement:
 
 | Form | Example | Type | Notes |
 |---|---|---|---|
-| Decimal | `42`, `1_000_000` | `i64` | `_` may separate digits. Leading zeros are allowed and mean nothing: `007` is 7. |
+| Decimal | `42`, `1_000_000` | `i64` | A `_` may stand between two digits. No zeros in front: `007` is an error. |
 | Hexadecimal | `0x1F`, `0xff_ff` | `i64` | The prefix is lower-case `0x`. Digits may be either case. |
 | Binary | `0b1010` | `i64` | The prefix is lower-case `0b`. |
 | Character | `'a'`, `'\n'` | `i64` | The byte value of one ASCII character. |
@@ -151,8 +151,12 @@ A block may be written on one line when it holds one statement:
 
 A decimal literal must be at most 9223372036854775807. A hexadecimal or
 binary literal may use all 64 bits; `0xFFFFFFFFFFFFFFFF` is -1. There are no
-negative literals: `-5` is the operator `-` applied to `5`. So the smallest
-`i64` cannot be written in decimal; write `0x8000000000000000`.
+negative literals: `-5` is the operator `-` applied to `5`. The one
+exception is the smallest `i64`: `-9223372036854775808` is accepted, with
+the `-` directly in front of the digits.
+
+A `_` in a number of any base stands between two digits: `1__0`, `1_`,
+`0x_F` and `0b1_` are errors.
 
 Escapes in strings: `\n` `\t` `\r` `\0` `\\` `\"`.
 Escapes in character literals: `\n` `\t` `\r` `\0` `\\` `\'`. A `"` needs no
@@ -194,7 +198,7 @@ fn main() {
 ```
 
 ```error
-floating-point numbers are not supported by `azol build` yet
+there are no floating-point numbers yet; the only number type is `i64`
 ```
 
 ## 3. Types
@@ -288,6 +292,8 @@ fn main() {
 ```error
 function `sign` must return a value of type `i64` on every path
 ```
+
+A path may also end in a call to `exit`, which never comes back.
 
 **`main`.** Takes no parameters and no type parameters. It returns nothing,
 or it returns `i64`, which becomes the exit code of the program (the system
@@ -527,8 +533,9 @@ A constant is an `i64`, a `bool` or a `str`, computed while compiling.
 
 - A number or boolean constant may use literals, other constants,
   parentheses and every operator of [6.1](#61-operators-and-precedence).
-- A string constant must be a single string literal. `"a" + "b"` is not
-  accepted there.
+- A string constant is a string literal, another string constant, or
+  several of them joined with `+`: `const LOUD = GREETING + "!"`. No other
+  operator works on strings in a constant.
 - Constants may be declared in any order and may use each other. A cycle is
   an error. Division by zero in a constant is an error.
 - A constant is visible in every function and every file. It can be used as
@@ -920,7 +927,7 @@ group from the left.
 
 | Level | Operators | Operands | Result |
 |---|---|---|---|
-| 1 | calls `f(x)`, indexing `a[i]`, fields and methods `a.b` | | |
+| 1 | calls `f(x)`, indexing `a[i]`, fields and methods `a.b`, `value?` | | |
 | 2 | unary `-`, `!` | `i64`; `bool` | same |
 | 3 | `*` `/` `%` | `i64` | `i64` |
 | 4 | `+` `-` | `i64`; `+` also joins two `str` | `i64`; `str` |
@@ -1072,8 +1079,8 @@ in parentheses
 as an argument
 ```
 
-Without the parentheses the compiler reads `{` as the start of the block and
-reports a syntax error a little further on:
+Without the parentheses the compiler reads `{` as the start of the block.
+It sees the `name:` that follows and says what to do:
 
 ```azol-error
 struct Point { x: i64, y: i64 }
@@ -1087,7 +1094,94 @@ fn main() {
 ```
 
 ```error
-expected end of line but found `:`
+a struct literal here needs parentheses around it, `(Point { ... })`: this `{` starts the block
+```
+
+### 6.5 `?`: leaving early with an `Err` or a `None`
+
+`value?` follows an expression of type `Result[T, E]` or `Option[T]`. When
+the value is an `Ok` or a `Some`, the expression is what it holds, of type
+`T`. When it is an `Err` or a `None`, the function returns at once: with
+that same `Err`, or with `None`. Everything a `return` at that point would
+free is freed.
+
+The function must be able to return it: `?` on a `Result[T, E]` needs a
+function that returns a `Result` with the same error type `E`, and `?` on
+an `Option` needs a function that returns an `Option`. Nothing is
+converted. `main` cannot use `?`; it uses `match`.
+
+`?` binds like a call or a field access, tighter than every operator:
+`a()? + b()?`, `f()?.name`, `-n()?`.
+
+```azol
+fn number(text: str) -> Result[i64, str] {
+    match text.to_i64() {
+        Some(n) => return Ok(n)
+        None => return Err("not a number: " + text)
+    }
+}
+
+fn sum(a: str, b: str) -> Result[i64, str] {
+    let total = number(a)? + number(b)?
+    return Ok(total)
+}
+
+fn first_word(text: str) -> Option[str] {
+    let end = text.find(" ")?
+    return Some(text.slice(0, end))
+}
+
+fn main() {
+    match sum("40", "2") {
+        Ok(n) => print(n)
+        Err(why) => print(why)
+    }
+    match sum("40", "two") {
+        Ok(n) => print(n)
+        Err(why) => print(why)
+    }
+    match first_word("one two") {
+        Some(word) => print(word)
+        None => print("no space")
+    }
+    match first_word("one") {
+        Some(word) => print(word)
+        None => print("no space")
+    }
+}
+```
+
+```output
+42
+not a number: two
+one
+no space
+```
+
+A value taken out of a temporary, as in `let text = read_file(path)?`, is
+moved, not copied. Out of a variable it is copied, and the variable keeps
+its value.
+
+`?` may leave in the middle of an expression, so two places are closed to
+it, where a half-built value would be lost: inside a list literal, and in a
+struct literal or a variant after a part that owns memory (a string, a
+list, a struct or enum that holds one). Put the value in a `let` first.
+
+```azol-error
+fn number(text: str) -> Result[i64, str] {
+    return Ok(1)
+}
+
+fn pair(a: str, b: str) -> Result[List[i64], str] {
+    return Ok([number(a)?, number(b)?])
+}
+
+fn main() {
+}
+```
+
+```error
+`?` cannot be used inside a list literal; store its value in a variable first
 ```
 
 ## 7. Calls and `mut` arguments
@@ -1181,12 +1275,17 @@ A variant with values is built like a call: `Some(3)`, `Rect(2, 5)`.
 
 ## 8. Methods
 
-`value.method(arguments)` calls a method. Only lists and strings have
-methods, and the set is fixed: programs cannot define methods on their own
-types. Write a plain function that takes the value as its first parameter.
+`value.method(arguments)` calls a method. Lists, strings, numbers and the
+library's `Map` have methods, and the set is fixed: programs cannot define
+methods on their own types. Write a plain function that takes the value as
+its first parameter.
 
-The methods that change a list, `push` and `pop`, need the list to be a
-place that can change. No `mut` is written for them.
+Some methods change the value they are called on: `push`, `pop`, `extend`,
+`truncate`, `insert` and `remove_at` of a list, `set` and `remove` of a
+`Map`. No `mut` is written for the receiver, but it must be a place that
+can change, and it follows the exclusivity rules (section 13) exactly as
+if it were passed as a `mut` argument: `xs.extend(xs)` is rejected, and so
+is `xs.extend(...)` inside a `for` over `xs`.
 
 ```azol-error
 fn main() {
@@ -1277,6 +1376,19 @@ exit code 4. The file is written to the folder the program is started in.
 | `xs.last()` | `Option[T]` | The last item, or `None`. |
 | `xs.reversed()` | `List[T]` | A new list in the opposite order. |
 | `xs.join(separator)` | `str` | Only for `List[str]`: the strings in one, with `separator` between them. |
+| `xs.is_empty()` | `bool` | Whether there are no items. |
+| `xs.index_of(item)` | `Option[i64]` | Position of the first item equal to `item`. |
+| `xs.count(item)` | `i64` | How many items equal `item`. |
+| `xs.take(n)` | `List[T]` | A new list of the first `n` items; all of them when there are fewer. |
+| `xs.skip(n)` | `List[T]` | A new list without the first `n` items. |
+| `xs.sorted()` | `List[T]` | Only for numbers and strings: a new list from smallest to largest. Equal items keep their order. |
+| `xs.min()`, `xs.max()` | `Option[T]` | Only for numbers and strings: the smallest or largest item, `None` for an empty list. |
+| `xs.sum()` | `i64` | Only for `List[i64]`: the items added up. |
+| `xs.to_str()` | `str` | Only for `List[i64]`: the string with these bytes. Stops the program unless each is from 0 to 255. |
+| `xs.extend(more)` | nothing | Adds a copy of every item of `more` at the end. Changes `xs`. |
+| `xs.truncate(n)` | nothing | Keeps the first `n` items; nothing when `n` is below zero. Changes `xs`. |
+| `xs.insert(at, item)` | nothing | Puts `item` at position `at` and moves the later items up. `at` may be `xs.len()`; stops the program outside 0 to `xs.len()`. Changes `xs`. |
+| `xs.remove_at(at)` | `T` | Takes the item at `at` out and returns it; the later items move down. Stops the program when `at` is out of range. Changes `xs`. |
 
 ```azol
 fn main() {
@@ -1316,6 +1428,51 @@ a, b, c
 3
 ```
 
+```azol
+fn main() {
+    var xs = [3, 1, 2]
+    xs.extend([5, 4])
+    xs.insert(0, 9)
+    print(xs.remove_at(1))
+    xs.truncate(4)
+    print(xs.len())
+    print(xs.sum())
+    let sorted = xs.sorted()
+    print(sorted[0])
+    print(sorted[3])
+    match xs.max() {
+        Some(n) => print(n)
+        None => print("empty")
+    }
+    match xs.index_of(2) {
+        Some(at) => print(at)
+        None => print("missing")
+    }
+    print(xs.take(2).len())
+    print(xs.skip(3)[0])
+    print(xs.count(9))
+    print(xs.is_empty())
+    print(["pear", "apple"].sorted()[0])
+    print([104, 105].to_str())
+}
+```
+
+```output
+3
+4
+17
+1
+9
+9
+2
+2
+5
+1
+false
+apple
+hi
+```
+
 ### 10.2 Strings
 
 Positions and lengths count bytes.
@@ -1333,9 +1490,21 @@ Positions and lengths count bytes.
 | `s.split(separator)` | `List[str]` | The pieces between occurrences of `separator`. Always at least one piece. An empty separator gives `s` whole. |
 | `s.lines()` | `List[str]` | The lines, without `\n` or `\r\n`. A final line end does not add an empty line. |
 | `s.to_i64()` | `Option[i64]` | The number written in decimal digits with an optional `-` in front; `None` for anything else. |
+| `s.is_empty()` | `bool` | Whether there are no bytes. |
+| `s.compare(other)` | `i64` | -1, 0 or 1: whether `s` comes before, equals or comes after `other` in byte order. |
+| `s.index_of_from(part, start)` | `Option[i64]` | Where `part` first occurs at position `start` or later. |
+| `s.last_index_of(part)` | `Option[i64]` | Where `part` last occurs. |
+| `s.replace(old, new)` | `str` | Every occurrence of `old` replaced by `new`. An empty `old` changes nothing. |
+| `s.repeat(n)` | `str` | `s` written `n` times; empty when `n` is zero or less. |
+| `s.to_upper()`, `s.to_lower()` | `str` | The letters `a` to `z` and `A` to `Z` changed; other bytes stay. |
+| `s.pad_left(width, fill)`, `s.pad_right(width, fill)` | `str` | Copies of `fill` added in front or after until the length is at least `width`. |
+| `s.bytes()` | `List[i64]` | The bytes, each from 0 to 255. |
+| `s.parse_hex()` | `Option[i64]` | The number written in one to sixteen hexadecimal digits; `None` for anything else. |
+| `s.hash()` | `i64` | The FNV-1a hash of the bytes. |
 
-`to_i64` accepts no `+`, no spaces, no `_` and no `0x`. It returns `None`
-for the text `-9223372036854775808`, although that number is an `i64`.
+`to_i64` accepts no `+`, no spaces, no `_` and no `0x`. It reads the whole
+range, from `-9223372036854775808` to `9223372036854775807`, and returns
+`None` for a number outside it.
 
 ```azol
 fn main() {
@@ -1377,6 +1546,143 @@ padded|
 2
 -41
 not a number
+```
+
+```azol
+fn main() {
+    let s = "a-b-c"
+    print(s.replace("-", "+"))
+    print("ab".repeat(3))
+    print("Hello".to_upper() + "Hello".to_lower())
+    print("7".pad_left(3, "0") + "|" + "7".pad_right(3, ".") + "|")
+    print("apple".compare("pear"))
+    match s.last_index_of("-") {
+        Some(at) => print(at)
+        None => print("missing")
+    }
+    match s.index_of_from("-", 2) {
+        Some(at) => print(at)
+        None => print("missing")
+    }
+    print("hi".bytes()[1])
+    match "ff".parse_hex() {
+        Some(n) => print(n)
+        None => print("not hex")
+    }
+    print("".is_empty())
+}
+```
+
+```output
+a+b+c
+ababab
+HELLOhello
+007|7..|
+-1
+3
+3
+105
+255
+true
+```
+
+### 10.3 Numbers
+
+| Method | Result | Meaning |
+|---|---|---|
+| `n.abs()` | `i64` | Without the sign. The smallest `i64` stays as it is. |
+| `n.min(other)`, `n.max(other)` | `i64` | The smaller or the larger of the two. |
+| `n.clamp(low, high)` | `i64` | `n`, or `low` when it is below `low`, or `high` when it is above `high`. |
+| `n.pow(exponent)` | `i64` | `n` multiplied by itself `exponent` times, wrapping; 1 when `exponent` is zero or less. |
+| `n.compare(other)` | `i64` | -1, 0 or 1. |
+| `n.to_hex()` | `str` | The 64 bits in hexadecimal with small letters and no zeros in front. |
+
+A method call binds tighter than a unary minus: `-5.abs()` is `-(5.abs())`.
+
+```azol
+fn main() {
+    let n = -7
+    print(n.abs())
+    print(n.min(3))
+    print(n.max(3))
+    print(n.clamp(0, 5))
+    print(2.pow(10))
+    print(255.to_hex())
+    print(3.compare(3))
+}
+```
+
+```output
+7
+-7
+3
+0
+1024
+ff
+0
+```
+
+### 10.4 `Map`
+
+`Map[V]` is a map from `str` keys to values of type `V`. `new_map()` makes
+an empty one; the type it is stored in says what `V` is. A program cannot
+declare a type of its own called `Map`; it can declare a function called
+`new_map`, which then takes the library's place.
+
+| Method | Result | Meaning |
+|---|---|---|
+| `m.set(key, value)` | nothing | Makes `key` stand for `value`, in place of any value it had. Changes `m`. |
+| `m.get(key)` | `Option[V]` | A copy of the value of `key`, or `None`. |
+| `m.has(key)` | `bool` | Whether `key` has a value. |
+| `m.remove(key)` | `bool` | Takes `key` and its value out; `false` when it was not there. Changes `m`. |
+| `m.keys()` | `List[str]` | A copy of the keys, in the order they were set until the first `remove`. |
+| `m.len()` | `i64` | Number of keys. |
+
+A map is a value like any other: storing or passing it copies all its keys
+and values, and `get` returns a copy. To change a value, `get` it, change
+the copy and `set` it again.
+
+```azol
+fn main() {
+    var ages: Map[i64] = new_map()
+    ages.set("ann", 31)
+    ages.set("bob", 27)
+    ages.set("ann", 32)
+    match ages.get("ann") {
+        Some(age) => print(age)
+        None => print("unknown")
+    }
+    print(ages.has("cy"))
+    print(ages.len())
+    print(ages.keys().join(","))
+    print(ages.remove("bob"))
+    print(ages.len())
+
+    var groups: Map[List[str]] = new_map()
+    groups.set("a", ["ann"])
+    match groups.get("a") {
+        Some(names) => {
+            var longer = names
+            longer.push("al")
+            groups.set("a", longer)
+        }
+        None => {}
+    }
+    match groups.get("a") {
+        Some(names) => print(names.len())
+        None => print(0)
+    }
+}
+```
+
+```output
+32
+false
+2
+ann,bob
+true
+1
+2
 ```
 
 ## 11. Value semantics
@@ -1626,6 +1932,7 @@ exit code 1. No memory is read or written out of bounds.
 | `slice` with a bad range | `azol: slice out of range` |
 | `chr` outside 0 to 255 | `azol: chr needs a number from 0 to 255` |
 | The system has no more memory | `azol: out of memory` |
+| Calls inside one another without end use up the stack | `azol: stack overflow` |
 
 ```azol exit=1
 fn main() {
@@ -1688,8 +1995,27 @@ azol: chr needs a number from 0 to 255
 
 Integer overflow does not stop the program; it wraps.
 
-Recursion that never ends runs out of stack. The system then stops the
-program with a segmentation fault and no `azol:` message.
+Recursion that never ends runs out of stack, and that stops the program
+like the other mistakes:
+
+```azol exit=1
+fn forever(n: i64) -> i64 {
+    return forever(n + 1) + 1
+}
+
+fn main() {
+    print(str(forever(0)))
+}
+```
+
+```stderr
+azol: stack overflow
+```
+
+How deep a program may go is the system's stack limit, usually 8 MB: a
+hundred thousand calls of a small function inside one another fit easily.
+Where the limit has been lifted altogether (`ulimit -s unlimited` on
+Linux), such a program instead runs until the machine's memory is used up.
 
 ## 15. Programs in several files
 
@@ -1836,14 +2162,13 @@ instead.
 | Patterns inside patterns, `Some(Some(x))`, `Some(3)` | Bind a name and `match` again inside the arm. |
 | Several patterns in one arm, guards | Separate arms; `if` inside the arm. |
 | Tuples | A struct. |
-| Maps, sets | A `List` of structs searched in a loop. |
+| Sets, maps with keys that are not `str` | `Map[bool]`, or a `List` of structs searched in a loop. |
 | Ranges, `for i in 0..n` | `while` with a counter. |
 | `for` over the bytes of a string | `while i < s.len()` and `s[i]`. |
 | `==` on structs, lists and enums that carry values | Compare fields; `match`. |
 | `<` and the other orderings on strings | Compare bytes in a loop. |
 | Changing a byte of a string | `slice` and `+`. |
 | Global variables | Constants, and `mut` parameters. |
-| String constants built with `+` | One literal. |
 | Multi-line strings, string interpolation, formatting | `+`, `str(...)` and `\n`. |
 | `print` with several arguments or without a newline | Build one string; one `print` per line. |
 | Reading standard input | `read_file` and `args()`. |

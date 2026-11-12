@@ -283,6 +283,11 @@ impl<'a> Dumper<'a> {
                 self.expr(value);
                 self.out.push(')');
             }
+            Expr::Try(value) => {
+                self.out.push_str("(try ");
+                self.expr(value);
+                self.out.push(')');
+            }
             Expr::Field { base, name } => {
                 self.expr(base);
                 self.out.push('.');

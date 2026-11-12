@@ -95,6 +95,9 @@ pub enum Expr {
     Call { callee: ExprId, args: List },
     /// `mut value` in argument position.
     MutArg(ExprId),
+    /// `value?`: the value inside `Ok` or `Some`, or else the function
+    /// returns the `Err` or the `None` at once.
+    Try(ExprId),
     Field { base: ExprId, name: Span },
     Index { base: ExprId, index: ExprId },
     /// `fields` is a list of ids into `Ast::field_inits`.

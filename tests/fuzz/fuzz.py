@@ -722,16 +722,19 @@ class Interp:
                 i = 1
             if i == len(s):
                 return EnumV('None', [])
+            # The whole range of i64 can be read, the smallest number included.
             value = 0
             while i < len(s):
                 digit = s[i] - 48
                 if digit < 0 or digit > 9:
                     return EnumV('None', [])
-                if value > (MAX - digit) // 10:
-                    return EnumV('None', [])
                 value = value * 10 + digit
                 i += 1
-            return EnumV('Some', [-value if negative else value])
+            if negative:
+                value = -value
+            if value < MIN or value > MAX:
+                return EnumV('None', [])
+            return EnumV('Some', [value])
         if name == 'join':
             if sum(len(x) for x in recv) + len(args[0]) * len(recv) > 60000:
                 raise Budget()

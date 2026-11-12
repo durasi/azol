@@ -346,6 +346,11 @@ fn dump_expr(ast: Ast, src: str, id: i64, out: mut str) {
             dump_expr(ast, src, value, mut out)
             out = out + ")"
         }
+        ExprTry(value) => {
+            out = out + "(try "
+            dump_expr(ast, src, value, mut out)
+            out = out + ")"
+        }
         ExprField(base, name) => {
             dump_expr(ast, src, base, mut out)
             out = out + "."

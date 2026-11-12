@@ -1,0 +1,1839 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Name resolution, type checking and the memory safety analysis: the
+// checker of the azoL compiler, written in azoL. It follows
+// `src/sema.rs` function by function (`ck_shape` is `shape` there,
+// `ck_stmt` is `stmt`, and so on) and fills the same tables with the
+// same values, which `compiler/check_sema.py` verifies.
+//
+// This file holds the data, the names, the types and the declarations.
+// `sema_fn.azl` checks function bodies.
+//
+// How it differs from the Rust text, on purpose:
+//
+// - A type is one number (`TY_I64`, `ty_struct(3)`, ...), so types are
+//   compared and stored like numbers. `TY_NONE` stands for "no type".
+// - Every name is interned once into a number (a "sym") and all tables
+//   keyed by name are lists indexed by it; nothing is hashed twice.
+// - A shape (a type as written, possibly with type parameters) is an
+//   entry in a flat table, not a tree of boxes.
+// - There is no `Result`. A mistake is recorded with `ck_err` and every
+//   caller looks at `c.failed` and returns, as the parser does.
+
+// ---- types as numbers -------------------------------------------------
+
+const TY_NONE = -1
+// `TY_UNIT` is 0 so that a table of zeros is a table of "no value yet".
+const TY_UNIT = 0
+const TY_I64 = 1
+const TY_BOOL = 2
+const TY_STR = 3
+
+fn ty_struct(index: i64) -> i64 {
+    return 4 + index * 4
+}
+
+fn ty_list(index: i64) -> i64 {
+    return 5 + index * 4
+}
+
+fn ty_enum(index: i64) -> i64 {
+    return 6 + index * 4
+}
+
+fn ty_is_struct(ty: i64) -> bool {
+    return ty >= 4 && (ty & 3) == 0
+}
+
+fn ty_is_list(ty: i64) -> bool {
+    return ty >= 4 && (ty & 3) == 1
+}
+
+fn ty_is_enum(ty: i64) -> bool {
+    return ty >= 4 && (ty & 3) == 2
+}
+
+// The index in `structs`, `lists` or `enums` of such a type.
+fn ty_index(ty: i64) -> i64 {
+    return (ty - 4) >> 2
+}
+
+// Values that live in memory and are handed around by address.
+fn ty_is_aggregate(ty: i64) -> bool {
+    return ty >= 3
+}
+
+// ---- what the code generators read ------------------------------------
+
+// Built-in functions and methods, as call resolutions.
+const BUILTIN_PRINT_I64 = 4294967295
+const BUILTIN_PRINT_BOOL = 4294967294
+const BUILTIN_PRINT_STR = 4294967293
+const BUILTIN_LIST_PUSH = 4294967292
+const BUILTIN_LIST_POP = 4294967291
+const BUILTIN_LEN = 4294967290
+const BUILTIN_STR_FROM_I64 = 4294967289
+const BUILTIN_STR_FROM_BOOL = 4294967288
+const BUILTIN_VARIANT = 4294967287
+const BUILTIN_ARGS = 4294967286
+const BUILTIN_READ_FILE = 4294967285
+const BUILTIN_WRITE_FILE = 4294967284
+const BUILTIN_CHR = 4294967283
+const BUILTIN_EXIT = 4294967282
+const BUILTIN_EPRINT = 4294967281
+const BUILTIN_STR_SLICE = 4294967280
+const BUILTIN_SET_EXECUTABLE = 4294967279
+
+// In `expr_aux` of a name that is a constant.
+const CONST_INT = 4294967295
+const CONST_TRUE = 4294967294
+const CONST_FALSE = 4294967293
+const CONST_STR = 4294967292
+
+// Where the built-in `Option` and `Result` sit among the enum declarations.
+const OPTION_TEMPLATE = 0
+const RESULT_TEMPLATE = 1
+// Set in the resolution of a name whose stack slot holds a pointer.
+const BY_REF = 2147483648
+// The resolution of a name that is a variant without fields.
+const VARIANT = 1073741824
+
+const MAX_PARAMS = 8
+const MAX_SLOTS = 2000
+const MAX_SIZE = 500
+const FIRST_REGISTER = 19
+const REGISTERS = 10
+const MIN_REGISTER_USES = 3
+const MAX_VARIANTS = 1000
+const MAX_USES = 4294967295
+
+const IN_PLACE = 0
+const MOVED = 1
+const COPIED = 2
+const APPEND = 1
+
+const PAT_ANY = 0
+const PAT_BIND = 1
+const PAT_VARIANT = 2
+const PAT_LITERAL = 3
+
+// Who refers to a place: see `Borrow`.
+const HOLDER_CALL = 0
+const HOLDER_OPERATOR = 1
+const HOLDER_LOOP = 2
+const HOLDER_MATCH = 3
+
+// The kinds of constant values.
+const CV_INT = 0
+const CV_BOOL = 1
+const CV_STR = 2
+
+// The kinds of shapes; see `Checker.shape_kind`.
+const SHAPE_PARAM = 0
+const SHAPE_KNOWN = 1
+const SHAPE_LIST = 2
+const SHAPE_STRUCT = 3
+const SHAPE_ENUM = 4
+
+// The names interned before any source is read, in this order.
+const SYM_I64 = 0
+const SYM_BOOL = 1
+const SYM_STR = 2
+const SYM_LIST = 3
+const SYM_OPTION = 4
+const SYM_RESULT = 5
+const SYM_SOME = 6
+const SYM_NONE = 7
+const SYM_OK = 8
+const SYM_ERR = 9
+const SYM_T = 10
+const SYM_E = 11
+const SYM_MAIN = 12
+const SYM_PRINT = 13
+const SYM_EPRINT = 14
+const SYM_CHR = 15
+const SYM_ARGS = 16
+const SYM_READ_FILE = 17
+const SYM_WRITE_FILE = 18
+const SYM_SET_EXECUTABLE = 19
+const SYM_EXIT = 20
+const SYM_LEN = 21
+const SYM_SLICE = 22
+const SYM_PUSH = 23
+const SYM_POP = 24
+// Not names: what an expression is checked for, for messages.
+const SYM_W_NEG = 25
+const SYM_W_NOT = 26
+const SYM_W_INDEX = 27
+const SYM_W_ELEMENT = 28
+const SYM_W_PUSH = 29
+
+// One struct type. A generic struct has one per combination of type
+// arguments that the program uses.
+struct StructInfo {
+    // As written in messages: `Point`, `Pair[i64, str]`.
+    name: str
+    template: i64
+    args: List[i64]
+    // Size in 8-byte slots.
+    size: i64
+    // Per field: its name (a sym), type and offset in slots.
+    field_names: List[i64]
+    field_tys: List[i64]
+    field_offsets: List[i64]
+    // The lists, strings and owning enums directly inside the struct.
+    heap_offsets: List[i64]
+    heap_tys: List[i64]
+}
+
+// A value of variant number `n` has tag `n + 1`.
+struct VariantInfo {
+    field_tys: List[i64]
+    field_offsets: List[i64]
+    heap_offsets: List[i64]
+    heap_tys: List[i64]
+}
+
+struct EnumInfo {
+    name: str
+    template: i64
+    args: List[i64]
+    // Size in slots: the tag plus the largest variant.
+    size: i64
+    // True when some variant holds a list, a string or an owning enum.
+    owning: bool
+    variants: List[VariantInfo]
+}
+
+struct FnInfo {
+    // Index in `Ast.items` of the function's source.
+    item: i64
+    // Where its entries sit in the per-node tables: id plus shift.
+    sh_e: i64
+    sh_s: i64
+    sh_p: i64
+    sh_i: i64
+    // For a use of a generic function: which one, or -1.
+    generic: i64
+    type_args: List[i64]
+    depth: i64
+    origin: i64
+    ret: i64
+    param_tys: List[i64]
+    param_by_ref: List[bool]
+    param_mutable: List[bool]
+    slots: i64
+    // -1 when the function returns no aggregate.
+    sret_slot: i64
+    scratch_slot: i64
+    // Slots of the variables that live in x19, x20, ... in this order.
+    reg_slots: List[i64]
+    zero_slots: List[i64]
+}
+
+// ---- what only the checker needs --------------------------------------
+
+struct StructTemplate {
+    name: i64
+    pos: i64
+    params: List[i64]
+    field_names: List[i64]
+    field_shapes: List[i64]
+    // For a struct without type parameters, its one `StructInfo`, or -1.
+    only: i64
+    // The struct types made from it so far.
+    instances: List[i64]
+}
+
+struct EnumTemplate {
+    name: i64
+    // Where it is declared; 0 for the built-in ones.
+    pos: i64
+    params: List[i64]
+    builtin: bool
+    variant_names: List[i64]
+    // Per variant, the shapes of its fields.
+    variant_fields: List[List[i64]]
+    instances: List[i64]
+}
+
+struct GenericFn {
+    item: i64
+    name: i64
+    type_params: List[i64]
+    param_shapes: List[i64]
+    param_mut: List[bool]
+    // The shape of the result, or -1.
+    ret: i64
+    // The functions in `fns` made from it so far.
+    instances: List[i64]
+}
+
+struct ConstValue {
+    kind: i64
+    // The number, 0/1 for a `bool`, or the index in `strings`.
+    value: i64
+}
+
+struct ConstInfo {
+    name: i64
+    pos: i64
+    ty: i64
+    expr: i64
+    // 0 not evaluated yet, 1 being evaluated, 2 done.
+    state: i64
+    kind: i64
+    value: i64
+    // For a number: its index in `ints`, shared by every use.
+    int: i64
+}
+
+// What is known about a variable, as bits of `Checker.loc_flags`.
+const LOC_MUTABLE = 1
+const LOC_BY_REF = 2
+const LOC_PARAM = 4
+// The variable of a `for` loop or a name bound by a pattern.
+const LOC_VIEW = 8
+// Not set for a view of data another value owns.
+const LOC_OWNS = 16
+// A number or `bool` that may live in a register.
+const LOC_SCALAR = 32
+// Passed as `mut` somewhere, so it needs an address in memory.
+const LOC_ADDRESSED = 64
+
+// A variable or a part of one, as a range of slots. `ok` is false for
+// "not a place".
+struct Place {
+    ok: bool
+    root: i64
+    start: i64
+    len: i64
+    mutable: bool
+    is_param: bool
+    is_view: bool
+}
+
+// A place something else currently refers to.
+struct Borrow {
+    root: i64
+    start: i64
+    len: i64
+    mutable: bool
+    holder: i64
+}
+
+// An owning temporary of the statement being checked that nothing has
+// taken over yet.
+struct Pending {
+    expr: i64
+    slot: i64
+    ty: i64
+}
+
+struct SemaError {
+    message: str
+    offset: i64
+    // The expression the error is about, or -1.
+    expr: i64
+}
+
+// Every distinct name, as a number. `text` holds them one after another.
+// A name of up to eight bytes is also kept as one number, its bytes
+// packed together, so that looking one up compares numbers, not texts.
+struct Names {
+    text: str
+    starts: List[i64]
+    lens: List[i64]
+    // The packed bytes, or 0 for a longer name.
+    packed: List[i64]
+    // Open addressing: sym + 1, or 0 for an empty place.
+    table: List[i64]
+    mask: i64
+}
+
+// A table from a number to a number, for keys that are not syms.
+struct IntMap {
+    keys: List[i64]
+    values: List[i64]
+    mask: i64
+    count: i64
+}
+
+struct Checker {
+    names: Names
+    prelude_start: i64
+    failed: bool
+    error: SemaError
+    errors: List[SemaError]
+
+    structs: List[StructInfo]
+    struct_templates: List[StructTemplate]
+    // Struct name to its declaration.
+    struct_names: List[i64]
+    // 0 layout not started, 1 in progress, 2 done.
+    struct_state: List[i64]
+    settled_structs: i64
+    templates: List[EnumTemplate]
+    template_names: List[i64]
+    // Variant name to its enum declaration and its index there, as
+    // `template * 1024 + index`.
+    variant_names: List[i64]
+    consts: List[ConstInfo]
+    const_names: List[i64]
+    enums: List[EnumInfo]
+    enum_state: List[i64]
+    settled: i64
+    declared: bool
+    nesting: i64
+    lists: List[i64]
+    fns: List[FnInfo]
+    fn_names: List[i64]
+    generic_fns: List[GenericFn]
+    generic_names: List[i64]
+    // The library's methods: method name to an entry of `library_fns`,
+    // which lists the `generic_fns` of that name. The one whose first
+    // parameter fits the receiver is the one called.
+    library: List[i64]
+    library_fns: List[List[i64]]
+    main: i64
+
+    // Shapes: kind, one number (parameter index, type, element shape or
+    // declaration) and for a struct or enum its arguments, as a run of
+    // shape ids in `shape_ids`. Shapes 0, 1 and 2 are `i64`, `bool`, `str`.
+    shape_kind: List[i64]
+    shape_a: List[i64]
+    shape_start: List[i64]
+    shape_len: List[i64]
+    shape_ids: List[i64]
+
+    // The type parameters in scope where a type is being read, and
+    // inside a use of a generic function what they stand for.
+    tparams: List[i64]
+    fn_bound: List[i64]
+    fn_depth: i64
+    fn_origin: i64
+    sh_e: i64
+    sh_s: i64
+    sh_p: i64
+    sh_i: i64
+
+    // Per expression (id plus shift).
+    expr_res: List[i64]
+    expr_ty: List[i64]
+    expr_aux: List[i64]
+    expr_tmp: List[i64]
+    // 1 where the value is handed over instead of copied.
+    expr_moved: List[i64]
+    // Per statement.
+    stmt_slot: List[i64]
+    stmt_flag: List[i64]
+    stmt_drops_start: List[i64]
+    stmt_drops_len: List[i64]
+    // Per pattern.
+    pat_kind: List[i64]
+    pat_res: List[i64]
+    pat_slot: List[i64]
+    drop_slots: List[i64]
+    drop_tys: List[i64]
+    init_offset: List[i64]
+    ints: List[i64]
+    // Bytes of all string literals, escapes already decoded.
+    data: str
+    string_offsets: List[i64]
+    string_lens: List[i64]
+
+    // Per expression of the tree: the sym of a name plus one, once
+    // known, or 0.
+    expr_sym: List[i64]
+
+    // The variables in scope, innermost last: the first `locals_len`
+    // entries of these lists, which only ever grow. Per variable: its
+    // name, first slot, type, `LOC_` flags, how many loops enclosed the
+    // declaration, the latest store that could hand its buffers over
+    // (or -1) and how much it is used.
+    locals_len: i64
+    loc_name: List[i64]
+    loc_slot: List[i64]
+    loc_ty: List[i64]
+    loc_flags: List[i64]
+    loc_depth: List[i64]
+    loc_candidate: List[i64]
+    loc_uses: List[i64]
+    borrows: List[Borrow]
+    pending: List[Pending]
+    late: List[i64]
+    // The `?` expressions of the statement being checked.
+    tries: List[i64]
+    // How many list literals the expression being checked is inside.
+    in_list: i64
+    // How many parts that own memory have already been stored in the
+    // struct literals and variants the expression being checked is
+    // inside.
+    owned_siblings: i64
+    wish_slots: List[i64]
+    wish_uses: List[i64]
+    zero_slots: List[i64]
+    ret: i64
+    next_slot: i64
+    loop_depth: i64
+}
+
+// ---- names ------------------------------------------------------------
+
+fn names_hash(text: str, start: i64, len: i64) -> i64 {
+    var h = 0xcbf29ce484222325
+    let end = start + len
+    var i = start
+    while i < end {
+        h = (h ^ text[i]) * 0x100000001b3
+        i = i + 1
+    }
+    return h
+}
+
+fn new_names() -> Names {
+    var table: List[i64] = []
+    var i = 0
+    while i < 4096 {
+        table.push(0)
+        i = i + 1
+    }
+    return Names { text: "", starts: [], lens: [], packed: [], table: table, mask: 4095 }
+}
+
+fn names_grow(n: mut Names) {
+    let size = (n.mask + 1) * 2
+    var table: List[i64] = []
+    var i = 0
+    while i < size {
+        table.push(0)
+        i = i + 1
+    }
+    let mask = size - 1
+    var sym = 0
+    while sym < n.starts.len() {
+        var h = n.packed[sym] * 0x9E3779B97F4A7C15
+        if n.packed[sym] == 0 {
+            h = names_hash(n.text, n.starts[sym], n.lens[sym])
+        }
+        var at = ((h >> 48) ^ (h >> 32)) & mask
+        while table[at] != 0 {
+            at = (at + 1) & mask
+        }
+        table[at] = sym + 1
+        sym = sym + 1
+    }
+    n.table = table
+    n.mask = mask
+}
+
+// The number of the name `text[start .. start + len]`, new or known.
+fn names_intern(n: mut Names, text: str, start: i64, len: i64) -> i64 {
+    var key = 0
+    var h = 0
+    if len <= 8 {
+        var j = start + len - 1
+        while j >= start {
+            key = (key << 8) | text[j]
+            j = j - 1
+        }
+        h = key * 0x9E3779B97F4A7C15
+    } else {
+        h = names_hash(text, start, len)
+    }
+    var at = ((h >> 48) ^ (h >> 32)) & n.mask
+    while true {
+        let entry = n.table[at]
+        if entry == 0 {
+            break
+        }
+        let sym = entry - 1
+        if key != 0 {
+            if n.packed[sym] == key {
+                return sym
+            }
+        } else if n.packed[sym] == 0 && n.lens[sym] == len {
+            let known = n.starts[sym]
+            var i = 0
+            while i < len && n.text[known + i] == text[start + i] {
+                i = i + 1
+            }
+            if i == len {
+                return sym
+            }
+        }
+        at = (at + 1) & n.mask
+    }
+    let sym = n.starts.len()
+    n.table[at] = sym + 1
+    n.starts.push(n.text.len())
+    n.lens.push(len)
+    n.packed.push(key)
+    n.text = n.text + text.slice(start, start + len)
+    if sym * 2 > n.mask {
+        names_grow(mut n)
+    }
+    return sym
+}
+
+fn sym_text(c: Checker, sym: i64) -> str {
+    let start = c.names.starts[sym]
+    return c.names.text.slice(start, start + c.names.lens[sym])
+}
+
+// The sym of a name written in the source.
+fn ck_intern(c: mut Checker, p: Parser, span: Span) -> i64 {
+    return names_intern(mut c.names, p.src, span.start, span.len)
+}
+
+// True when the text of `span` is the name `sym`. Interns nothing.
+fn ck_span_is_sym(c: Checker, p: Parser, span: Span, sym: i64) -> bool {
+    if c.names.lens[sym] != span.len {
+        return false
+    }
+    let known = c.names.starts[sym]
+    var i = 0
+    while i < span.len {
+        if c.names.text[known + i] != p.src[span.start + i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// A list indexed by sym: the value for `sym`, or -1.
+fn tab_get(tab: List[i64], sym: i64) -> i64 {
+    if sym < tab.len() {
+        return tab[sym]
+    }
+    return -1
+}
+
+fn tab_set(tab: mut List[i64], sym: i64, value: i64) {
+    while tab.len() <= sym {
+        tab.push(-1)
+    }
+    tab[sym] = value
+}
+
+fn new_int_map() -> IntMap {
+    var keys: List[i64] = []
+    var values: List[i64] = []
+    var i = 0
+    while i < 256 {
+        keys.push(-1)
+        values.push(0)
+        i = i + 1
+    }
+    return IntMap { keys: keys, values: values, mask: 255, count: 0 }
+}
+
+fn int_map_place(m: IntMap, key: i64) -> i64 {
+    let h = key * 0x9E3779B97F4A7C15
+    var at = (h ^ (h >> 31)) & m.mask
+    while m.keys[at] != -1 && m.keys[at] != key {
+        at = (at + 1) & m.mask
+    }
+    return at
+}
+
+// The value stored for `key` (which is never negative), or -1.
+fn int_map_get(m: IntMap, key: i64) -> i64 {
+    let at = int_map_place(m, key)
+    if m.keys[at] == key {
+        return m.values[at]
+    }
+    return -1
+}
+
+fn int_map_set(m: mut IntMap, key: i64, value: i64) {
+    if m.count * 2 > m.mask {
+        let old_keys = m.keys
+        let old_values = m.values
+        let size = (m.mask + 1) * 2
+        var keys: List[i64] = []
+        var values: List[i64] = []
+        var i = 0
+        while i < size {
+            keys.push(-1)
+            values.push(0)
+            i = i + 1
+        }
+        m.keys = keys
+        m.values = values
+        m.mask = size - 1
+        i = 0
+        while i < old_keys.len() {
+            if old_keys[i] != -1 {
+                let to = int_map_place(m, old_keys[i])
+                m.keys[to] = old_keys[i]
+                m.values[to] = old_values[i]
+            }
+            i = i + 1
+        }
+    }
+    let at = int_map_place(m, key)
+    if m.keys[at] != key {
+        m.keys[at] = key
+        m.count = m.count + 1
+    }
+    m.values[at] = value
+}
+
+// ---- mistakes ---------------------------------------------------------
+
+// Records a mistake at `offset`. The first one in a function wins.
+// `c` comes last so that the message can be built from it in the call.
+fn ck_err(offset: i64, message: str, c: mut Checker) {
+    if !c.failed {
+        c.failed = true
+        c.error = SemaError { message: message, offset: offset, expr: -1 }
+    }
+}
+
+// A mistake about the whole expression `expr`.
+fn ck_err_expr(p: Parser, expr: i64, message: str, c: mut Checker) {
+    if !c.failed {
+        c.failed = true
+        c.error = SemaError { message: message, offset: p.ast.expr_pos[expr], expr: expr }
+    }
+}
+
+fn plural(count: i64) -> str {
+    if count == 1 {
+        return ""
+    }
+    return "s"
+}
+
+// `what` repeated `count` times with ", " in between.
+fn repeated(what: str, count: i64) -> str {
+    var out = ""
+    var i = 0
+    while i < count {
+        if i > 0 {
+            out = out + ", "
+        }
+        out = out + what
+        i = i + 1
+    }
+    return out
+}
+
+// ---- types ------------------------------------------------------------
+
+fn ck_ty_name(c: Checker, ty: i64) -> str {
+    if ty == TY_I64 {
+        return "i64"
+    }
+    if ty == TY_BOOL {
+        return "bool"
+    }
+    if ty == TY_STR {
+        return "str"
+    }
+    if ty == TY_UNIT {
+        return "no value"
+    }
+    if ty_is_struct(ty) {
+        return c.structs[ty_index(ty)].name
+    }
+    if ty_is_list(ty) {
+        return "List[" + ck_ty_name(c, c.lists[ty_index(ty)]) + "]"
+    }
+    return c.enums[ty_index(ty)].name
+}
+
+fn ck_size_of(c: Checker, ty: i64) -> i64 {
+    if ty == TY_I64 || ty == TY_BOOL {
+        return 1
+    }
+    if ty == TY_UNIT {
+        return 0
+    }
+    if ty_is_struct(ty) {
+        return c.structs[ty_index(ty)].size
+    }
+    if ty_is_enum(ty) {
+        return c.enums[ty_index(ty)].size
+    }
+    return 3
+}
+
+fn ck_needs_drop(c: Checker, ty: i64) -> bool {
+    if ty < 3 {
+        return false
+    }
+    if ty_is_struct(ty) {
+        return c.structs[ty_index(ty)].heap_tys.len() > 0
+    }
+    if ty_is_enum(ty) {
+        return c.enums[ty_index(ty)].owning
+    }
+    return true
+}
+
+// How many lists, strings and owning enums sit directly inside a value
+// of this type; `ck_owned_offset` and `ck_owned_ty` give each of them.
+fn ck_owned_count(c: Checker, ty: i64) -> i64 {
+    if ty < 3 {
+        return 0
+    }
+    if ty_is_struct(ty) {
+        return c.structs[ty_index(ty)].heap_tys.len()
+    }
+    if ty_is_enum(ty) {
+        if c.enums[ty_index(ty)].owning {
+            return 1
+        }
+        return 0
+    }
+    return 1
+}
+
+fn ck_owned_offset(c: Checker, ty: i64, k: i64) -> i64 {
+    if ty_is_struct(ty) {
+        return c.structs[ty_index(ty)].heap_offsets[k]
+    }
+    return 0
+}
+
+fn ck_owned_ty(c: Checker, ty: i64, k: i64) -> i64 {
+    if ty_is_struct(ty) {
+        return c.structs[ty_index(ty)].heap_tys[k]
+    }
+    return ty
+}
+
+// Inside a list, a string or an owning enum, the slot that says "this
+// owns nothing" when it is zero: the capacity, or the enum's tag.
+fn idle_slot(ty: i64) -> i64 {
+    if ty_is_enum(ty) {
+        return 0
+    }
+    return 2
+}
+
+fn ck_list_of(c: mut Checker, elem: i64) -> i64 {
+    var index = 0
+    let count = c.lists.len()
+    while index < count {
+        if c.lists[index] == elem {
+            return ty_list(index)
+        }
+        index = index + 1
+    }
+    c.lists.push(elem)
+    return ty_list(count)
+}
+
+fn same_types(a: List[i64], b: List[i64]) -> bool {
+    if a.len() != b.len() {
+        return false
+    }
+    var i = 0
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+fn ck_new_shape(c: mut Checker, kind: i64, a: i64) -> i64 {
+    c.shape_kind.push(kind)
+    c.shape_a.push(a)
+    c.shape_start.push(0)
+    c.shape_len.push(0)
+    return c.shape_kind.len() - 1
+}
+
+// A struct or enum shape with these argument shapes.
+fn ck_new_shape_args(c: mut Checker, kind: i64, template: i64, args: List[i64]) -> i64 {
+    c.shape_kind.push(kind)
+    c.shape_a.push(template)
+    c.shape_start.push(c.shape_ids.len())
+    c.shape_len.push(args.len())
+    for arg in args {
+        c.shape_ids.push(arg)
+    }
+    return c.shape_kind.len() - 1
+}
+
+// Resolves a type written in a function or a struct. Inside a use of a
+// generic function its type parameters stand for known types.
+fn ck_ty(c: mut Checker, p: Parser, id: i64) -> i64 {
+    let at = p.ast.types[id].name.start
+    let shape = ck_shape(mut c, p, id)
+    if c.failed {
+        return TY_UNIT
+    }
+    var ty = TY_UNIT
+    if c.tparams.len() == 0 {
+        let none: List[i64] = []
+        ty = ck_realize(mut c, shape, none, at)
+    } else {
+        let bound = c.fn_bound
+        ty = ck_realize(mut c, shape, bound, at)
+    }
+    if c.failed {
+        return TY_UNIT
+    }
+    ck_settle(mut c)
+    return ty
+}
+
+// The message for a type written with the wrong number of type arguments.
+fn wrong_type_arguments(name: str, want: i64) -> str {
+    if want == 0 {
+        return "`" + name + "` takes no type arguments"
+    }
+    return "`" + name + "` takes " + str(want) + " type argument" + plural(want) + ", as in `" + name + "[" +
+        repeated("i64", want) + "]`"
+}
+
+// Reads a type as written and returns its shape. The type parameters
+// in scope are `c.tparams`.
+fn ck_shape(c: mut Checker, p: Parser, id: i64) -> i64 {
+    let node = p.ast.types[id]
+    let argc = node.args.len
+    // The three most written names are recognised without a lookup.
+    let from = node.name.start
+    let first = p.src[from]
+    var name = -1
+    if node.name.len == 3 {
+        if first == 'i' && p.src[from + 1] == '6' && p.src[from + 2] == '4' {
+            name = SYM_I64
+        } else if first == 's' && p.src[from + 1] == 't' && p.src[from + 2] == 'r' {
+            name = SYM_STR
+        }
+    } else if node.name.len == 4 && first == 'b' {
+        if p.src[from + 1] == 'o' && p.src[from + 2] == 'o' && p.src[from + 3] == 'l' {
+            name = SYM_BOOL
+        }
+    }
+    if name < 0 {
+        name = ck_intern(mut c, p, node.name)
+    }
+    var k = 0
+    while k < c.tparams.len() {
+        if c.tparams[k] == name {
+            if argc != 0 {
+                ck_err(node.name.start, "`" + sym_text(c, name) + "` is a type parameter and takes no type arguments", mut c)
+                return 0
+            }
+            return ck_new_shape(mut c, SHAPE_PARAM, k)
+        }
+        k = k + 1
+    }
+    // The common case first: it needs no lookup.
+    if name <= SYM_STR {
+        if argc != 0 {
+            ck_err(node.name.start, "`" + sym_text(c, name) + "` takes no type arguments", mut c)
+            return 0
+        }
+        return name
+    }
+    if name == SYM_LIST {
+        if argc != 1 {
+            ck_err(node.name.start, "`List` takes one element type, as in `List[i64]`", mut c)
+            return 0
+        }
+        let elem = ck_shape(mut c, p, p.ast.lists[node.args.start])
+        if c.failed {
+            return 0
+        }
+        return ck_new_shape(mut c, SHAPE_LIST, elem)
+    }
+    let template = tab_get(c.template_names, name)
+    if template >= 0 {
+        let want = c.templates[template].params.len()
+        if argc != want {
+            ck_err(node.name.start, wrong_type_arguments(sym_text(c, name), want), mut c)
+            return 0
+        }
+        var shapes: List[i64] = []
+        var i = 0
+        while i < argc {
+            let shape = ck_shape(mut c, p, p.ast.lists[node.args.start + i])
+            if c.failed {
+                return 0
+            }
+            shapes.push(shape)
+            i = i + 1
+        }
+        return ck_new_shape_args(mut c, SHAPE_ENUM, template, shapes)
+    }
+    let struct_template = tab_get(c.struct_names, name)
+    if struct_template < 0 {
+        ck_err(node.name.start, "unknown type `" + sym_text(c, name) +
+                "`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`", mut c)
+        return 0
+    }
+    let want = c.struct_templates[struct_template].params.len()
+    if argc != want {
+        ck_err(node.name.start, wrong_type_arguments(sym_text(c, name), want), mut c)
+        return 0
+    }
+    let only = c.struct_templates[struct_template].only
+    if only >= 0 {
+        // A struct without type parameters is one known type.
+        return ck_new_shape(mut c, SHAPE_KNOWN, ty_struct(only))
+    }
+    var shapes: List[i64] = []
+    var i = 0
+    while i < argc {
+        let shape = ck_shape(mut c, p, p.ast.lists[node.args.start + i])
+        if c.failed {
+            return 0
+        }
+        shapes.push(shape)
+        i = i + 1
+    }
+    return ck_new_shape_args(mut c, SHAPE_STRUCT, struct_template, shapes)
+}
+
+// True when `shape` mentions no type parameter that is still unknown.
+fn ck_ready(c: Checker, shape: i64, bound: List[i64]) -> bool {
+    let kind = c.shape_kind[shape]
+    if kind == SHAPE_PARAM {
+        return bound[c.shape_a[shape]] != TY_NONE
+    }
+    if kind == SHAPE_KNOWN {
+        return true
+    }
+    if kind == SHAPE_LIST {
+        return ck_ready(c, c.shape_a[shape], bound)
+    }
+    let start = c.shape_start[shape]
+    var i = 0
+    while i < c.shape_len[shape] {
+        if !ck_ready(c, c.shape_ids[start + i], bound) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// Turns a shape into a type, given what its type parameters stand for.
+// Every parameter it mentions must be known.
+fn ck_realize(c: mut Checker, shape: i64, bound: List[i64], at: i64) -> i64 {
+    let kind = c.shape_kind[shape]
+    let a = c.shape_a[shape]
+    if kind == SHAPE_KNOWN {
+        return a
+    }
+    if kind == SHAPE_PARAM {
+        return bound[a]
+    }
+    if kind == SHAPE_LIST {
+        let elem = ck_realize(mut c, a, bound, at)
+        if c.failed {
+            return TY_UNIT
+        }
+        return ck_list_of(mut c, elem)
+    }
+    let start = c.shape_start[shape]
+    let len = c.shape_len[shape]
+    var args: List[i64] = []
+    var i = 0
+    while i < len {
+        let arg = ck_realize(mut c, c.shape_ids[start + i], bound, at)
+        if c.failed {
+            return TY_UNIT
+        }
+        args.push(arg)
+        i = i + 1
+    }
+    if kind == SHAPE_STRUCT {
+        return ck_struct_instance(mut c, a, args, at)
+    }
+    return ck_instance(mut c, a, args, at)
+}
+
+// `Name[A, B]` for a declaration's name and type arguments.
+fn ck_instance_name(c: Checker, name: i64, args: List[i64]) -> str {
+    var text = sym_text(c, name)
+    if args.len() > 0 {
+        text = text + "["
+        for i, arg in args {
+            if i > 0 {
+                text = text + ", "
+            }
+            text = text + ck_ty_name(c, arg)
+        }
+        text = text + "]"
+    }
+    return text
+}
+
+// The struct type made from a declaration and type arguments, created
+// the first time it is asked for.
+fn ck_struct_instance(c: mut Checker, template: i64, args: List[i64], at: i64) -> i64 {
+    var j = 0
+    let known = c.struct_templates[template].instances.len()
+    while j < known {
+        let index = c.struct_templates[template].instances[j]
+        if same_types(c.structs[index].args, args) {
+            return ty_struct(index)
+        }
+        j = j + 1
+    }
+    if c.nesting >= 200 {
+        ck_err(at, "this type nests structs too deeply", mut c)
+        return TY_UNIT
+    }
+    let name = ck_instance_name(c, c.struct_templates[template].name, args)
+    let index = c.structs.len()
+    c.struct_templates[template].instances.push(index)
+    c.structs.push(StructInfo {
+        name: name,
+        template: template,
+        args: args,
+        size: 0,
+        field_names: [],
+        field_tys: [],
+        field_offsets: [],
+        heap_offsets: [],
+        heap_tys: [],
+    })
+    c.struct_state.push(0)
+    c.nesting = c.nesting + 1
+    var names: List[i64] = []
+    var tys: List[i64] = []
+    var offsets: List[i64] = []
+    let count = c.struct_templates[template].field_shapes.len()
+    var k = 0
+    while k < count {
+        let ty = ck_realize(mut c, c.struct_templates[template].field_shapes[k], args, at)
+        if c.failed {
+            return TY_UNIT
+        }
+        names.push(c.struct_templates[template].field_names[k])
+        tys.push(ty)
+        offsets.push(0)
+        k = k + 1
+    }
+    c.nesting = c.nesting - 1
+    c.structs[index].field_names = names
+    c.structs[index].field_tys = tys
+    c.structs[index].field_offsets = offsets
+    return ty_struct(index)
+}
+
+// The enum type made from a declaration and type arguments. Its layout
+// follows in `ck_settle`, once the types it mentions exist too.
+fn ck_instance(c: mut Checker, template: i64, args: List[i64], at: i64) -> i64 {
+    var j = 0
+    let known = c.templates[template].instances.len()
+    while j < known {
+        let index = c.templates[template].instances[j]
+        if same_types(c.enums[index].args, args) {
+            return ty_enum(index)
+        }
+        j = j + 1
+    }
+    // `enum E[T] { A(E[List[T]]) }` would ask for ever larger types.
+    if c.nesting >= 200 {
+        ck_err(at, "this type nests enums too deeply", mut c)
+        return TY_UNIT
+    }
+    let name = ck_instance_name(c, c.templates[template].name, args)
+    let index = c.enums.len()
+    // Registered before its fields are resolved: they may mention it.
+    c.templates[template].instances.push(index)
+    c.enums.push(EnumInfo { name: name, template: template, args: args, size: 0, owning: false, variants: [] })
+    c.enum_state.push(0)
+    c.nesting = c.nesting + 1
+    var variants: List[VariantInfo] = []
+    let count = c.templates[template].variant_fields.len()
+    var v = 0
+    while v < count {
+        var tys: List[i64] = []
+        var offsets: List[i64] = []
+        let fields = c.templates[template].variant_fields[v].len()
+        var k = 0
+        while k < fields {
+            let ty = ck_realize(mut c, c.templates[template].variant_fields[v][k], args, at)
+            if c.failed {
+                return TY_UNIT
+            }
+            tys.push(ty)
+            offsets.push(0)
+            k = k + 1
+        }
+        variants.push(VariantInfo { field_tys: tys, field_offsets: offsets, heap_offsets: [], heap_tys: [] })
+        v = v + 1
+    }
+    c.nesting = c.nesting - 1
+    c.enums[index].variants = variants
+    return ty_enum(index)
+}
+
+// Lays out the struct and enum types made since the last call.
+fn ck_settle(c: mut Checker) {
+    if !c.declared {
+        return
+    }
+    while c.settled_structs < c.structs.len() {
+        ck_layout_struct(mut c, c.settled_structs)
+        if c.failed {
+            return
+        }
+        c.settled_structs = c.settled_structs + 1
+    }
+    while c.settled < c.enums.len() {
+        ck_layout_enum(mut c, c.settled)
+        if c.failed {
+            return
+        }
+        c.settled = c.settled + 1
+    }
+}
+
+// How a shape is written, for messages.
+fn ck_shape_name(c: Checker, shape: i64, params: List[i64]) -> str {
+    let kind = c.shape_kind[shape]
+    let a = c.shape_a[shape]
+    if kind == SHAPE_PARAM {
+        return sym_text(c, params[a])
+    }
+    if kind == SHAPE_KNOWN {
+        return ck_ty_name(c, a)
+    }
+    if kind == SHAPE_LIST {
+        return "List[" + ck_shape_name(c, a, params) + "]"
+    }
+    var text = ""
+    if kind == SHAPE_STRUCT {
+        text = sym_text(c, c.struct_templates[a].name)
+    } else {
+        text = sym_text(c, c.templates[a].name)
+    }
+    let len = c.shape_len[shape]
+    if len > 0 {
+        text = text + "["
+        var i = 0
+        while i < len {
+            if i > 0 {
+                text = text + ", "
+            }
+            text = text + ck_shape_name(c, c.shape_ids[c.shape_start[shape] + i], params)
+            i = i + 1
+        }
+        text = text + "]"
+    }
+    return text
+}
+
+// Matches a shape against a type, learning what unknown type parameters
+// stand for. False when they cannot be the same type.
+fn ck_unify(c: Checker, shape: i64, ty: i64, bound: mut List[i64]) -> bool {
+    let kind = c.shape_kind[shape]
+    let a = c.shape_a[shape]
+    if kind == SHAPE_PARAM {
+        if bound[a] == TY_NONE {
+            bound[a] = ty
+            return true
+        }
+        return bound[a] == ty
+    }
+    if kind == SHAPE_KNOWN {
+        return a == ty
+    }
+    if kind == SHAPE_LIST {
+        if !ty_is_list(ty) {
+            return false
+        }
+        return ck_unify(c, a, c.lists[ty_index(ty)], mut bound)
+    }
+    let start = c.shape_start[shape]
+    let len = c.shape_len[shape]
+    let index = ty_index(ty)
+    if kind == SHAPE_STRUCT {
+        if !ty_is_struct(ty) || c.structs[index].template != a {
+            return false
+        }
+        var i = 0
+        while i < len && i < c.structs[index].args.len() {
+            if !ck_unify(c, c.shape_ids[start + i], c.structs[index].args[i], mut bound) {
+                return false
+            }
+            i = i + 1
+        }
+        return true
+    }
+    if !ty_is_enum(ty) || c.enums[index].template != a {
+        return false
+    }
+    var i = 0
+    while i < len && i < c.enums[index].args.len() {
+        if !ck_unify(c, c.shape_ids[start + i], c.enums[index].args[i], mut bound) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// ---- declarations -----------------------------------------------------
+
+fn ck_add_variant(c: mut Checker, name: i64, template: i64, index: i64) {
+    tab_set(mut c.variant_names, name, template * 1024 + index)
+}
+
+fn is_builtin_function(sym: i64) -> bool {
+    return sym == SYM_STR || (sym >= SYM_PRINT && sym <= SYM_EXIT)
+}
+
+fn ck_declare_types(c: mut Checker, p: Parser) {
+    // `Option[T] { Some(T), None }` and `Result[T, E] { Ok(T), Err(E) }`.
+    let t0 = ck_new_shape(mut c, SHAPE_PARAM, 0)
+    c.templates.push(EnumTemplate {
+        name: SYM_OPTION,
+        pos: 0,
+        params: [SYM_T],
+        builtin: true,
+        variant_names: [SYM_SOME, SYM_NONE],
+        variant_fields: [[t0], []],
+        instances: [],
+    })
+    tab_set(mut c.template_names, SYM_OPTION, 0)
+    ck_add_variant(mut c, SYM_SOME, 0, 0)
+    ck_add_variant(mut c, SYM_NONE, 0, 1)
+    let r0 = ck_new_shape(mut c, SHAPE_PARAM, 0)
+    let r1 = ck_new_shape(mut c, SHAPE_PARAM, 1)
+    c.templates.push(EnumTemplate {
+        name: SYM_RESULT,
+        pos: 0,
+        params: [SYM_T, SYM_E],
+        builtin: true,
+        variant_names: [SYM_OK, SYM_ERR],
+        variant_fields: [[r0], [r1]],
+        instances: [],
+    })
+    tab_set(mut c.template_names, SYM_RESULT, 1)
+    ck_add_variant(mut c, SYM_OK, 1, 0)
+    ck_add_variant(mut c, SYM_ERR, 1, 1)
+
+    // First every type name, so that declarations can mention each
+    // other in any order. Declarations found: template and item index.
+    var struct_decls: List[i64] = []
+    var struct_items: List[i64] = []
+    var enum_decls: List[i64] = []
+    var enum_items: List[i64] = []
+    for item_index, item in p.ast.items {
+        var name = Span { start: 0, len: 0 }
+        var generics = IdRange { start: 0, len: 0 }
+        var is_struct = true
+        match item {
+            ItemStruct(n, g, _) => {
+                name = n
+                generics = g
+            }
+            ItemEnum(n, g, _) => {
+                name = n
+                generics = g
+                is_struct = false
+            }
+            _ => continue
+        }
+        let sym = ck_intern(mut c, p, name)
+        if sym <= SYM_LIST {
+            ck_err(name.start, "`" + sym_text(c, sym) + "` is a built-in type and cannot be redefined", mut c)
+            return
+        }
+        let template = tab_get(c.template_names, sym)
+        if name.start >= c.prelude_start {
+            // The program's own declarations come first, so the clash
+            // is with one of them: that is where to report it.
+            var earlier = -1
+            if template >= 0 {
+                earlier = c.templates[template].pos
+            } else if tab_get(c.struct_names, sym) >= 0 {
+                earlier = c.struct_templates[tab_get(c.struct_names, sym)].pos
+            }
+            if earlier >= 0 {
+                ck_err(earlier, "`" + sym_text(c, sym) + "` is a type of the standard library; choose another name", mut c)
+                return
+            }
+        }
+        if template >= 0 {
+            if c.templates[template].builtin {
+                ck_err(name.start, "`" + sym_text(c, sym) + "` is built in and cannot be redefined", mut c)
+            } else if is_struct {
+                ck_err(name.start, "`" + sym_text(c, sym) + "` is already defined as an enum", mut c)
+            } else {
+                ck_err(name.start, "enum `" + sym_text(c, sym) + "` is defined more than once", mut c)
+            }
+            return
+        }
+        if tab_get(c.struct_names, sym) >= 0 {
+            if is_struct {
+                ck_err(name.start, "struct `" + sym_text(c, sym) + "` is defined more than once", mut c)
+            } else {
+                ck_err(name.start, "`" + sym_text(c, sym) + "` is already defined as a struct", mut c)
+            }
+            return
+        }
+        var params: List[i64] = []
+        var g = 0
+        while g < generics.len {
+            let param = p.ast.names[p.ast.lists[generics.start + g]]
+            let param_sym = ck_intern(mut c, p, param)
+            if params.contains(param_sym) {
+                ck_err(param.start, "type parameter `" + sym_text(c, param_sym) + "` is declared more than once", mut c)
+                return
+            }
+            params.push(param_sym)
+            g = g + 1
+        }
+        if is_struct {
+            let index = c.struct_templates.len()
+            tab_set(mut c.struct_names, sym, index)
+            c.struct_templates.push(StructTemplate {
+                name: sym,
+                pos: name.start,
+                params: params,
+                field_names: [],
+                field_shapes: [],
+                only: -1,
+                instances: [],
+            })
+            struct_decls.push(index)
+            struct_items.push(item_index)
+        } else {
+            let index = c.templates.len()
+            tab_set(mut c.template_names, sym, index)
+            c.templates.push(EnumTemplate {
+                name: sym,
+                pos: name.start,
+                params: params,
+                builtin: false,
+                variant_names: [],
+                variant_fields: [],
+                instances: [],
+            })
+            enum_decls.push(index)
+            enum_items.push(item_index)
+        }
+    }
+
+    // Then what each enum's variants hold.
+    for d, index in enum_decls {
+        var variants = IdRange { start: 0, len: 0 }
+        match p.ast.items[enum_items[d]] {
+            ItemEnum(_, _, v) => {
+                variants = v
+            }
+            _ => {}
+        }
+        let pos = c.templates[index].pos
+        if variants.len == 0 {
+            ck_err(pos, "enum `" + sym_text(c, c.templates[index].name) + "` has no variants", mut c)
+            return
+        }
+        if variants.len > MAX_VARIANTS {
+            ck_err(pos, "enum `" + sym_text(c, c.templates[index].name) + "` has more than " + str(MAX_VARIANTS) +
+                    " variants, which is not supported yet", mut c)
+            return
+        }
+        c.tparams = c.templates[index].params
+        var at = 0
+        while at < variants.len {
+            let variant = p.ast.variants[p.ast.lists[variants.start + at]]
+            let sym = ck_intern(mut c, p, variant.name)
+            let other = tab_get(c.variant_names, sym)
+            if other >= 0 {
+                if (other >> 10) == index {
+                    ck_err(variant.name.start, "variant `" + sym_text(c, sym) + "` is declared more than once", mut c)
+                } else {
+                    ck_err(variant.name.start, "variant `" + sym_text(c, sym) + "` already belongs to `" +
+                            sym_text(c, c.templates[other >> 10].name) + "`; variant names must differ across enums", mut c)
+                }
+                return
+            }
+            ck_add_variant(mut c, sym, index, at)
+            var shapes: List[i64] = []
+            var f = 0
+            while f < variant.fields.len {
+                let shape = ck_shape(mut c, p, p.ast.lists[variant.fields.start + f])
+                if c.failed {
+                    return
+                }
+                shapes.push(shape)
+                f = f + 1
+            }
+            c.templates[index].variant_names.push(sym)
+            c.templates[index].variant_fields.push(shapes)
+            at = at + 1
+        }
+    }
+
+    // Then the fields of each struct.
+    for d, index in struct_decls {
+        var fields = IdRange { start: 0, len: 0 }
+        match p.ast.items[struct_items[d]] {
+            ItemStruct(_, _, f) => {
+                fields = f
+            }
+            _ => {}
+        }
+        c.tparams = c.struct_templates[index].params
+        var names: List[i64] = []
+        var shapes: List[i64] = []
+        var f = 0
+        while f < fields.len {
+            let field = p.ast.fields[p.ast.lists[fields.start + f]]
+            let sym = ck_intern(mut c, p, field.name)
+            if names.contains(sym) {
+                ck_err(field.name.start, "field `" + sym_text(c, sym) + "` is declared more than once", mut c)
+                return
+            }
+            let shape = ck_shape(mut c, p, field.ty)
+            if c.failed {
+                return
+            }
+            names.push(sym)
+            shapes.push(shape)
+            f = f + 1
+        }
+        c.struct_templates[index].field_names = names
+        c.struct_templates[index].field_shapes = shapes
+    }
+    let no_params: List[i64] = []
+    c.tparams = no_params
+
+    // A struct or enum without type parameters is one type; make it now
+    // so that it is checked even if nothing uses it.
+    for index in struct_decls {
+        if c.struct_templates[index].params.len() == 0 {
+            let ty = ck_struct_instance(mut c, index, no_params, c.struct_templates[index].pos)
+            if c.failed {
+                return
+            }
+            c.struct_templates[index].only = ty_index(ty)
+        }
+    }
+    for index in enum_decls {
+        if c.templates[index].params.len() == 0 {
+            ck_instance(mut c, index, no_params, c.templates[index].pos)
+            if c.failed {
+                return
+            }
+        }
+    }
+
+    // Sizes and offsets, depth first. A type that contains itself would
+    // have no finite size.
+    c.declared = true
+    ck_settle(mut c)
+}
+
+// The size of a type in slots, laying it out first if needed.
+fn ck_layout(c: mut Checker, ty: i64) -> i64 {
+    if ty_is_struct(ty) {
+        return ck_layout_struct(mut c, ty_index(ty))
+    }
+    if ty_is_enum(ty) {
+        return ck_layout_enum(mut c, ty_index(ty))
+    }
+    return ck_size_of(c, ty)
+}
+
+fn ck_layout_struct(c: mut Checker, index: i64) -> i64 {
+    let pos = c.struct_templates[c.structs[index].template].pos
+    let state = c.struct_state[index]
+    if state == 2 {
+        return c.structs[index].size
+    }
+    if state == 1 {
+        ck_err(pos, "struct `" + c.structs[index].name + "` contains itself, so it would have no finite size", mut c)
+        return 0
+    }
+    c.struct_state[index] = 1
+    var offset = 0
+    var heap_offsets: List[i64] = []
+    var heap_tys: List[i64] = []
+    let count = c.structs[index].field_tys.len()
+    var field = 0
+    while field < count {
+        let ty = c.structs[index].field_tys[field]
+        let size = ck_layout(mut c, ty)
+        if c.failed {
+            return 0
+        }
+        c.structs[index].field_offsets[field] = offset
+        let owned = ck_owned_count(c, ty)
+        var k = 0
+        while k < owned {
+            heap_offsets.push(offset + ck_owned_offset(c, ty, k))
+            heap_tys.push(ck_owned_ty(c, ty, k))
+            k = k + 1
+        }
+        offset = offset + size
+        field = field + 1
+    }
+    if offset > MAX_SIZE {
+        ck_err(pos, "struct `" + c.structs[index].name + "` is too large for now", mut c)
+        return 0
+    }
+    c.structs[index].size = offset
+    c.structs[index].heap_offsets = heap_offsets
+    c.structs[index].heap_tys = heap_tys
+    c.struct_state[index] = 2
+    return offset
+}
+
+fn ck_layout_enum(c: mut Checker, index: i64) -> i64 {
+    let pos = c.templates[c.enums[index].template].pos
+    let state = c.enum_state[index]
+    if state == 2 {
+        return c.enums[index].size
+    }
+    if state == 1 {
+        ck_err(pos, "enum `" + c.enums[index].name +
+                "` contains itself, so it would have no finite size; put the inner value in a `List`", mut c)
+        return 0
+    }
+    c.enum_state[index] = 1
+    // Slot 0 is the tag; every variant's fields start right after it.
+    var size = 1
+    var owning = false
+    let count = c.enums[index].variants.len()
+    var variant = 0
+    while variant < count {
+        var offset = 1
+        var heap_offsets: List[i64] = []
+        var heap_tys: List[i64] = []
+        let fields = c.enums[index].variants[variant].field_tys.len()
+        var field = 0
+        while field < fields {
+            let ty = c.enums[index].variants[variant].field_tys[field]
+            let field_size = ck_layout(mut c, ty)
+            if c.failed {
+                return 0
+            }
+            c.enums[index].variants[variant].field_offsets[field] = offset
+            let owned = ck_owned_count(c, ty)
+            var k = 0
+            while k < owned {
+                heap_offsets.push(offset + ck_owned_offset(c, ty, k))
+                heap_tys.push(ck_owned_ty(c, ty, k))
+                k = k + 1
+            }
+            offset = offset + field_size
+            field = field + 1
+        }
+        if heap_tys.len() > 0 {
+            owning = true
+        }
+        c.enums[index].variants[variant].heap_offsets = heap_offsets
+        c.enums[index].variants[variant].heap_tys = heap_tys
+        if offset > size {
+            size = offset
+        }
+        variant = variant + 1
+    }
+    if size > MAX_SIZE {
+        ck_err(pos, "enum `" + c.enums[index].name + "` is too large for now", mut c)
+        return 0
+    }
+    c.enums[index].size = size
+    c.enums[index].owning = owning
+    c.enum_state[index] = 2
+    return size
+}
+
+// The sym of the method a standard library function `type_method` is.
+fn ck_method_sym(c: mut Checker, p: Parser, name: Span) -> i64 {
+    var k = 0
+    while k < name.len && p.src[name.start + k] != '_' {
+        k = k + 1
+    }
+    return names_intern(mut c.names, p.src, name.start + k + 1, name.len - k - 1)
+}
+
+fn ck_signatures(c: mut Checker, p: Parser) {
+    let no_params: List[i64] = []
+    for item_index, item in p.ast.items {
+        var name = Span { start: 0, len: 0 }
+        var generics = IdRange { start: 0, len: 0 }
+        var params = IdRange { start: 0, len: 0 }
+        var ret = NO_NODE
+        match item {
+            ItemFn(n, g, ps, r, _, _) => {
+                name = n
+                generics = g
+                params = ps
+                ret = r
+            }
+            _ => continue
+        }
+        let sym = ck_intern(mut c, p, name)
+        let in_prelude = name.start >= c.prelude_start
+        if !in_prelude {
+            if is_builtin_function(sym) {
+                ck_err(name.start, "`" + sym_text(c, sym) + "` is built in and cannot be redefined", mut c)
+                return
+            }
+            let variant = tab_get(c.variant_names, sym)
+            if variant >= 0 {
+                ck_err(name.start, "`" + sym_text(c, sym) + "` is already a variant of `" +
+                        sym_text(c, c.templates[variant >> 10].name) + "`", mut c)
+                return
+            }
+            if tab_get(c.const_names, sym) >= 0 {
+                ck_err(name.start, "`" + sym_text(c, sym) + "` is already a constant", mut c)
+                return
+            }
+        }
+        if params.len > MAX_PARAMS {
+            ck_err(name.start, "function `" + sym_text(c, sym) + "` has more than " + str(MAX_PARAMS) +
+                    " parameters, which is not supported yet", mut c)
+            return
+        }
+        if generics.len > 0 || in_prelude {
+            if sym == SYM_MAIN {
+                ck_err(name.start, "`main` cannot have type parameters", mut c)
+                return
+            }
+            var type_params: List[i64] = []
+            var g = 0
+            while g < generics.len {
+                let param = p.ast.names[p.ast.lists[generics.start + g]]
+                let param_sym = ck_intern(mut c, p, param)
+                if type_params.contains(param_sym) {
+                    ck_err(param.start, "type parameter `" + sym_text(c, param_sym) + "` is declared more than once", mut c)
+                    return
+                }
+                type_params.push(param_sym)
+                g = g + 1
+            }
+            // What the types mean is settled per use; here they are only
+            // read, which also reports unknown type names.
+            c.tparams = type_params
+            var shapes: List[i64] = []
+            var muts: List[bool] = []
+            var i = 0
+            while i < params.len {
+                let param = p.ast.params[p.ast.lists[params.start + i]]
+                let shape = ck_shape(mut c, p, param.ty)
+                if c.failed {
+                    return
+                }
+                shapes.push(shape)
+                muts.push(param.mutable)
+                i = i + 1
+            }
+            var ret_shape = -1
+            if ret != NO_NODE {
+                ret_shape = ck_shape(mut c, p, ret)
+                if c.failed {
+                    return
+                }
+            }
+            c.tparams = no_params
+            let index = c.generic_fns.len()
+            var shown = sym
+            if in_prelude {
+                if shapes.len() == 0 {
+                    // A plain function of the library. One of the
+                    // program's own with the same name hides it.
+                    if tab_get(c.fn_names, sym) >= 0 || tab_get(c.generic_names, sym) >= 0 {
+                        continue
+                    }
+                    tab_set(mut c.generic_names, sym, index)
+                } else {
+                    shown = ck_method_sym(mut c, p, name)
+                    var entry = tab_get(c.library, shown)
+                    if entry < 0 {
+                        entry = c.library_fns.len()
+                        c.library_fns.push([])
+                        tab_set(mut c.library, shown, entry)
+                    }
+                    c.library_fns[entry].push(index)
+                }
+            } else {
+                let taken = tab_get(c.fn_names, sym) >= 0 || tab_get(c.generic_names, sym) >= 0
+                if taken {
+                    ck_err(name.start, "function `" + sym_text(c, sym) + "` is defined more than once", mut c)
+                    return
+                }
+                tab_set(mut c.generic_names, sym, index)
+            }
+            c.generic_fns.push(GenericFn {
+                item: item_index,
+                name: shown,
+                type_params: type_params,
+                param_shapes: shapes,
+                param_mut: muts,
+                ret: ret_shape,
+                instances: [],
+            })
+            continue
+        }
+        var tys: List[i64] = []
+        var by_ref: List[bool] = []
+        var muts: List[bool] = []
+        var i = 0
+        while i < params.len {
+            let param = p.ast.params[p.ast.lists[params.start + i]]
+            let ty = ck_ty(mut c, p, param.ty)
+            if c.failed {
+                return
+            }
+            tys.push(ty)
+            by_ref.push(param.mutable || ty_is_aggregate(ty))
+            muts.push(param.mutable)
+            i = i + 1
+        }
+        var ret_ty = TY_UNIT
+        if ret != NO_NODE {
+            ret_ty = ck_ty(mut c, p, ret)
+            if c.failed {
+                return
+            }
+        }
+        if sym == SYM_MAIN {
+            if tys.len() > 0 {
+                ck_err(name.start, "`main` cannot take parameters", mut c)
+                return
+            }
+            if ret_ty != TY_I64 && ret_ty != TY_UNIT {
+                ck_err(name.start, "`main` must return `i64` or nothing", mut c)
+                return
+            }
+        }
+        let index = c.fns.len()
+        let taken = tab_get(c.generic_names, sym) >= 0 || tab_get(c.fn_names, sym) >= 0
+        if taken {
+            ck_err(name.start, "function `" + sym_text(c, sym) + "` is defined more than once", mut c)
+            return
+        }
+        tab_set(mut c.fn_names, sym, index)
+        c.fns.push(FnInfo {
+            item: item_index,
+            sh_e: 0,
+            sh_s: 0,
+            sh_p: 0,
+            sh_i: 0,
+            generic: -1,
+            type_args: [],
+            depth: 0,
+            origin: name.start,
+            ret: ret_ty,
+            param_tys: tys,
+            param_by_ref: by_ref,
+            param_mutable: muts,
+            slots: 0,
+            sret_slot: -1,
+            scratch_slot: 0,
+            reg_slots: [],
+            zero_slots: [],
+        })
+    }
+}

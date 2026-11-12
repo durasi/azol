@@ -120,6 +120,37 @@ Messages:
 
 - a constant is declared outside functions; use `let` for a value inside one
 
+## E0112
+
+Between `if`, `while`, `for ... in` or `match` and the `{` of its block, a struct literal is written in parentheses.
+
+What to do: Put the struct literal in parentheses.
+
+Wrong:
+
+    if p == Point { x: 1, y: 2 } {
+    }
+
+Right:
+
+    if p == (Point { x: 1, y: 2 }) {
+    }
+
+Messages:
+
+- a struct literal here needs parentheses around it, `(... { ... })`: this `{` starts the block
+
+## E0113
+
+In a number a `_` stands between two digits, and a decimal number other than `0` does not start with `0`.
+
+`1_000_000`, `0xFFFF_FFFF` and `0b1010_1010` are fine; `1__0`, `1_`, `0x_F` and `007` are not. There are no octal numbers.
+
+Messages:
+
+- a `_` in a number stands between two digits, as in `1_000`
+- a decimal number does not start with `0`; other bases are written `0x1F` and `0b1010`
+
 ## E0201
 
 A name must be declared before it is used: as a variable, a parameter, a constant or a variant.
@@ -218,6 +249,7 @@ Messages:
 
 - `...` is a built-in type and cannot be redefined
 - `...` is built in and cannot be redefined
+- `...` is a type of the standard library; choose another name
 
 ## E0210
 
@@ -412,6 +444,34 @@ Messages:
 - this number does not fit in `i64`
 - this number does not fit in 64 bits
 
+## E0318
+
+`value?` follows a `Result` or an `Option`, in a function that returns the same kind: an `Option`, or a `Result` with the same error type.
+
+What to do: Use `match` to handle the other case here.
+
+`value?` is what an `Ok` or a `Some` holds. For an `Err` or a `None` the function returns that `Err` or `None` at once, so its own result type must be able to hold it.
+
+Wrong:
+
+    fn main() {
+        let text = read_file("a.txt")?
+    }
+
+Right:
+
+    fn main() {
+        match read_file("a.txt") {
+            Ok(text) => print(text)
+            Err(why) => eprint(why)
+        }
+    }
+
+Messages:
+
+- `?` needs a `Result` or an `Option` but this is `...`
+- `?` on `...` needs a function that returns ..., but this function returns ...; use `match`
+
 ## E0401
 
 A variable declared with `let` never changes; only one declared with `var` can be assigned, grown or passed as `mut`.
@@ -531,6 +591,7 @@ Messages:
 
 - `mut` needs a variable or a part of a variable
 - `...` changes the list, so it needs a variable or a part of a variable
+- `...` changes its receiver, so it needs a variable or a part of a variable
 - only a variable or a part of a variable can be assigned
 
 ## E0408
@@ -662,6 +723,27 @@ Messages:
 
 - struct `...` contains itself, so it would have no finite size
 - enum `...` contains itself, so it would have no finite size; put the inner value in a `List`
+
+## E0414
+
+`?` may leave the function, so it cannot stand inside a list literal, or in a struct literal or variant after a part that owns memory: the half-built value would have no owner.
+
+What to do: Compute the value with `?` in a `let` before the literal.
+
+Wrong:
+
+    return Ok([first()?, second()?])
+
+Right:
+
+    let a = first()?
+    let b = second()?
+    return Ok([a, b])
+
+Messages:
+
+- `?` cannot be used inside a list literal; store its value in a variable first
+- `?` cannot be used after a part of the same value that owns memory; store its value in a variable first
 
 ## E0501
 
@@ -872,7 +954,7 @@ Messages:
 
 - `...` is not a constant; a constant is made of literals and other constants
 - a constant must be made of literals and other constants
-- a string constant must be a single string literal
+- string constants can be joined with `+`; no other operator works on them in a constant
 
 ## E0702
 
@@ -937,4 +1019,4 @@ The only number type so far is `i64`.
 
 Messages:
 
-- floating-point numbers are not supported by `azol build` yet
+- there are no floating-point numbers yet; the only number type is `i64`

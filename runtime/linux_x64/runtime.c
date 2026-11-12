@@ -32,9 +32,12 @@ enum {
     SYS_open = 2,
     SYS_close = 3,
     SYS_mmap = 9,
+    SYS_rt_sigaction = 13,
+    SYS_rt_sigreturn = 15,
     SYS_munmap = 11,
     SYS_mremap = 25,
     SYS_chmod = 90,
+    SYS_sigaltstack = 131,
     SYS_exit_group = 231,
 };
 
@@ -513,11 +516,32 @@ EXPORT i64 rt_set_executable(const Buf *path, void *out) {
 // jump to its `main`, which takes no arguments and returns the exit code.
 extern i64 azol_program(void);
 
+// Where the stack pointer of the interrupted program is in what the
+// system hands a signal handler: `struct ucontext` in
+// arch/x86/include/uapi/asm/ucontext.h has flags (8 bytes), link (8) and
+// the signal stack (24) before `struct sigcontext`, which in
+// arch/x86/include/uapi/asm/sigcontext.h starts r8 to r15, rdi, rsi, rbp,
+// rbx, rdx, rax, rcx, rsp: 40 + 15 * 8.
+#define SP_IN_CONTEXT 160
+
+#include "../linux_common/overflow.h"
+
+// On x86-64 the system does not provide the way back from a handler; the
+// program must. This is all it takes.
+__asm__(".text\n"
+        "sigreturn_stub:\n"
+        "    mov $15, %eax\n"
+        "    syscall\n");
+
 // Called by `_start` with the stack as the system set it up: the number
 // of arguments, then their addresses.
 EXPORT NORETURN void rt_start(i64 *stack) {
+    // This function never returns, so its own frame is a piece of the
+    // stack that stays put: the handler's spare stack.
+    u8 spare[SPARE_STACK];
     state.argc = stack[0];
     state.argv = (char **)(stack + 1);
+    watch_stack(spare);
     quit(azol_program());
 }
 

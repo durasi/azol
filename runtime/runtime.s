@@ -6,16 +6,20 @@
 //   brk #(0x2000 + 32 * data + reg); nop    load the address of runtime text
 // Imports: 0 write, 1 exit, 2 malloc, 3 realloc, 4 free, 5 memcpy, 6 memcmp,
 //          7 open, 8 read, 9 close, 10 __error, 11 strerror, 12 strlen,
-//          13 _NSGetArgc, 14 _NSGetArgv, 15 chmod.
+//          13 _NSGetArgc, 14 _NSGetArgv, 15 chmod, 16 sigaltstack,
+//          17 sigaction, 18 _exit.
 // Text:    0 newline, 1 "true", 2 "false", 3-8 the panic messages,
-//          9 the 256 one-byte strings `chr` hands out.
+//          9 the 256 one-byte strings `chr` hands out, 10 the message for
+//          a stack that ran out.
+// A third marker, `brk #0x800` at `_rt_start_main`, becomes the call of
+// the program's `main` when the program is one for macOS.
 .text
 .p2align 2
 .globl _rt_print_i64, _rt_print_bool, _rt_print_str, _rt_div_zero
 .globl _rt_index_fail, _rt_pop_empty, _rt_alloc, _rt_free, _rt_list_push, _rt_list_clone
 .globl _rt_drop, _rt_str_concat, _rt_str_eq, _rt_str_from_i64, _rt_str_from_bool
 .globl _rt_eprint_str, _rt_exit, _rt_str_slice, _rt_chr, _rt_args, _rt_read_file, _rt_write_file
-.globl _rt_str_append, _rt_set_executable
+.globl _rt_str_append, _rt_set_executable, _rt_start, _rt_start_main
 
 // x0 = number. Prints it and a newline.
 _rt_print_i64:
@@ -846,4 +850,106 @@ _rt_set_executable:
 36:
     ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #32
+    ret
+
+// Where a macOS program starts: it arranges for running out of stack to
+// end in a message, then calls the program's `main` and hands its result
+// back to the system.
+//
+// A program that calls itself without end walks off the bottom of its
+// stack into the guard page, and the system answers with SIGSEGV or
+// SIGBUS, which end the process without a word. A handler cannot run on a
+// stack that has just run out, so it gets one of its own: 64 KiB set
+// aside here, at the top of the ordinary stack, where they stay until
+// `main` returns.
+//
+// Layouts, from the macOS SDK:
+//   <sys/_types/_sigaltstack.h>  stack_t: ss_sp at 0, ss_size at 8,
+//                                ss_flags at 16.
+//   <sys/signal.h>               struct sigaction: handler at 0, sa_mask
+//                                (32 bits) at 8, sa_flags at 12.
+//                                SA_ONSTACK 1, SA_RESETHAND 4,
+//                                SA_SIGINFO 0x40; SIGBUS 10, SIGSEGV 11;
+//                                MINSIGSTKSZ 32768.
+_rt_start:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    sub sp, sp, #0x10, lsl #12
+    sub sp, sp, #48
+    add x9, sp, #48
+    str x9, [sp]
+    mov x9, #0x10000
+    str x9, [sp, #8]
+    str xzr, [sp, #16]
+    mov x0, sp
+    mov x1, #0
+    brk #0x1010
+    nop
+    nop
+    cbnz w0, 37f
+    adr x9, _rt_fault
+    str x9, [sp, #24]
+    mov w9, #0x45
+    str wzr, [sp, #32]
+    str w9, [sp, #36]
+    mov w0, #11
+    add x1, sp, #24
+    mov x2, #0
+    brk #0x1011
+    nop
+    nop
+    mov w0, #10
+    add x1, sp, #24
+    mov x2, #0
+    brk #0x1011
+    nop
+    nop
+37:
+    add sp, sp, #48
+_rt_start_main:
+    brk #0x800
+    mov sp, x29
+    ldp x29, x30, [sp], #16
+    ret
+
+// The handler: x0 = signal, x1 = what happened, x2 = the registers at
+// that moment. It runs on the spare stack.
+//
+// Layouts, from the macOS SDK:
+//   <sys/signal.h>               siginfo_t: si_signo, si_errno, si_code,
+//                                si_pid, si_uid, si_status, 4 bytes each,
+//                                then si_addr at 24.
+//   <sys/_types/_ucontext.h>     ucontext_t: uc_onstack 0, uc_sigmask 4,
+//                                uc_stack 8, uc_link 32, uc_mcsize 40,
+//                                uc_mcontext (a pointer) at 48.
+//   <arm/_mcontext.h>, <mach/arm/_structs.h>
+//                                mcontext64: the exception state (far,
+//                                esr, exception: 16 bytes), then the
+//                                thread state: x0 to x28, fp, lr, and sp
+//                                at 16 + 31 * 8 = 264.
+// A fault within 64 KiB of the stack pointer is the stack running out: no
+// function's frame is larger than 16 KiB. Anything else is not ours to
+// explain; SA_RESETHAND has already put the system's own answer back, so
+// returning runs the instruction again and the process ends as it would
+// have without this handler.
+_rt_fault:
+    ldr x9, [x1, #24]
+    ldr x10, [x2, #48]
+    ldr x10, [x10, #264]
+    sub x9, x9, x10
+    add x9, x9, #0x10, lsl #12
+    cmp x9, #0x20, lsl #12
+    b.hs 38f
+    mov x0, #2
+    brk #0x2141
+    nop
+    mov x2, #LEN_STACK
+    brk #0x1000
+    nop
+    nop
+    mov x0, #1
+    brk #0x1012
+    nop
+    nop
+38:
     ret

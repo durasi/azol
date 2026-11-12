@@ -29,7 +29,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 AZOL = os.path.join(ROOT, "target", "release", "azol")
 BIG = os.path.join(ROOT, "bench", "generated", "big.azl")
-SOURCES = ["front_main.azl", "token.azl", "lexer.azl", "ast.azl", "parser.azl", "dump.azl"]
+SOURCES = ["front_main.azl", "driver.azl", "token.azl", "lexer.azl", "ast.azl", "parser.azl", "dump.azl"]
 MODES = ["lex", "parse"]
 TIMING = re.compile(rb"^(lexed|parsed) .*\n", re.M)
 
@@ -170,6 +170,16 @@ BROKEN = {
     "ok_nested_just_enough": "fn main() {\n  let a = " + "(" * 150 + "1" + ")" * 150 + "\n}\n",
     "ok_dot_on_next_line": "fn main() {\n  let a = b\n\n    .c\n    .d(1)\n}\n",
     "ok_not_ascii": "fn main() {\n  // şğü\n  print(\"çöı\")  // ığ\n  let a = 1\n}\n",
+    # ---- a struct literal where a block is expected, and `?` ----
+    "literal_in_if": "fn main() {\n  if a == P { x: 1 } {\n  }\n}\n",
+    "literal_in_while_next_line": "fn main() {\n  while f(a) != P {\n    x: 1\n  } {\n  }\n}\n",
+    "literal_in_match": "fn main() {\n  match P { x: 1 } {\n  }\n}\n",
+    "literal_in_for": "fn main() {\n  for x in P { xs: [1] }.xs {\n  }\n}\n",
+    "block_after_name_is_fine": "fn main() {\n  if a {\n    b.c(1)\n  }\n  if a == b {\n    x = 1\n  }\n}\n",
+    "try_everywhere": "fn f() -> Option[i64] {\n  let a = g()? + h(1)?.x\n  g()?\n  return Some(a??[0]?)\n}\n",
+    "try_alone": "fn main() {\n  ?\n}\n",
+    # ---- numbers the checker looks at, not the lexer ----
+    "numbers_of_every_form": "fn main() {\n  let a = 0 + 10 + 1_000 + 0x0F + 0xff_ff + 0b0_1 + 007 + 1__0 + 0x_F\n}\n",
 }
 
 # Pieces put into right programs to damage them.

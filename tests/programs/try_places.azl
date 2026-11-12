@@ -1,0 +1,122 @@
+// expect-exit: 0
+// expect-line: ok bcdef 6 4 3 106
+// expect-line: err -1 n-1
+// expect-line: err -2 n-2
+// expect-line: ok 21
+// expect-line: ok 23
+// expect-line: err -7 n-7
+// expect-line: err -5 n-5
+// expect-line: ok 23
+// expect-line: ok 5
+// expect-line: err 9 n9
+// expect-line: err 8 n8
+
+// `?` where evaluation is out of the written order, with errors that own
+// memory, and on values that are not temporaries.
+
+struct Fail {
+    code: i64
+    notes: List[str]
+}
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+struct Holder {
+    r: Result[List[str], Fail]
+}
+
+fn fail(code: i64) -> Fail {
+    return Fail { code: code, notes: ["n" + str(code)] }
+}
+
+fn point(n: i64) -> Result[Point, Fail] {
+    if n < 0 {
+        return Err(fail(n))
+    }
+    return Ok(Point { x: n, y: n * 2 })
+}
+
+fn names(n: i64) -> Result[List[str], Fail] {
+    if n < 0 {
+        return Err(fail(n))
+    }
+    var out: List[str] = []
+    var i = 0
+    while i < n {
+        out.push("s" + str(i))
+        i = i + 1
+    }
+    return Ok(out)
+}
+
+// In `push`, an element assignment, a method that changes its receiver,
+// the bounds of `slice`, the list of a `for` and the value of a `match`.
+fn build(n: i64) -> Result[str, Fail] {
+    var xs: List[i64] = []
+    xs.push(point(n)?.y)
+    xs.push(0)
+    xs[1] = point(n + 1)?.x
+    var all: List[List[str]] = []
+    all.push(names(n)?)
+    var m: Map[i64] = new_map()
+    m.set("k", point(n - 1)?.x)
+    let text = "abcdefgh".slice(point(1)?.x, point(n)?.y)
+    var total = 0
+    for name in names(n)? {
+        total = total + name.len()
+    }
+    match point(n)?.x {
+        3 => total = total + 100
+        _ => total = total + 1
+    }
+    return Ok(text + " " + str(xs[0]) + " " + str(xs[1]) + " " + str(all[0].len()) + " " + str(total))
+}
+
+// A field, an element: the value is copied and its owner keeps it.
+fn from_places(h: Holder, rs: List[Result[List[str], Fail]], i: i64) -> Result[i64, Fail] {
+    let a = h.r?
+    let b = rs[i]?
+    return Ok(a.len() * 10 + b.len())
+}
+
+// What a pattern bound.
+fn unwrap_inner(r: Result[Result[i64, Fail], Fail]) -> Result[i64, Fail] {
+    match r {
+        Ok(inner) => return Ok(inner? + 1)
+        Err(f) => return Err(f)
+    }
+}
+
+fn show(r: Result[i64, Fail]) -> str {
+    match r {
+        Ok(n) => return "ok " + str(n)
+        Err(f) => return "err " + str(f.code) + " " + f.notes.join(",")
+    }
+}
+
+fn show_str(r: Result[str, Fail]) -> str {
+    match r {
+        Ok(s) => return "ok " + s
+        Err(f) => return "err " + str(f.code) + " " + f.notes.join(",")
+    }
+}
+
+fn main() {
+    print(show_str(build(3)))
+    print(show_str(build(0)))
+    print(show_str(build(-2)))
+    let good = Holder { r: names(2) }
+    let bad = Holder { r: names(-5) }
+    let rs = [names(1), names(-7), names(3)]
+    print(show(from_places(good, rs, 0)))
+    print(show(from_places(good, rs, 2)))
+    print(show(from_places(good, rs, 1)))
+    print(show(from_places(bad, rs, 0)))
+    print(show(from_places(good, rs, 2)))
+    print(show(unwrap_inner(Ok(Ok(4)))))
+    print(show(unwrap_inner(Ok(Err(fail(9))))))
+    print(show(unwrap_inner(Err(fail(8)))))
+}

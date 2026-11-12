@@ -1,0 +1,119 @@
+// expect-exit: 0
+// expect-line: [1,2,3,4]
+// expect-line: [1,2,3,4,1,2,3,4]
+// expect-line: [1,2,3,4,1]
+// expect-line: [9,1,2,0,3,4,1,5]
+// expect-line: 9
+// expect-line: 5
+// expect-line: 0
+// expect-line: [1,2,3,4,1]
+// expect-line: [1,2,3,4,1,7,8]
+// expect-line: 0
+// expect-line: true
+// expect-line: abcd
+// expect-line: b
+// expect-line: a-c
+// expect-line: 3
+// expect-line: [2,3,1]
+// expect-line: 0
+// expect-line: [1]
+// expect-line: 2
+// expect-line: ada=2 alan=1
+// expect-line: false true
+
+// The library's methods that change the list they are called on.
+
+struct Box {
+    items: List[str]
+}
+
+struct Counts {
+    seen: Map[i64]
+}
+
+fn show(xs: List[i64]) -> str {
+    var out = "["
+    for i, x in xs {
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + str(x)
+    }
+    return out + "]"
+}
+
+fn grow(xs: mut List[i64]) {
+    xs.extend([7, 8])
+}
+
+fn count(counts: mut Counts, name: str) {
+    match counts.seen.get(name) {
+        Some(n) => counts.seen.set(name, n + 1)
+        None => counts.seen.set(name, 1)
+    }
+}
+
+fn main() {
+    var xs = [1, 2]
+    xs.extend([3, 4])
+    print(show(xs))
+    let copy = xs
+    xs.extend(copy)
+    print(show(xs))
+    xs.truncate(5)
+    xs.truncate(9)
+    print(show(xs))
+    xs.insert(0, 9)
+    xs.insert(6, 5)
+    xs.insert(3, 0)
+    print(show(xs))
+    print(xs.remove_at(0))
+    print(xs.remove_at(6))
+    print(xs.remove_at(2))
+    print(show(xs))
+    grow(mut xs)
+    print(show(xs))
+    xs.truncate(-3)
+    print(xs.len())
+    xs.extend([])
+    print(xs.is_empty())
+
+    // A field as the receiver, and items that own memory.
+    var box = Box { items: ["b"] }
+    box.items.insert(0, "a")
+    box.items.extend(["c", "d"])
+    print(box.items.join(""))
+    print(box.items.remove_at(1))
+    box.items.truncate(2)
+    print(box.items.join("-"))
+
+    // An element as the receiver.
+    var rows = [[1], [2, 3]]
+    let first = rows[0]
+    rows[1].extend(first)
+    rows.insert(1, [])
+    print(rows.len())
+    print(show(rows[2]))
+    print(rows[1].len())
+    let taken = rows.remove_at(0)
+    print(show(taken))
+    print(rows.len())
+
+    // A map inside a struct that is a `mut` parameter.
+    var counts = Counts { seen: new_map() }
+    count(mut counts, "ada")
+    count(mut counts, "alan")
+    count(mut counts, "ada")
+    var line = ""
+    for key in counts.seen.keys() {
+        if line.len() > 0 {
+            line = line + " "
+        }
+        match counts.seen.get(key) {
+            Some(n) => line = line + key + "=" + str(n)
+            None => {}
+        }
+    }
+    print(line)
+    print(str(counts.seen.remove("grace")) + " " + str(counts.seen.remove("ada")))
+}

@@ -1,0 +1,52 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The Linux x86-64 runtime as the compiler written in azoL sees it:
+// the ids of its routines, where each starts, and where the runtime
+// sits in an executable. Generated from `src/runtime_x64.rs` by
+// `compiler/gen_runtime_azl.py`; edit neither, but the runtime's
+// source in `runtime/linux_x64`.
+
+// Ids of the routines, shared with the code generator.
+const RT_PRINT_I64 = 0
+const RT_PRINT_BOOL = 1
+const RT_PRINT_STR = 2
+const RT_DIV_ZERO = 3
+const RT_INDEX_FAIL = 4
+const RT_POP_EMPTY = 5
+const RT_ALLOC = 6
+const RT_FREE = 7
+const RT_LIST_PUSH = 8
+const RT_LIST_CLONE = 9
+const RT_DROP = 10
+const RT_STR_CONCAT = 11
+const RT_STR_EQ = 12
+const RT_STR_FROM_I64 = 13
+const RT_STR_FROM_BOOL = 14
+const RT_EPRINT_STR = 15
+const RT_EXIT = 16
+const RT_STR_SLICE = 17
+const RT_CHR = 18
+const RT_ARGS = 19
+const RT_READ_FILE = 20
+const RT_WRITE_FILE = 21
+const RT_STR_APPEND = 22
+const RT_SET_EXECUTABLE = 23
+
+// Address the executable file is mapped at.
+const RT_BASE = 4194304
+// Where in the file, and so after `RT_BASE`, the runtime starts.
+const RT_TEXT_OFFSET = 256
+// Size of the runtime's code and constant data: the file
+// `runtime/linux_x64/runtime.bin`.
+const RT_TEXT_SIZE = 9168
+// Offset in it of the code the system starts the process at.
+const RT_START = 7
+// Address and size of the runtime's writable memory.
+const RT_MEMORY = 1073741824
+const RT_MEMORY_SIZE = 128
+
+// Offset in the runtime of each routine, indexed by its id.
+fn rt_entries() -> List[i64] {
+    return [800, 1040, 1312, 1632, 1712, 1728, 384, 720, 1744, 2432, 2624, 2704,
+        3088, 3152, 3472, 1440, 1568, 3536, 3808, 4400, 4704, 6064, 3872, 6576]
+}

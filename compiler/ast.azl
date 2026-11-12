@@ -87,6 +87,8 @@ enum Expr {
     ExprCall(i64, IdRange)
     // `mut value` in argument position.
     ExprMutArg(i64)
+    // `value?`.
+    ExprTry(i64)
     // Base, field name.
     ExprField(i64, Span)
     // Base, index.

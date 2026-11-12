@@ -59,6 +59,7 @@ pub enum TokenKind {
     Caret,
     Shl,
     Shr,
+    Question,
 
     Newline,
     Eof,

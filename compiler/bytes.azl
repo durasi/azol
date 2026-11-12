@@ -81,10 +81,65 @@ fn align_up(value: i64, to: i64) -> i64 {
 // The finished bytes as a string, ready for `write_file`.
 fn bytes_to_text(bytes: List[i64]) -> str {
     var text = ""
-    for byte in bytes {
-        text = text + chr(byte)
-    }
+    append_bytes(mut text, bytes)
     return text
+}
+
+// How many bytes make it worth building the table of byte pairs.
+const PAIRS_FROM = 1000000
+
+// Adds `bytes` to the end of `text`. Text grows by whole strings only,
+// so every byte value is made into a string once and added from a
+// table; for a lot of bytes, every pair of byte values is, which halves
+// the number of additions.
+fn append_bytes(text: mut str, bytes: List[i64]) {
+    var singles: List[str] = []
+    var b = 0
+    while b < 256 {
+        singles.push(chr(b))
+        b = b + 1
+    }
+    var i = 0
+    if bytes.len() >= PAIRS_FROM {
+        var pairs: List[str] = []
+        b = 0
+        while b < 65536 {
+            pairs.push(singles[b >> 8] + singles[b & 255])
+            b = b + 1
+        }
+        let last = bytes.len() - 1
+        while i < last {
+            text = text + pairs[bytes[i] * 256 + bytes[i + 1]]
+            i = i + 2
+        }
+    }
+    while i < bytes.len() {
+        text = text + singles[bytes[i]]
+        i = i + 1
+    }
+}
+
+// Adds `count` bytes of value `byte` to the end of `text`.
+fn append_repeated(text: mut str, byte: i64, count: i64) {
+    if count <= 0 {
+        return
+    }
+    let one = chr(byte)
+    var chunk = ""
+    var size = 0
+    while size < 64 && size < count {
+        chunk = chunk + one
+        size = size + 1
+    }
+    var left = count
+    while left >= size {
+        text = text + chunk
+        left = left - size
+    }
+    while left > 0 {
+        text = text + one
+        left = left - 1
+    }
 }
 
 // The bytes of a string as a list.

@@ -30,6 +30,9 @@ enum {
     SYS_read = 63,
     SYS_write = 64,
     SYS_exit_group = 94,
+    SYS_sigaltstack = 132,
+    SYS_rt_sigaction = 134,
+    SYS_rt_sigreturn = 139,
     SYS_munmap = 215,
     SYS_mremap = 216,
     SYS_mmap = 222,
@@ -300,17 +303,61 @@ EXPORT i64 az_chmod(const char *path, i64 mode) {
     return checked(syscall6(SYS_fchmodat, AT_FDCWD, (i64)path, mode & 07777, 0, 0, 0));
 }
 
+// The assembly runtime has a routine that starts a macOS program and
+// watches its stack through three more functions of the macOS library.
+// On Linux a program starts in `az_start` below, which does that work
+// itself, so nothing ever calls them; they exist because every imported
+// name needs an address of its own.
+static NORETURN void macos_only(void) {
+    panic("azol: internal error: a macOS-only routine was called\n");
+}
+
+EXPORT NORETURN void az_sigaltstack(void) {
+    macos_only();
+}
+
+EXPORT NORETURN void az_sigaction(void) {
+    macos_only();
+}
+
+EXPORT NORETURN void az_exit_now(void) {
+    macos_only();
+}
+
 // ---- starting the program -------------------------------------------------
 
 // The compiled program follows the library in memory. It begins with a
 // jump to its `main`, which takes no arguments and returns the exit code.
 extern i64 azol_program(void);
 
+// Where the stack pointer of the interrupted program is in what the
+// system hands a signal handler: `struct ucontext` in
+// arch/arm64/include/uapi/asm/ucontext.h has flags (8 bytes), link (8),
+// the signal stack (24) and 128 bytes for the signal mask, and then,
+// aligned to 16 bytes, `struct sigcontext`, which in
+// arch/arm64/include/uapi/asm/sigcontext.h is the fault address, x0 to
+// x30, sp: 176 + 8 + 31 * 8.
+#define SP_IN_CONTEXT 432
+
+#include "../linux_common/overflow.h"
+
+// The way back from a handler. The system has one of its own, but asking
+// for this one works wherever the program runs.
+__asm__(".text\n"
+        ".p2align 2\n"
+        "sigreturn_stub:\n"
+        "    mov x8, #139\n"
+        "    svc #0\n");
+
 // Called by `_start` with the stack as the system set it up: the number
 // of arguments, then their addresses.
 EXPORT NORETURN void az_start(i64 *stack) {
+    // This function never returns, so its own frame is a piece of the
+    // stack that stays put: the handler's spare stack.
+    u8 spare[SPARE_STACK];
     state.argc = (int)stack[0];
     state.argv = (char **)(stack + 1);
+    watch_stack(spare);
     quit(azol_program());
 }
 

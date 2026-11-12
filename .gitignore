@@ -6,3 +6,4 @@
 !/bench/*.azl
 !/bench/*.py
 !/bench/*.js
+__pycache__/

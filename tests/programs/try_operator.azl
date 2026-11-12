@@ -1,0 +1,225 @@
+// expect-exit: 0
+// expect-line: ok 5
+// expect-line: err bad number `x`
+// expect-line: err bad number `y`
+// expect-line: ok 6
+// expect-line: err bad number `two`
+// expect-line: err no words
+// expect-line: ok 6
+// expect-line: err gone
+// expect-line: ok 6
+// expect-line: err negative size
+// expect-line: err no words
+// expect-line: err bad number `four`
+// expect-line: ok x
+// expect-line: err no config
+// expect-line: ok 1
+// expect-line: err bad number `a`
+// expect-line: some 5
+// expect-line: none
+// expect-line: some 7
+// expect-line: none
+// expect-line: none
+// expect-line: err bad number `x`
+// expect-line: ok 4
+// expect-line: ok 3
+// expect-line: err outer
+// expect-line: err inner
+// expect-line: ok 70
+// expect-line: ok sum of 1 and 2 is 3!
+// expect-line: err bad number `q`
+// expect-line: ok 2 144 22
+// expect-line: err bad number `z`
+// expect-line: ok 2;err bad number `x`;ok 3;err bad number `y`;
+
+// `value?` gives what an `Ok` or a `Some` holds, or returns the `Err` or
+// the `None` from the function at once.
+
+struct Config {
+    name: str
+    size: i64
+    tags: List[str]
+}
+
+fn number(s: str) -> Result[i64, str] {
+    match s.to_i64() {
+        Some(n) => return Ok(n)
+        None => return Err("bad number `" + s + "`")
+    }
+}
+
+fn words(s: str) -> Result[List[str], str] {
+    if s.len() == 0 {
+        return Err("no words")
+    }
+    return Ok(s.split(" "))
+}
+
+// Numbers out of temporaries, twice in one expression.
+fn add(a: str, b: str) -> Result[i64, str] {
+    return Ok(number(a)? + number(b)?)
+}
+
+// A list moves out of the temporary; leaving from inside the loop
+// frees it.
+fn count(s: str) -> Result[i64, str] {
+    let parts = words(s)?
+    var total = 0
+    for part in parts {
+        total = total + number(part)?
+    }
+    return Ok(total)
+}
+
+// Out of a variable the value is copied, and the variable keeps it.
+fn twice(r: Result[List[i64], str]) -> Result[i64, str] {
+    let a = r?
+    let b = r?
+    return Ok(a.len() + b.len())
+}
+
+// In a condition and in the fields of a struct.
+fn config(name: str, size: str, tags: str) -> Result[Config, str] {
+    if number(size)? < 0 {
+        return Err("negative size")
+    }
+    let made = Config { size: number(size)?, tags: words(tags)?, name: name }
+    return Ok(made)
+}
+
+// A field of the value, an index and a method call right after `?`.
+fn first_tag(c: Result[Config, str]) -> Result[str, str] {
+    return Ok(c?.tags[0])
+}
+
+fn tag_count(name: str, size: str, tags: str) -> Result[i64, str] {
+    return Ok(config(name, size, tags)?.tags.len() + words(tags)?.len())
+}
+
+// As a statement: the value is not needed.
+fn check(s: str) -> Result[i64, str] {
+    number(s)?
+    words(s)?
+    return Ok(1)
+}
+
+fn second(xs: List[str]) -> Option[str] {
+    if xs.len() < 2 {
+        return None
+    }
+    return Some(xs[1])
+}
+
+fn second_len(text: str) -> Option[i64] {
+    let parts = text.split(",")
+    let item = second(parts)?
+    return Some(item.len() + parts.first()?.len())
+}
+
+fn head_twice[T](xs: List[List[T]]) -> Option[T] {
+    let inner = xs.first()?
+    return Some(inner.first()?)
+}
+
+// In the condition of a loop, after `&&`.
+fn drain(items: List[str]) -> Result[i64, str] {
+    var i = 0
+    var total = 0
+    while i < items.len() && number(items[i])? >= 0 {
+        total = total + number(items[i])?
+        i = i + 1
+    }
+    return Ok(total)
+}
+
+fn nested(flag: i64) -> Result[Result[i64, str], str] {
+    if flag == 0 {
+        return Err("outer")
+    }
+    if flag == 1 {
+        return Ok(Err("inner"))
+    }
+    return Ok(Ok(flag))
+}
+
+fn both(flag: i64) -> Result[i64, str] {
+    return Ok(nested(flag)?? * 10)
+}
+
+// Strings that are being put together are freed on the way out.
+fn describe(a: str, b: str) -> Result[str, str] {
+    var out = "sum of " + a + " and " + b + " is " + str(number(a)? + number(b)?)
+    out = out + "!"
+    return Ok(out)
+}
+
+fn tally(items: List[str]) -> Result[str, str] {
+    var out = ""
+    for item in items {
+        out = out + str(number(item)? * 2) + " " + words(item)?.join("")
+    }
+    return Ok(out)
+}
+
+fn show(r: Result[i64, str]) -> str {
+    match r {
+        Ok(n) => return "ok " + str(n)
+        Err(e) => return "err " + e
+    }
+}
+
+fn show_str(r: Result[str, str]) -> str {
+    match r {
+        Ok(s) => return "ok " + s
+        Err(e) => return "err " + e
+    }
+}
+
+fn show_opt(o: Option[i64]) -> str {
+    match o {
+        Some(n) => return "some " + str(n)
+        None => return "none"
+    }
+}
+
+fn main() {
+    print(show(add("2", "3")))
+    print(show(add("x", "3")))
+    print(show(add("2", "y")))
+    print(show(count("1 2 3")))
+    print(show(count("1 two 3")))
+    print(show(count("")))
+    print(show(twice(Ok([1, 2, 3]))))
+    print(show(twice(Err("gone"))))
+    print(show(tag_count("n", "4", "a b c")))
+    print(show(tag_count("n", "-1", "a")))
+    print(show(tag_count("n", "4", "")))
+    print(show(tag_count("n", "four", "a")))
+    print(show_str(first_tag(config("n", "1", "x y"))))
+    print(show_str(first_tag(Err("no config"))))
+    print(show(check("5")))
+    print(show(check("a")))
+    print(show_opt(second_len("ab,cde")))
+    print(show_opt(second_len("ab")))
+    print(show_opt(head_twice([[7, 8], [9]])))
+    let nothing: List[List[i64]] = []
+    print(show_opt(head_twice(nothing)))
+    let hollow: List[List[i64]] = [[]]
+    print(show_opt(head_twice(hollow)))
+    print(show(drain(["1", "2", "x"])))
+    print(show(drain(["4", "-1", "x"])))
+    print(show(drain(["3"])))
+    print(show(both(0)))
+    print(show(both(1)))
+    print(show(both(7)))
+    print(show_str(describe("1", "2")))
+    print(show_str(describe("1", "q")))
+    print(show_str(tally(["1", "22"])))
+    print(show_str(tally(["3", "z"])))
+    let inputs = ["1", "x", "2", "y"]
+    var line = ""
+    for input in inputs {
+        line = line + show(add(input, "1")) + ";"
+    }
+    print(line)
+}

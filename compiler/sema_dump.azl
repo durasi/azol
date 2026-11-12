@@ -1,0 +1,229 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Everything the checker hands to the code generators, as text: what
+// `azol sema-dump` prints (`src/sema_dump.rs`), line for line.
+
+fn dump_ty(ty: i64, out: mut str) {
+    if ty == TY_I64 {
+        out = out + "i64"
+    } else if ty == TY_BOOL {
+        out = out + "bool"
+    } else if ty == TY_UNIT {
+        out = out + "unit"
+    } else if ty == TY_STR {
+        out = out + "str"
+    } else if ty_is_struct(ty) {
+        out = out + "S"
+        out = out + str(ty_index(ty))
+    } else if ty_is_list(ty) {
+        out = out + "L"
+        out = out + str(ty_index(ty))
+    } else {
+        out = out + "E"
+        out = out + str(ty_index(ty))
+    }
+}
+
+fn dump_tys(tys: List[i64], out: mut str) {
+    for ty in tys {
+        out = out + " "
+        dump_ty(ty, mut out)
+    }
+}
+
+fn dump_number(label: str, value: i64, out: mut str) {
+    out = out + label
+    out = out + str(value)
+}
+
+fn dump_flag(flag: bool, out: mut str) {
+    if flag {
+        out = out + "1"
+    } else {
+        out = out + "0"
+    }
+}
+
+fn dump_pairs(offsets: List[i64], tys: List[i64], label: str, out: mut str) {
+    for k, offset in offsets {
+        out = out + label
+        out = out + str(offset)
+        out = out + " "
+        dump_ty(tys[k], mut out)
+        out = out + "\n"
+    }
+}
+
+// The two hexadecimal digits of every byte value.
+fn hex_pairs() -> List[str] {
+    let digits = "0123456789abcdef"
+    var pairs: List[str] = []
+    var b = 0
+    while b < 256 {
+        pairs.push(digits.slice(b >> 4, (b >> 4) + 1) + digits.slice(b & 15, (b & 15) + 1))
+        b = b + 1
+    }
+    return pairs
+}
+
+fn dump_program(c: Checker) -> str {
+    var out = ""
+    dump_number("lists ", c.lists.len(), mut out)
+    out = out + "\n"
+    for elem in c.lists {
+        dump_ty(elem, mut out)
+        out = out + "\n"
+    }
+    dump_number("structs ", c.structs.len(), mut out)
+    out = out + "\n"
+    for info in c.structs {
+        out = out + "struct "
+        out = out + info.name
+        dump_number(" template=", info.template, mut out)
+        dump_number(" size=", info.size, mut out)
+        out = out + " args="
+        dump_tys(info.args, mut out)
+        out = out + "\n"
+        for k, name in info.field_names {
+            out = out + "field "
+            out = out + sym_text(c, name)
+            out = out + " "
+            dump_ty(info.field_tys[k], mut out)
+            dump_number(" ", info.field_offsets[k], mut out)
+            out = out + "\n"
+        }
+        dump_pairs(info.heap_offsets, info.heap_tys, "heap ", mut out)
+    }
+    dump_number("enums ", c.enums.len(), mut out)
+    out = out + "\n"
+    for info in c.enums {
+        out = out + "enum "
+        out = out + info.name
+        dump_number(" template=", info.template, mut out)
+        dump_number(" size=", info.size, mut out)
+        out = out + " owning="
+        dump_flag(info.owning, mut out)
+        out = out + " args="
+        dump_tys(info.args, mut out)
+        out = out + "\n"
+        for variant in info.variants {
+            out = out + "variant\n"
+            for k, field in variant.field_tys {
+                out = out + "vfield "
+                dump_ty(field, mut out)
+                dump_number(" ", variant.field_offsets[k], mut out)
+                out = out + "\n"
+            }
+            dump_pairs(variant.heap_offsets, variant.heap_tys, "vheap ", mut out)
+        }
+    }
+    dump_number("ints ", c.ints.len(), mut out)
+    out = out + "\n"
+    for value in c.ints {
+        out = out + str(value)
+        out = out + "\n"
+    }
+    dump_number("strings ", c.string_offsets.len(), mut out)
+    out = out + "\n"
+    for k, offset in c.string_offsets {
+        out = out + str(offset)
+        dump_number(" ", c.string_lens[k], mut out)
+        out = out + "\n"
+    }
+    dump_number("data ", c.data.len(), mut out)
+    out = out + " "
+    let pairs = hex_pairs()
+    var at = 0
+    while at < c.data.len() {
+        out = out + pairs[c.data[at]]
+        at = at + 1
+    }
+    out = out + "\n"
+    dump_number("main ", c.main, mut out)
+    out = out + "\n"
+    dump_number("fns ", c.fns.len(), mut out)
+    out = out + "\n"
+    for info in c.fns {
+        dump_number("fn item=", info.item, mut out)
+        dump_number(" shift=", info.sh_e, mut out)
+        dump_number(",", info.sh_s, mut out)
+        dump_number(",", info.sh_p, mut out)
+        dump_number(",", info.sh_i, mut out)
+        if info.generic < 0 {
+            out = out + " generic=-"
+        } else {
+            dump_number(" generic=", info.generic, mut out)
+        }
+        dump_number(" depth=", info.depth, mut out)
+        dump_number(" origin=", info.origin, mut out)
+        out = out + " ret="
+        dump_ty(info.ret, mut out)
+        dump_number(" slots=", info.slots, mut out)
+        if info.sret_slot < 0 {
+            out = out + " sret=-"
+        } else {
+            dump_number(" sret=", info.sret_slot, mut out)
+        }
+        dump_number(" scratch=", info.scratch_slot, mut out)
+        out = out + "\ntargs"
+        dump_tys(info.type_args, mut out)
+        out = out + "\n"
+        for k, ty in info.param_tys {
+            out = out + "param "
+            dump_ty(ty, mut out)
+            out = out + " "
+            dump_flag(info.param_by_ref[k], mut out)
+            out = out + " "
+            dump_flag(info.param_mutable[k], mut out)
+            out = out + "\n"
+        }
+        for k, slot in info.reg_slots {
+            dump_number("reg ", slot, mut out)
+            dump_number(" ", FIRST_REGISTER + k, mut out)
+            out = out + "\n"
+        }
+        out = out + "zero"
+        for slot in info.zero_slots {
+            dump_number(" ", slot, mut out)
+        }
+        out = out + "\n"
+    }
+    dump_number("exprs ", c.expr_res.len(), mut out)
+    out = out + "\n"
+    for i, res in c.expr_res {
+        out = out + str(res)
+        out = out + " "
+        dump_ty(c.expr_ty[i], mut out)
+        dump_number(" ", c.expr_aux[i], mut out)
+        dump_number(" ", c.expr_tmp[i], mut out)
+        dump_number(" ", c.expr_moved[i], mut out)
+        out = out + "\n"
+    }
+    dump_number("stmts ", c.stmt_slot.len(), mut out)
+    out = out + "\n"
+    for i, slot in c.stmt_slot {
+        out = out + str(slot)
+        dump_number(" ", c.stmt_flag[i], mut out)
+        dump_number(" ", c.stmt_drops_start[i], mut out)
+        dump_number(" ", c.stmt_drops_len[i], mut out)
+        out = out + "\n"
+    }
+    dump_number("pats ", c.pat_kind.len(), mut out)
+    out = out + "\n"
+    for i, kind in c.pat_kind {
+        out = out + str(kind)
+        dump_number(" ", c.pat_res[i], mut out)
+        dump_number(" ", c.pat_slot[i], mut out)
+        out = out + "\n"
+    }
+    dump_number("drops ", c.drop_slots.len(), mut out)
+    out = out + "\n"
+    dump_pairs(c.drop_slots, c.drop_tys, "", mut out)
+    dump_number("inits ", c.init_offset.len(), mut out)
+    out = out + "\n"
+    for offset in c.init_offset {
+        out = out + str(offset)
+        out = out + "\n"
+    }
+    return out
+}

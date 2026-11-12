@@ -561,6 +561,24 @@ impl<'a> Parser<'a> {
         self.no_struct = true;
         let result = self.expr();
         self.no_struct = saved;
+        // `if p == Point { x: 1 } {`: the `{` after a name starts the
+        // block here, and no statement begins with `name:`.
+        if result.is_ok() && self.at(K::LBrace) && self.tokens[self.pos - 1].kind == K::Ident {
+            let mut next = self.pos + 1;
+            while self.tokens[next].kind == K::Newline {
+                next += 1;
+            }
+            if self.tokens[next].kind == K::Ident && self.tokens[next + 1].kind == K::Colon {
+                let name = self.tokens[self.pos - 1];
+                return Err(ParseError {
+                    message: format!(
+                        "a struct literal here needs parentheses around it, `({} {{ ... }})`: this `{{` starts the block",
+                        name.text(self.src)
+                    ),
+                    offset: name.start,
+                });
+            }
+        }
         result
     }
 
@@ -660,6 +678,10 @@ impl<'a> Parser<'a> {
                     self.bump();
                     let name = self.ident("a field name")?;
                     expr = self.push_expr(Expr::Field { base: expr, name }, pos);
+                }
+                K::Question => {
+                    self.bump();
+                    expr = self.push_expr(Expr::Try(expr), pos);
                 }
                 // A line that starts with `.` continues the previous one.
                 K::Newline if self.kind_after_newlines() == K::Dot => self.skip_newlines(),
@@ -813,6 +835,7 @@ pub fn describe(kind: TokenKind) -> &'static str {
         K::Caret => "`^`",
         K::Shl => "`<<`",
         K::Shr => "`>>`",
+        K::Question => "`?`",
         K::Newline => "end of line",
         K::Eof => "end of file",
     }
@@ -892,6 +915,8 @@ mod tests {
     fn postfix_chains() {
         assert_eq!(body("x = a.b.c(1)[2].d"), "x = (index (call a.b.c 1) 2).d");
         assert_eq!(body("grid[i][j] = 0"), "(index (index grid i) j) = 0");
+        assert_eq!(body("x = f(a)?.b + g()?"), "x = (+ (try (call f a)).b (try (call g)))");
+        assert_eq!(body("read(p)?"), "(try (call read p))");
     }
 
     #[test]
@@ -904,6 +929,19 @@ mod tests {
         assert_eq!(body("if a == b {\nreturn 1\n}"), "if (== a b)\n  return 1");
         assert_eq!(body("if a == (P { x: 1 }) {\nreturn\n}"), "if (== a (new P x: 1))\n  return");
         assert_eq!(body("while f(P { x: 1 }) {\nbreak\n}"), "while (call f (new P x: 1))\n  break");
+    }
+
+    #[test]
+    fn struct_literal_in_a_condition_says_what_to_do() {
+        let wanted = "a struct literal here needs parentheses around it, `(P { ... })`: this `{` starts the block";
+        let (message, line, col) = error("fn main() {\n  if a == P { x: 1 } {\n  }\n}");
+        assert_eq!((message.as_str(), line, col), (wanted, 2, 11));
+        assert_eq!(error("fn main() {\n  while f(a) != P {\n    x: 1\n  } {\n  }\n}").0, wanted);
+        assert_eq!(error("fn main() {\n  match P { x: 1 } {\n  }\n}").0, wanted);
+        assert_eq!(error("fn main() {\n  for x in P { xs: [1] }.xs {\n  }\n}").0, wanted);
+        // A block that starts with a name is still a block.
+        assert_eq!(body("if a == b {\nx = 1\n}"), "if (== a b)\n  x = 1");
+        assert_eq!(body("if a {\nb.c(1)\n}"), "if a\n  (call b.c 1)");
     }
 
     #[test]

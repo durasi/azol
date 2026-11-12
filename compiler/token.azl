@@ -63,9 +63,10 @@ const TOK_PIPE = 49
 const TOK_CARET = 50
 const TOK_SHL = 51
 const TOK_SHR = 52
+const TOK_QUESTION = 53
 
-const TOK_NEWLINE = 53
-const TOK_EOF = 54
+const TOK_NEWLINE = 54
+const TOK_EOF = 55
 
 // The tokens of one source text. The last one is always `TOK_EOF`.
 struct Tokens {
@@ -134,6 +135,7 @@ fn token_kind_name(kind: i64) -> str {
         TOK_CARET => return "Caret"
         TOK_SHL => return "Shl"
         TOK_SHR => return "Shr"
+        TOK_QUESTION => return "Question"
         TOK_NEWLINE => return "Newline"
         _ => return "Eof"
     }
@@ -195,6 +197,7 @@ fn describe_token(kind: i64) -> str {
         TOK_CARET => return "`^`"
         TOK_SHL => return "`<<`"
         TOK_SHR => return "`>>`"
+        TOK_QUESTION => return "`?`"
         TOK_NEWLINE => return "end of line"
         _ => return "end of file"
     }

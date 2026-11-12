@@ -20,8 +20,8 @@ first time. It is short on purpose. The full reference is
 **Types**
 
 5. The types are `i64`, `bool`, `str`, `List[T]`, structs, enums,
-   `Option[T]`, `Result[T, E]`. Nothing else: no `i32`, `u8`, `f64`,
-   `char`, `String`, `Vec`, tuples, maps.
+   `Option[T]`, `Result[T, E]` and the library's `Map[V]` (text keys).
+   Nothing else: no `i32`, `u8`, `f64`, `char`, `String`, `Vec`, tuples.
 6. Generics use square brackets: `List[i64]`, `Option[str]`,
    `fn first[T](xs: List[T]) -> Option[T]`. Never `<...>`.
 7. Type arguments are never written at a call. `parse[i64](s)` is an error.
@@ -42,8 +42,9 @@ first time. It is short on purpose. The full reference is
     `var`. There is no `&`, no `&mut`, no `*`.
 13. `xs.push(x)` and `xs.pop()` need `xs` to be a `var` or a `mut`
     parameter. No `mut` is written for them.
-14. Only lists and strings have methods, and only the built-in ones. For
-    your own types write functions: `area(shape)`, not `shape.area()`.
+14. Only lists, strings, numbers and `Map` have methods, and only the
+    built-in ones. For your own types write functions: `area(shape)`, not
+    `shape.area()`.
 15. There are no closures and no function values.
 
 **Control flow**
@@ -123,14 +124,29 @@ exit(code)
 xs.len()  xs.push(x)  xs.pop()  xs[i]  xs[i] = x
 xs.contains(x)  xs.first()  xs.last()      // first, last: Option[T]
 xs.reversed()   parts.join(separator)      // join: List[str] only
+xs.is_empty()  xs.index_of(x)  xs.count(x)  xs.take(n)  xs.skip(n)
+xs.sorted()  xs.min()  xs.max()  xs.sum()  // numbers and strings; sum: List[i64]
+xs.extend(more)  xs.truncate(n)  xs.insert(at, x)  xs.remove_at(at)   // change xs
+bytes.to_str()                             // List[i64] to str
 
 s.len()  s[i]  s.slice(from, to)  s.find(part)   // find: Option[i64]
 s.contains(part)  s.starts_with(p)  s.ends_with(p)
 s.trim()  s.split(separator)  s.lines()  s.to_i64()   // to_i64: Option[i64]
+s.is_empty()  s.compare(t)  s.replace(old, new)  s.repeat(n)
+s.to_upper()  s.to_lower()  s.pad_left(width, fill)  s.pad_right(width, fill)
+s.index_of_from(part, start)  s.last_index_of(part)  s.bytes()  s.parse_hex()  s.hash()
+
+n.abs()  n.min(m)  n.max(m)  n.clamp(low, high)  n.pow(e)  n.compare(m)  n.to_hex()
+
+var m: Map[V] = new_map()                  // keys are str
+m.set(key, value)  m.remove(key)           // change m; remove: bool
+m.get(key)  m.has(key)  m.keys()  m.len()  // get: Option[V], a copy
 ```
 
-Nothing else exists: no `min`, `max`, `abs`, `sort`, `map`, `filter`,
-`insert`, `remove`, `format`, `assert`, `panic`, standard input. Write the loop.
+Nothing else exists: no `sort` in place, `map`, `filter`, `format`,
+`assert`, `panic`, standard input. Write the loop. A method that changes
+its receiver (`push`, `extend`, `set`, ...) takes no `mut`, but the receiver
+must be a `var`, a `mut` parameter or a part of one.
 
 ## 3. Idioms
 
@@ -165,8 +181,33 @@ fn main() {
 error: missing.txt: No such file or directory
 ```
 
-There is no `?` and no `unwrap`. Every `Option` and `Result` is opened with
-`match`.
+`value?` passes an `Err` or a `None` on to the caller and otherwise gives
+what the `Ok` or the `Some` holds. It needs a function that returns a
+`Result` with the same error type, or an `Option` for an `Option`; nothing
+is converted, so `main` and functions with other result types use `match`.
+There is no `unwrap`.
+
+```azol
+fn total_lines(a: str, b: str) -> Result[i64, str] {
+    let first = read_file(a)?
+    let second = read_file(b)?
+    return Ok(first.lines().len() + second.lines().len())
+}
+
+fn main() {
+    match total_lines("missing-a.txt", "missing-b.txt") {
+        Ok(n) => print(n)
+        Err(why) => print("error: " + why)
+    }
+}
+```
+
+```output
+error: No such file or directory
+```
+
+Do not write `?` inside a list literal (`[f()?]`), nor in a struct literal
+or variant after a field that owns memory; use a `let` before it.
 
 ### Build a string, byte by byte or piece by piece
 
@@ -358,56 +399,45 @@ b
 There are no trait bounds. A generic body may use any operation; a call
 with a type that does not support it is an error at that call.
 
-### A map-like lookup
+### A map
 
-There is no map type. Keep a list of entries and search it.
+`Map[V]` has `str` keys. Values come out as copies: change the copy and
+`set` it again.
 
 ```azol
-struct Entry {
-    key: str
-    value: i64
-}
-
-fn get(entries: List[Entry], key: str) -> Option[i64] {
-    for e in entries {
-        if e.key == key {
-            return Some(e.value)
+fn count_words(text: str) -> Map[i64] {
+    var counts: Map[i64] = new_map()
+    for word in text.split(" ") {
+        match counts.get(word) {
+            Some(n) => counts.set(word, n + 1)
+            None => counts.set(word, 1)
         }
     }
-    return None
-}
-
-fn put(entries: mut List[Entry], key: str, value: i64) {
-    var i = 0
-    while i < entries.len() {
-        if entries[i].key == key {
-            entries[i].value = value
-            return
-        }
-        i = i + 1
-    }
-    entries.push(Entry { key: key, value: value })
+    return counts
 }
 
 fn main() {
-    var ages: List[Entry] = []
-    put(mut ages, "ann", 31)
-    put(mut ages, "bob", 27)
-    put(mut ages, "ann", 32)
-    match get(ages, "ann") {
-        Some(age) => print(age)
-        None => print("unknown")
+    let counts = count_words("to be or not to be")
+    for word in counts.keys() {
+        match counts.get(word) {
+            Some(n) => print(word + ": " + str(n))
+            None => {}
+        }
     }
-    print(ages.len())
+    print(counts.len())
 }
 ```
 
 ```output
-32
-2
+to: 2
+be: 2
+or: 1
+not: 1
+4
 ```
 
-`put` uses `while`: a list cannot be changed inside a `for` over it.
+For keys that are not text, keep a list of structs and search it with a
+`while` loop: a list cannot be changed inside a `for` over it.
 
 ## 4. Before you call the compiler
 
@@ -417,8 +447,8 @@ Go through the program once with this list.
 - [ ] Exactly one `fn main()`, with no parameters, returning nothing or
       `i64`.
 - [ ] Every `fn` with `->` reaches `return value` on every path. An `if`
-      with an `else`, or a `match`, whose branches all return is enough;
-      otherwise add a final `return`.
+      with an `else`, or a `match`, whose branches all return is enough,
+      and so is a final `exit(code)`; otherwise add a final `return`.
 - [ ] Every variable that is assigned again, pushed to, or passed as `mut`
       is a `var`.
 - [ ] Every `mut` parameter has `mut` at each call, and the argument is a
@@ -462,8 +492,10 @@ Messages to recognize:
 
 | Message starts with | Usual cause | Fix |
 |---|---|---|
-| `unexpected character` | `;`, `~`, `?`, `#`, `@` or another symbol azoL does not have | Remove it. |
-| `expected end of line but found` | Two statements on one line, `Enum::Variant`, or a struct literal in a condition | Split the line; bare variant; parentheses. |
+| `unexpected character` | `;`, `~`, `#`, `@` or another symbol azoL does not have | Remove it. |
+| `` `?` on ... needs a function that returns ... `` | `?` in `main`, or with another error type | `match`, or change the function's result type. |
+| `expected end of line but found` | Two statements on one line, or `Enum::Variant` | Split the line; bare variant. |
+| `a struct literal here needs parentheses` | `if p == Point { ... } {` | `if p == (Point { ... }) {`. |
 | `expected an expression but found` | `+=`, a line starting with an operator, `if` used as a value | See rules 2, 11, 16. |
 | `expected `fn`, `struct`, `enum` or `const`` | Something else at the top level: `import`, `var`, `let`, a statement | Move it into a function or delete it. |
 | `unknown type` | A type azoL does not have | Rule 5. |
@@ -488,9 +520,9 @@ Messages to recognize:
 At run time a program can stop with one of these on standard error and exit
 code 1: `azol: index out of range`, `azol: division by zero`,
 `azol: pop from an empty list`, `azol: slice out of range`,
-`azol: chr needs a number from 0 to 255`, `azol: out of memory`. Check
-`len()` before indexing, slicing and popping. Unbounded recursion ends in a
-segmentation fault with no message.
+`azol: chr needs a number from 0 to 255`, `azol: out of memory`,
+`azol: stack overflow`. Check `len()` before indexing, slicing and popping,
+and give every recursion a case that ends it.
 
 **Use `azol check --json <files...>` while you work.** It builds nothing and
 reports the first error of every function at once, one JSON object per line:

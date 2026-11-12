@@ -79,26 +79,10 @@ fn elf_relative(target: i64, field: i64) -> i64 {
     return target - (field + 4)
 }
 
-// Builds the complete executable for a program. `runtime` is the content
-// of `runtime/linux_x64/runtime.bin`.
-fn build_elf(code: CodeFile, runtime: str) -> List[i64] {
-    // Where each part sits in the file. Addresses are the base plus the
-    // offset, except for the runtime's memory.
-    let jump = code.text_offset + runtime.len()
-    let code_at = jump + elf_jump_size()
-    let data_at = align_up(code_at + code.code.len(), 16)
-    let text_end = data_at + code.data.len()
-    let memory_at = align_up(text_end, elf_page())
-    var memory_size = code.memory_size
-    if memory_size < 1 {
-        memory_size = 1
-    }
-    let file_size = memory_at + align_up(memory_size, elf_page())
-    if code.base + text_end > code.memory {
-        eprint("azol-link: the program is too large for this executable layout")
-        exit(1)
-    }
-
+// The ELF header and the program headers: the first 232 bytes of the
+// file. `text_end` is where the code and constant data end in the file,
+// `memory_at` where the runtime's memory starts there.
+fn elf_headers(code: CodeFile, text_end: i64, memory_at: i64, file_size: i64) -> List[i64] {
     var out: List[i64] = []
     // ELF header: 64-bit, little-endian, version 1, System V.
     put8(mut out, 0x7F)
@@ -127,7 +111,34 @@ fn build_elf(code: CodeFile, runtime: str) -> List[i64] {
     put_program_header(mut out, pt_load(), pf_r() | pf_x(), 0, code.base, text_end, elf_page())
     put_program_header(mut out, pt_load(), pf_r() | pf_w(), memory_at, code.memory, file_size - memory_at, elf_page())
     put_program_header(mut out, pt_gnu_stack(), pf_r() | pf_w(), 0, 0, 0, 16)
+    return out
+}
 
+// The size of the runtime's memory in the file, at least one byte.
+fn elf_memory_size(code: CodeFile) -> i64 {
+    if code.memory_size < 1 {
+        return 1
+    }
+    return code.memory_size
+}
+
+// Builds the complete executable for a program. `runtime` is the content
+// of `runtime/linux_x64/runtime.bin`.
+fn build_elf(code: CodeFile, runtime: str) -> List[i64] {
+    // Where each part sits in the file. Addresses are the base plus the
+    // offset, except for the runtime's memory.
+    let jump = code.text_offset + runtime.len()
+    let code_at = jump + elf_jump_size()
+    let data_at = align_up(code_at + code.code.len(), 16)
+    let text_end = data_at + code.data.len()
+    let memory_at = align_up(text_end, elf_page())
+    let file_size = memory_at + align_up(elf_memory_size(code), elf_page())
+    if code.base + text_end > code.memory {
+        eprint("azol-link: the program is too large for this executable layout")
+        exit(1)
+    }
+
+    var out = elf_headers(code, text_end, memory_at, file_size)
     pad_to(mut out, code.text_offset, 0)
     put_text(mut out, runtime)
 
@@ -152,4 +163,51 @@ fn build_elf(code: CodeFile, runtime: str) -> List[i64] {
 
     pad_to(mut out, file_size, 0)
     return out
+}
+
+// The same executable as `build_elf` builds, as text ready for
+// `write_file`, for a compiler that holds the parts itself: `code` is
+// the program's machine code, whose references to the runtime and to
+// the data are filled in here, in place; `data` its string literals;
+// `info` says where the runtime sits and what the code refers to (its
+// own `code` and `data` are not used). Nothing is copied byte by byte
+// that is text already.
+fn build_elf_text(info: CodeFile, code: mut List[i64], data: str, runtime: str) -> str {
+    let jump = info.text_offset + runtime.len()
+    let code_at = jump + elf_jump_size()
+    let code_end = code_at + code.len()
+    let data_at = align_up(code_end, 16)
+    let text_end = data_at + data.len()
+    let memory_at = align_up(text_end, elf_page())
+    let file_size = memory_at + align_up(elf_memory_size(info), elf_page())
+    if info.base + text_end > info.memory {
+        eprint("error: the program is too large for this executable layout")
+        exit(1)
+    }
+
+    var head = elf_headers(info, text_end, memory_at, file_size)
+    pad_to(mut head, info.text_offset, 0)
+    var text = bytes_to_text(head)
+    text = text + runtime
+
+    var start: List[i64] = []
+    put8(mut start, 0xE9) // jmp rel32
+    put32(mut start, elf_relative(code_at + info.entry, jump + 1))
+    pad_to(mut start, elf_jump_size(), 0xCC)
+    append_bytes(mut text, start)
+
+    for call in info.calls {
+        let target = info.text_offset + info.entries[call.value]
+        let field = code_at + call.field
+        patch32(mut code, call.field, elf_relative(target, field))
+    }
+    for reference in info.refs {
+        let field = code_at + reference.field
+        patch32(mut code, reference.field, elf_relative(data_at + reference.value, field))
+    }
+    append_bytes(mut text, code)
+    append_repeated(mut text, 0xCC, data_at - code_end)
+    text = text + data
+    append_repeated(mut text, 0, file_size - text_end)
+    return text
 }

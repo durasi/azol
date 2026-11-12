@@ -1,0 +1,6 @@
+fn f(a: str) -> Result[i64, str] {
+    let n = number(a)? + number(a)?
+    let m = lists(a)?[0] + nested(a)??
+    check(a)?
+    return Ok(words(a)?.len() - n? - 1)
+}

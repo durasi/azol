@@ -714,6 +714,11 @@ impl<'a> Gen<'a> {
     /// value the statement still needs.
     fn drop_temps(&mut self, id: StmtId, keep_x0: bool) {
         let (start, len) = self.prog.stmt_drops[self.sh.s(id)];
+        self.drop_range(start, len, keep_x0);
+    }
+
+    /// Frees the temporaries listed in `drops[start..start + len]`.
+    fn drop_range(&mut self, start: u32, len: u32, keep_x0: bool) {
         if len == 0 {
             return;
         }
@@ -1665,6 +1670,7 @@ impl<'a> Gen<'a> {
                 self.frame_address(X0, tmp);
             }
             Expr::ArrayLit { items } => self.list_literal(id, items),
+            Expr::Try(inner) => self.try_expr(id, inner),
             Expr::Call { args, .. } if self.prog.expr_res[self.sh.e(id)] == BUILTIN_VARIANT => {
                 self.enum_value(id, self.ast.list(args));
             }
@@ -1770,9 +1776,83 @@ impl<'a> Gen<'a> {
         self.frame_address(X0, tmp);
     }
 
+    /// `inner?`. When `inner` is an `Ok` or a `Some`, what it holds is the
+    /// value: a number or `bool` in x0, anything else in this expression's
+    /// temporary with its address in x0. Otherwise the function returns
+    /// the `Err` or the `None` here and now, after freeing what a `return`
+    /// at this point would free.
+    fn try_expr(&mut self, id: ExprId, inner: ExprId) {
+        let Ty::Enum(index) = self.ty(inner) else {
+            unreachable!("checked: `?` follows a `Result` or an `Option`");
+        };
+        let Ty::Enum(ret_index) = self.ret else {
+            unreachable!("checked: the function returns a `Result` or an `Option`");
+        };
+        let prog = self.prog;
+        let (value_ty, value_at) = prog.enums[index as usize].variants[0].fields[0];
+        // A temporary gives away what it holds and is left empty (tag
+        // 0); what a variable holds is copied.
+        let from_temp = prog.expr_aux[self.sh.e(id)] & 1 == 1;
+        let (start, len) = (prog.expr_res[self.sh.e(id)], prog.expr_aux[self.sh.e(id)] >> 1);
+        let inner_tmp = prog.expr_tmp[self.sh.e(inner)];
+        self.address(inner);
+        self.emit(ldr(X9, X0, 0));
+        self.emit(0xD100_0529); // sub x9, x9, #1: zero for `Ok` and `Some`
+        let ok = self.placeholder();
+
+        let ret_slot = self.sret_slot.expect("checked: this function returns an enum");
+        self.emit(ldr(X10, FP, frame(ret_slot)));
+        if let Some(&(error_ty, error_at)) = prog.enums[index as usize].variants[1].fields.first() {
+            let error_to = prog.enums[ret_index as usize].variants[1].fields[0].1;
+            for i in 0..prog.size_of(error_ty) {
+                self.emit(ldr(X11, X0, error_at + i));
+                self.emit(str(X11, X10, error_to + i));
+            }
+            self.mov_imm(X11, 2);
+            self.emit(str(X11, X10, 0));
+            if prog.needs_drop(error_ty) {
+                if from_temp {
+                    self.emit(str(XZR, FP, frame(inner_tmp)));
+                } else {
+                    self.emit(add_slots(X0, X10, error_to));
+                    self.clone_value(error_ty);
+                }
+            }
+        } else {
+            self.mov_imm(X11, 2);
+            self.emit(str(X11, X10, 0));
+        }
+        self.drop_range(start, len, false);
+        for i in (0..self.live.len()).rev() {
+            let (slot, ty) = self.live[i];
+            self.drop_frame(slot, ty);
+        }
+        // Values of the unfinished statement may be parked on the stack.
+        self.emit(0x9100_03BF); // mov sp, x29
+        self.epilogue();
+
+        self.patch_cbz_reg(ok, false, X9);
+        if !value_ty.is_aggregate() {
+            self.emit(ldr(X0, X0, value_at));
+            return;
+        }
+        let tmp = prog.expr_tmp[self.sh.e(id)];
+        self.emit(add_slots(X0, X0, value_at));
+        self.copy_to_frame(tmp, prog.size_of(value_ty));
+        if prog.needs_drop(value_ty) {
+            if from_temp {
+                self.emit(str(XZR, FP, frame(inner_tmp)));
+            } else {
+                self.clone_frame(tmp, value_ty);
+            }
+        }
+        self.frame_address(X0, tmp);
+    }
+
     /// Generates code that leaves a scalar value in x0.
     fn value(&mut self, id: ExprId) {
         match self.expr(id) {
+            Expr::Try(inner) => self.try_expr(id, inner),
             Expr::Int(_) => self.mov_imm(X0, self.prog.ints[self.prog.expr_res[self.sh.e(id)] as usize]),
             Expr::Bool(value) => self.mov_imm(X0, value as i64),
             Expr::Index { base, index } if self.ty(base) == Ty::Str => {

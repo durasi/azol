@@ -1,0 +1,55 @@
+// Running out of stack with large frames: two values of 400 slots each,
+// with the room their making needs, put well over 6,400 bytes in every
+// frame. A step from one frame to the next is then a good part of the
+// guard below the stack, and the program must still stop with the message.
+// expect-exit: 1
+// expect-line: start
+// expect-stderr: azol: stack overflow
+
+struct Row { f0: i64, f1: i64, f2: i64, f3: i64, f4: i64, f5: i64, f6: i64, f7: i64, f8: i64, f9: i64, f10: i64, f11: i64, f12: i64, f13: i64, f14: i64, f15: i64, f16: i64, f17: i64, f18: i64, f19: i64 }
+
+struct Block {
+    r0: Row
+    r1: Row
+    r2: Row
+    r3: Row
+    r4: Row
+    r5: Row
+    r6: Row
+    r7: Row
+    r8: Row
+    r9: Row
+    r10: Row
+    r11: Row
+    r12: Row
+    r13: Row
+    r14: Row
+    r15: Row
+    r16: Row
+    r17: Row
+    r18: Row
+    r19: Row
+}
+
+fn row(n: i64) -> Row {
+    return Row { f0: n + 0, f1: n + 1, f2: n + 2, f3: n + 3, f4: n + 4, f5: n + 5, f6: n + 6, f7: n + 7, f8: n + 8, f9: n + 9, f10: n + 10, f11: n + 11, f12: n + 12, f13: n + 13, f14: n + 14, f15: n + 15, f16: n + 16, f17: n + 17, f18: n + 18, f19: n + 19 }
+}
+
+fn block(n: i64) -> Block {
+    let r = row(n)
+    return Block {
+        r0: r, r1: r, r2: r, r3: r, r4: r, r5: r, r6: r, r7: r, r8: r, r9: r,
+        r10: r, r11: r, r12: r, r13: r, r14: r, r15: r, r16: r, r17: r, r18: r, r19: r
+    }
+}
+
+fn deep(n: i64) -> i64 {
+    let a = block(n)
+    let b = block(n + 1)
+    return deep(n + 1) + a.r0.f0 + b.r7.f3
+}
+
+fn main() {
+    print("start")
+    print(str(deep(0)))
+}

@@ -177,7 +177,7 @@ fn continues(kind: K) -> bool {
 /// Whether an expression can end in this token, so that a `-` right
 /// after it on the same line subtracts.
 fn ends_operand(kind: K) -> bool {
-    matches!(kind, K::Ident | K::Int | K::Float | K::Str | K::True | K::False | K::RParen | K::RBracket | K::RBrace)
+    matches!(kind, K::Ident | K::Int | K::Float | K::Str | K::True | K::False | K::RParen | K::RBracket | K::RBrace | K::Question)
 }
 
 /// Finds the comments in `src[from..to]`, a stretch between two tokens
@@ -304,9 +304,9 @@ fn space_between(previous: K, previous_is_unary: bool, kind: K) -> bool {
         return false;
     }
     match kind {
-        K::RParen | K::RBracket | K::Comma | K::Colon | K::Dot => false,
+        K::RParen | K::RBracket | K::Comma | K::Colon | K::Dot | K::Question => false,
         K::LParen => !matches!(previous, K::Ident | K::RParen | K::RBracket),
-        K::LBracket => !matches!(previous, K::Ident | K::RParen | K::RBracket | K::Str),
+        K::LBracket => !matches!(previous, K::Ident | K::RParen | K::RBracket | K::Str | K::Question),
         K::RBrace => previous != K::LBrace,
         _ => true,
     }

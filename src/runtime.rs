@@ -7,12 +7,12 @@
 //! linker rewrites.
 
 /// Functions imported from the system library, in GOT order.
-pub const IMPORTS: [&str; 16] = ["_write", "_exit", "_malloc", "_realloc", "_free", "_memcpy", "_memcmp", "_open", "_read", "_close", "___error", "_strerror", "_strlen", "__NSGetArgc", "__NSGetArgv", "_chmod"];
+pub const IMPORTS: [&str; 19] = ["_write", "_exit", "_malloc", "_realloc", "_free", "_memcpy", "_memcmp", "_open", "_read", "_close", "___error", "_strerror", "_strlen", "__NSGetArgc", "__NSGetArgv", "_chmod", "_sigaltstack", "_sigaction", "__exit"];
 
 /// Text the runtime prints. `RUNTIME_DATA_OFFSETS[n]` is where item `n`
 /// starts; program string literals are placed after it.
-pub const RUNTIME_DATA: &[u8] = b"\ntruefalseazol: division by zero\nazol: index out of range\nazol: pop from an empty list\nazol: out of memory\nazol: slice out of range\nazol: chr needs a number from 0 to 255\n\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\n\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f !\x22#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\x5c]^_`abcdefghijklmnopqrstuvwxyz{|}~\x7f\x80\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8a\x8b\x8c\x8d\x8e\x8f\x90\x91\x92\x93\x94\x95\x96\x97\x98\x99\x9a\x9b\x9c\x9d\x9e\x9f\xa0\xa1\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa\xab\xac\xad\xae\xaf\xb0\xb1\xb2\xb3\xb4\xb5\xb6\xb7\xb8\xb9\xba\xbb\xbc\xbd\xbe\xbf\xc0\xc1\xc2\xc3\xc4\xc5\xc6\xc7\xc8\xc9\xca\xcb\xcc\xcd\xce\xcf\xd0\xd1\xd2\xd3\xd4\xd5\xd6\xd7\xd8\xd9\xda\xdb\xdc\xdd\xde\xdf\xe0\xe1\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9\xea\xeb\xec\xed\xee\xef\xf0\xf1\xf2\xf3\xf4\xf5\xf6\xf7\xf8\xf9\xfa\xfb\xfc\xfd\xfe\xff";
-pub const RUNTIME_DATA_OFFSETS: [u32; 10] = [0, 1, 5, 10, 33, 58, 87, 107, 132, 171];
+pub const RUNTIME_DATA: &[u8] = b"\ntruefalseazol: division by zero\nazol: index out of range\nazol: pop from an empty list\nazol: out of memory\nazol: slice out of range\nazol: chr needs a number from 0 to 255\n\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\n\x0b\x0c\x0d\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f !\x22#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\x5c]^_`abcdefghijklmnopqrstuvwxyz{|}~\x7f\x80\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8a\x8b\x8c\x8d\x8e\x8f\x90\x91\x92\x93\x94\x95\x96\x97\x98\x99\x9a\x9b\x9c\x9d\x9e\x9f\xa0\xa1\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa\xab\xac\xad\xae\xaf\xb0\xb1\xb2\xb3\xb4\xb5\xb6\xb7\xb8\xb9\xba\xbb\xbc\xbd\xbe\xbf\xc0\xc1\xc2\xc3\xc4\xc5\xc6\xc7\xc8\xc9\xca\xcb\xcc\xcd\xce\xcf\xd0\xd1\xd2\xd3\xd4\xd5\xd6\xd7\xd8\xd9\xda\xdb\xdc\xdd\xde\xdf\xe0\xe1\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9\xea\xeb\xec\xed\xee\xef\xf0\xf1\xf2\xf3\xf4\xf5\xf6\xf7\xf8\xf9\xfa\xfb\xfc\xfd\xfe\xffazol: stack overflow\n";
+pub const RUNTIME_DATA_OFFSETS: [u32; 11] = [0, 1, 5, 10, 33, 58, 87, 107, 132, 171, 427];
 
 /// Entry points, as word offsets into `RUNTIME`.
 pub const PRINT_I64: u32 = 0;
@@ -40,6 +40,11 @@ pub const WRITE_FILE: u32 = 523;
 pub const STR_APPEND: u32 = 583;
 pub const SET_EXECUTABLE: u32 = 645;
 
+/// Where a macOS program starts, and the word in it that the linker turns
+/// into the call of the program's `main`.
+pub const START: u32 = 669;
+pub const START_MAIN: u32 = 702;
+
 pub enum RuntimeReloc {
     /// Three words: load the import's address and call it.
     Import { at: u32, import: u32 },
@@ -47,7 +52,7 @@ pub enum RuntimeReloc {
     Data { at: u32, data: u32, reg: u32 },
 }
 
-pub const RUNTIME_RELOCS: [RuntimeReloc; 58] = [
+pub const RUNTIME_RELOCS: [RuntimeReloc; 64] = [
     RuntimeReloc::Import { at: 21, import: 0 },
     RuntimeReloc::Data { at: 27, data: 1, reg: 0 },
     RuntimeReloc::Data { at: 31, data: 2, reg: 0 },
@@ -106,9 +111,15 @@ pub const RUNTIME_RELOCS: [RuntimeReloc; 58] = [
     RuntimeReloc::Import { at: 627, import: 5 },
     RuntimeReloc::Import { at: 636, import: 5 },
     RuntimeReloc::Import { at: 652, import: 15 },
+    RuntimeReloc::Import { at: 680, import: 16 },
+    RuntimeReloc::Import { at: 692, import: 17 },
+    RuntimeReloc::Import { at: 698, import: 17 },
+    RuntimeReloc::Data { at: 714, data: 10, reg: 1 },
+    RuntimeReloc::Import { at: 717, import: 0 },
+    RuntimeReloc::Import { at: 721, import: 18 },
 ];
 
-pub const RUNTIME: [u32; 669] = [
+pub const RUNTIME: [u32; 725] = [
     0xA9BC7BFD, //   0: stp x29, x30, [sp, #-0x40]!
     0x910003FD, //   1: mov x29, sp
     0x9100FFE9, //   2: add x9, sp, #0x3f
@@ -778,4 +789,60 @@ pub const RUNTIME: [u32; 669] = [
     0xA94153F3, // 666: ldp x19, x20, [sp, #0x10]
     0xA8C27BFD, // 667: ldp x29, x30, [sp], #0x20
     0xD65F03C0, // 668: ret 
+    0xA9BF7BFD, // 669: stp x29, x30, [sp, #-0x10]!
+    0x910003FD, // 670: mov x29, sp
+    0xD14043FF, // 671: sub sp, sp, #0x10, lsl #12
+    0xD100C3FF, // 672: sub sp, sp, #0x30
+    0x9100C3E9, // 673: add x9, sp, #0x30
+    0xF90003E9, // 674: str x9, [sp]
+    0xD2A00029, // 675: mov x9, #0x10000
+    0xF90007E9, // 676: str x9, [sp, #8]
+    0xF9000BFF, // 677: str xzr, [sp, #0x10]
+    0x910003E0, // 678: mov x0, sp
+    0xD2800001, // 679: mov x1, #0
+    0xD4220200, // 680: brk #0x1010
+    0xD503201F, // 681: nop 
+    0xD503201F, // 682: nop 
+    0x35000240, // 683: cbnz w0, #0xaf4
+    0x100002C9, // 684: adr x9, #0xb08
+    0xF9000FE9, // 685: str x9, [sp, #0x18]
+    0x528008A9, // 686: mov w9, #0x45
+    0xB90023FF, // 687: str wzr, [sp, #0x20]
+    0xB90027E9, // 688: str w9, [sp, #0x24]
+    0x52800160, // 689: mov w0, #0xb
+    0x910063E1, // 690: add x1, sp, #0x18
+    0xD2800002, // 691: mov x2, #0
+    0xD4220220, // 692: brk #0x1011
+    0xD503201F, // 693: nop 
+    0xD503201F, // 694: nop 
+    0x52800140, // 695: mov w0, #0xa
+    0x910063E1, // 696: add x1, sp, #0x18
+    0xD2800002, // 697: mov x2, #0
+    0xD4220220, // 698: brk #0x1011
+    0xD503201F, // 699: nop 
+    0xD503201F, // 700: nop 
+    0x9100C3FF, // 701: add sp, sp, #0x30
+    0xD4210000, // 702: brk #0x800
+    0x910003BF, // 703: mov sp, x29
+    0xA8C17BFD, // 704: ldp x29, x30, [sp], #0x10
+    0xD65F03C0, // 705: ret 
+    0xF9400C29, // 706: ldr x9, [x1, #0x18]
+    0xF940184A, // 707: ldr x10, [x2, #0x30]
+    0xF940854A, // 708: ldr x10, [x10, #0x108]
+    0xCB0A0129, // 709: sub x9, x9, x10
+    0x91404129, // 710: add x9, x9, #0x10, lsl #12
+    0xF140813F, // 711: cmp x9, #0x20, lsl #12
+    0x54000182, // 712: b.hs #0xb50
+    0xD2800040, // 713: mov x0, #2
+    0xD4242820, // 714: brk #0x2141
+    0xD503201F, // 715: nop 
+    0xD28002A2, // 716: mov x2, #0x15
+    0xD4220000, // 717: brk #0x1000
+    0xD503201F, // 718: nop 
+    0xD503201F, // 719: nop 
+    0xD2800020, // 720: mov x0, #1
+    0xD4220240, // 721: brk #0x1012
+    0xD503201F, // 722: nop 
+    0xD503201F, // 723: nop 
+    0xD65F03C0, // 724: ret 
 ];

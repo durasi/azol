@@ -1,0 +1,3501 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The checker, second part: function bodies. Statements, patterns,
+// places and borrows, expressions and calls, as in `src/sema.rs`.
+// See `sema.azl` for the data and the conventions.
+
+// What an expression is checked for, for messages; see `ck_expect`.
+// A fixed text (a sym), the operator of expression `a`, argument `a`
+// of the function named `b`, or the field named `a`.
+const W_TEXT = 0
+const W_OPERATOR = 1
+const W_ARGUMENT = 2
+const W_FIELD = 3
+
+const I64_MAX = 9223372036854775807
+const I64_MIN = -9223372036854775807 - 1
+
+// How a number is written: `code` 0 with its value, 1 when it needs
+// more than 64 bits, 2 when it does not fit in `i64`, 3 when the text
+// is a plain decimal number (from `special_literal` only), 4 and 5 when
+// it is badly written (see `number_fault`).
+struct IntLiteral {
+    code: i64
+    value: i64
+}
+
+fn hex_digit_value(b: i64) -> i64 {
+    if b >= 'a' {
+        return b - 'a' + 10
+    }
+    if b >= 'A' {
+        return b - 'A' + 10
+    }
+    return b - '0'
+}
+
+// The value of a number that is not written in decimal: `0x1F`,
+// `0b1010` or a character such as `'a'` or `'\n'`.
+fn special_literal(src: str, start: i64, len: i64) -> IntLiteral {
+    let first = src[start]
+    if first == '\'' {
+        // The lexer accepted only one ASCII character or one escape.
+        let b = src[start + 1]
+        if b != '\\' {
+            return IntLiteral { code: 0, value: b }
+        }
+        let escaped = src[start + 2]
+        if escaped == 'n' {
+            return IntLiteral { code: 0, value: 10 }
+        }
+        if escaped == 't' {
+            return IntLiteral { code: 0, value: 9 }
+        }
+        if escaped == 'r' {
+            return IntLiteral { code: 0, value: 13 }
+        }
+        if escaped == '0' {
+            return IntLiteral { code: 0, value: 0 }
+        }
+        return IntLiteral { code: 0, value: escaped }
+    }
+    var bits = 0
+    if len > 1 && first == '0' {
+        if src[start + 1] == 'x' {
+            bits = 4
+        } else if src[start + 1] == 'b' {
+            bits = 1
+        }
+    }
+    if bits == 0 {
+        return IntLiteral { code: 3, value: 0 }
+    }
+    var value = 0
+    var i = 2
+    while i < len {
+        let b = src[start + i]
+        i = i + 1
+        if b == '_' {
+            continue
+        }
+        // All 64 bits may be used; one more digit must still fit.
+        if bits == 4 && ((value >> 60) & 15) != 0 {
+            return IntLiteral { code: 1, value: 0 }
+        }
+        if bits == 1 && value < 0 {
+            return IntLiteral { code: 1, value: 0 }
+        }
+        value = (value << bits) | hex_digit_value(b)
+    }
+    return IntLiteral { code: 0, value: value }
+}
+
+// Says what is wrong with the way a number is written, if anything, as
+// a code of `IntLiteral` (0 for nothing): its digits start at `digits`,
+// after any `0x` or `0b`. A `_` stands between two digits, and a decimal
+// number has no zeros in front, so that nothing looks like the octal
+// numbers of other languages.
+fn number_fault(src: str, start: i64, len: i64, digits: i64) -> i64 {
+    var at = digits
+    while at < len {
+        if src[start + at] == '_' {
+            if at == digits || at + 1 == len || !is_hex_digit(src[start + at - 1]) || !is_hex_digit(src[start + at + 1]) {
+                return 4
+            }
+        }
+        at = at + 1
+    }
+    if digits == 0 && len > 1 && src[start] == '0' {
+        return 5
+    }
+    return 0
+}
+
+// The value of a number literal as written.
+fn int_literal(src: str, start: i64, len: i64) -> IntLiteral {
+    let special = special_literal(src, start, len)
+    if special.code != 3 {
+        if src[start] != '\'' {
+            let fault = number_fault(src, start, len, 2)
+            if fault != 0 {
+                return IntLiteral { code: fault, value: 0 }
+            }
+        }
+        return special
+    }
+    var value = 0
+    var underscore = false
+    var i = 0
+    while i < len {
+        let b = src[start + i]
+        i = i + 1
+        if b == '_' {
+            underscore = true
+            continue
+        }
+        let digit = b - '0'
+        if value > (I64_MAX - digit) / 10 {
+            return IntLiteral { code: 2, value: 0 }
+        }
+        value = value * 10 + digit
+    }
+    // Only a number with a `_` or a zero in front can be badly written.
+    if underscore || src[start] == '0' && len > 1 {
+        let fault = number_fault(src, start, len, 0)
+        if fault != 0 {
+            return IntLiteral { code: fault, value: 0 }
+        }
+    }
+    return IntLiteral { code: 0, value: value }
+}
+
+fn int_literal_message(code: i64) -> str {
+    if code == 1 {
+        return "this number does not fit in 64 bits"
+    }
+    if code == 4 {
+        return "a `_` in a number stands between two digits, as in `1_000`"
+    }
+    if code == 5 {
+        return "a decimal number does not start with `0`; other bases are written `0x1F` and `0b1010`"
+    }
+    return "this number does not fit in `i64`"
+}
+
+fn overlaps(root_a: i64, start_a: i64, len_a: i64, root_b: i64, start_b: i64, len_b: i64) -> bool {
+    if root_a != root_b {
+        return false
+    }
+    var a = len_a
+    if a < 1 {
+        a = 1
+    }
+    var b = len_b
+    if b < 1 {
+        b = 1
+    }
+    return start_a < start_b + b && start_b < start_a + a
+}
+
+// Why a place that is not mutable cannot be changed, as the end of a message.
+fn read_only(place: Place) -> str {
+    if place.is_param {
+        return "a parameter is read-only unless it is declared `mut`"
+    }
+    if place.is_view {
+        return "a loop variable or pattern binding is read-only"
+    }
+    return "declare it with `var` to make it changeable"
+}
+
+fn no_place() -> Place {
+    return Place { ok: false, root: 0, start: 0, len: 0, mutable: false, is_param: false, is_view: false }
+}
+
+// ---- functions and statements -----------------------------------------
+
+// Checks the body of function `index`. A mistake inside a generic
+// function may only show with some types, so the message names them.
+fn ck_function(c: mut Checker, p: Parser, index: i64) {
+    c.sh_e = c.fns[index].sh_e
+    c.sh_s = c.fns[index].sh_s
+    c.sh_p = c.fns[index].sh_p
+    c.sh_i = c.fns[index].sh_i
+    c.fn_depth = c.fns[index].depth
+    c.fn_origin = c.fns[index].origin
+    let generic = c.fns[index].generic
+    if generic < 0 {
+        if c.tparams.len() > 0 {
+            c.tparams = []
+            c.fn_bound = []
+        }
+        ck_function_body(mut c, p, index)
+        return
+    }
+    c.fn_bound = c.fns[index].type_args
+    c.tparams = c.generic_fns[generic].type_params
+    ck_function_body(mut c, p, index)
+    if !c.failed {
+        return
+    }
+    var types = ""
+    for i, param in c.tparams {
+        var name = ck_ty_name(c, c.fns[index].type_args[i])
+        if name.len() > 60 {
+            name = name.slice(0, 57) + "..."
+        }
+        if i > 0 {
+            types = types + ", "
+        }
+        types = types + "`" + sym_text(c, param) + "` = `" + name + "`"
+    }
+    if c.tparams.len() > 0 {
+        let suffix = " (in `" + sym_text(c, c.generic_fns[generic].name) + "` with " + types + ")"
+        c.error.message = c.error.message + suffix
+    }
+    // A mistake inside the standard library's code is shown where the
+    // program asked for these types.
+    if c.error.offset >= c.prelude_start {
+        c.error.offset = c.fns[index].origin
+    }
+}
+
+fn ck_function_body(c: mut Checker, p: Parser, index: i64) {
+    var name = Span { start: 0, len: 0 }
+    var params = IdRange { start: 0, len: 0 }
+    var body = IdRange { start: 0, len: 0 }
+    match p.ast.items[c.fns[index].item] {
+        ItemFn(n, _, ps, _, b, _) => {
+            name = n
+            params = ps
+            body = b
+        }
+        _ => {}
+    }
+    c.locals_len = 0
+    while c.borrows.len() > 0 {
+        c.borrows.pop()
+    }
+    while c.pending.len() > 0 {
+        c.pending.pop()
+    }
+    while c.late.len() > 0 {
+        c.late.pop()
+    }
+    while c.tries.len() > 0 {
+        c.tries.pop()
+    }
+    c.in_list = 0
+    c.owned_siblings = 0
+    while c.wish_slots.len() > 0 {
+        c.wish_slots.pop()
+        c.wish_uses.pop()
+    }
+    while c.zero_slots.len() > 0 {
+        c.zero_slots.pop()
+    }
+    c.next_slot = 0
+    c.loop_depth = 0
+    c.ret = c.fns[index].ret
+    var i = 0
+    while i < params.len {
+        let param = p.ast.params[p.ast.lists[params.start + i]]
+        let slot = ck_alloc(mut c, 1, param.name.start)
+        if c.failed {
+            return
+        }
+        let sym = ck_binding(mut c, p, param.name)
+        if c.failed {
+            return
+        }
+        let by_ref = c.fns[index].param_by_ref[i]
+        var flags = LOC_PARAM
+        if c.fns[index].param_mutable[i] {
+            flags = flags | LOC_MUTABLE
+        }
+        if by_ref {
+            flags = flags | LOC_BY_REF
+        } else {
+            flags = flags | LOC_SCALAR
+        }
+        ck_push_local(mut c, sym, slot, c.fns[index].param_tys[i], flags)
+        i = i + 1
+    }
+    if ty_is_aggregate(c.ret) {
+        let slot = ck_alloc(mut c, 1, name.start)
+        if c.failed {
+            return
+        }
+        c.fns[index].sret_slot = slot
+    }
+    let scratch = ck_alloc(mut c, 1, name.start)
+    if c.failed {
+        return
+    }
+    c.fns[index].scratch_slot = scratch
+    ck_block(mut c, p, body)
+    if c.failed {
+        return
+    }
+    ck_close_scope(mut c, 0)
+    if c.ret != TY_UNIT && !ck_always_returns(p, body) {
+        ck_err(name.start, "function `" + span_text(p.src, name) + "` must return a value of type `" + ck_ty_name(c, c.ret) +
+                "` on every path", mut c)
+        return
+    }
+    c.fns[index].slots = c.next_slot
+    c.fns[index].zero_slots = c.zero_slots
+    // The most used variables get the registers. One that is hardly
+    // used is not worth saving and restoring a register for.
+    var chosen: List[i64] = []
+    while chosen.len() < REGISTERS {
+        var best = -1
+        var k = 0
+        while k < c.wish_slots.len() {
+            let uses = c.wish_uses[k]
+            if uses >= MIN_REGISTER_USES {
+                if best < 0 || uses > c.wish_uses[best] || (uses == c.wish_uses[best] && c.wish_slots[k] < c.wish_slots[best]) {
+                    best = k
+                }
+            }
+            k = k + 1
+        }
+        if best < 0 {
+            break
+        }
+        chosen.push(c.wish_slots[best])
+        c.wish_uses[best] = -1
+    }
+    c.fns[index].reg_slots = chosen
+}
+
+fn ck_always_returns(p: Parser, body: IdRange) -> bool {
+    if body.len == 0 {
+        return false
+    }
+    return ck_stmt_returns(p, p.ast.lists[body.start + body.len - 1])
+}
+
+fn ck_stmt_returns(p: Parser, id: i64) -> bool {
+    match p.ast.stmts[id] {
+        StmtReturn(_) => return true
+        // `exit` ends the program; nothing comes back from it. The name
+        // is built in, so no function of the program has it.
+        StmtExpr(expr) => {
+            match p.ast.exprs[expr] {
+                ExprCall(callee, _) => {
+                    match p.ast.exprs[callee] {
+                        ExprIdent(name) => return span_is(p.src, name, "exit")
+                        _ => return false
+                    }
+                }
+                _ => return false
+            }
+        }
+        StmtIf(_, then_block, else_branch) => {
+            if !ck_always_returns(p, then_block) {
+                return false
+            }
+            match else_branch {
+                ElseNone => return false
+                ElseBlock(body) => return ck_always_returns(p, body)
+                ElseIf(next) => return ck_stmt_returns(p, next)
+            }
+        }
+        // The checker makes sure the arms cover every case.
+        StmtMatch(_, arms) => {
+            if arms.len == 0 {
+                return false
+            }
+            var i = 0
+            while i < arms.len {
+                if !ck_always_returns(p, p.ast.arms[p.ast.lists[arms.start + i]].body) {
+                    return false
+                }
+                i = i + 1
+            }
+            return true
+        }
+        _ => return false
+    }
+}
+
+fn ck_alloc(c: mut Checker, slots: i64, at: i64) -> i64 {
+    if c.next_slot + slots > MAX_SLOTS {
+        ck_err(at, "this function needs more than " + str(MAX_SLOTS) + " slots of stack, which is not supported yet", mut c)
+        return 0
+    }
+    let start = c.next_slot
+    c.next_slot = c.next_slot + slots
+    return start
+}
+
+// The sym of the name that expression `id` is.
+fn ck_sym(c: mut Checker, p: Parser, id: i64) -> i64 {
+    let known = c.expr_sym[id]
+    if known > 0 {
+        return known - 1
+    }
+    var sym = -1
+    match p.ast.exprs[id] {
+        ExprIdent(span) => {
+            sym = names_intern(mut c.names, p.src, span.start, span.len)
+        }
+        _ => {}
+    }
+    c.expr_sym[id] = sym + 1
+    return sym
+}
+
+// Adds a variable to the ones in scope.
+fn ck_push_local(c: mut Checker, name: i64, slot: i64, ty: i64, flags: i64) {
+    let at = c.locals_len
+    if at < c.loc_name.len() {
+        c.loc_name[at] = name
+        c.loc_slot[at] = slot
+        c.loc_ty[at] = ty
+        c.loc_flags[at] = flags
+        c.loc_depth[at] = c.loop_depth
+        c.loc_candidate[at] = -1
+        c.loc_uses[at] = 0
+    } else {
+        c.loc_name.push(name)
+        c.loc_slot.push(slot)
+        c.loc_ty.push(ty)
+        c.loc_flags.push(flags)
+        c.loc_depth.push(c.loop_depth)
+        c.loc_candidate.push(-1)
+        c.loc_uses.push(0)
+    }
+    c.locals_len = at + 1
+}
+
+// The index among the variables in scope of the innermost one called
+// `sym`, or -1.
+fn ck_lookup(c: Checker, sym: i64) -> i64 {
+    var at = c.locals_len - 1
+    while at >= 0 {
+        if c.loc_name[at] == sym {
+            return at
+        }
+        at = at - 1
+    }
+    return -1
+}
+
+// True when an already checked expression is the name of a constant.
+fn ck_is_constant(c: Checker, p: Parser, id: i64) -> bool {
+    match p.ast.exprs[id] {
+        ExprIdent(_) => return c.expr_aux[c.sh_e + id] >= CONST_STR
+        _ => return false
+    }
+}
+
+// The sym of a name that is about to become a variable. A variant name
+// cannot be one: `None` must always mean the variant.
+fn ck_binding(c: mut Checker, p: Parser, name: Span) -> i64 {
+    let sym = ck_intern(mut c, p, name)
+    let variant = tab_get(c.variant_names, sym)
+    if variant >= 0 {
+        ck_err(name.start, "`" + sym_text(c, sym) + "` is a variant of `" + sym_text(c, c.templates[variant >> 10].name) +
+                "` and cannot be used as a variable name", mut c)
+        return sym
+    }
+    if ck_constant(c, name.start, sym) >= 0 {
+        ck_err(name.start, "`" + sym_text(c, sym) + "` is a constant and cannot be used as a variable name", mut c)
+    }
+    return sym
+}
+
+// The constant that the name `sym` written at `start` means, or -1.
+// The standard library's own code never means a program's constants.
+fn ck_constant(c: Checker, start: i64, sym: i64) -> i64 {
+    if start >= c.prelude_start {
+        return -1
+    }
+    return tab_get(c.const_names, sym)
+}
+
+// Registers every `const` and computes its value. Constants may use
+// each other in any order, but not in a circle.
+fn ck_declare_consts(c: mut Checker, p: Parser) {
+    for item in p.ast.items {
+        var name = Span { start: 0, len: 0 }
+        var ty = NO_NODE
+        var value = NO_NODE
+        match item {
+            ItemConst(n, t, v) => {
+                name = n
+                ty = t
+                value = v
+            }
+            _ => continue
+        }
+        let sym = ck_intern(mut c, p, name)
+        if is_builtin_function(sym) {
+            ck_err(name.start, "`" + sym_text(c, sym) + "` is built in and cannot be redefined", mut c)
+            return
+        }
+        let variant = tab_get(c.variant_names, sym)
+        if variant >= 0 {
+            ck_err(name.start, "`" + sym_text(c, sym) + "` is already a variant of `" +
+                    sym_text(c, c.templates[variant >> 10].name) + "`", mut c)
+            return
+        }
+        if tab_get(c.const_names, sym) >= 0 {
+            ck_err(name.start, "constant `" + sym_text(c, sym) + "` is defined more than once", mut c)
+            return
+        }
+        tab_set(mut c.const_names, sym, c.consts.len())
+        c.consts.push(ConstInfo { name: sym, pos: name.start, ty: ty, expr: value, state: 0, kind: CV_BOOL, value: 0, int: 0 })
+    }
+    var index = 0
+    while index < c.consts.len() {
+        ck_const_value(mut c, p, index)
+        if c.failed {
+            return
+        }
+        index = index + 1
+    }
+}
+
+fn const_ty(kind: i64) -> i64 {
+    if kind == CV_INT {
+        return TY_I64
+    }
+    if kind == CV_BOOL {
+        return TY_BOOL
+    }
+    return TY_STR
+}
+
+// The value of constant `index`, computed the first time it is needed.
+fn ck_const_value(c: mut Checker, p: Parser, index: i64) -> ConstValue {
+    let info = c.consts[index]
+    if info.state == 2 {
+        return ConstValue { kind: info.kind, value: info.value }
+    }
+    if info.state == 1 {
+        ck_err(info.pos, "constant `" + sym_text(c, info.name) + "` is defined in terms of itself", mut c)
+        return ConstValue { kind: CV_BOOL, value: 0 }
+    }
+    c.consts[index].state = 1
+    let value = ck_const_eval(mut c, p, info.expr)
+    if c.failed {
+        return value
+    }
+    if info.ty != NO_NODE {
+        let declared = ck_ty(mut c, p, info.ty)
+        if c.failed {
+            return value
+        }
+        if declared != const_ty(value.kind) {
+            ck_err_expr(p, info.expr, "expected `" + ck_ty_name(c, declared) + "` but this is `" +
+                    ck_ty_name(c, const_ty(value.kind)) + "`", mut c)
+            return value
+        }
+    }
+    if value.kind == CV_INT {
+        c.consts[index].int = c.ints.len()
+        c.ints.push(value.value)
+    }
+    c.consts[index].kind = value.kind
+    c.consts[index].value = value.value
+    c.consts[index].state = 2
+    return value
+}
+
+fn ck_const_wrong(c: mut Checker, p: Parser, at: i64, what: str, want: i64, got: ConstValue) {
+    ck_err(p.ast.expr_pos[at], what + " needs `" + ck_ty_name(c, want) + "` but this is `" + ck_ty_name(c, const_ty(got.kind)) +
+            "`", mut c)
+}
+
+fn bool_number(flag: bool) -> i64 {
+    if flag {
+        return 1
+    }
+    return 0
+}
+
+// Computes a constant expression: literals, other constants and
+// operators on numbers and `bool`s, with the results the same operators
+// give when the program runs.
+fn ck_const_eval(c: mut Checker, p: Parser, id: i64) -> ConstValue {
+    let pos = p.ast.expr_pos[id]
+    let nothing = ConstValue { kind: CV_BOOL, value: 0 }
+    match p.ast.exprs[id] {
+        ExprInt(span) => {
+            let literal = int_literal(p.src, span.start, span.len)
+            if literal.code != 0 {
+                ck_err(pos, int_literal_message(literal.code), mut c)
+                return nothing
+            }
+            return ConstValue { kind: CV_INT, value: literal.value }
+        }
+        ExprBool(value) => return ConstValue { kind: CV_BOOL, value: bool_number(value) }
+        ExprStr(span) => return ConstValue { kind: CV_STR, value: ck_string_literal(mut c, p, span) }
+        ExprIdent(name) => {
+            let sym = ck_intern(mut c, p, name)
+            let index = tab_get(c.const_names, sym)
+            if index < 0 {
+                ck_err(pos, "`" + sym_text(c, sym) + "` is not a constant; a constant is made of literals and other constants", mut c)
+                return nothing
+            }
+            return ck_const_value(mut c, p, index)
+        }
+        ExprUnary(op, operand) => {
+            if op == OpNeg && is_min_literal(p, operand) {
+                return ConstValue { kind: CV_INT, value: I64_MIN }
+            }
+            let value = ck_const_eval(mut c, p, operand)
+            if c.failed {
+                return nothing
+            }
+            if op == OpNeg {
+                if value.kind != CV_INT {
+                    ck_const_wrong(mut c, p, operand, "`-`", TY_I64, value)
+                    return nothing
+                }
+                return ConstValue { kind: CV_INT, value: 0 - value.value }
+            }
+            if value.kind != CV_BOOL {
+                ck_const_wrong(mut c, p, operand, "`!`", TY_BOOL, value)
+                return nothing
+            }
+            return ConstValue { kind: CV_BOOL, value: 1 - value.value }
+        }
+        ExprBinary(op, lhs, rhs) => {
+            let left = ck_const_eval(mut c, p, lhs)
+            if c.failed {
+                return nothing
+            }
+            let right = ck_const_eval(mut c, p, rhs)
+            if c.failed {
+                return nothing
+            }
+            let what = "`" + binop_symbol(op) + "`"
+            if left.kind == CV_STR {
+                // Two string constants joined into a new one.
+                if op != BinAdd {
+                    ck_err(pos, "string constants can be joined with `+`; no other operator works on them in a constant", mut c)
+                    return nothing
+                }
+                if right.kind != CV_STR {
+                    ck_const_wrong(mut c, p, rhs, what, TY_STR, right)
+                    return nothing
+                }
+                let offset = c.data.len()
+                let first = c.data.slice(c.string_offsets[left.value], c.string_offsets[left.value] + c.string_lens[left.value])
+                c.data = c.data + first
+                let second = c.data.slice(c.string_offsets[right.value], c.string_offsets[right.value] + c.string_lens[right.value])
+                c.data = c.data + second
+                c.string_offsets.push(offset)
+                c.string_lens.push(c.data.len() - offset)
+                return ConstValue { kind: CV_STR, value: c.string_offsets.len() - 1 }
+            }
+            if op == BinAnd || op == BinOr {
+                if left.kind != CV_BOOL {
+                    ck_const_wrong(mut c, p, lhs, what, TY_BOOL, left)
+                    return nothing
+                }
+                if right.kind != CV_BOOL {
+                    ck_const_wrong(mut c, p, rhs, what, TY_BOOL, right)
+                    return nothing
+                }
+                if op == BinAnd {
+                    return ConstValue { kind: CV_BOOL, value: left.value & right.value }
+                }
+                return ConstValue { kind: CV_BOOL, value: left.value | right.value }
+            }
+            if op == BinEq || op == BinNotEq {
+                if left.kind != right.kind {
+                    ck_const_wrong(mut c, p, rhs, what, const_ty(left.kind), right)
+                    return nothing
+                }
+                return ConstValue { kind: CV_BOOL, value: bool_number((left.value == right.value) == (op == BinEq)) }
+            }
+            if left.kind != CV_INT {
+                ck_const_wrong(mut c, p, lhs, what, TY_I64, left)
+                return nothing
+            }
+            if right.kind != CV_INT {
+                ck_const_wrong(mut c, p, rhs, what, TY_I64, right)
+                return nothing
+            }
+            let a = left.value
+            let b = right.value
+            if (op == BinDiv || op == BinRem) && b == 0 {
+                ck_err_expr(p, rhs, "division by zero in a constant", mut c)
+                return nothing
+            }
+            match op {
+                BinAdd => return ConstValue { kind: CV_INT, value: a + b }
+                BinSub => return ConstValue { kind: CV_INT, value: a - b }
+                BinMul => return ConstValue { kind: CV_INT, value: a * b }
+                BinDiv => {
+                    // The one division that does not fit wraps around.
+                    if b == -1 {
+                        return ConstValue { kind: CV_INT, value: 0 - a }
+                    }
+                    return ConstValue { kind: CV_INT, value: a / b }
+                }
+                BinRem => {
+                    if b == -1 {
+                        return ConstValue { kind: CV_INT, value: 0 }
+                    }
+                    return ConstValue { kind: CV_INT, value: a % b }
+                }
+                BinBitAnd => return ConstValue { kind: CV_INT, value: a & b }
+                BinBitOr => return ConstValue { kind: CV_INT, value: a | b }
+                BinBitXor => return ConstValue { kind: CV_INT, value: a ^ b }
+                // The low 6 bits of the count, as at run time.
+                BinShl => return ConstValue { kind: CV_INT, value: a << b }
+                BinShr => return ConstValue { kind: CV_INT, value: a >> b }
+                BinLt => return ConstValue { kind: CV_BOOL, value: bool_number(a < b) }
+                BinLtEq => return ConstValue { kind: CV_BOOL, value: bool_number(a <= b) }
+                BinGt => return ConstValue { kind: CV_BOOL, value: bool_number(a > b) }
+                BinGtEq => return ConstValue { kind: CV_BOOL, value: bool_number(a >= b) }
+                _ => return nothing
+            }
+        }
+        _ => {
+            ck_err(pos, "a constant must be made of literals and other constants", mut c)
+            return nothing
+        }
+    }
+}
+
+// True for the digits `9223372036854775808`, which are a number only
+// with a `-` in front: the smallest `i64`.
+fn is_min_literal(p: Parser, id: i64) -> bool {
+    match p.ast.exprs[id] {
+        ExprInt(span) => {
+            if span.len < 19 {
+                return false
+            }
+            let digits = "9223372036854775808"
+            var at = 0
+            var i = 0
+            while i < span.len {
+                let b = p.src[span.start + i]
+                i = i + 1
+                if b == '_' {
+                    continue
+                }
+                if at >= 19 || b != digits[at] {
+                    return false
+                }
+                at = at + 1
+            }
+            return at == 19
+        }
+        _ => return false
+    }
+}
+
+fn ck_block(c: mut Checker, p: Parser, body: IdRange) {
+    let scope = c.locals_len
+    var i = 0
+    while i < body.len {
+        ck_stmt(mut c, p, p.ast.lists[body.start + i])
+        if c.failed {
+            return
+        }
+        i = i + 1
+    }
+    ck_close_scope(mut c, scope)
+}
+
+// Ends the scope of the variables declared since `scope`. A store that
+// was the last mention of a variable takes its buffers over.
+fn ck_close_scope(c: mut Checker, scope: i64) {
+    var at = scope
+    let count = c.locals_len
+    while at < count {
+        let candidate = c.loc_candidate[at]
+        if candidate >= 0 {
+            c.expr_moved[c.sh_e + candidate] = 1
+        }
+        if (c.loc_flags[at] & (LOC_SCALAR | LOC_ADDRESSED)) == LOC_SCALAR {
+            c.wish_slots.push(c.loc_slot[at])
+            c.wish_uses.push(c.loc_uses[at])
+        }
+        at = at + 1
+    }
+    if scope < count {
+        c.locals_len = scope
+    }
+}
+
+// True when the name `sym` is written anywhere inside expression `id`.
+fn ck_mentions(c: Checker, p: Parser, id: i64, sym: i64) -> bool {
+    match p.ast.exprs[id] {
+        ExprIdent(span) => return ck_span_is_sym(c, p, span, sym)
+        ExprUnary(_, operand) => return ck_mentions(c, p, operand, sym)
+        ExprBinary(_, lhs, rhs) => return ck_mentions(c, p, lhs, sym) || ck_mentions(c, p, rhs, sym)
+        ExprCall(callee, args) => {
+            if ck_mentions(c, p, callee, sym) {
+                return true
+            }
+            var i = 0
+            while i < args.len {
+                if ck_mentions(c, p, p.ast.lists[args.start + i], sym) {
+                    return true
+                }
+                i = i + 1
+            }
+            return false
+        }
+        ExprMutArg(inner) => return ck_mentions(c, p, inner, sym)
+        ExprTry(inner) => return ck_mentions(c, p, inner, sym)
+        ExprField(base, _) => return ck_mentions(c, p, base, sym)
+        ExprIndex(base, index) => return ck_mentions(c, p, base, sym) || ck_mentions(c, p, index, sym)
+        ExprStructLit(_, fields) => {
+            var i = 0
+            while i < fields.len {
+                if ck_mentions(c, p, p.ast.field_inits[p.ast.lists[fields.start + i]].value, sym) {
+                    return true
+                }
+                i = i + 1
+            }
+            return false
+        }
+        ExprArrayLit(items) => {
+            var i = 0
+            while i < items.len {
+                if ck_mentions(c, p, p.ast.lists[items.start + i], sym) {
+                    return true
+                }
+                i = i + 1
+            }
+            return false
+        }
+        _ => return false
+    }
+}
+
+fn ck_is_ident(p: Parser, id: i64) -> bool {
+    match p.ast.exprs[id] {
+        ExprIdent(_) => return true
+        _ => return false
+    }
+}
+
+// Called where the value of `id` is stored in a new owner. Like
+// `ck_take`, and in addition: a whole variable that owns its value may
+// hand its buffers over instead of being copied, if it turns out that
+// it is never mentioned again. That is safe only when nothing can run
+// the store twice, nothing is looking into the variable, and nothing
+// written earlier reads it later.
+fn ck_store_from(c: mut Checker, p: Parser, id: i64) -> bool {
+    if ck_take(mut c, p, id) {
+        return true
+    }
+    if !ck_is_ident(p, id) {
+        return false
+    }
+    let sym = ck_sym(mut c, p, id)
+    let at = ck_lookup(c, sym)
+    if at < 0 {
+        return false
+    }
+    let ty = c.loc_ty[at]
+    if (c.loc_flags[at] & (LOC_OWNS | LOC_BY_REF)) != LOC_OWNS || c.loc_depth[at] != c.loop_depth || !ck_needs_drop(c, ty) {
+        return false
+    }
+    let slot = c.loc_slot[at]
+    let len = ck_size_of(c, ty)
+    var k = 0
+    while k < c.borrows.len() {
+        if overlaps(slot, 0, len, c.borrows[k].root, c.borrows[k].start, c.borrows[k].len) {
+            return false
+        }
+        k = k + 1
+    }
+    k = 0
+    while k < c.late.len() {
+        if ck_mentions(c, p, c.late[k], sym) {
+            return false
+        }
+        k = k + 1
+    }
+    c.loc_candidate[at] = id
+    return false
+}
+
+// Registers an owning temporary created by `id`.
+fn ck_temp(c: mut Checker, p: Parser, id: i64, ty: i64) -> i64 {
+    let size = ck_size_of(c, ty)
+    let slot = ck_alloc(mut c, size, p.ast.expr_pos[id])
+    if c.failed {
+        return 0
+    }
+    if ck_needs_drop(c, ty) {
+        c.pending.push(Pending { expr: id, slot: slot, ty: ty })
+    }
+    return slot
+}
+
+// Called where the value of `id` is stored somewhere that will own it.
+// A temporary hands its buffers over; anything else is copied.
+fn ck_take(c: mut Checker, p: Parser, id: i64) -> bool {
+    var literal = false
+    match p.ast.exprs[id] {
+        ExprStr(_) => {
+            literal = true
+        }
+        ExprIdent(_) => {
+            literal = c.expr_aux[c.sh_e + id] == CONST_STR
+        }
+        _ => {}
+    }
+    if literal {
+        // A literal owns nothing, so there is nothing to copy either.
+        c.expr_moved[c.sh_e + id] = 1
+        return true
+    }
+    let count = c.pending.len()
+    var at = 0
+    while at < count {
+        if c.pending[at].expr == id {
+            while at + 1 < count {
+                c.pending[at] = c.pending[at + 1]
+                at = at + 1
+            }
+            c.pending.pop()
+            c.expr_moved[c.sh_e + id] = 1
+            return true
+        }
+        at = at + 1
+    }
+    return false
+}
+
+// Ends the expression of statement `id`: the temporaries nothing took
+// over are freed by the statement.
+fn ck_finish(c: mut Checker, id: i64) {
+    let start = c.drop_slots.len()
+    let count = c.pending.len()
+    var at = 0
+    while at < count {
+        let slot = c.pending[at].slot
+        let ty = c.pending[at].ty
+        let owned = ck_owned_count(c, ty)
+        var k = 0
+        while k < owned {
+            c.zero_slots.push(slot + ck_owned_offset(c, ty, k) + idle_slot(ck_owned_ty(c, ty, k)))
+            k = k + 1
+        }
+        c.drop_slots.push(slot)
+        c.drop_tys.push(ty)
+        at = at + 1
+    }
+    while c.pending.len() > 0 {
+        c.pending.pop()
+    }
+    let len = c.drop_slots.len() - start
+    c.stmt_drops_start[c.sh_s + id] = start
+    c.stmt_drops_len[c.sh_s + id] = len
+    // A `?` that leaves the function frees the same temporaries.
+    while c.tries.len() > 0 {
+        let at = c.tries.pop()
+        c.expr_res[c.sh_e + at] = start
+        c.expr_aux[c.sh_e + at] = c.expr_aux[c.sh_e + at] | (len << 1)
+    }
+}
+
+// Notes that `value` was stored in a struct literal or a variant that
+// is still being put together.
+fn ck_sibling(c: mut Checker, value: i64) {
+    if ck_needs_drop(c, c.expr_ty[c.sh_e + value]) {
+        c.owned_siblings = c.owned_siblings + 1
+    }
+}
+
+// `value?`: what `Ok` or `Some` holds, or an early return of the `Err`
+// or the `None`.
+fn ck_try_expr(c: mut Checker, p: Parser, id: i64, inner: i64) -> i64 {
+    let pos = p.ast.expr_pos[id]
+    let inner_ty = ck_expr_hint(mut c, p, inner, TY_NONE)
+    if c.failed {
+        return TY_UNIT
+    }
+    var template = -1
+    if ty_is_enum(inner_ty) {
+        template = c.enums[ty_index(inner_ty)].template
+    }
+    if template != OPTION_TEMPLATE && template != RESULT_TEMPLATE {
+        ck_err_expr(p, inner, "`?` needs a `Result` or an `Option` but this is `" + ck_ty_name(c, inner_ty) + "`", mut c)
+        return TY_UNIT
+    }
+    let index = ty_index(inner_ty)
+    var fits = false
+    if ty_is_enum(c.ret) {
+        let ret = ty_index(c.ret)
+        if c.enums[ret].template == template {
+            fits = template == OPTION_TEMPLATE || c.enums[ret].args[1] == c.enums[index].args[1]
+        }
+    }
+    if !fits {
+        var wanted = "an `Option`"
+        if template != OPTION_TEMPLATE {
+            wanted = "a `Result` with the error type `" + ck_ty_name(c, c.enums[index].args[1]) + "`"
+        }
+        var returns = "nothing"
+        if c.ret != TY_UNIT {
+            returns = "`" + ck_ty_name(c, c.ret) + "`"
+        }
+        ck_err(pos, "`?` on `" + ck_ty_name(c, inner_ty) + "` needs a function that returns " + wanted +
+                ", but this function returns " + returns + "; use `match`", mut c)
+        return TY_UNIT
+    }
+    // Leaving in the middle of a list literal would lose its buffer,
+    // and leaving after a part of a struct or variant was stored would
+    // lose what that part owns.
+    if c.in_list > 0 {
+        ck_err(pos, "`?` cannot be used inside a list literal; store its value in a variable first", mut c)
+        return TY_UNIT
+    }
+    if c.owned_siblings > 0 {
+        ck_err(pos, "`?` cannot be used after a part of the same value that owns memory; store its value in a variable first", mut c)
+        return TY_UNIT
+    }
+    let value_ty = c.enums[index].args[0]
+    // A temporary gives what it holds away; anything else is copied.
+    var from_temp = 0
+    for pending in c.pending {
+        if pending.expr == inner {
+            from_temp = 1
+        }
+    }
+    c.expr_aux[c.sh_e + id] = from_temp
+    c.tries.push(id)
+    if ty_is_aggregate(value_ty) {
+        let slot = ck_temp(mut c, p, id, value_ty)
+        c.expr_tmp[c.sh_e + id] = slot
+    }
+    return value_ty
+}
+
+// Adds a variable that looks at a value which lives somewhere else:
+// the variable of a `for` loop or a name bound by a pattern.
+fn ck_push_view(c: mut Checker, name: i64, slot: i64, ty: i64, by_ref: bool) {
+    if by_ref {
+        ck_push_local(mut c, name, slot, ty, LOC_VIEW | LOC_BY_REF)
+    } else {
+        ck_push_local(mut c, name, slot, ty, LOC_VIEW)
+    }
+}
+
+fn ck_stmt(c: mut Checker, p: Parser, id: i64) {
+    match p.ast.stmts[id] {
+        StmtLet(mutable, name, ty, value) => ck_let(mut c, p, id, mutable, name, ty, value)
+        StmtAssign(target, value) => ck_assign(mut c, p, id, target, value)
+        StmtExpr(expr) => {
+            ck_expr_hint(mut c, p, expr, TY_NONE)
+            if c.failed {
+                return
+            }
+            ck_finish(mut c, id)
+        }
+        StmtReturn(value) => ck_return(mut c, p, id, value)
+        StmtIf(cond, then_block, else_branch) => {
+            ck_condition(mut c, p, cond)
+            if c.failed {
+                return
+            }
+            ck_finish(mut c, id)
+            ck_block(mut c, p, then_block)
+            if c.failed {
+                return
+            }
+            match else_branch {
+                ElseNone => {}
+                ElseBlock(body) => ck_block(mut c, p, body)
+                ElseIf(next) => ck_stmt(mut c, p, next)
+            }
+        }
+        StmtWhile(cond, body) => {
+            // The condition runs on every round, like the body.
+            c.loop_depth = c.loop_depth + 1
+            ck_condition(mut c, p, cond)
+            if c.failed {
+                return
+            }
+            ck_finish(mut c, id)
+            ck_block(mut c, p, body)
+            if c.failed {
+                return
+            }
+            c.loop_depth = c.loop_depth - 1
+        }
+        StmtFor(has_index, index, item, iter, body) => ck_for(mut c, p, id, has_index, index, item, iter, body)
+        StmtBreak => ck_outside_loop(mut c, p.ast.stmt_pos[id])
+        StmtContinue => ck_outside_loop(mut c, p.ast.stmt_pos[id])
+        StmtMatch(scrutinee, arms) => ck_match_stmt(mut c, p, id, scrutinee, arms)
+    }
+}
+
+// `break` or `continue` at `pos`: only inside a loop.
+fn ck_outside_loop(c: mut Checker, pos: i64) {
+    if c.loop_depth == 0 {
+        ck_err(pos, "`break` and `continue` can only be used inside a loop", mut c)
+    }
+}
+
+// Reports that `expr` has type `got` where `want` was declared.
+fn ck_wrong_type(c: mut Checker, p: Parser, expr: i64, want: i64, got: i64) {
+    ck_err_expr(p, expr, "expected `" + ck_ty_name(c, want) + "` but this is `" + ck_ty_name(c, got) + "`", mut c)
+}
+
+// Reports a `return` at `at` whose value has the wrong type `got`.
+fn ck_wrong_return(c: mut Checker, at: i64, got: i64) {
+    if c.ret == TY_UNIT {
+        ck_err(at, "this function returns nothing, so `return` cannot have a value", mut c)
+    } else if got == TY_UNIT {
+        ck_err(at, "this function must return a value of type `" + ck_ty_name(c, c.ret) + "`", mut c)
+    } else {
+        ck_err(at, "this function returns `" + ck_ty_name(c, c.ret) + "` but this is `" + ck_ty_name(c, got) + "`", mut c)
+    }
+}
+
+fn ck_let(c: mut Checker, p: Parser, id: i64, mutable: bool, name: Span, ty: i64, value: i64) {
+    var declared = TY_NONE
+    if ty != NO_NODE {
+        declared = ck_ty(mut c, p, ty)
+        if c.failed {
+            return
+        }
+    }
+    let value_ty = ck_expr_hint(mut c, p, value, declared)
+    if c.failed {
+        return
+    }
+    if value_ty == TY_UNIT {
+        ck_err_expr(p, value, "this expression has no value to store", mut c)
+        return
+    }
+    if declared != TY_NONE && declared != value_ty {
+        ck_wrong_type(mut c, p, value, declared, value_ty)
+        return
+    }
+    ck_store_from(mut c, p, value)
+    ck_finish(mut c, id)
+    let size = ck_size_of(c, value_ty)
+    let slot = ck_alloc(mut c, size, name.start)
+    if c.failed {
+        return
+    }
+    let sym = ck_binding(mut c, p, name)
+    if c.failed {
+        return
+    }
+    var flags = LOC_OWNS
+    if mutable {
+        flags = flags | LOC_MUTABLE
+    }
+    if value_ty == TY_I64 || value_ty == TY_BOOL {
+        flags = flags | LOC_SCALAR
+    }
+    ck_push_local(mut c, sym, slot, value_ty, flags)
+    c.stmt_slot[c.sh_s + id] = slot
+}
+
+fn ck_no_list(c: mut Checker, p: Parser, iter: i64, ty: i64) {
+    ck_err_expr(p, iter, "`for` needs a list to go through but this is `" + ck_ty_name(c, ty) + "`", mut c)
+}
+
+fn ck_return(c: mut Checker, p: Parser, id: i64, value: i64) {
+    let pos = p.ast.stmt_pos[id]
+    var value_ty = TY_UNIT
+    if value != NO_NODE {
+        value_ty = ck_expr_hint(mut c, p, value, c.ret)
+        if c.failed {
+            return
+        }
+    }
+    if value_ty != c.ret {
+        var at = pos
+        if value != NO_NODE {
+            at = p.ast.expr_pos[value]
+        }
+        ck_wrong_return(mut c, at, value_ty)
+        return
+    }
+    if value != NO_NODE && ck_needs_drop(c, value_ty) {
+        if !ck_take(mut c, p, value) && ck_is_ident(p, value) {
+            // Returning a whole local variable hands its buffers
+            // to the caller instead of copying them.
+            let sym = ck_sym(mut c, p, value)
+            let at = ck_lookup(c, sym)
+            if at >= 0 && (c.loc_flags[at] & LOC_OWNS) != 0 {
+                c.expr_moved[c.sh_e + value] = 1
+            }
+        }
+    }
+    ck_finish(mut c, id)
+}
+
+// The names are `index` (only with `has_index`) and `item`.
+fn ck_for(c: mut Checker, p: Parser, id: i64, has_index: bool, index: Span, item: Span, iter: i64, body: IdRange) {
+    let pos = p.ast.stmt_pos[id]
+    let iter_ty = ck_expr_hint(mut c, p, iter, TY_NONE)
+    if c.failed {
+        return
+    }
+    if !ty_is_list(iter_ty) {
+        ck_no_list(mut c, p, iter, iter_ty)
+        return
+    }
+    let elem = c.lists[ty_index(iter_ty)]
+    let place = ck_place(c, p, iter)
+    var flag = COPIED
+    if ck_take(mut c, p, iter) {
+        flag = MOVED
+    } else if place.ok {
+        flag = IN_PLACE
+    }
+    c.stmt_flag[c.sh_s + id] = flag
+    ck_finish(mut c, id)
+    // Hidden slots: the position, then room for a list the loop
+    // owns, then the loop variables.
+    let base = ck_alloc(mut c, 4, pos)
+    if c.failed {
+        return
+    }
+    c.stmt_slot[c.sh_s + id] = base
+    let scope = c.locals_len
+    let elem_size = ck_size_of(c, elem)
+    let item_slot = ck_alloc(mut c, elem_size, item.start)
+    if c.failed {
+        return
+    }
+    // The loop variable looks at the element; the list keeps owning it.
+    let item_sym = ck_binding(mut c, p, item)
+    if c.failed {
+        return
+    }
+    ck_push_view(mut c, item_sym, item_slot, elem, false)
+    if has_index {
+        let index_slot = ck_alloc(mut c, 1, index.start)
+        if c.failed {
+            return
+        }
+        let index_sym = ck_binding(mut c, p, index)
+        if c.failed {
+            return
+        }
+        ck_push_view(mut c, index_sym, index_slot, TY_I64, false)
+    }
+    let borrows = c.borrows.len()
+    if flag == IN_PLACE {
+        c.borrows.push(Borrow { root: place.root, start: place.start, len: place.len, mutable: false, holder: HOLDER_LOOP })
+    }
+    c.loop_depth = c.loop_depth + 1
+    ck_block(mut c, p, body)
+    if c.failed {
+        return
+    }
+    c.loop_depth = c.loop_depth - 1
+    while c.borrows.len() > borrows {
+        c.borrows.pop()
+    }
+    ck_close_scope(mut c, scope)
+}
+
+fn ck_assign(c: mut Checker, p: Parser, id: i64, target: i64, value: i64) {
+    let pos = p.ast.stmt_pos[id]
+    let target_ty = ck_expr_hint(mut c, p, target, TY_NONE)
+    if c.failed {
+        return
+    }
+    match p.ast.exprs[target] {
+        ExprIndex(base, _) => {
+            if c.expr_ty[c.sh_e + base] == TY_STR {
+                ck_err(pos, "a string cannot be changed in place; build a new one with `slice` and `+`", mut c)
+                return
+            }
+        }
+        _ => {}
+    }
+    let place = ck_place(c, p, target)
+    if !place.ok {
+        if ck_is_constant(c, p, target) {
+            ck_err(pos, "cannot change `" + ck_root_name(p, target) + "`: it is a constant", mut c)
+        } else {
+            ck_err(pos, "only a variable or a part of a variable can be assigned", mut c)
+        }
+        return
+    }
+    if !place.mutable {
+        ck_err(pos, "cannot change `" + ck_root_name(p, target) + "`: " + read_only(place), mut c)
+        return
+    }
+    ck_check_change(mut c, p, target, place)
+    if c.failed {
+        return
+    }
+    // The target is found after the value has been computed.
+    c.late.push(target)
+    let value_ty = ck_expr_hint(mut c, p, value, target_ty)
+    if c.failed {
+        return
+    }
+    if value_ty != target_ty {
+        ck_wrong_type(mut c, p, value, target_ty, value_ty)
+        return
+    }
+    if target_ty == TY_STR {
+        var left = NO_NODE
+        match p.ast.exprs[value] {
+            ExprBinary(op, lhs, _) => {
+                if op == BinAdd {
+                    left = lhs
+                }
+            }
+            _ => {}
+        }
+        if left != NO_NODE {
+            // `s = s + more`: add to `s` where it is. The right side
+            // cannot change `s`, so the result is the same.
+            let left_place = ck_place(c, p, left)
+            let same = left_place.ok && left_place.root == place.root && left_place.start == place.start
+            if same && !ck_contains_index(p, target) && !ck_contains_index(p, left) {
+                c.late.pop()
+                var kept: List[Pending] = []
+                for entry in c.pending {
+                    if entry.expr != value {
+                        kept.push(entry)
+                    }
+                }
+                c.pending = kept
+                c.stmt_flag[c.sh_s + id] = APPEND
+                ck_finish(mut c, id)
+                return
+            }
+        }
+    }
+    let owning = ck_needs_drop(c, target_ty)
+    var moved = false
+    if owning {
+        moved = ck_store_from(mut c, p, value)
+    }
+    c.late.pop()
+    if ty_is_aggregate(target_ty) && !moved && (owning || ck_contains_index(p, target)) {
+        // The value is copied aside first. That lets `a = a` read the
+        // old value before it is freed, and keeps the copy safe while a
+        // list index on the left is computed.
+        let size = ck_size_of(c, target_ty)
+        let slot = ck_alloc(mut c, size, pos)
+        if c.failed {
+            return
+        }
+        c.stmt_slot[c.sh_s + id] = slot
+    }
+    ck_finish(mut c, id)
+}
+
+// The bytes of string literal `a` are the bytes of string literal `b`.
+fn ck_same_string(c: Checker, a: i64, b: i64) -> bool {
+    let len = c.string_lens[a]
+    if c.string_lens[b] != len {
+        return false
+    }
+    let from_a = c.string_offsets[a]
+    let from_b = c.string_offsets[b]
+    var i = 0
+    while i < len {
+        if c.data[from_a + i] != c.data[from_b + i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// Checks a `match`. The value is looked at where it lives when it is a
+// variable (which then cannot change inside the arms), and is owned by
+// the statement when it was computed. Names bound by a pattern are
+// read-only views into it.
+fn ck_match_stmt(c: mut Checker, p: Parser, id: i64, scrutinee: i64, arms: IdRange) {
+    let pos = p.ast.stmt_pos[id]
+    let at = p.ast.expr_pos[scrutinee]
+    let ty = ck_expr_hint(mut c, p, scrutinee, TY_NONE)
+    if c.failed {
+        return
+    }
+    if ty == TY_UNIT {
+        ck_err(at, "this expression has no value to match on", mut c)
+        return
+    }
+    if ty_is_struct(ty) || ty_is_list(ty) {
+        ck_err(at, "`match` works on enums, `i64`, `bool` and `str` but this is `" + ck_ty_name(c, ty) + "`", mut c)
+        return
+    }
+    let aggregate = ty_is_aggregate(ty)
+    var place = no_place()
+    if aggregate {
+        place = ck_place(c, p, scrutinee)
+    }
+    var mode = COPIED
+    if aggregate {
+        if ck_take(mut c, p, scrutinee) {
+            mode = MOVED
+        } else if place.ok {
+            mode = IN_PLACE
+        }
+    }
+    c.stmt_flag[c.sh_s + id] = mode
+    ck_finish(mut c, id)
+    // Hidden slots: the value itself (a number or `bool`) or its
+    // address, then room for a value the statement owns.
+    let base = ck_alloc(mut c, 1, pos)
+    if c.failed {
+        return
+    }
+    if aggregate && mode != IN_PLACE {
+        let size = ck_size_of(c, ty)
+        ck_alloc(mut c, size, pos)
+        if c.failed {
+            return
+        }
+    }
+    c.stmt_slot[c.sh_s + id] = base
+    let outer_borrows = c.borrows.len()
+    if mode == IN_PLACE && place.ok {
+        c.borrows.push(Borrow { root: place.root, start: place.start, len: place.len, mutable: false, holder: HOLDER_MATCH })
+    }
+
+    let is_enum = ty_is_enum(ty)
+    var enum_index = 0
+    var enum_template = 0
+    var variant_count = 0
+    if is_enum {
+        enum_index = ty_index(ty)
+        enum_template = c.enums[enum_index].template
+        variant_count = c.enums[enum_index].variants.len()
+    }
+    // What the arms so far cover.
+    var seen_variants: List[bool] = []
+    while seen_variants.len() < variant_count {
+        seen_variants.push(false)
+    }
+    var unseen_variants = variant_count
+    var seen_false = false
+    var seen_true = false
+    var seen_ints: List[i64] = []
+    var seen_strings: List[i64] = []
+    var catch_all = false
+    var literal_slot = -1
+
+    var arm_at = 0
+    while arm_at < arms.len {
+        let arm = p.ast.arms[p.ast.lists[arms.start + arm_at]]
+        arm_at = arm_at + 1
+        let pat = arm.pattern
+        let pat_pos = p.ast.pat_pos[pat]
+        var complete = catch_all
+        if is_enum && unseen_variants == 0 {
+            complete = true
+        }
+        if ty == TY_BOOL && seen_false && seen_true {
+            complete = true
+        }
+        if complete {
+            ck_err(pat_pos, "this arm can never run: the arms above already cover every case", mut c)
+            return
+        }
+        let scope = c.locals_len
+        // A pattern that stands for one value: a literal, or the name of
+        // a constant.
+        var literal_kind = -1
+        var literal_value = 0
+        // What the pattern is otherwise: 0 `_`, 1 a name, 2 a variant
+        // with `()`.
+        var form = 0
+        var pat_name = Span { start: 0, len: 0 }
+        var pat_args = IdRange { start: 0, len: 0 }
+        match p.ast.patterns[pat] {
+            PatInt(negative, digits) => {
+                if p.src[digits.start] != '\'' {
+                    var from = 0
+                    if digits.len > 1 && (p.src[digits.start + 1] == 'x' || p.src[digits.start + 1] == 'b') {
+                        from = 2
+                    }
+                    let fault = number_fault(p.src, digits.start, digits.len, from)
+                    if fault != 0 {
+                        ck_err(pat_pos, int_literal_message(fault), mut c)
+                        return
+                    }
+                }
+                let special = special_literal(p.src, digits.start, digits.len)
+                var value = 0
+                if special.code == 1 {
+                    ck_err(pat_pos, "this number does not fit in 64 bits", mut c)
+                    return
+                }
+                if special.code == 0 {
+                    value = special.value
+                    if negative {
+                        if value == I64_MIN {
+                            ck_err(pat_pos, "this number does not fit in `i64`", mut c)
+                            return
+                        }
+                        value = 0 - value
+                    }
+                } else {
+                    // Counted below zero, where there is room for one more.
+                    var below = 0
+                    var too_big = false
+                    var i = 0
+                    while i < digits.len && !too_big {
+                        let b = p.src[digits.start + i]
+                        i = i + 1
+                        if b != '_' {
+                            let digit = b - '0'
+                            if below < (I64_MIN + digit) / 10 {
+                                too_big = true
+                            } else {
+                                below = below * 10 - digit
+                            }
+                        }
+                    }
+                    if too_big || (!negative && below == I64_MIN) {
+                        ck_err(pat_pos, "this number does not fit in `i64`", mut c)
+                        return
+                    }
+                    if negative {
+                        value = below
+                    } else {
+                        value = 0 - below
+                    }
+                }
+                literal_kind = CV_INT
+                literal_value = value
+            }
+            PatBool(value) => {
+                literal_kind = CV_BOOL
+                literal_value = bool_number(value)
+            }
+            PatStr(span) => {
+                literal_kind = CV_STR
+                literal_value = ck_string_literal(mut c, p, span)
+            }
+            PatName(name) => {
+                form = 1
+                pat_name = name
+                let name_sym = ck_intern(mut c, p, name)
+                let constant = ck_constant(c, name.start, name_sym)
+                if constant >= 0 {
+                    literal_kind = c.consts[constant].kind
+                    literal_value = c.consts[constant].value
+                }
+            }
+            PatVariant(name, args) => {
+                form = 2
+                pat_name = name
+                pat_args = args
+            }
+            PatWildcard => {}
+        }
+        if literal_kind >= 0 {
+            if ty != const_ty(literal_kind) {
+                var kind = "a string"
+                if literal_kind == CV_INT {
+                    kind = "a number"
+                } else if literal_kind == CV_BOOL {
+                    kind = "a `bool`"
+                }
+                ck_err(pat_pos, "this pattern is " + kind + " but the `match` is on `" + ck_ty_name(c, ty) + "`", mut c)
+                return
+            }
+            var seen_before = false
+            if literal_kind == CV_INT {
+                seen_before = seen_ints.contains(literal_value)
+                seen_ints.push(literal_value)
+            } else if literal_kind == CV_BOOL {
+                if literal_value == 1 {
+                    seen_before = seen_true
+                    seen_true = true
+                } else {
+                    seen_before = seen_false
+                    seen_false = true
+                }
+            } else {
+                for earlier in seen_strings {
+                    if ck_same_string(c, earlier, literal_value) {
+                        seen_before = true
+                    }
+                }
+                seen_strings.push(literal_value)
+            }
+            if seen_before {
+                // How the value is written.
+                var shown = ""
+                if form == 1 {
+                    shown = "`" + span_text(p.src, pat_name) + "`"
+                } else if literal_kind == CV_INT {
+                    shown = "`" + str(literal_value) + "`"
+                } else if literal_kind == CV_BOOL {
+                    shown = "`" + str(literal_value == 1) + "`"
+                } else {
+                    match p.ast.patterns[pat] {
+                        PatStr(span) => {
+                            shown = span_text(p.src, span)
+                        }
+                        _ => {}
+                    }
+                }
+                ck_err(pat_pos, "this arm can never run: " + shown + " is already handled above", mut c)
+                return
+            }
+            c.pat_kind[c.sh_p + pat] = PAT_LITERAL
+            if literal_kind == CV_INT {
+                c.ints.push(literal_value)
+                c.pat_res[c.sh_p + pat] = c.ints.len() - 1
+                c.pat_slot[c.sh_p + pat] = 0
+            } else if literal_kind == CV_BOOL {
+                c.pat_res[c.sh_p + pat] = literal_value
+                c.pat_slot[c.sh_p + pat] = 0
+            } else {
+                // One area is enough: the strings are compared one at a time.
+                if literal_slot < 0 {
+                    literal_slot = ck_alloc(mut c, 3, pat_pos)
+                    if c.failed {
+                        return
+                    }
+                }
+                c.pat_res[c.sh_p + pat] = literal_value
+                c.pat_slot[c.sh_p + pat] = literal_slot
+            }
+            ck_block(mut c, p, arm.body)
+            if c.failed {
+                return
+            }
+            ck_close_scope(mut c, scope)
+            continue
+        }
+        if form == 0 {
+            c.pat_kind[c.sh_p + pat] = PAT_ANY
+            c.pat_res[c.sh_p + pat] = 0
+            c.pat_slot[c.sh_p + pat] = 0
+            catch_all = true
+        } else {
+            let sym = ck_intern(mut c, p, pat_name)
+            let found = tab_get(c.variant_names, sym)
+            if form == 1 && found < 0 {
+                // A plain name matches anything and stands for the whole value.
+                let slot = ck_alloc(mut c, 1, pat_name.start)
+                if c.failed {
+                    return
+                }
+                ck_push_view(mut c, sym, slot, ty, aggregate)
+                c.pat_kind[c.sh_p + pat] = PAT_BIND
+                c.pat_res[c.sh_p + pat] = 0
+                c.pat_slot[c.sh_p + pat] = slot
+                catch_all = true
+            } else {
+                if found < 0 {
+                    ck_err(pat_pos, "unknown variant `" + sym_text(c, sym) + "`", mut c)
+                    return
+                }
+                let template = found >> 10
+                let variant = found & 1023
+                if !is_enum || enum_template != template {
+                    ck_err(pat_pos, "`" + sym_text(c, sym) + "` is a variant of `" + sym_text(c, c.templates[template].name) +
+                            "` but this `match` is on `" + ck_ty_name(c, ty) + "`", mut c)
+                    return
+                }
+                let want = c.enums[enum_index].variants[variant].field_tys.len()
+                if form == 2 {
+                    if want == 0 {
+                        ck_err(pat_pos, "`" + sym_text(c, sym) + "` holds no value; write it without `()`", mut c)
+                        return
+                    }
+                } else if want > 0 {
+                    let fields = repeated("_", want)
+                    ck_err(pat_pos, "`" + sym_text(c, sym) + "` holds " + str(want) + " value" + plural(want) + "; write `" +
+                            sym_text(c, sym) + "(" + fields + ")` to match it", mut c)
+                    return
+                }
+                if pat_args.len != want {
+                    ck_err(pat_pos, "`" + sym_text(c, sym) + "` holds " + str(want) + " value" + plural(want) +
+                            " but this pattern lists " + str(pat_args.len), mut c)
+                    return
+                }
+                if seen_variants[variant] {
+                    ck_err(pat_pos, "this arm can never run: `" + sym_text(c, sym) + "` is already handled above", mut c)
+                    return
+                }
+                seen_variants[variant] = true
+                unseen_variants = unseen_variants - 1
+                var i = 0
+                while i < pat_args.len {
+                    let sub = p.ast.lists[pat_args.start + i]
+                    // 0 `_`, 1 a name to bind, 2 anything else.
+                    var sub_form = 2
+                    var binding = Span { start: 0, len: 0 }
+                    match p.ast.patterns[sub] {
+                        PatWildcard => {
+                            sub_form = 0
+                        }
+                        PatName(name) => {
+                            binding = name
+                            sub_form = 1
+                        }
+                        _ => {}
+                    }
+                    var binding_sym = -1
+                    if sub_form == 1 {
+                        binding_sym = ck_intern(mut c, p, binding)
+                        if tab_get(c.variant_names, binding_sym) >= 0 || ck_constant(c, binding.start, binding_sym) >= 0 {
+                            sub_form = 2
+                        }
+                    }
+                    if sub_form == 2 {
+                        ck_err(p.ast.pat_pos[sub], "a pattern inside a pattern is not supported yet; give the value a name and `match` on it inside the arm", mut c)
+                        return
+                    }
+                    if sub_form == 1 {
+                        var k = scope
+                        while k < c.locals_len {
+                            if c.loc_name[k] == binding_sym {
+                                ck_err(binding.start, "`" + sym_text(c, binding_sym) + "` is used twice in this pattern", mut c)
+                                return
+                            }
+                            k = k + 1
+                        }
+                        let field = c.enums[enum_index].variants[variant].field_tys[i]
+                        let offset = c.enums[enum_index].variants[variant].field_offsets[i]
+                        // The name refers to the field where it is.
+                        let slot = ck_alloc(mut c, 1, binding.start)
+                        if c.failed {
+                            return
+                        }
+                        ck_push_view(mut c, binding_sym, slot, field, true)
+                        c.pat_kind[c.sh_p + sub] = PAT_BIND
+                        c.pat_res[c.sh_p + sub] = offset
+                        c.pat_slot[c.sh_p + sub] = slot
+                    }
+                    i = i + 1
+                }
+                c.pat_kind[c.sh_p + pat] = PAT_VARIANT
+                c.pat_res[c.sh_p + pat] = variant
+                c.pat_slot[c.sh_p + pat] = 0
+            }
+        }
+        ck_block(mut c, p, arm.body)
+        if c.failed {
+            return
+        }
+        ck_close_scope(mut c, scope)
+    }
+    while c.borrows.len() > outer_borrows {
+        c.borrows.pop()
+    }
+
+    if catch_all {
+        return
+    }
+    if is_enum {
+        if unseen_variants == 0 {
+            return
+        }
+        var missing: List[str] = []
+        for variant, seen in seen_variants {
+            if !seen {
+                missing.push("`" + sym_text(c, c.templates[enum_template].variant_names[variant]) + "`")
+            }
+        }
+        if missing.len() == 1 {
+            ck_err(pos, "this `match` does not handle " + missing[0] + "; add an arm for it or a final `_ =>` arm", mut c)
+            return
+        }
+        let last = missing.pop()
+        ck_err(pos, "this `match` does not handle " + missing.join(", ") + " and " + last +
+                "; add arms for them or a final `_ =>` arm", mut c)
+        return
+    }
+    if ty == TY_BOOL {
+        if seen_false && seen_true {
+            return
+        }
+        ck_err(pos, "this `match` does not handle `" + str(!seen_true) + "`; add an arm for it or a final `_ =>` arm", mut c)
+        return
+    }
+    ck_err(pos, "a `match` on `" + ck_ty_name(c, ty) + "` needs a final `_ =>` arm: the arms cannot list every value", mut c)
+}
+
+fn ck_condition(c: mut Checker, p: Parser, cond: i64) {
+    let ty = ck_expr_hint(mut c, p, cond, TY_NONE)
+    if c.failed {
+        return
+    }
+    if ty != TY_BOOL {
+        ck_err_expr(p, cond, "a condition must be `bool` but this is `" + ck_ty_name(c, ty) + "`", mut c)
+    }
+}
+
+// ---- places -----------------------------------------------------------
+
+// The variable, or part of a variable, that an already checked
+// expression names. Not a place for a computed value. An element of a
+// list counts as the whole list: which element is only known at run time.
+fn ck_place(c: Checker, p: Parser, id: i64) -> Place {
+    match p.ast.exprs[id] {
+        ExprIdent(_) => {
+            let sym = c.expr_sym[id] - 1
+            if sym < 0 {
+                return no_place()
+            }
+            let at = ck_lookup(c, sym)
+            if at < 0 {
+                return no_place()
+            }
+            let flags = c.loc_flags[at]
+            return Place {
+                ok: true,
+                root: c.loc_slot[at],
+                start: 0,
+                len: ck_size_of(c, c.loc_ty[at]),
+                mutable: (flags & LOC_MUTABLE) != 0,
+                is_param: (flags & LOC_PARAM) != 0,
+                is_view: (flags & LOC_VIEW) != 0,
+            }
+        }
+        ExprField(base, _) => {
+            var place = ck_place(c, p, base)
+            if !place.ok || ck_contains_index(p, base) {
+                return place
+            }
+            place.start = place.start + c.expr_res[c.sh_e + id]
+            place.len = ck_size_of(c, c.expr_ty[c.sh_e + id])
+            return place
+        }
+        ExprIndex(base, _) => {
+            // A byte of a string is a number read from it, not a place.
+            if c.expr_ty[c.sh_e + base] == TY_STR {
+                return no_place()
+            }
+            return ck_place(c, p, base)
+        }
+        _ => return no_place()
+    }
+}
+
+fn ck_contains_index(p: Parser, id: i64) -> bool {
+    match p.ast.exprs[id] {
+        ExprIndex(_, _) => return true
+        ExprField(base, _) => return ck_contains_index(p, base)
+        _ => return false
+    }
+}
+
+fn ck_root_name(p: Parser, id: i64) -> str {
+    match p.ast.exprs[id] {
+        ExprIdent(name) => return span_text(p.src, name)
+        ExprField(base, _) => return ck_root_name(p, base)
+        ExprIndex(base, _) => return ck_root_name(p, base)
+        _ => return "this value"
+    }
+}
+
+// Fails when `place` cannot be changed right now because something else
+// still refers to it.
+fn ck_check_change(c: mut Checker, p: Parser, id: i64, place: Place) {
+    var k = 0
+    while k < c.borrows.len() {
+        let other = c.borrows[k]
+        if overlaps(place.root, place.start, place.len, other.root, other.start, other.len) {
+            let name = ck_root_name(p, id)
+            if other.holder == HOLDER_LOOP {
+                ck_err_expr(p, id, "cannot change `" + name + "` while a loop is going through it", mut c)
+            } else if other.holder == HOLDER_MATCH {
+                ck_err_expr(p, id, "cannot change `" + name + "` while a `match` is looking inside it", mut c)
+            } else if other.holder == HOLDER_CALL {
+                ck_err_expr(p, id, "cannot change `" + name + "` here: it is also passed to a function in the same expression", mut c)
+            } else {
+                ck_err_expr(p, id, "cannot change `" + name + "` here: it is still being read earlier in the same expression", mut c)
+            }
+            return
+        }
+        k = k + 1
+    }
+}
+
+// Records that `place` is handed to a call by reference, after checking
+// it against everything that already refers to it.
+fn ck_borrow(c: mut Checker, p: Parser, id: i64, place: Place, mutable: bool) {
+    var k = 0
+    while k < c.borrows.len() {
+        let other = c.borrows[k]
+        if (mutable || other.mutable) && overlaps(place.root, place.start, place.len, other.root, other.start, other.len) {
+            let name = ck_root_name(p, id)
+            if other.holder == HOLDER_LOOP {
+                ck_err_expr(p, id, "cannot pass `" + name + "` as `mut` while a loop is going through it", mut c)
+            } else if other.holder == HOLDER_MATCH {
+                ck_err_expr(p, id, "cannot pass `" + name + "` as `mut` while a `match` is looking inside it", mut c)
+            } else if other.holder == HOLDER_CALL {
+                ck_err_expr(p, id, "`" + name + "` is passed twice in one call and one of the uses is `mut`; copy it into a variable first", mut c)
+            } else {
+                ck_err_expr(p, id, "cannot pass `" + name + "` as `mut` here: it is still being read earlier in the same expression", mut c)
+            }
+            return
+        }
+        k = k + 1
+    }
+    c.borrows.push(Borrow { root: place.root, start: place.start, len: place.len, mutable: mutable, holder: HOLDER_CALL })
+}
+
+// ---- expressions ------------------------------------------------------
+
+// Checks that `expr` has type `want`. What needs that type (`kind`, `a`
+// and `b`: see `W_TEXT`) is only put into words when the check fails.
+fn ck_expect(c: mut Checker, p: Parser, expr: i64, want: i64, kind: i64, a: i64, b: i64) {
+    let ty = ck_expr_hint(mut c, p, expr, want)
+    if c.failed {
+        return
+    }
+    if ty != want {
+        ck_expect_failed(mut c, p, expr, want, ty, kind, a, b)
+    }
+}
+
+// Reports that `expr` has type `ty` where `want` is needed.
+fn ck_expect_failed(c: mut Checker, p: Parser, expr: i64, want: i64, ty: i64, kind: i64, a: i64, b: i64) {
+    var what = ""
+    if kind == W_TEXT {
+        what = sym_text(c, a)
+    } else if kind == W_OPERATOR {
+        match p.ast.exprs[a] {
+            ExprBinary(op, _, _) => {
+                what = "`" + binop_symbol(op) + "`"
+            }
+            _ => {}
+        }
+    } else if kind == W_ARGUMENT {
+        what = "argument " + str(a) + " of `" + sym_text(c, b) + "`"
+    } else {
+        what = "field `" + sym_text(c, a) + "`"
+    }
+    ck_err_expr(p, expr, what + " needs `" + ck_ty_name(c, want) + "` but this is `" + ck_ty_name(c, ty) + "`", mut c)
+}
+
+// Checks an expression and records its type. `hint` is the type the
+// surroundings expect (or `TY_NONE`), which is what gives `[]` its
+// element type.
+fn ck_expr_hint(c: mut Checker, p: Parser, id: i64, hint: i64) -> i64 {
+    let ty = ck_expr_inner(mut c, p, id, hint)
+    if c.failed {
+        return TY_UNIT
+    }
+    c.expr_ty[c.sh_e + id] = ty
+    return ty
+}
+
+fn ck_expr_inner(c: mut Checker, p: Parser, id: i64, hint: i64) -> i64 {
+    match p.ast.exprs[id] {
+        ExprIdent(_) => return ck_name(mut c, p, id, hint)
+        ExprInt(span) => return ck_int(mut c, p, id, span)
+        ExprBinary(op, lhs, rhs) => return ck_binary(mut c, p, id, op, lhs, rhs)
+        ExprCall(callee, args) => return ck_call(mut c, p, id, callee, args, hint)
+        ExprField(base, name) => return ck_field(mut c, p, id, base, name)
+        ExprBool(_) => return TY_BOOL
+        ExprStr(span) => {
+            c.expr_res[c.sh_e + id] = ck_string_literal(mut c, p, span)
+            let slot = ck_alloc(mut c, 3, p.ast.expr_pos[id])
+            c.expr_tmp[c.sh_e + id] = slot
+            return TY_STR
+        }
+        ExprTry(inner) => return ck_try_expr(mut c, p, id, inner)
+        ExprUnary(op, operand) => {
+            if op == OpNeg && is_min_literal(p, operand) {
+                // The smallest number has no positive twin to write
+                // down; negating it gives it back.
+                c.expr_res[c.sh_e + operand] = c.ints.len()
+                c.ints.push(I64_MIN)
+                c.expr_ty[c.sh_e + operand] = TY_I64
+                return TY_I64
+            }
+            if op == OpNeg {
+                ck_expect(mut c, p, operand, TY_I64, W_TEXT, SYM_W_NEG, 0)
+                return TY_I64
+            }
+            ck_expect(mut c, p, operand, TY_BOOL, W_TEXT, SYM_W_NOT, 0)
+            return TY_BOOL
+        }
+        ExprIndex(base, index) => return ck_index(mut c, p, id, base, index)
+        ExprArrayLit(items) => return ck_array_literal(mut c, p, id, items, hint)
+        ExprStructLit(name, fields) => return ck_struct_literal(mut c, p, id, name, fields, hint)
+        ExprMutArg(_) => {
+            ck_err(p.ast.expr_pos[id], "`mut` can only be used on a function argument", mut c)
+            return TY_UNIT
+        }
+        ExprFloat(_) => {
+            ck_err(p.ast.expr_pos[id], "there are no floating-point numbers yet; the only number type is `i64`", mut c)
+            return TY_UNIT
+        }
+    }
+}
+
+fn ck_int(c: mut Checker, p: Parser, id: i64, span: Span) -> i64 {
+    let literal = int_literal(p.src, span.start, span.len)
+    if literal.code != 0 {
+        ck_err(p.ast.expr_pos[id], int_literal_message(literal.code), mut c)
+        return TY_UNIT
+    }
+    c.expr_res[c.sh_e + id] = c.ints.len()
+    c.ints.push(literal.value)
+    return TY_I64
+}
+
+// `base.name`: a field of a struct.
+fn ck_field(c: mut Checker, p: Parser, id: i64, base: i64, name: Span) -> i64 {
+    let base_ty = ck_expr_hint(mut c, p, base, TY_NONE)
+    if c.failed {
+        return TY_UNIT
+    }
+    let field_name = ck_intern(mut c, p, name)
+    if !ty_is_struct(base_ty) {
+        ck_no_fields(mut c, base_ty, name.start, field_name)
+        return TY_UNIT
+    }
+    let index = ty_index(base_ty)
+    let count = c.structs[index].field_names.len()
+    var k = 0
+    while k < count {
+        if c.structs[index].field_names[k] == field_name {
+            c.expr_res[c.sh_e + id] = c.structs[index].field_offsets[k]
+            return c.structs[index].field_tys[k]
+        }
+        k = k + 1
+    }
+    ck_no_fields(mut c, base_ty, name.start, field_name)
+    return TY_UNIT
+}
+
+// Reports that type `ty` has no field called `field_name`.
+fn ck_no_fields(c: mut Checker, ty: i64, at: i64, field_name: i64) {
+    if ty_is_struct(ty) {
+        ck_err(at, "struct `" + ck_ty_name(c, ty) + "` has no field `" + sym_text(c, field_name) + "`", mut c)
+    } else if ty_is_list(ty) {
+        ck_err(at, "`" + ck_ty_name(c, ty) + "` has no field `" + sym_text(c, field_name) +
+                "`; its methods are `len()`, `push(...)` and `pop()`", mut c)
+    } else if ty_is_enum(ty) {
+        ck_err(at, "`" + ck_ty_name(c, ty) + "` has no fields; use `match` to look inside it", mut c)
+    } else {
+        ck_err(at, "`" + ck_ty_name(c, ty) + "` has no fields", mut c)
+    }
+}
+
+// `base[index]`: an element of a list or a byte of a string.
+fn ck_index(c: mut Checker, p: Parser, id: i64, base: i64, index: i64) -> i64 {
+    let pos = p.ast.expr_pos[id]
+    let base_ty = ck_expr_hint(mut c, p, base, TY_NONE)
+    if c.failed {
+        return TY_UNIT
+    }
+    // A string gives its bytes, as numbers from 0 to 255.
+    var elem = TY_I64
+    if ty_is_list(base_ty) {
+        elem = c.lists[ty_index(base_ty)]
+    } else if base_ty != TY_STR {
+        ck_err(pos, "only a list or a string can be indexed but this is `" + ck_ty_name(c, base_ty) + "`", mut c)
+        return TY_UNIT
+    }
+    // The index is computed before the list is looked at.
+    c.late.push(base)
+    ck_expect(mut c, p, index, TY_I64, W_TEXT, SYM_W_INDEX, 0)
+    if c.failed {
+        return TY_UNIT
+    }
+    c.late.pop()
+    return elem
+}
+
+// `[a, b, c]`.
+fn ck_array_literal(c: mut Checker, p: Parser, id: i64, items: IdRange, hint: i64) -> i64 {
+    let pos = p.ast.expr_pos[id]
+    var hinted = TY_NONE
+    if hint >= 0 && ty_is_list(hint) {
+        hinted = c.lists[ty_index(hint)]
+    }
+    c.in_list = c.in_list + 1
+    var elem = hinted
+    if hinted == TY_NONE {
+        if items.len == 0 {
+            ck_err(pos, "cannot tell what this empty list holds; give the variable a type, as in `var xs: List[i64] = []`", mut c)
+            return TY_UNIT
+        }
+        elem = ck_expr_hint(mut c, p, p.ast.lists[items.start], TY_NONE)
+        if c.failed {
+            return TY_UNIT
+        }
+    }
+    if elem == TY_UNIT {
+        ck_err(pos, "this expression has no value to put in a list", mut c)
+        return TY_UNIT
+    }
+    var i = 0
+    while i < items.len {
+        let item = p.ast.lists[items.start + i]
+        if i > 0 || hinted != TY_NONE {
+            ck_expect(mut c, p, item, elem, W_TEXT, SYM_W_ELEMENT, 0)
+            if c.failed {
+                return TY_UNIT
+            }
+        }
+        // The list takes a temporary's buffers over.
+        ck_store_from(mut c, p, item)
+        i = i + 1
+    }
+    c.in_list = c.in_list - 1
+    let ty = ck_list_of(mut c, elem)
+    let slot = ck_temp(mut c, p, id, ty)
+    c.expr_tmp[c.sh_e + id] = slot
+    return ty
+}
+
+// A name used as a value: a variable, a variant without fields or a
+// constant.
+fn ck_name(c: mut Checker, p: Parser, id: i64, hint: i64) -> i64 {
+    let sym = ck_sym(mut c, p, id)
+    let at = ck_lookup(c, sym)
+    if at < 0 {
+        return ck_name_other(mut c, p, id, sym, hint)
+    }
+    var depth = c.loop_depth
+    if depth > 6 {
+        depth = 6
+    }
+    // Mentioned again: an earlier store was not its last use.
+    c.loc_candidate[at] = -1
+    var uses = c.loc_uses[at] + (1 << (3 * depth))
+    if uses > MAX_USES {
+        uses = MAX_USES
+    }
+    c.loc_uses[at] = uses
+    var res = c.loc_slot[at]
+    if (c.loc_flags[at] & LOC_BY_REF) != 0 {
+        res = res | BY_REF
+    }
+    c.expr_res[c.sh_e + id] = res
+    return c.loc_ty[at]
+}
+
+// A name that is not a variable: a variant without fields, a constant,
+// or a mistake.
+fn ck_name_other(c: mut Checker, p: Parser, id: i64, sym: i64, hint: i64) -> i64 {
+    let pos = p.ast.expr_pos[id]
+    let found = tab_get(c.variant_names, sym)
+    if found >= 0 {
+        return ck_construct(mut c, p, id, found, false, IdRange { start: 0, len: 0 }, hint)
+    }
+    let constant = ck_constant(c, pos, sym)
+    if constant >= 0 {
+        // From here on the name reads as the literal.
+        let kind = c.consts[constant].kind
+        let value = c.consts[constant].value
+        let e = c.sh_e + id
+        if kind == CV_INT {
+            c.expr_res[e] = c.consts[constant].int
+            c.expr_aux[e] = CONST_INT
+        } else if kind == CV_BOOL {
+            if value == 1 {
+                c.expr_aux[e] = CONST_TRUE
+            } else {
+                c.expr_aux[e] = CONST_FALSE
+            }
+        } else {
+            c.expr_res[e] = value
+            c.expr_aux[e] = CONST_STR
+            let slot = ck_alloc(mut c, 3, pos)
+            c.expr_tmp[e] = slot
+        }
+        return const_ty(kind)
+    }
+    if tab_get(c.fn_names, sym) >= 0 || tab_get(c.generic_names, sym) >= 0 || is_builtin_function(sym) {
+        ck_err(pos, "`" + sym_text(c, sym) + "` is a function; call it with `" + sym_text(c, sym) + "(...)`", mut c)
+    } else if tab_get(c.struct_names, sym) >= 0 {
+        ck_err(pos, "`" + sym_text(c, sym) + "` is a struct; create a value with `" + sym_text(c, sym) + " { ... }`", mut c)
+    } else if tab_get(c.template_names, sym) >= 0 {
+        ck_err(pos, "`" + sym_text(c, sym) + "` is an enum; create a value with one of its variants", mut c)
+    } else {
+        ck_err(pos, "unknown variable `" + sym_text(c, sym) + "`", mut c)
+    }
+    return TY_UNIT
+}
+
+// Reports that the left operand `lhs` of operator expression `id`, of
+// type `left`, cannot be added (`plus`) or compared.
+fn ck_cannot_compare(c: mut Checker, p: Parser, id: i64, lhs: i64, left: i64, plus: bool) {
+    let pos = p.ast.expr_pos[id]
+    var symbol = ""
+    match p.ast.exprs[id] {
+        ExprBinary(op, _, _) => {
+            symbol = binop_symbol(op)
+        }
+        _ => {}
+    }
+    if plus {
+        ck_err_expr(p, lhs, "`+` needs `i64` or `str` but this is `" + ck_ty_name(c, left) + "`", mut c)
+    } else if left == TY_UNIT {
+        ck_err_expr(p, lhs, "this expression has no value to compare", mut c)
+    } else if ty_is_struct(left) {
+        ck_err(pos, "structs cannot be compared with `" + symbol + "` yet; compare their fields", mut c)
+    } else if ty_is_list(left) {
+        ck_err(pos, "lists cannot be compared with `" + symbol + "` yet", mut c)
+    } else {
+        ck_err(pos, "`" + symbol + "` works only on enums whose variants hold no values; use `match` for `" + ck_ty_name(c, left) +
+                "`", mut c)
+    }
+}
+
+fn ck_binary(c: mut Checker, p: Parser, id: i64, op: BinOp, lhs: i64, rhs: i64) -> i64 {
+    if op == BinAdd {
+        let left = ck_expr_hint(mut c, p, lhs, TY_NONE)
+        if c.failed {
+            return TY_UNIT
+        }
+        if left != TY_STR {
+            if left != TY_I64 {
+                ck_cannot_compare(mut c, p, id, lhs, left, true)
+                return TY_UNIT
+            }
+            ck_expect(mut c, p, rhs, TY_I64, W_OPERATOR, id, 0)
+            return TY_I64
+        }
+        ck_string_operands(mut c, p, id, lhs, rhs)
+        if c.failed {
+            return TY_UNIT
+        }
+        // Joining makes a new string, which this temporary owns.
+        let slot = ck_temp(mut c, p, id, TY_STR)
+        c.expr_tmp[c.sh_e + id] = slot
+        return TY_STR
+    }
+    if op == BinAnd || op == BinOr {
+        ck_expect(mut c, p, lhs, TY_BOOL, W_OPERATOR, id, 0)
+        if c.failed {
+            return TY_UNIT
+        }
+        ck_expect(mut c, p, rhs, TY_BOOL, W_OPERATOR, id, 0)
+        return TY_BOOL
+    }
+    if op == BinEq || op == BinNotEq {
+        let left = ck_expr_hint(mut c, p, lhs, TY_NONE)
+        if c.failed {
+            return TY_UNIT
+        }
+        if left == TY_STR {
+            ck_string_operands(mut c, p, id, lhs, rhs)
+            return TY_BOOL
+        }
+        // Without values in any variant, the tags of two enums say it all.
+        if left == TY_UNIT || ty_is_struct(left) || ty_is_list(left) || (ty_is_enum(left) && c.enums[ty_index(left)].size != 1) {
+            ck_cannot_compare(mut c, p, id, lhs, left, false)
+            return TY_UNIT
+        }
+        ck_expect(mut c, p, rhs, left, W_OPERATOR, id, 0)
+        return TY_BOOL
+    }
+    ck_expect(mut c, p, lhs, TY_I64, W_OPERATOR, id, 0)
+    if c.failed {
+        return TY_UNIT
+    }
+    ck_expect(mut c, p, rhs, TY_I64, W_OPERATOR, id, 0)
+    if op == BinLt || op == BinLtEq || op == BinGt || op == BinGtEq {
+        return TY_BOOL
+    }
+    return TY_I64
+}
+
+// Checks the right operand of a string `+`, `==` or `!=` (expression
+// `id`) whose left operand is already checked. The left string is read
+// after the right side has run, so it must not change in between.
+fn ck_string_operands(c: mut Checker, p: Parser, id: i64, lhs: i64, rhs: i64) {
+    let outer = c.borrows.len()
+    let place = ck_place(c, p, lhs)
+    if place.ok {
+        c.borrows.push(Borrow { root: place.root, start: place.start, len: place.len, mutable: false, holder: HOLDER_OPERATOR })
+    }
+    ck_expect(mut c, p, rhs, TY_STR, W_OPERATOR, id, 0)
+    if c.failed {
+        return
+    }
+    while c.borrows.len() > outer {
+        c.borrows.pop()
+    }
+}
+
+// Checks `Name { field: value, ... }`. The type arguments of a generic
+// struct come from the type the surroundings expect, or else from the
+// values given.
+fn ck_struct_literal(c: mut Checker, p: Parser, id: i64, name: Span, fields: IdRange, hint: i64) -> i64 {
+    let siblings = c.owned_siblings
+    let pos = p.ast.expr_pos[id]
+    let sym = ck_intern(mut c, p, name)
+    let template = tab_get(c.struct_names, sym)
+    if template < 0 {
+        ck_err(pos, "unknown struct `" + sym_text(c, sym) + "`", mut c)
+        return TY_UNIT
+    }
+    let only = c.struct_templates[template].only
+    if only >= 0 {
+        // The common case: every field's type is already known.
+        let field_count = c.structs[only].field_names.len()
+        var seen: List[bool] = []
+        while seen.len() < field_count {
+            seen.push(false)
+        }
+        var i = 0
+        while i < fields.len {
+            let init_id = p.ast.lists[fields.start + i]
+            let init = p.ast.field_inits[init_id]
+            let field_name = ck_intern(mut c, p, init.name)
+            var at = 0
+            while at < field_count && c.structs[only].field_names[at] != field_name {
+                at = at + 1
+            }
+            if at == field_count {
+                ck_err(init.name.start, "struct `" + sym_text(c, sym) + "` has no field `" + sym_text(c, field_name) + "`", mut c)
+                return TY_UNIT
+            }
+            if seen[at] {
+                ck_err(init.name.start, "field `" + sym_text(c, field_name) + "` is given more than once", mut c)
+                return TY_UNIT
+            }
+            seen[at] = true
+            let offset = c.structs[only].field_offsets[at]
+            ck_expect(mut c, p, init.value, c.structs[only].field_tys[at], W_FIELD, field_name, 0)
+            if c.failed {
+                return TY_UNIT
+            }
+            // The new struct takes a temporary's buffers over.
+            ck_store_from(mut c, p, init.value)
+            ck_sibling(mut c, init.value)
+            c.init_offset[c.sh_i + init_id] = offset
+            i = i + 1
+        }
+        for missing, given in seen {
+            if !given {
+                ck_err(pos, "field `" + sym_text(c, c.structs[only].field_names[missing]) + "` of `" + sym_text(c, sym) +
+                        "` is missing", mut c)
+                return TY_UNIT
+            }
+        }
+        let ty = ty_struct(only)
+        c.owned_siblings = siblings
+        let slot = ck_temp(mut c, p, id, ty)
+        c.expr_tmp[c.sh_e + id] = slot
+        return ty
+    }
+    let param_count = c.struct_templates[template].params.len()
+    let field_count = c.struct_templates[template].field_names.len()
+    var bound: List[i64] = []
+    if hint >= 0 && ty_is_struct(hint) && c.structs[ty_index(hint)].template == template {
+        bound = c.structs[ty_index(hint)].args
+    } else {
+        while bound.len() < param_count {
+            bound.push(TY_NONE)
+        }
+    }
+    var seen: List[bool] = []
+    while seen.len() < field_count {
+        seen.push(false)
+    }
+    // Field initializers and the fields they fill, for the offsets.
+    var filled_inits: List[i64] = []
+    var filled_fields: List[i64] = []
+    var i = 0
+    while i < fields.len {
+        let init_id = p.ast.lists[fields.start + i]
+        let init = p.ast.field_inits[init_id]
+        let field_name = ck_intern(mut c, p, init.name)
+        var at = 0
+        while at < field_count && c.struct_templates[template].field_names[at] != field_name {
+            at = at + 1
+        }
+        if at == field_count {
+            ck_err(init.name.start, "struct `" + sym_text(c, sym) + "` has no field `" + sym_text(c, field_name) + "`", mut c)
+            return TY_UNIT
+        }
+        if seen[at] {
+            ck_err(init.name.start, "field `" + sym_text(c, field_name) + "` is given more than once", mut c)
+            return TY_UNIT
+        }
+        seen[at] = true
+        let shape = c.struct_templates[template].field_shapes[at]
+        if ck_ready(c, shape, bound) {
+            let want = ck_realize(mut c, shape, bound, pos)
+            if c.failed {
+                return TY_UNIT
+            }
+            ck_settle(mut c)
+            if c.failed {
+                return TY_UNIT
+            }
+            ck_expect(mut c, p, init.value, want, W_FIELD, field_name, 0)
+            if c.failed {
+                return TY_UNIT
+            }
+        } else {
+            // This value decides what a type parameter stands for.
+            let value_pos = p.ast.expr_pos[init.value]
+            let got = ck_expr_hint(mut c, p, init.value, TY_NONE)
+            if c.failed {
+                return TY_UNIT
+            }
+            if got == TY_UNIT {
+                ck_err(value_pos, "this expression has no value to store", mut c)
+                return TY_UNIT
+            }
+            if !ck_unify(c, shape, got, mut bound) {
+                ck_err(value_pos, "field `" + sym_text(c, field_name) + "` needs `" +
+                        ck_shape_name(c, shape, c.struct_templates[template].params) + "` but this is `" + ck_ty_name(c, got) + "`", mut c)
+                return TY_UNIT
+            }
+        }
+        // The new struct takes a temporary's buffers over.
+        ck_store_from(mut c, p, init.value)
+        ck_sibling(mut c, init.value)
+        filled_inits.push(init_id)
+        filled_fields.push(at)
+        i = i + 1
+    }
+    for missing, given in seen {
+        if !given {
+            ck_err(pos, "field `" + sym_text(c, c.struct_templates[template].field_names[missing]) + "` of `" +
+                    sym_text(c, sym) + "` is missing", mut c)
+            return TY_UNIT
+        }
+    }
+    if bound.contains(TY_NONE) {
+        ck_err(pos, "cannot tell which `" + sym_text(c, sym) + "` this is; give the variable a type, as in `let x: " +
+                sym_text(c, sym) + "[" + repeated("i64", param_count) + "] = ...`", mut c)
+        return TY_UNIT
+    }
+    let ty = ck_struct_instance(mut c, template, bound, pos)
+    if c.failed {
+        return TY_UNIT
+    }
+    ck_settle(mut c)
+    if c.failed {
+        return TY_UNIT
+    }
+    let index = ty_index(ty)
+    for k, init_id in filled_inits {
+        c.init_offset[c.sh_i + init_id] = c.structs[index].field_offsets[filled_fields[k]]
+    }
+    c.owned_siblings = siblings
+    let slot = ck_temp(mut c, p, id, ty)
+    c.expr_tmp[c.sh_e + id] = slot
+    return ty
+}
+
+// Stores the bytes of a string literal, escapes decoded, and returns
+// its index in `strings`.
+fn ck_string_literal(c: mut Checker, p: Parser, span: Span) -> i64 {
+    let offset = c.data.len()
+    let end = span.start + span.len - 1
+    var from = span.start + 1
+    var i = from
+    while i < end {
+        if p.src[i] != '\\' {
+            i = i + 1
+            continue
+        }
+        if i > from {
+            c.data = c.data + p.src.slice(from, i)
+        }
+        // The lexer accepted only these escapes.
+        var byte = '\\'
+        if i + 1 < end {
+            byte = p.src[i + 1]
+            if byte == 'n' {
+                byte = '\n'
+            } else if byte == 't' {
+                byte = '\t'
+            } else if byte == 'r' {
+                byte = '\r'
+            } else if byte == '0' {
+                byte = 0
+            }
+        }
+        c.data = c.data + chr(byte)
+        i = i + 2
+        from = i
+    }
+    if end > from {
+        c.data = c.data + p.src.slice(from, end)
+    }
+    c.string_offsets.push(offset)
+    c.string_lens.push(c.data.len() - offset)
+    return c.string_offsets.len() - 1
+}
+
+// Checks an expression that builds an enum value: `Some(x)`, or just
+// `None` when `has_args` is false. `found` is the variant as stored in
+// `variant_names`. The type arguments of a generic enum come from the
+// type the surroundings expect, or else from the values given.
+fn ck_construct(c: mut Checker, p: Parser, id: i64, found: i64, has_args: bool, args: IdRange, hint: i64) -> i64 {
+    let siblings = c.owned_siblings
+    let pos = p.ast.expr_pos[id]
+    let template = found >> 10
+    let variant = found & 1023
+    let name = c.templates[template].variant_names[variant]
+    let want = c.templates[template].variant_fields[variant].len()
+    if !has_args && want > 0 {
+        ck_err(pos, "`" + sym_text(c, name) + "` holds " + str(want) + " value" + plural(want) + "; write `" +
+                sym_text(c, name) + "(" + repeated("...", want) + ")`", mut c)
+        return TY_UNIT
+    }
+    if has_args && want == 0 {
+        ck_err(pos, "`" + sym_text(c, name) + "` holds no value; write it without `()`", mut c)
+        return TY_UNIT
+    }
+    if args.len != want {
+        ck_err(pos, "`" + sym_text(c, name) + "` holds " + str(want) + " value" + plural(want) + " but " + str(args.len) +
+                " were given", mut c)
+        return TY_UNIT
+    }
+    let param_count = c.templates[template].params.len()
+    var ty = TY_NONE
+    if param_count == 0 {
+        let none: List[i64] = []
+        ty = ck_instance(mut c, template, none, pos)
+        if c.failed {
+            return TY_UNIT
+        }
+    } else if hint >= 0 && ty_is_enum(hint) && c.enums[ty_index(hint)].template == template {
+        ty = hint
+    }
+    if ty != TY_NONE {
+        let index = ty_index(ty)
+        var i = 0
+        while i < want {
+            let arg = p.ast.lists[args.start + i]
+            ck_expect(mut c, p, arg, c.enums[index].variants[variant].field_tys[i], W_ARGUMENT, i + 1, name)
+            if c.failed {
+                return TY_UNIT
+            }
+            // The new value takes a temporary's buffers over.
+            ck_store_from(mut c, p, arg)
+            ck_sibling(mut c, arg)
+            i = i + 1
+        }
+    } else {
+        // Nothing says which `Option` or `Result` is meant, so the
+        // values decide what the type parameters stand for.
+        var bound: List[i64] = []
+        while bound.len() < param_count {
+            bound.push(TY_NONE)
+        }
+        var i = 0
+        while i < want {
+            let arg = p.ast.lists[args.start + i]
+            let shape = c.templates[template].variant_fields[variant][i]
+            if ck_ready(c, shape, bound) {
+                let field = ck_realize(mut c, shape, bound, pos)
+                if c.failed {
+                    return TY_UNIT
+                }
+                ck_settle(mut c)
+                if c.failed {
+                    return TY_UNIT
+                }
+                ck_expect(mut c, p, arg, field, W_ARGUMENT, i + 1, name)
+                if c.failed {
+                    return TY_UNIT
+                }
+            } else {
+                let arg_pos = p.ast.expr_pos[arg]
+                let got = ck_expr_hint(mut c, p, arg, TY_NONE)
+                if c.failed {
+                    return TY_UNIT
+                }
+                if got == TY_UNIT {
+                    ck_err(arg_pos, "this expression has no value to store", mut c)
+                    return TY_UNIT
+                }
+                if !ck_unify(c, shape, got, mut bound) {
+                    ck_err(arg_pos, "argument " + str(i + 1) + " of `" + sym_text(c, name) + "` needs `" +
+                            ck_shape_name(c, shape, c.templates[template].params) + "` but this is `" + ck_ty_name(c, got) + "`", mut c)
+                    return TY_UNIT
+                }
+            }
+            ck_store_from(mut c, p, arg)
+            ck_sibling(mut c, arg)
+            i = i + 1
+        }
+        if bound.contains(TY_NONE) {
+            let enum_name = sym_text(c, c.templates[template].name)
+            ck_err(pos, "cannot tell which `" + enum_name + "` this is; give the variable a type, as in `let x: " + enum_name +
+                    "[" + repeated("i64", param_count) + "] = ...`", mut c)
+            return TY_UNIT
+        }
+        ty = ck_instance(mut c, template, bound, pos)
+        if c.failed {
+            return TY_UNIT
+        }
+    }
+    ck_settle(mut c)
+    if c.failed {
+        return TY_UNIT
+    }
+    c.owned_siblings = siblings
+    if has_args {
+        c.expr_res[c.sh_e + id] = BUILTIN_VARIANT
+    } else {
+        c.expr_res[c.sh_e + id] = VARIANT
+    }
+    c.expr_aux[c.sh_e + id] = variant
+    let slot = ck_temp(mut c, p, id, ty)
+    c.expr_tmp[c.sh_e + id] = slot
+    return ty
+}
+
+fn ck_call(c: mut Checker, p: Parser, id: i64, callee: i64, args: IdRange, hint: i64) -> i64 {
+    let pos = p.ast.expr_pos[id]
+    var is_name = false
+    var method_base = NO_NODE
+    var method_name = Span { start: 0, len: 0 }
+    match p.ast.exprs[callee] {
+        ExprIdent(_) => {
+            is_name = true
+        }
+        ExprField(base, name) => {
+            method_base = base
+            method_name = name
+        }
+        _ => {}
+    }
+    if method_base != NO_NODE {
+        return ck_method(mut c, p, id, method_base, method_name, args)
+    }
+    if !is_name {
+        ck_err(pos, "only functions can be called", mut c)
+        return TY_UNIT
+    }
+    let sym = ck_sym(mut c, p, callee)
+    if ck_lookup(c, sym) >= 0 {
+        ck_err(pos, "`" + sym_text(c, sym) + "` is a variable, not a function", mut c)
+        return TY_UNIT
+    }
+    let found = tab_get(c.variant_names, sym)
+    if found >= 0 {
+        return ck_construct(mut c, p, id, found, true, args, hint)
+    }
+    if sym == SYM_PRINT {
+        if args.len != 1 {
+            ck_err(pos, "`print` takes 1 argument but " + str(args.len) + " were given", mut c)
+            return TY_UNIT
+        }
+        let arg = p.ast.lists[args.start]
+        let ty = ck_expr_hint(mut c, p, arg, TY_NONE)
+        if c.failed {
+            return TY_UNIT
+        }
+        if ty == TY_I64 {
+            c.expr_res[c.sh_e + id] = BUILTIN_PRINT_I64
+        } else if ty == TY_BOOL {
+            c.expr_res[c.sh_e + id] = BUILTIN_PRINT_BOOL
+        } else if ty == TY_STR {
+            c.expr_res[c.sh_e + id] = BUILTIN_PRINT_STR
+        } else {
+            ck_err_expr(p, arg, "`print` takes an `i64`, a `bool` or a `str` but this is `" + ck_ty_name(c, ty) + "`", mut c)
+        }
+        return TY_UNIT
+    }
+    if sym == SYM_STR {
+        if args.len != 1 {
+            ck_err(pos, "`str` takes 1 argument but " + str(args.len) + " were given", mut c)
+            return TY_UNIT
+        }
+        let arg = p.ast.lists[args.start]
+        let ty = ck_expr_hint(mut c, p, arg, TY_NONE)
+        if c.failed {
+            return TY_UNIT
+        }
+        if ty == TY_I64 {
+            c.expr_res[c.sh_e + id] = BUILTIN_STR_FROM_I64
+        } else if ty == TY_BOOL {
+            c.expr_res[c.sh_e + id] = BUILTIN_STR_FROM_BOOL
+        } else {
+            ck_err_expr(p, arg, "`str` turns an `i64` or a `bool` into text but this is `" + ck_ty_name(c, ty) + "`", mut c)
+            return TY_UNIT
+        }
+        let slot = ck_temp(mut c, p, id, TY_STR)
+        c.expr_tmp[c.sh_e + id] = slot
+        return TY_STR
+    }
+    let index = tab_get(c.fn_names, sym)
+    if index < 0 {
+        if is_builtin_function(sym) {
+            return ck_builtin(mut c, p, id, sym, args)
+        }
+        let generic = tab_get(c.generic_names, sym)
+        if generic >= 0 {
+            return ck_call_generic(mut c, p, id, generic, sym, NO_NODE, args, hint)
+        }
+        if tab_get(c.struct_names, sym) >= 0 {
+            ck_err(pos, "`" + sym_text(c, sym) + "` is a struct; create a value with `" + sym_text(c, sym) + " { ... }`", mut c)
+        } else {
+            ck_err(pos, "unknown function `" + sym_text(c, sym) + "`", mut c)
+        }
+        return TY_UNIT
+    }
+    return ck_call_function(mut c, p, id, index, sym, NO_NODE, args)
+}
+
+// The built-in functions that talk to the system.
+fn ck_builtin(c: mut Checker, p: Parser, id: i64, sym: i64, args: IdRange) -> i64 {
+    let pos = p.ast.expr_pos[id]
+    var first = TY_STR
+    var count = 1
+    var target = BUILTIN_EPRINT
+    if sym == SYM_EXIT {
+        first = TY_I64
+        target = BUILTIN_EXIT
+    } else if sym == SYM_CHR {
+        first = TY_I64
+        target = BUILTIN_CHR
+    } else if sym == SYM_ARGS {
+        count = 0
+        target = BUILTIN_ARGS
+    } else if sym == SYM_READ_FILE {
+        target = BUILTIN_READ_FILE
+    } else if sym == SYM_WRITE_FILE {
+        count = 2
+        target = BUILTIN_WRITE_FILE
+    } else if sym == SYM_SET_EXECUTABLE {
+        target = BUILTIN_SET_EXECUTABLE
+    }
+    if args.len != count {
+        ck_err(pos, "`" + sym_text(c, sym) + "` takes " + str(count) + " argument" + plural(count) + " but " + str(args.len) +
+                " were given", mut c)
+        return TY_UNIT
+    }
+    var i = 0
+    while i < count {
+        var want = TY_STR
+        if i == 0 {
+            want = first
+        }
+        ck_expect(mut c, p, p.ast.lists[args.start + i], want, W_ARGUMENT, i + 1, sym)
+        if c.failed {
+            return TY_UNIT
+        }
+        i = i + 1
+    }
+    c.expr_res[c.sh_e + id] = target
+    if target == BUILTIN_EPRINT || target == BUILTIN_EXIT {
+        return TY_UNIT
+    }
+    var ty = TY_STR
+    if target == BUILTIN_ARGS {
+        ty = ck_list_of(mut c, TY_STR)
+    } else if target == BUILTIN_READ_FILE {
+        // The text of the file, or what the system says went wrong.
+        ty = ck_instance(mut c, RESULT_TEMPLATE, [TY_STR, TY_STR], pos)
+    } else if target != BUILTIN_CHR {
+        // The number of bytes written (0 for `set_executable`), or what
+        // went wrong.
+        ty = ck_instance(mut c, RESULT_TEMPLATE, [TY_I64, TY_STR], pos)
+    }
+    if c.failed {
+        return TY_UNIT
+    }
+    ck_settle(mut c)
+    if c.failed {
+        return TY_UNIT
+    }
+    let slot = ck_temp(mut c, p, id, ty)
+    c.expr_tmp[c.sh_e + id] = slot
+    return ty
+}
+
+// Argument `i` of a call: for a method call (`base` is the receiver)
+// the receiver comes first.
+fn call_arg(p: Parser, base: i64, args: IdRange, i: i64) -> i64 {
+    if base == NO_NODE {
+        return p.ast.lists[args.start + i]
+    }
+    if i == 0 {
+        return base
+    }
+    return p.ast.lists[args.start + i - 1]
+}
+
+fn ck_wrong_count(c: mut Checker, pos: i64, text: i64, expected: i64, given: i64) {
+    ck_err(pos, "`" + sym_text(c, text) + "` takes " + str(expected) + " argument" + plural(expected) + " but " + str(given) +
+            " were given", mut c)
+}
+
+// Checks the arguments of a call to function `index`, called `text`.
+// For a method call, `base` is the receiver, which is already checked.
+fn ck_call_function(c: mut Checker, p: Parser, id: i64, index: i64, text: i64, base: i64, args: IdRange) -> i64 {
+    var receivers = 0
+    if base != NO_NODE {
+        receivers = 1
+    }
+    let count = args.len + receivers
+    let expected = c.fns[index].param_tys.len()
+    if count != expected {
+        ck_wrong_count(mut c, p.ast.expr_pos[id], text, expected - receivers, args.len)
+        return TY_UNIT
+    }
+    // Places handed over by reference stay borrowed until this call
+    // returns, so later arguments are checked against them.
+    let outer_borrows = c.borrows.len()
+    var i = 0
+    while i < count {
+        let arg = call_arg(p, base, args, i)
+        let ty = c.fns[index].param_tys[i]
+        let mutable = c.fns[index].param_mutable[i]
+        let number = i + 1 - receivers
+        let value = ck_arg_value(mut c, p, text, number, arg, mutable)
+        if c.failed {
+            return TY_UNIT
+        }
+        if base == NO_NODE || i > 0 {
+            ck_expect(mut c, p, value, ty, W_ARGUMENT, number, text)
+            if c.failed {
+                return TY_UNIT
+            }
+        }
+        ck_arg_pass(mut c, p, arg, value, mutable, ty, text, number == 0)
+        if c.failed {
+            return TY_UNIT
+        }
+        i = i + 1
+    }
+    while c.borrows.len() > outer_borrows {
+        c.borrows.pop()
+    }
+    return ck_finish_call(mut c, p, id, index)
+}
+
+// First part of checking an argument: that `mut` is written exactly
+// where the parameter is `mut`. Returns the expression whose value is
+// passed.
+fn ck_arg_value(c: mut Checker, p: Parser, text: i64, number: i64, arg: i64, mutable: bool) -> i64 {
+    var inner = NO_NODE
+    match p.ast.exprs[arg] {
+        ExprMutArg(value) => {
+            inner = value
+        }
+        _ => {}
+    }
+    if mutable {
+        if inner == NO_NODE {
+            // The receiver of a method that changes it is written
+            // plainly, `xs.extend(ys)`, like the receiver of `push`.
+            if number == 0 {
+                return arg
+            }
+            ck_wrong_mut(mut c, p.ast.expr_pos[arg], text, number, true)
+        }
+        return inner
+    }
+    if inner != NO_NODE {
+        ck_wrong_mut(mut c, p.ast.expr_pos[arg], text, number, false)
+    }
+    return arg
+}
+
+// Reports an argument that lacks `mut` (`missing`) or has one too many.
+fn ck_wrong_mut(c: mut Checker, at: i64, text: i64, number: i64, missing: bool) {
+    if missing {
+        ck_err(at, "argument " + str(number) + " of `" + sym_text(c, text) +
+                "` can be changed by the function, so it must be written `mut <variable>`", mut c)
+    } else {
+        ck_err(at, "argument " + str(number) + " of `" + sym_text(c, text) + "` is not a `mut` parameter; remove `mut`", mut c)
+    }
+}
+
+// Last part of checking an argument, whose type is `ty`: that the place
+// it names is free to be handed over. `text` is the function's name and
+// `receiver` says that this is the receiver of a method.
+fn ck_arg_pass(c: mut Checker, p: Parser, arg: i64, value: i64, mutable: bool, ty: i64, text: i64, receiver: bool) {
+    let arg_pos = p.ast.expr_pos[arg]
+    if mutable {
+        c.expr_ty[c.sh_e + arg] = ty
+        let place = ck_place(c, p, value)
+        if !place.ok {
+            if receiver {
+                ck_err(arg_pos, "`" + sym_text(c, text) + "` changes its receiver, so it needs a variable or a part of a variable", mut c)
+            } else if ck_is_constant(c, p, value) {
+                ck_err(arg_pos, "cannot pass `" + ck_root_name(p, value) + "` as `mut`: it is a constant", mut c)
+            } else {
+                ck_err(arg_pos, "`mut` needs a variable or a part of a variable", mut c)
+            }
+            return
+        }
+        if !place.mutable {
+            if receiver {
+                ck_err(arg_pos, "cannot change `" + ck_root_name(p, value) + "`: " + read_only(place), mut c)
+            } else {
+                ck_err(arg_pos, "cannot pass `" + ck_root_name(p, value) + "` as `mut`: " + read_only(place), mut c)
+            }
+            return
+        }
+        // The function gets its address, so it must stay in memory.
+        var at = c.locals_len - 1
+        while at >= 0 {
+            if c.loc_slot[at] == place.root {
+                c.loc_flags[at] = c.loc_flags[at] | LOC_ADDRESSED
+                break
+            }
+            at = at - 1
+        }
+        ck_borrow(mut c, p, value, place, true)
+        // A receiver is not written `mut`, so the message says what the
+        // method does to it.
+        if c.failed && receiver && c.error.message.starts_with("cannot pass ") {
+            var rest = c.error.message.slice(12, c.error.message.len())
+            match rest.find(" as `mut`") {
+                Some(at) => {
+                    rest = rest.slice(0, at) + rest.slice(at + 9, rest.len())
+                }
+                None => {}
+            }
+            c.error.message = "cannot change " + rest
+        }
+    } else if ty_is_aggregate(ty) {
+        // Passed by reference: the place must not change meanwhile.
+        let place = ck_place(c, p, arg)
+        if place.ok {
+            ck_borrow(mut c, p, arg, place, false)
+        }
+    }
+}
+
+// Records that call `id` goes to function `index` and gives the call's type.
+fn ck_finish_call(c: mut Checker, p: Parser, id: i64, index: i64) -> i64 {
+    let ret = c.fns[index].ret
+    c.expr_res[c.sh_e + id] = index
+    if ty_is_aggregate(ret) {
+        let slot = ck_temp(mut c, p, id, ret)
+        c.expr_tmp[c.sh_e + id] = slot
+    }
+    return ret
+}
+
+// A call to a generic function. What its type parameters stand for
+// comes from the arguments, read left to right; a parameter no argument
+// mentions comes from the type expected of the result.
+fn ck_call_generic(c: mut Checker, p: Parser, id: i64, generic: i64, text: i64, base: i64, args: IdRange, hint: i64) -> i64 {
+    let pos = p.ast.expr_pos[id]
+    // For a method call the receiver is already checked and not counted
+    // as an argument.
+    var receivers = 0
+    if base != NO_NODE {
+        receivers = 1
+    }
+    let count = args.len + receivers
+    let expected = c.generic_fns[generic].param_shapes.len()
+    if count != expected {
+        ck_wrong_count(mut c, pos, text, expected - receivers, args.len)
+        return TY_UNIT
+    }
+    var bound: List[i64] = []
+    while bound.len() < c.generic_fns[generic].type_params.len() {
+        bound.push(TY_NONE)
+    }
+    let outer_borrows = c.borrows.len()
+    var i = 0
+    while i < count {
+        let arg = call_arg(p, base, args, i)
+        let shape = c.generic_fns[generic].param_shapes[i]
+        let mutable = c.generic_fns[generic].param_mut[i]
+        let number = i + 1 - receivers
+        var ty = TY_UNIT
+        if base != NO_NODE && i == 0 {
+            // The caller matched the receiver.
+            ty = c.expr_ty[c.sh_e + arg]
+            ck_unify(c, shape, ty, mut bound)
+        }
+        let value = ck_arg_value(mut c, p, text, number, arg, mutable)
+        if c.failed {
+            return TY_UNIT
+        }
+        if base == NO_NODE || i > 0 {
+            if ck_ready(c, shape, bound) {
+                ty = ck_realize(mut c, shape, bound, p.ast.expr_pos[arg])
+                if c.failed {
+                    return TY_UNIT
+                }
+                ck_settle(mut c)
+                if c.failed {
+                    return TY_UNIT
+                }
+                ck_expect(mut c, p, value, ty, W_ARGUMENT, number, text)
+                if c.failed {
+                    return TY_UNIT
+                }
+            } else {
+                // This argument decides what a type parameter stands for.
+                ty = ck_expr_hint(mut c, p, value, TY_NONE)
+                if c.failed {
+                    return TY_UNIT
+                }
+                if ty == TY_UNIT {
+                    ck_err_expr(p, value, "this expression has no value to pass", mut c)
+                    return TY_UNIT
+                }
+                if !ck_unify(c, shape, ty, mut bound) {
+                    ck_err_expr(p, value, "argument " + str(number) + " of `" + sym_text(c, text) + "` needs `" +
+                            ck_shape_name(c, shape, c.generic_fns[generic].type_params) + "` but this is `" + ck_ty_name(c, ty) + "`", mut c)
+                    return TY_UNIT
+                }
+            }
+        }
+        ck_arg_pass(mut c, p, arg, value, mutable, ty, text, number == 0)
+        if c.failed {
+            return TY_UNIT
+        }
+        i = i + 1
+    }
+    while c.borrows.len() > outer_borrows {
+        c.borrows.pop()
+    }
+    // What the arguments leave open, the expected type may settle.
+    let ret = c.generic_fns[generic].ret
+    if ret >= 0 && hint != TY_NONE && bound.contains(TY_NONE) {
+        var trial = bound
+        if ck_unify(c, ret, hint, mut trial) {
+            bound = trial
+        }
+    }
+    for unknown, ty in bound {
+        if ty == TY_NONE {
+            ck_err(pos, "cannot tell what `" + sym_text(c, c.generic_fns[generic].type_params[unknown]) +
+                    "` is in this call to `" + sym_text(c, text) +
+                    "`: no argument settles it; store the result in a variable with a type", mut c)
+            return TY_UNIT
+        }
+    }
+    let index = ck_fn_instance(mut c, p, generic, bound, pos)
+    if c.failed {
+        return TY_UNIT
+    }
+    return ck_finish_call(mut c, p, id, index)
+}
+
+// The function a generic function becomes with these types. It is added
+// to the list of functions the first time it is asked for, and its body
+// is checked when its turn comes.
+fn ck_fn_instance(c: mut Checker, p: Parser, generic: i64, type_args: List[i64], at: i64) -> i64 {
+    var j = 0
+    let known = c.generic_fns[generic].instances.len()
+    while j < known {
+        let index = c.generic_fns[generic].instances[j]
+        if same_types(c.fns[index].type_args, type_args) {
+            return index
+        }
+        j = j + 1
+    }
+    // `fn f[T](x: T) { f([x]) }` would ask for ever larger types.
+    let depth = c.fn_depth + 1
+    if depth > 40 {
+        ck_err(at, "`" + sym_text(c, c.generic_fns[generic].name) + "` is used with types that grow without end", mut c)
+        return 0
+    }
+    var tys: List[i64] = []
+    var by_ref: List[bool] = []
+    var muts: List[bool] = []
+    let count = c.generic_fns[generic].param_shapes.len()
+    var i = 0
+    while i < count {
+        let ty = ck_realize(mut c, c.generic_fns[generic].param_shapes[i], type_args, at)
+        if c.failed {
+            return 0
+        }
+        let mutable = c.generic_fns[generic].param_mut[i]
+        tys.push(ty)
+        by_ref.push(mutable || ty_is_aggregate(ty))
+        muts.push(mutable)
+        i = i + 1
+    }
+    var ret = TY_UNIT
+    if c.generic_fns[generic].ret >= 0 {
+        ret = ck_realize(mut c, c.generic_fns[generic].ret, type_args, at)
+        if c.failed {
+            return 0
+        }
+    }
+    ck_settle(mut c)
+    if c.failed {
+        return 0
+    }
+    let item = c.generic_fns[generic].item
+    var nodes = Nodes {
+        exprs_start: 0,
+        exprs_len: 0,
+        stmts_start: 0,
+        stmts_len: 0,
+        patterns_start: 0,
+        patterns_len: 0,
+        field_inits_start: 0,
+        field_inits_len: 0,
+    }
+    match p.ast.items[item] {
+        ItemFn(_, _, _, _, _, n) => {
+            nodes = n
+        }
+        _ => {}
+    }
+    // Entries of its own in every per-node table. A library function
+    // without type parameters is used with one set of types only and
+    // keeps the entries its nodes already have.
+    var sh_e = 0
+    var sh_s = 0
+    var sh_p = 0
+    var sh_i = 0
+    if type_args.len() > 0 {
+        sh_e = c.expr_res.len() - nodes.exprs_start
+        sh_s = c.stmt_slot.len() - nodes.stmts_start
+        sh_p = c.pat_kind.len() - nodes.patterns_start
+        sh_i = c.init_offset.len() - nodes.field_inits_start
+        i = 0
+        while i < nodes.exprs_len {
+            c.expr_res.push(0)
+            c.expr_ty.push(TY_UNIT)
+            c.expr_aux.push(0)
+            c.expr_tmp.push(0)
+            c.expr_moved.push(0)
+            i = i + 1
+        }
+        i = 0
+        while i < nodes.stmts_len {
+            c.stmt_slot.push(0)
+            c.stmt_flag.push(0)
+            c.stmt_drops_start.push(0)
+            c.stmt_drops_len.push(0)
+            i = i + 1
+        }
+        i = 0
+        while i < nodes.patterns_len {
+            c.pat_kind.push(0)
+            c.pat_res.push(0)
+            c.pat_slot.push(0)
+            i = i + 1
+        }
+        i = 0
+        while i < nodes.field_inits_len {
+            c.init_offset.push(0)
+            i = i + 1
+        }
+    }
+    let index = c.fns.len()
+    c.generic_fns[generic].instances.push(index)
+    var origin = at
+    if at >= c.prelude_start {
+        origin = c.fn_origin
+    }
+    c.fns.push(FnInfo {
+        item: item,
+        sh_e: sh_e,
+        sh_s: sh_s,
+        sh_p: sh_p,
+        sh_i: sh_i,
+        generic: generic,
+        type_args: type_args,
+        depth: depth,
+        origin: origin,
+        ret: ret,
+        param_tys: tys,
+        param_by_ref: by_ref,
+        param_mutable: muts,
+        slots: 0,
+        sret_slot: -1,
+        scratch_slot: 0,
+        reg_slots: [],
+        zero_slots: [],
+    })
+    return index
+}
+
+// A method the standard library defines in azoL for this type: an
+// ordinary function that takes the receiver as its first argument.
+fn ck_library_method(c: mut Checker, p: Parser, id: i64, base: i64, name: Span, args: IdRange) -> i64 {
+    let base_ty = c.expr_ty[c.sh_e + base]
+    let sym = ck_intern(mut c, p, name)
+    let entry = tab_get(c.library, sym)
+    if entry >= 0 {
+        var k = 0
+        while k < c.library_fns[entry].len() {
+            let generic = c.library_fns[entry][k]
+            var trial: List[i64] = []
+            while trial.len() < c.generic_fns[generic].type_params.len() {
+                trial.push(TY_NONE)
+            }
+            if ck_unify(c, c.generic_fns[generic].param_shapes[0], base_ty, mut trial) {
+                return ck_call_generic(mut c, p, id, generic, sym, base, args, TY_NONE)
+            }
+            k = k + 1
+        }
+    }
+    ck_err(name.start, "`" + ck_ty_name(c, base_ty) + "` has no method `" + sym_text(c, sym) + "`", mut c)
+    return TY_UNIT
+}
+
+// A call written `value.name(...)`.
+fn ck_method(c: mut Checker, p: Parser, id: i64, base: i64, name: Span, args: IdRange) -> i64 {
+    let pos = p.ast.expr_pos[id]
+    let base_ty = ck_expr_hint(mut c, p, base, TY_NONE)
+    if c.failed {
+        return TY_UNIT
+    }
+    let sym = ck_intern(mut c, p, name)
+    if base_ty == TY_STR {
+        if sym == SYM_LEN {
+            if args.len != 0 {
+                ck_wrong_count(mut c, pos, sym, 0, args.len)
+                return TY_UNIT
+            }
+            c.expr_res[c.sh_e + id] = BUILTIN_LEN
+            return TY_I64
+        }
+        if sym == SYM_SLICE {
+            if args.len != 2 {
+                ck_wrong_count(mut c, pos, sym, 2, args.len)
+                return TY_UNIT
+            }
+            // The bounds are computed before the string is looked at.
+            c.late.push(base)
+            ck_expect(mut c, p, p.ast.lists[args.start], TY_I64, W_ARGUMENT, 1, SYM_SLICE)
+            if c.failed {
+                return TY_UNIT
+            }
+            ck_expect(mut c, p, p.ast.lists[args.start + 1], TY_I64, W_ARGUMENT, 2, SYM_SLICE)
+            if c.failed {
+                return TY_UNIT
+            }
+            c.late.pop()
+            // The bytes are copied into a string of their own.
+            let slot = ck_temp(mut c, p, id, TY_STR)
+            c.expr_tmp[c.sh_e + id] = slot
+            c.expr_res[c.sh_e + id] = BUILTIN_STR_SLICE
+            return TY_STR
+        }
+        return ck_library_method(mut c, p, id, base, name, args)
+    }
+    if !ty_is_list(base_ty) {
+        return ck_library_method(mut c, p, id, base, name, args)
+    }
+    let elem = c.lists[ty_index(base_ty)]
+    if sym == SYM_LEN {
+        if args.len != 0 {
+            ck_wrong_count(mut c, pos, sym, 0, args.len)
+            return TY_UNIT
+        }
+        c.expr_res[c.sh_e + id] = BUILTIN_LEN
+        return TY_I64
+    }
+    if sym != SYM_PUSH && sym != SYM_POP {
+        return ck_library_method(mut c, p, id, base, name, args)
+    }
+    var expected = 0
+    if sym == SYM_PUSH {
+        expected = 1
+    }
+    if args.len != expected {
+        ck_wrong_count(mut c, pos, sym, expected, args.len)
+        return TY_UNIT
+    }
+    let place = ck_place(c, p, base)
+    if !place.ok {
+        ck_err(pos, "`" + sym_text(c, sym) + "` changes the list, so it needs a variable or a part of a variable", mut c)
+        return TY_UNIT
+    }
+    if !place.mutable {
+        ck_err(pos, "cannot change `" + ck_root_name(p, base) + "`: " + read_only(place), mut c)
+        return TY_UNIT
+    }
+    if sym == SYM_PUSH {
+        let arg = p.ast.lists[args.start]
+        // The element is computed before the list is looked at.
+        c.late.push(base)
+        ck_expect(mut c, p, arg, elem, W_TEXT, SYM_W_PUSH, 0)
+        if c.failed {
+            return TY_UNIT
+        }
+        // The list takes a temporary's buffers over.
+        ck_store_from(mut c, p, arg)
+        c.late.pop()
+        ck_check_change(mut c, p, base, place)
+        if c.failed {
+            return TY_UNIT
+        }
+        // The element waits here while the list makes room.
+        let size = ck_size_of(c, elem)
+        let slot = ck_alloc(mut c, size, pos)
+        c.expr_tmp[c.sh_e + id] = slot
+        c.expr_res[c.sh_e + id] = BUILTIN_LIST_PUSH
+        return TY_UNIT
+    }
+    ck_check_change(mut c, p, base, place)
+    if c.failed {
+        return TY_UNIT
+    }
+    if ty_is_aggregate(elem) {
+        // The element leaves the list; this temporary owns it now.
+        let slot = ck_temp(mut c, p, id, elem)
+        c.expr_tmp[c.sh_e + id] = slot
+    }
+    c.expr_res[c.sh_e + id] = BUILTIN_LIST_POP
+    return elem
+}
+
+// ---- the whole program ------------------------------------------------
+
+fn filled(count: i64, value: i64) -> List[i64] {
+    var list: List[i64] = []
+    var i = 0
+    while i < count {
+        list.push(value)
+        i = i + 1
+    }
+    return list
+}
+
+// A checker for the tree in `p`, whose source continues from
+// `prelude_start` on with the standard library's azoL code.
+fn new_checker(p: Parser, prelude_start: i64) -> Checker {
+    var names = new_names()
+    let builtin = ["i64", "bool", "str", "List", "Option", "Result", "Some", "None", "Ok", "Err", "T", "E", "main", "print",
+        "eprint", "chr", "args", "read_file", "write_file", "set_executable", "exit", "len", "slice", "push", "pop", "`-`",
+        "`!`", "an index", "this list's element", "`push`"]
+    for text in builtin {
+        names_intern(mut names, text, 0, text.len())
+    }
+    let exprs = p.ast.exprs.len()
+    let stmts = p.ast.stmts.len()
+    let patterns = p.ast.patterns.len()
+    return Checker {
+        names: names,
+        prelude_start: prelude_start,
+        failed: false,
+        error: SemaError { message: "", offset: 0, expr: -1 },
+        errors: [],
+        structs: [],
+        struct_templates: [],
+        struct_names: [],
+        struct_state: [],
+        settled_structs: 0,
+        templates: [],
+        template_names: [],
+        variant_names: [],
+        consts: [],
+        const_names: [],
+        enums: [],
+        enum_state: [],
+        settled: 0,
+        declared: false,
+        nesting: 0,
+        lists: [],
+        fns: [],
+        fn_names: [],
+        generic_fns: [],
+        generic_names: [],
+        library: [],
+        library_fns: [],
+        main: -1,
+        shape_kind: [SHAPE_KNOWN, SHAPE_KNOWN, SHAPE_KNOWN],
+        shape_a: [TY_I64, TY_BOOL, TY_STR],
+        shape_start: [0, 0, 0],
+        shape_len: [0, 0, 0],
+        shape_ids: [],
+        tparams: [],
+        fn_bound: [],
+        fn_depth: 0,
+        fn_origin: 0,
+        sh_e: 0,
+        sh_s: 0,
+        sh_p: 0,
+        sh_i: 0,
+        expr_res: filled(exprs, 0),
+        expr_ty: filled(exprs, 0),
+        expr_aux: filled(exprs, 0),
+        expr_tmp: filled(exprs, 0),
+        expr_moved: filled(exprs, 0),
+        stmt_slot: filled(stmts, 0),
+        stmt_flag: filled(stmts, 0),
+        stmt_drops_start: filled(stmts, 0),
+        stmt_drops_len: filled(stmts, 0),
+        pat_kind: filled(patterns, 0),
+        pat_res: filled(patterns, 0),
+        pat_slot: filled(patterns, 0),
+        drop_slots: [],
+        drop_tys: [],
+        init_offset: filled(p.ast.field_inits.len(), 0),
+        ints: [],
+        data: "",
+        string_offsets: [],
+        string_lens: [],
+        expr_sym: filled(exprs, 0),
+        locals_len: 0,
+        loc_name: [],
+        loc_slot: [],
+        loc_ty: [],
+        loc_flags: [],
+        loc_depth: [],
+        loc_candidate: [],
+        loc_uses: [],
+        borrows: [],
+        pending: [],
+        late: [],
+        tries: [],
+        in_list: 0,
+        owned_siblings: 0,
+        wish_slots: [],
+        wish_uses: [],
+        zero_slots: [],
+        ret: TY_UNIT,
+        next_slot: 0,
+        loop_depth: 0,
+    }
+}
+
+// Checks the program. Afterwards `c.errors` holds every problem that
+// can be reported reliably, in source order: the first one among the
+// declarations, or else the first one in each function. When it is
+// empty, the tables in `c` are what the code generators need.
+fn check_program(c: mut Checker, p: Parser) {
+    // Later declarations and every function body depend on the
+    // declarations, so a mistake there is reported alone.
+    ck_declare_types(mut c, p)
+    if !c.failed {
+        ck_declare_consts(mut c, p)
+    }
+    if !c.failed {
+        ck_signatures(mut c, p)
+    }
+    if c.failed {
+        c.errors.push(c.error)
+        return
+    }
+    // Checking a function can add to the list: each new use of a generic
+    // function is one more function to check.
+    var index = 0
+    while index < c.fns.len() {
+        ck_function(mut c, p, index)
+        if c.failed {
+            // A generic function is checked once per set of types; the
+            // same mistake in it is reported once.
+            var known = false
+            for error in c.errors {
+                if error.offset == c.error.offset {
+                    known = true
+                }
+            }
+            if !known {
+                c.errors.push(c.error)
+            }
+            c.failed = false
+            // Types the function was in the middle of creating stay as
+            // they are; nothing is generated from a program with errors.
+            c.settled_structs = c.structs.len()
+            c.settled = c.enums.len()
+        }
+        index = index + 1
+    }
+    c.main = tab_get(c.fn_names, SYM_MAIN)
+    if c.main < 0 {
+        c.errors.push(SemaError { message: "the program has no `main` function", offset: 0, expr: -1 })
+    }
+    // In source order; mistakes at the same place keep their order.
+    var i = 1
+    while i < c.errors.len() {
+        var k = i
+        while k > 0 && c.errors[k - 1].offset > c.errors[k].offset {
+            let moved = c.errors[k]
+            c.errors[k] = c.errors[k - 1]
+            c.errors[k - 1] = moved
+            k = k - 1
+        }
+        i = i + 1
+    }
+}

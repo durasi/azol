@@ -19,6 +19,8 @@ IMPORTS = [
     ("_free", "az_free"), ("_memcpy", "memcpy"), ("_memcmp", "az_memcmp"), ("_open", "az_open"),
     ("_read", "az_read"), ("_close", "az_close"), ("___error", "az_error"), ("_strerror", "az_strerror"),
     ("_strlen", "az_strlen"), ("__NSGetArgc", "az_argc"), ("__NSGetArgv", "az_argv"), ("_chmod", "az_chmod"),
+    # Used only by the start of a macOS program; see `macos_only`.
+    ("_sigaltstack", "az_sigaltstack"), ("_sigaction", "az_sigaction"), ("__exit", "az_exit_now"),
 ]
 FLAGS = [
     # General-purpose registers only: the code never touches the

@@ -1,0 +1,275 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// azol-self: the azoL compiler written in azoL.
+//
+//     azol-self build <file.azl>... [-o <out>] --prelude <prelude.azl> --runtime <runtime.bin>
+//                     [--map <path>]
+//
+// It reads the source files, lexes, parses and checks them, generates
+// x86-64 code and writes a Linux executable: what `azol build --target
+// x86_64-linux` does, with the same bytes as the result, which
+// `compiler/check_self.py` verifies. Built by itself, it produces
+// itself again.
+//
+// Two files the Rust compiler carries inside itself are named on the
+// command line: the standard library's azoL source (`src/prelude.azl`)
+// and the runtime's machine code (`runtime/linux_x64/runtime.bin`).
+// Where the runtime's routines start comes from `runtime_x64.azl`.
+//
+// Without `-o`, the executable is named after the first source file,
+// without its extension. `--target x86_64-linux` is accepted; it is the
+// only target so far. `--map <path>` also writes where each function
+// of the program starts in memory, one `address name` line each, for
+// reading a profile of the executable.
+
+fn usage() -> i64 {
+    eprint("usage: azol-self build <file.azl>... [-o <out>] --prelude <prelude.azl> --runtime <runtime.bin> [--map <path>]")
+    return 2
+}
+
+// `path` without the extension of its file name.
+fn without_extension(path: str) -> str {
+    var name_start = 0
+    var i = 0
+    while i < path.len() {
+        if path[i] == '/' {
+            name_start = i + 1
+        }
+        i = i + 1
+    }
+    var dot = -1
+    i = name_start + 1
+    while i < path.len() {
+        if path[i] == '.' {
+            dot = i
+        }
+        i = i + 1
+    }
+    if dot < 0 {
+        return path
+    }
+    return path.slice(0, dot)
+}
+
+// Prints the mistakes of a program as `azol build` does. Each is at an
+// offset in the whole text; `starts` and `lens` say where each file is.
+fn show_problems(problems: List[ParseError], paths: List[str], starts: List[i64], lens: List[i64], src: str) {
+    for n, problem in problems {
+        if n > 0 {
+            eprint("")
+        }
+        // The file the position falls in. A position right after a
+        // file's last character still belongs to it.
+        var file = starts.len() - 1
+        var k = starts.len() - 1
+        while k >= 0 {
+            if problem.offset <= starts[k] + lens[k] {
+                file = k
+            }
+            k = k - 1
+        }
+        var inside = problem.offset - starts[file]
+        if inside < 0 {
+            inside = 0
+        }
+        if inside > lens[file] {
+            inside = lens[file]
+        }
+        if starts.len() == 1 && lens[0] == src.len() {
+            report_error(paths[file], src, inside, problem.message)
+        } else {
+            report_error(paths[file], src.slice(starts[file], starts[file] + lens[file]), inside, problem.message)
+        }
+    }
+    if problems.len() > 1 {
+        eprint("\nfound " + str(problems.len()) + " errors")
+    }
+}
+
+// One line per function: the address its code starts at, in hexadecimal,
+// and its name.
+fn function_map(g: Gen, c: Checker, p: Parser) -> str {
+    let digits = "0123456789abcdef"
+    let code_at = RT_BASE + RT_TEXT_OFFSET + RT_TEXT_SIZE + elf_jump_size()
+    var out = ""
+    for index, start in g.fn_starts {
+        var address = code_at + start
+        var hex = ""
+        while address > 0 {
+            hex = digits.slice(address & 15, (address & 15) + 1) + hex
+            address = address >> 4
+        }
+        out = out + hex + " "
+        match p.ast.items[c.fns[index].item] {
+            ItemFn(name, _, _, _, _, _) => out = out + span_text(p.src, name)
+            _ => {}
+        }
+        out = out + "\n"
+    }
+    return out
+}
+
+fn main() -> i64 {
+    let arguments = args()
+    if arguments.len() < 3 || arguments[1] != "build" {
+        return usage()
+    }
+    var paths: List[str] = []
+    var out = ""
+    var prelude_path = ""
+    var runtime_path = ""
+    var map_path = ""
+    var at = 2
+    while at < arguments.len() {
+        let word = arguments[at]
+        if word == "-o" || word == "--prelude" || word == "--runtime" || word == "--target" || word == "--map" {
+            if at + 1 >= arguments.len() {
+                return usage()
+            }
+            let value = arguments[at + 1]
+            if word == "-o" {
+                out = value
+            } else if word == "--prelude" {
+                prelude_path = value
+            } else if word == "--runtime" {
+                runtime_path = value
+            } else if word == "--map" {
+                map_path = value
+            } else if value != "x86_64-linux" {
+                eprint("error: unknown target '" + value + "'; azol-self builds for `x86_64-linux`")
+                return 1
+            }
+            at = at + 2
+        } else {
+            paths.push(word)
+            at = at + 1
+        }
+    }
+    if paths.len() == 0 || prelude_path.len() == 0 || runtime_path.len() == 0 {
+        return usage()
+    }
+    if out.len() == 0 {
+        out = without_extension(paths[0])
+    }
+    if out == paths[0] {
+        eprint("error: the output would overwrite the source file; pass `-o <out>`")
+        return 1
+    }
+
+    // All source files, and after them the standard library's source,
+    // follow each other in one text, so that every position in any of
+    // them is a plain offset.
+    var src = ""
+    var starts: List[i64] = []
+    var lens: List[i64] = []
+    for path in paths {
+        let text = read_or_exit(path)
+        lens.push(text.len())
+        if starts.len() == 0 {
+            // The first file's text is taken over as it is.
+            starts.push(0)
+            src = text
+        } else {
+            src = src + "\n"
+            starts.push(src.len())
+            src = src + text
+        }
+    }
+    let prelude = read_or_exit(prelude_path)
+    let prelude_start = src.len() + 1
+    src = src + "\n"
+    src = src + prelude
+
+    // Each file is lexed and parsed on its own, and every file with a
+    // mistake reports its first one. After a mistake the tree is of no
+    // use any more; the files that follow are still parsed. The parser
+    // takes the text over: from here on it is `p.src`.
+    var p = new_parser("")
+    p.src = src
+    var problems: List[ParseError] = []
+    for k, start in starts {
+        let problem = parse_part(mut p, start, lens[k])
+        if problem.message.len() > 0 {
+            problems.push(problem)
+            let text = p.src
+            p = new_parser("")
+            p.src = text
+        }
+    }
+    if problems.len() > 0 {
+        show_problems(problems, paths, starts, lens, p.src)
+        return 1
+    }
+    let problem = parse_part(mut p, prelude_start, prelude.len())
+    if problem.message.len() > 0 {
+        eprint("error: the standard library does not parse: " + problem.message)
+        return 1
+    }
+
+    var c = new_checker(p, prelude_start)
+    check_program(mut c, p)
+    if c.errors.len() > 0 {
+        for error in c.errors {
+            if error.offset >= prelude_start {
+                eprint("error: " + error.message + " (inside the standard library; this is a bug in azoL)")
+                return 1
+            }
+            problems.push(ParseError { message: error.message, offset: error.offset })
+        }
+        show_problems(problems, paths, starts, lens, p.src)
+        return 1
+    }
+
+    var g = x_new_gen()
+    x_generate(mut g, c, p)
+    let code_bytes = g.code.len()
+    let runtime = read_or_exit(runtime_path)
+    if runtime.len() != RT_TEXT_SIZE {
+        eprint("error: '" + runtime_path + "' is not the runtime this compiler was made for: it has " + str(runtime.len()) +
+                " bytes, not " + str(RT_TEXT_SIZE))
+        return 1
+    }
+    let info = CodeFile {
+        target: "x86_64-linux",
+        entry: g.fn_starts[c.main],
+        code: [],
+        data: [],
+        ident: "",
+        imports: [],
+        relocs: [],
+        base: RT_BASE,
+        text_offset: RT_TEXT_OFFSET,
+        start: RT_START,
+        memory: RT_MEMORY,
+        memory_size: RT_MEMORY_SIZE,
+        entries: rt_entries(),
+        calls: g.runtime_calls,
+        refs: g.data_refs,
+    }
+    let image = build_elf_text(info, mut g.code, c.data, runtime)
+    match write_file(out, image) {
+        Ok(_) => {}
+        Err(why) => {
+            eprint("error: cannot write '" + out + "': " + why)
+            return 1
+        }
+    }
+    match set_executable(out) {
+        Ok(_) => {}
+        Err(why) => {
+            eprint("error: cannot write '" + out + "': " + why)
+            return 1
+        }
+    }
+    if map_path.len() > 0 {
+        match write_file(map_path, function_map(g, c, p)) {
+            Ok(_) => {}
+            Err(why) => {
+                eprint("error: cannot write '" + map_path + "': " + why)
+                return 1
+            }
+        }
+    }
+    eprint("built " + out + " (" + str(code_bytes) + " bytes of code)")
+    return 0
+}

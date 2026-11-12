@@ -10,7 +10,7 @@ import capstone, lief
 HERE = os.path.dirname(os.path.abspath(__file__))
 IMPORTS = [
     "_write", "_exit", "_malloc", "_realloc", "_free", "_memcpy", "_memcmp", "_open", "_read", "_close", "___error",
-    "_strerror", "_strlen", "__NSGetArgc", "__NSGetArgv", "_chmod",
+    "_strerror", "_strlen", "__NSGetArgc", "__NSGetArgv", "_chmod", "_sigaltstack", "_sigaction", "__exit",
 ]
 TEXT = [
     (None, b"\n"),
@@ -23,6 +23,7 @@ TEXT = [
     ("LEN_SLICE", b"azol: slice out of range\n"),
     ("LEN_CHR", b"azol: chr needs a number from 0 to 255\n"),
     (None, bytes(range(256))),
+    ("LEN_STACK", b"azol: stack overflow\n"),
 ]
 ENTRIES = [
     "print_i64", "print_bool", "print_str", "div_zero", "index_fail", "pop_empty", "alloc", "free", "list_push",
@@ -51,7 +52,9 @@ relocs, lines = [], []
 for i, (word, ins) in enumerate(zip(words, disasm)):
     if word & 0xFFE0001F == 0xD4200000:
         imm = (word >> 5) & 0xFFFF
-        if imm >= 0x2000:
+        if imm == 0x800:
+            assert i == symbols["_rt_start_main"]
+        elif imm >= 0x2000:
             relocs.append("    RuntimeReloc::Data { at: %d, data: %d, reg: %d }," % (i, (imm - 0x2000) // 32, (imm - 0x2000) % 32))
         elif imm >= 0x1000:
             relocs.append("    RuntimeReloc::Import { at: %d, import: %d }," % (i, imm - 0x1000))
@@ -83,6 +86,11 @@ pub const RUNTIME_DATA_OFFSETS: [u32; %d] = [%s];
 /// Entry points, as word offsets into `RUNTIME`.
 %s
 
+/// Where a macOS program starts, and the word in it that the linker turns
+/// into the call of the program's `main`.
+pub const START: u32 = %d;
+pub const START_MAIN: u32 = %d;
+
 pub enum RuntimeReloc {
     /// Three words: load the import's address and call it.
     Import { at: u32, import: u32 },
@@ -101,6 +109,7 @@ pub const RUNTIME: [u32; %d] = [
     len(IMPORTS), ", ".join('"%s"' % name for name in IMPORTS),
     escaped, len(offsets), ", ".join(map(str, offsets)),
     "\n".join("pub const %s: u32 = %d;" % (name.upper(), symbols["_rt_" + name]) for name in ENTRIES),
+    symbols["_rt_start"], symbols["_rt_start_main"],
     len(relocs), "\n".join(relocs), len(words), "\n".join(lines),
 )
 open(os.path.join(HERE, "..", "src", "runtime.rs"), "w").write(out)

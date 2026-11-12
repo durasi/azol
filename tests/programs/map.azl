@@ -79,161 +79,14 @@
 // expect-line: [item147.0,item147.1,item147.2]
 // expect-line: 47
 
-// A map from text keys to values of any one type, written in azoL.
+// The library's map from text keys to values of any one type.
 //
-// It is here, and not in the library, for three reasons: a library
-// function cannot be called as a plain function, so nothing could
-// create a map; a method cannot change its receiver, so `set` and
-// `remove` could not be methods; and a struct in the library would
-// clash with a struct of the same name in a program.
-//
-// Who owns what: the map owns its keys and its values. `map_set`
-// takes its own copy of the value (or the value itself when the caller
-// does not use it again). `map_get` gives back a copy, like every read
-// in azoL: changing what it returned does not change the map, and a
-// changed value goes back in with `map_set`. Copying a map copies all
-// of its keys and values; the two maps are then independent.
-
-const FNV_START: i64 = 0xcbf2_9ce4_8422_2325
-const FNV_PRIME: i64 = 0x100_0000_01b3
-
-// The keys and values stand side by side in two lists with no gaps.
-// `table` is the hash table: each slot holds 0 when it was never used,
-// -1 when its key was removed, or the position of a key plus one.
-// `filled` counts the slots that are not 0.
-struct Map[V] {
-    keys: List[str]
-    values: List[V]
-    table: List[i64]
-    filled: i64
-}
-
-// The FNV-1a hash of the bytes of `key`; the multiplication wraps.
-fn hash(key: str) -> i64 {
-    var h = FNV_START
-    var i = 0
-    while i < key.len() {
-        h = (h ^ key[i]) * FNV_PRIME
-        i = i + 1
-    }
-    return h
-}
-
-// A map with nothing in it.
-fn map_new[V]() -> Map[V] {
-    return Map { keys: [], values: [], table: [0, 0, 0, 0, 0, 0, 0, 0], filled: 0 }
-}
-
-// How many keys `map` has.
-fn map_size[V](map: Map[V]) -> i64 {
-    return map.keys.len()
-}
-
-// The slot of `table` that holds `key`, or -1 when the map does not
-// have it. The table always has a slot that was never used, so the
-// search ends.
-fn map_find[V](map: Map[V], key: str) -> i64 {
-    let mask = map.table.len() - 1
-    var slot = hash(key) & mask
-    while map.table[slot] != 0 {
-        let entry = map.table[slot]
-        if entry > 0 && map.keys[entry - 1] == key {
-            return slot
-        }
-        slot = (slot + 1) & mask
-    }
-    return -1
-}
-
-// Builds the table again for the keys the map has now, at least twice
-// as large as their number. This also forgets the removed slots.
-fn map_rebuild[V](map: mut Map[V]) {
-    var size = 8
-    while size < (map.keys.len() + 1) * 2 {
-        size = size * 2
-    }
-    var table: List[i64] = []
-    var i = 0
-    while i < size {
-        table.push(0)
-        i = i + 1
-    }
-    let mask = size - 1
-    i = 0
-    while i < map.keys.len() {
-        var slot = hash(map.keys[i]) & mask
-        while table[slot] != 0 {
-            slot = (slot + 1) & mask
-        }
-        table[slot] = i + 1
-        i = i + 1
-    }
-    map.table = table
-    map.filled = map.keys.len()
-}
-
-// Makes `key` stand for `value`, in place of any value it had.
-fn map_set[V](map: mut Map[V], key: str, value: V) {
-    let found = map_find(map, key)
-    if found >= 0 {
-        map.values[map.table[found] - 1] = value
-        return
-    }
-    // At most three quarters of the slots may be in use.
-    if (map.filled + 1) * 4 > map.table.len() * 3 {
-        map_rebuild(mut map)
-    }
-    map.keys.push(key)
-    map.values.push(value)
-    let mask = map.table.len() - 1
-    var slot = hash(key) & mask
-    while map.table[slot] != 0 {
-        slot = (slot + 1) & mask
-    }
-    map.table[slot] = map.keys.len()
-    map.filled = map.filled + 1
-}
-
-// A copy of the value of `key`, or `None` when the map does not have it.
-fn map_get[V](map: Map[V], key: str) -> Option[V] {
-    let found = map_find(map, key)
-    if found < 0 {
-        return None
-    }
-    return Some(map.values[map.table[found] - 1])
-}
-
-// Whether the map has `key`.
-fn map_has[V](map: Map[V], key: str) -> bool {
-    return map_find(map, key) >= 0
-}
-
-// Takes `key` and its value out; false when the map did not have it.
-// The last key moves into the freed place, so `map_keys` does not keep
-// the order of insertion after a removal.
-fn map_remove[V](map: mut Map[V], key: str) -> bool {
-    let found = map_find(map, key)
-    if found < 0 {
-        return false
-    }
-    let at = map.table[found] - 1
-    map.table[found] = -1
-    let last = map.keys.len() - 1
-    if at != last {
-        let moved = map_find(map, map.keys[last])
-        map.table[moved] = at + 1
-        map.keys[at] = map.keys[last]
-        map.values[at] = map.values[last]
-    }
-    let key_out = map.keys.pop()
-    let value_out = map.values.pop()
-    return true
-}
-
-// A copy of the keys: in the order they were set, until a removal.
-fn map_keys[V](map: Map[V]) -> List[str] {
-    return map.keys
-}
+// Who owns what: the map owns its keys and its values. `set` takes its
+// own copy of the value (or the value itself when the caller does not
+// use it again). `get` gives back a copy, like every read in azoL:
+// changing what it returned does not change the map, and a changed
+// value goes back in with `set`. Copying a map copies all of its keys
+// and values; the two maps are then independent.
 
 fn show(found: Option[i64]) -> str {
     match found {
@@ -260,64 +113,64 @@ fn joined(found: Option[List[str]]) -> str {
 // before the next part starts.
 fn basics() {
     // An empty map.
-    var ages: Map[i64] = map_new()
-    print(map_size(ages))
-    print(show(map_get(ages, "ada")))
-    print(map_has(ages, ""))
-    print(map_remove(mut ages, "ada"))
-    print(map_keys(ages).len())
+    var ages: Map[i64] = new_map()
+    print(ages.len())
+    print(show(ages.get("ada")))
+    print(ages.has(""))
+    print(ages.remove("ada"))
+    print(ages.keys().len())
 
     // One key, then more, with a value replaced.
-    map_set(mut ages, "ada", 36)
-    print(map_size(ages))
-    print(show(map_get(ages, "ada")))
-    print(show(map_get(ages, "Ada")))
-    print(show(map_get(ages, "ad")))
-    print(show(map_get(ages, "adaa")))
-    map_set(mut ages, "alan", 41)
-    map_set(mut ages, "", -1)
-    map_set(mut ages, "ada", 37)
-    print(map_size(ages))
-    print(show(map_get(ages, "ada")))
-    print(show(map_get(ages, "")))
-    print(map_has(ages, "alan"))
-    print(map_has(ages, "grace"))
-    print(map_keys(ages).join("|"))
+    ages.set("ada", 36)
+    print(ages.len())
+    print(show(ages.get("ada")))
+    print(show(ages.get("Ada")))
+    print(show(ages.get("ad")))
+    print(show(ages.get("adaa")))
+    ages.set("alan", 41)
+    ages.set("", -1)
+    ages.set("ada", 37)
+    print(ages.len())
+    print(show(ages.get("ada")))
+    print(show(ages.get("")))
+    print(ages.has("alan"))
+    print(ages.has("grace"))
+    print(ages.keys().join("|"))
 
     // Removing: the first key, a missing key, the last key, all keys.
-    print(map_remove(mut ages, "ada"))
-    print(map_remove(mut ages, "ada"))
-    print(map_keys(ages).join("|"))
-    print(show(map_get(ages, "ada")))
-    print(show(map_get(ages, "alan")))
-    print(map_remove(mut ages, "alan"))
-    print(map_remove(mut ages, ""))
-    print(map_size(ages))
-    print(map_has(ages, ""))
-    map_set(mut ages, "ada", 1)
-    print(show(map_get(ages, "ada")))
-    print(map_size(ages))
+    print(ages.remove("ada"))
+    print(ages.remove("ada"))
+    print(ages.keys().join("|"))
+    print(show(ages.get("ada")))
+    print(show(ages.get("alan")))
+    print(ages.remove("alan"))
+    print(ages.remove(""))
+    print(ages.len())
+    print(ages.has(""))
+    ages.set("ada", 1)
+    print(show(ages.get("ada")))
+    print(ages.len())
 }
 
 fn large() {
     // The known hash of a short text.
-    print(hash("") == FNV_START)
-    print(hash("a").to_hex())
-    print(hash("foobar").to_hex())
+    print("".hash() == 0xcbf2_9ce4_8422_2325)
+    print("a".hash().to_hex())
+    print("foobar".hash().to_hex())
 
     // Thousands of keys.
-    var squares: Map[i64] = map_new()
+    var squares: Map[i64] = new_map()
     var i = 0
     while i < 2000 {
-        map_set(mut squares, "key" + str(i), i * i)
+        squares.set("key" + str(i), i * i)
         i = i + 1
     }
-    print(map_size(squares))
+    print(squares.len())
     var total = 0
     var missing = 0
     i = 0
     while i < 2000 {
-        match map_get(squares, "key" + str(i)) {
+        match squares.get("key" + str(i)) {
             Some(value) => total = total + value
             None => missing = missing + 1
         }
@@ -325,28 +178,28 @@ fn large() {
     }
     print(total)
     print(missing)
-    print(map_has(squares, "key2000"))
-    print(map_has(squares, "key"))
-    print(map_has(squares, "KEY7"))
+    print(squares.has("key2000"))
+    print(squares.has("key"))
+    print(squares.has("KEY7"))
 
     // Many removals: two keys of every three go.
     var removed = 0
     i = 0
     while i < 2000 {
         if i % 3 != 0 {
-            if map_remove(mut squares, "key" + str(i)) {
+            if squares.remove("key" + str(i)) {
                 removed = removed + 1
             }
         }
         i = i + 1
     }
     print(removed)
-    print(map_size(squares))
+    print(squares.len())
     var present = 0
     total = 0
     i = 0
     while i < 2000 {
-        match map_get(squares, "key" + str(i)) {
+        match squares.get("key" + str(i)) {
             Some(value) => {
                 present = present + 1
                 total = total + value
@@ -357,9 +210,9 @@ fn large() {
     }
     print(present)
     print(total)
-    print(map_has(squares, "key3"))
-    print(map_has(squares, "key4"))
-    let left = map_keys(squares)
+    print(squares.has("key3"))
+    print(squares.has("key4"))
+    let left = squares.keys()
     print(left.take(6).join(" "))
     print(left.skip(left.len() - 3).join(" "))
 
@@ -368,24 +221,24 @@ fn large() {
     i = 0
     while i < 600 {
         if i % 2 == 0 {
-            map_set(mut squares, "key" + str(i), -i)
+            squares.set("key" + str(i), -i)
         }
         i = i + 1
     }
     i = 0
     while i < 300 {
-        map_set(mut squares, "extra" + str(i), 1)
+        squares.set("extra" + str(i), 1)
         i = i + 1
     }
-    print(map_size(squares))
-    print(show(map_get(squares, "key6")))
-    print(show(map_get(squares, "key9")))
-    print(show(map_get(squares, "key4")))
-    print(show(map_get(squares, "key5")))
+    print(squares.len())
+    print(show(squares.get("key6")))
+    print(show(squares.get("key9")))
+    print(show(squares.get("key4")))
+    print(show(squares.get("key5")))
     var order = 0
-    for at, key in map_keys(squares) {
+    for at, key in squares.keys() {
         if at % 8 == 0 {
-            match map_get(squares, key) {
+            match squares.get(key) {
                 Some(value) => order = order + (at + 1) * value
                 None => order = order - 1000000
             }
@@ -397,76 +250,76 @@ fn large() {
 fn churning() {
     // Set and remove the same few keys again and again: the removed
     // slots must not fill the table.
-    var churn: Map[i64] = map_new()
+    var churn: Map[i64] = new_map()
     var i = 0
     while i < 3500 {
         let name = "c" + str(i % 7)
-        map_set(mut churn, name, i)
+        churn.set(name, i)
         if i % 2 == 1 {
-            let gone = map_remove(mut churn, name)
+            let gone = churn.remove(name)
         }
         i = i + 1
     }
-    print(map_size(churn))
-    print(map_keys(churn).sorted().join(","))
+    print(churn.len())
+    print(churn.keys().sorted().join(","))
     print(churn.table.len() <= 64)
     // Emptied completely, a key at a time.
-    for key in map_keys(churn) {
-        let gone = map_remove(mut churn, key)
+    for key in churn.keys() {
+        let gone = churn.remove(key)
     }
-    print(map_size(churn))
-    print(map_has(churn, "c0"))
+    print(churn.len())
+    print(churn.has("c0"))
 }
 
 fn owned_values() {
     // Values that own memory: text.
-    var capitals: Map[str] = map_new()
-    map_set(mut capitals, "Türkiye", "Ankara")
-    map_set(mut capitals, "France", "Paris")
-    map_set(mut capitals, "Japan", "Kyoto")
-    map_set(mut capitals, "Japan", "Tokyo")
-    print(text(map_get(capitals, "Japan")))
-    print(text(map_get(capitals, "Türkiye")))
-    print(text(map_get(capitals, "Spain")))
-    print(map_remove(mut capitals, "France"))
-    print(map_keys(capitals).sorted().join(","))
+    var capitals: Map[str] = new_map()
+    capitals.set("Türkiye", "Ankara")
+    capitals.set("France", "Paris")
+    capitals.set("Japan", "Kyoto")
+    capitals.set("Japan", "Tokyo")
+    print(text(capitals.get("Japan")))
+    print(text(capitals.get("Türkiye")))
+    print(text(capitals.get("Spain")))
+    print(capitals.remove("France"))
+    print(capitals.keys().sorted().join(","))
 
     // Values that own memory: lists of text.
-    var groups: Map[List[str]] = map_new()
-    map_set(mut groups, "fruit", ["apple", "pear"])
-    map_set(mut groups, "empty", [])
-    map_set(mut groups, "tools", ["saw"])
-    print(joined(map_get(groups, "fruit")))
-    print(joined(map_get(groups, "empty")))
-    print(joined(map_get(groups, "none")))
+    var groups: Map[List[str]] = new_map()
+    groups.set("fruit", ["apple", "pear"])
+    groups.set("empty", [])
+    groups.set("tools", ["saw"])
+    print(joined(groups.get("fruit")))
+    print(joined(groups.get("empty")))
+    print(joined(groups.get("none")))
     // What `map_get` returns is a copy: changing it leaves the map as
     // it was, until the changed list is set again.
-    match map_get(groups, "fruit") {
+    match groups.get("fruit") {
         Some(items) => {
             var more = items
             more.push("fig")
             print(more.len())
-            print(joined(map_get(groups, "fruit")))
-            map_set(mut groups, "fruit", more)
+            print(joined(groups.get("fruit")))
+            groups.set("fruit", more)
         }
         None => {}
     }
-    print(joined(map_get(groups, "fruit")))
+    print(joined(groups.get("fruit")))
     // A copy of the map is a map of its own.
     var copy = groups
-    map_set(mut copy, "tools", ["saw", "drill"])
-    print(map_remove(mut copy, "fruit"))
-    print(joined(map_get(copy, "tools")))
-    print(joined(map_get(groups, "tools")))
-    print(map_size(copy))
-    print(map_size(groups))
-    print(map_remove(mut groups, "empty"))
-    print(map_keys(groups).join(","))
+    copy.set("tools", ["saw", "drill"])
+    print(copy.remove("fruit"))
+    print(joined(copy.get("tools")))
+    print(joined(groups.get("tools")))
+    print(copy.len())
+    print(groups.len())
+    print(groups.remove("empty"))
+    print(groups.keys().join(","))
 }
 
 fn many_lists() {
     // Many lists, most of them removed again.
-    var lists: Map[List[str]] = map_new()
+    var lists: Map[List[str]] = new_map()
     var i = 0
     while i < 150 {
         var items: List[str] = []
@@ -475,24 +328,24 @@ fn many_lists() {
             items.push("item" + str(i) + "." + str(k))
             k = k + 1
         }
-        map_set(mut lists, "list" + str(i), items)
+        lists.set("list" + str(i), items)
         i = i + 1
     }
     i = 0
     while i < 150 {
         if i % 5 != 2 {
-            let gone = map_remove(mut lists, "list" + str(i))
+            let gone = lists.remove("list" + str(i))
         }
         i = i + 1
     }
-    print(map_size(lists))
-    print(joined(map_get(lists, "list7")))
-    print(joined(map_get(lists, "list8")))
-    print(joined(map_get(lists, "list149")))
-    print(joined(map_get(lists, "list147")))
+    print(lists.len())
+    print(joined(lists.get("list7")))
+    print(joined(lists.get("list8")))
+    print(joined(lists.get("list149")))
+    print(joined(lists.get("list147")))
     var items_left = 0
-    for key in map_keys(lists) {
-        match map_get(lists, key) {
+    for key in lists.keys() {
+        match lists.get(key) {
             Some(items) => items_left = items_left + items.len()
             None => {}
         }

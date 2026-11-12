@@ -1,0 +1,47 @@
+// expect-exit: 0
+// expect-line: -9223372036854775808
+// expect-line: true
+// expect-line: 9223372036854775807
+// expect-line: true
+// expect-line: -1
+// expect-line: true
+// expect-line: -9223372036854775808
+// expect-line: 9223372036854775807
+// expect-line: none
+// expect-line: none
+// expect-line: 0
+// expect-line: none
+// expect-line: none
+// expect-line: none
+// expect-line: 1016
+
+// The smallest number can be written and read, and numbers at the edges
+// of the range are told from those beyond it.
+
+const LOWEST = -9223372036854775808
+
+fn show(o: Option[i64]) -> str {
+    match o {
+        Some(n) => return str(n)
+        None => return "none"
+    }
+}
+
+fn main() {
+    let low = -9223372036854775808
+    print(low)
+    print(low == LOWEST)
+    print(low - 1)
+    print(-low == low)
+    print(low + 9223372036854775807)
+    print(-9_223_372_036_854_775_808 == low)
+    print(show("-9223372036854775808".to_i64()))
+    print(show("9223372036854775807".to_i64()))
+    print(show("9223372036854775808".to_i64()))
+    print(show("-9223372036854775809".to_i64()))
+    print(show("-0".to_i64()))
+    print(show("99999999999999999999".to_i64()))
+    print(show("-".to_i64()))
+    print(show("12a".to_i64()))
+    print(1_000 + 0x0F + 0b0_1 + 0)
+}

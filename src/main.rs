@@ -13,6 +13,7 @@ mod sha256;
 mod token;
 mod elf;
 mod format;
+mod sema_dump;
 mod runtime_x64;
 mod x64;
 mod elf_arm64;
@@ -206,6 +207,8 @@ fn main() -> ExitCode {
         ["parse", path] => run_parse(path, false),
         ["parse", "--time", path] => run_parse(path, true),
         ["fmt", rest @ ..] => format::run(rest),
+        // For comparing with the checker written in azoL; see `sema_dump.rs`.
+        ["sema-dump", rest @ ..] => sema_dump::run(rest),
         [command @ ("build" | "check"), rest @ ..] => match build_arguments(rest) {
             Some(arguments) => run_build(&arguments, *command == "check"),
             None => {
@@ -520,7 +523,8 @@ fn run_build(arguments: &BuildArguments, check_only: bool) -> ExitCode {
     // format the system loads.
     let (image, code_bytes, generated) = match target {
         Target::Aarch64Macos => {
-            let code = arm64::generate(&ast, &program);
+            let mut code = arm64::generate(&ast, &program);
+            macho::start_through_runtime(&mut code);
             let generated = started.elapsed().as_secs_f64();
             let ident = out_path.file_name().and_then(|name| name.to_str()).unwrap_or("azol-program");
             if let Some(path) = arguments.emit_code {

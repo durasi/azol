@@ -226,6 +226,10 @@
           "match": "->|=>"
         },
         {
+          "name": "keyword.operator.try.azol",
+          "match": "\\?"
+        },
+        {
           "name": "keyword.operator.comparison.azol",
           "match": "==|!=|<=|>=|<(?!<)|>(?!>)"
         },

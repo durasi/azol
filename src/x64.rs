@@ -1260,6 +1260,11 @@ impl<'a> Gen<'a> {
     /// value the statement still needs.
     fn drop_temps(&mut self, id: StmtId, keep_rax: bool) {
         let (start, len) = self.prog.stmt_drops[self.sh.s(id)];
+        self.drop_range(start, len, keep_rax);
+    }
+
+    /// Frees the temporaries listed in `drops[start..start + len]`.
+    fn drop_range(&mut self, start: u32, len: u32, keep_rax: bool) {
         if len == 0 {
             return;
         }
@@ -2276,6 +2281,7 @@ impl<'a> Gen<'a> {
                 self.frame_address(RAX, tmp);
             }
             Expr::ArrayLit { items } => self.list_literal(id, items),
+            Expr::Try(inner) => self.try_expr(id, inner),
             Expr::Call { args, .. } if self.prog.expr_res[self.sh.e(id)] == BUILTIN_VARIANT => {
                 self.enum_value(id, self.ast.list(args));
             }
@@ -2520,9 +2526,81 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// `inner?`. When `inner` is an `Ok` or a `Some`, what it holds is the
+    /// value: a number or `bool` in rax, anything else in this
+    /// expression's temporary with its address in rax. Otherwise the
+    /// function returns the `Err` or the `None` here and now, after
+    /// freeing what a `return` at this point would free.
+    fn try_expr(&mut self, id: ExprId, inner: ExprId) {
+        let Ty::Enum(index) = self.ty(inner) else {
+            unreachable!("checked: `?` follows a `Result` or an `Option`");
+        };
+        let Ty::Enum(ret_index) = self.ret else {
+            unreachable!("checked: the function returns a `Result` or an `Option`");
+        };
+        let prog = self.prog;
+        let (value_ty, value_at) = prog.enums[index as usize].variants[0].fields[0];
+        // A temporary gives away what it holds and is left empty (tag
+        // 0); what a variable holds is copied.
+        let from_temp = prog.expr_aux[self.sh.e(id)] & 1 == 1;
+        let (start, len) = (prog.expr_res[self.sh.e(id)], prog.expr_aux[self.sh.e(id)] >> 1);
+        let inner_tmp = prog.expr_tmp[self.sh.e(inner)];
+        self.address(inner);
+        self.op_mem_imm(CMP_I, RAX, 0, 1); // the tag of `Ok` and `Some`
+        let ok = self.jump_if(CC_E);
+
+        let ret_slot = self.sret_slot.expect("checked: this function returns an enum");
+        self.load(R8, ret_slot);
+        if let Some(&(error_ty, error_at)) = prog.enums[index as usize].variants[1].fields.first() {
+            let error_to = prog.enums[ret_index as usize].variants[1].fields[0].1;
+            for i in 0..prog.size_of(error_ty) {
+                self.load_mem(RCX, RAX, ((error_at + i) * 8) as i32);
+                self.store_mem(R8, ((error_to + i) * 8) as i32, RCX);
+            }
+            self.store_imm(R8, 0, 2);
+            if prog.needs_drop(error_ty) {
+                if from_temp {
+                    self.zero_slot(inner_tmp);
+                } else {
+                    self.lea(RDI, R8, (error_to * 8) as i32);
+                    self.clone_value(error_ty);
+                }
+            }
+        } else {
+            self.store_imm(R8, 0, 2);
+        }
+        self.drop_range(start, len, false);
+        for i in (0..self.live.len()).rev() {
+            let (slot, ty) = self.live[i];
+            self.drop_frame(slot, ty);
+        }
+        self.mov_imm(RAX, 0);
+        // Leaving also takes off what the unfinished statement parked
+        // on the stack.
+        self.function_epilogue();
+
+        self.patch(ok);
+        if !value_ty.is_aggregate() {
+            self.load_mem(RAX, RAX, (value_at * 8) as i32);
+            return;
+        }
+        let tmp = prog.expr_tmp[self.sh.e(id)];
+        self.lea(RAX, RAX, (value_at * 8) as i32);
+        self.copy_to_frame(tmp, prog.size_of(value_ty));
+        if prog.needs_drop(value_ty) {
+            if from_temp {
+                self.zero_slot(inner_tmp);
+            } else {
+                self.clone_frame(tmp, value_ty);
+            }
+        }
+        self.frame_address(RAX, tmp);
+    }
+
     /// Generates code that leaves a scalar value in rax.
     fn value(&mut self, id: ExprId) {
         match self.expr(id) {
+            Expr::Try(inner) => self.try_expr(id, inner),
             Expr::Int(_) => self.mov_imm(RAX, self.prog.ints[self.prog.expr_res[self.sh.e(id)] as usize]),
             Expr::Bool(value) => self.mov_imm(RAX, value as i64),
             Expr::Index { base, index } if self.ty(base) == Ty::Str => {

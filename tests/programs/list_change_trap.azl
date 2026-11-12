@@ -1,0 +1,10 @@
+// expect-exit: 1
+// expect-output: 2
+// expect-stderr: azol: index out of range
+
+// Taking out an item that is not there stops the program.
+fn main() {
+    var xs = [1, 2]
+    print(xs.remove_at(1))
+    print(xs.remove_at(1))
+}

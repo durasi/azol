@@ -1,0 +1,14 @@
+// A function that calls itself without end runs out of stack. The program
+// must stop with a message, not with a silent crash.
+// expect-exit: 1
+// expect-line: start
+// expect-stderr: azol: stack overflow
+
+fn forever(n: i64) -> i64 {
+    return forever(n + 1) + 1
+}
+
+fn main() {
+    print("start")
+    print(str(forever(0)))
+}

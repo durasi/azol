@@ -115,6 +115,7 @@ SAMPLES = [
     ("const MASK = (1 << 4) - 1", [("const", "keyword.declaration.constant"), ("MASK", "variable.other.constant"), ("<<", "keyword.operator.bitwise"), ("-", "keyword.operator.arithmetic")], []),
     ("if a <= b && !done || c != d {", [("if", "keyword.control"), ("<=", "keyword.operator.comparison"), ("&&", "keyword.operator.logical"), ("!", "keyword.operator.logical"), ("||", "keyword.operator.logical"), ("!=", "keyword.operator.comparison")], []),
     ("} else if x >> 2 > 1 {", [("else", "keyword.control"), ("if", "keyword.control"), (">>", "keyword.operator.bitwise"), (">", "keyword.operator.comparison")], []),
+    ("let n = parse(a)? + 1", [("let", "keyword.declaration"), ("?", "keyword.operator.try"), ("+", "keyword.operator.arithmetic")], []),
     ("for i, item in items {", [("for", "keyword.control"), ("in", "keyword.control"), (",", "punctuation.separator")], [("item", "keyword"), ("items", "keyword")]),
     ("while true { break }", [("while", "keyword.control"), ("true", "constant.language.boolean"), ("break", "keyword.control")], []),
     ("match found {", [("match", "keyword.control")], [("found", "keyword")]),

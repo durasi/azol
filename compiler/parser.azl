@@ -832,6 +832,20 @@ fn parse_condition(p: mut Parser) -> i64 {
     p.no_struct = true
     let result = parse_expr(mut p)
     p.no_struct = saved
+    // `if p == Point { x: 1 } {`: the `{` after a name starts the block
+    // here, and no statement begins with `name:`.
+    if !p.failed && p.kind == TOK_LBRACE && p.tokens.kinds[p.pos - 1] == TOK_IDENT {
+        var next = p.pos + 1
+        while p.tokens.kinds[next] == TOK_NEWLINE {
+            next = next + 1
+        }
+        if p.tokens.kinds[next] == TOK_IDENT && p.tokens.kinds[next + 1] == TOK_COLON {
+            let name = Span { start: p.tokens.starts[p.pos - 1], len: p.tokens.lens[p.pos - 1] }
+            let message = "a struct literal here needs parentheses around it, `(" + span_text(p.src, name)
+            parse_fail_at(mut p, message + " { ... })`: this `{` starts the block", name.start)
+            return NO_NODE
+        }
+    }
     return result
 }
 
@@ -1000,6 +1014,9 @@ fn parse_postfix(p: mut Parser) -> i64 {
                 return NO_NODE
             }
             expr = push_expr(mut p, ExprField(expr, name), pos)
+        } else if p.kind == TOK_QUESTION {
+            bump(mut p)
+            expr = push_expr(mut p, ExprTry(expr), pos)
         } else if p.kind == TOK_NEWLINE && kind_after_newlines(p) == TOK_DOT {
             // A line that starts with `.` continues the previous one.
             skip_newlines(mut p)

@@ -124,7 +124,8 @@ pub const CONST_STR: u32 = u32::MAX - 3;
 /// Names of the built-in functions; a program cannot define these.
 const BUILTIN_FUNCTIONS: [&str; 9] =
     ["print", "eprint", "str", "chr", "args", "read_file", "write_file", "set_executable", "exit"];
-/// Where the built-in `Result` sits among the enum declarations.
+/// Where the built-in `Option` and `Result` sit among the enum declarations.
+const OPTION: u32 = 0;
 const RESULT: u32 = 1;
 /// Set in the resolution of a name whose stack slot holds a pointer.
 pub const BY_REF: u32 = 1 << 31;
@@ -645,15 +646,15 @@ struct Checker<'a> {
     lists: Vec<Ty>,
     fns: Vec<FnInfo>,
     fn_names: HashMap<&'a str, u32>,
-    /// Source offset where the standard library's own azoL code starts.
-    /// Functions from there on are methods: `str_find` is `find` on the
-    /// type of its first parameter, and no name a program can call.
+    /// Where the standard library's source starts. Functions from there
+    /// on are the library's: `str_find` is the method `find`, and a
+    /// function without parameters is called by its name.
     prelude_start: u32,
-    methods: HashMap<(Ty, &'a str), u32>,
     generic_fns: Vec<GenericFn<'a>>,
     generic_names: HashMap<&'a str, u32>,
-    /// Generic functions of the standard library, by method name.
-    generic_methods: HashMap<&'a str, u32>,
+    /// The library's methods by name, as indices into `generic_fns`. The
+    /// one whose first parameter fits the receiver is the one called.
+    library: HashMap<&'a str, Vec<u32>>,
     /// A generic function and type arguments to its entry in `fns`.
     fn_ids: HashMap<(u32, Vec<Ty>), u32>,
     /// The type parameters of the function being checked, what they
@@ -687,6 +688,14 @@ struct Checker<'a> {
     /// evaluated after it: the list in `list[index]` while the index is
     /// checked, the target of an assignment while its value is.
     late: Vec<ExprId>,
+    /// The `?` expressions of the statement being checked.
+    tries: Vec<ExprId>,
+    /// How many list literals the expression being checked is inside.
+    in_list: u32,
+    /// How many parts that own memory have already been stored in the
+    /// struct literals and variants the expression being checked is
+    /// inside.
+    owned_siblings: u32,
     /// Variables of the function being checked that could live in a
     /// register: slot and how much each is used.
     wishes: Vec<(u32, u32)>,
@@ -737,10 +746,9 @@ pub fn check_with_prelude<'a>(ast: &'a Ast, src: &'a str, prelude_start: u32) ->
         fns: Vec::new(),
         fn_names: HashMap::new(),
         prelude_start,
-        methods: HashMap::new(),
         generic_fns: Vec::new(),
         generic_names: HashMap::new(),
-        generic_methods: HashMap::new(),
+        library: HashMap::new(),
         fn_ids: HashMap::new(),
         fn_params: Vec::new(),
         fn_bound: Vec::new(),
@@ -765,6 +773,9 @@ pub fn check_with_prelude<'a>(ast: &'a Ast, src: &'a str, prelude_start: u32) ->
         borrows: Vec::new(),
         pending: Vec::new(),
         late: Vec::new(),
+        tries: Vec::new(),
+        in_list: 0,
+        owned_siblings: 0,
         wishes: Vec::new(),
         zero_slots: Vec::new(),
         ret: Ty::Unit,
@@ -864,18 +875,50 @@ fn special_literal(text: &str) -> Option<Option<i64>> {
 /// The value of a number literal as written: decimal, hexadecimal,
 /// binary or a character. The error is the message to report.
 fn int_literal(text: &str) -> Result<i64, &'static str> {
+    let bytes = text.as_bytes();
     match special_literal(text) {
-        Some(Some(value)) => Ok(value),
-        Some(None) => Err("this number does not fit in 64 bits"),
+        Some(value) => {
+            if bytes[0] != b'\'' {
+                number_fault(bytes, 2)?;
+            }
+            value.ok_or("this number does not fit in 64 bits")
+        }
         None => {
             let mut value: i64 = 0;
-            for byte in text.bytes().filter(|&b| b != b'_') {
+            let mut underscore = false;
+            for &byte in bytes {
+                if byte == b'_' {
+                    underscore = true;
+                    continue;
+                }
                 let digit = (byte - b'0') as i64;
                 value = value.checked_mul(10).and_then(|v| v.checked_add(digit)).ok_or("this number does not fit in `i64`")?;
+            }
+            // Only a number with a `_` or a zero in front can be badly written.
+            if underscore || (bytes[0] == b'0' && bytes.len() > 1) {
+                number_fault(bytes, 0)?;
             }
             Ok(value)
         }
     }
+}
+
+/// Says what is wrong with the way the number `text` is written, if
+/// anything: its digits start at `digits`, after any `0x` or `0b`. A `_`
+/// stands between two digits, and a decimal number has no zeros in
+/// front, so that nothing looks like the octal numbers of other languages.
+fn number_fault(text: &[u8], digits: usize) -> Result<(), &'static str> {
+    for at in digits..text.len() {
+        if text[at] == b'_'
+            && (at == digits || at + 1 == text.len() || !text[at - 1].is_ascii_hexdigit() || !text[at + 1].is_ascii_hexdigit())
+        {
+            return Err("a `_` in a number stands between two digits, as in `1_000`");
+        }
+    }
+    if digits == 0 && text.len() > 1 && text[0] == b'0' {
+        return Err("a decimal number does not start with `0`; other bases are written `0x1F` and `0b1010`");
+    }
+    Ok(())
 }
 
 fn err<T>(offset: u32, message: impl Into<String>) -> SResult<T> {
@@ -1239,6 +1282,18 @@ impl<'a> Checker<'a> {
             if matches!(text, "i64" | "bool" | "str" | "List") {
                 return err(name.start, format!("`{text}` is a built-in type and cannot be redefined"));
             }
+            if name.start >= self.prelude_start {
+                // The program's own declarations come first, so the
+                // clash is with one of them: that is where to report it.
+                let earlier = match (self.template_names.get(text), self.struct_names.get(text)) {
+                    (Some(&template), _) => Some(self.templates[template as usize].pos),
+                    (_, Some(&index)) => Some(self.struct_templates[index as usize].pos),
+                    _ => None,
+                };
+                if let Some(pos) = earlier {
+                    return err(pos, format!("`{text}` is a type of the standard library; choose another name"));
+                }
+            }
             if let Some(&template) = self.template_names.get(text) {
                 return err(
                     name.start,
@@ -1474,7 +1529,7 @@ impl<'a> Checker<'a> {
             if param_ids.len() > MAX_PARAMS {
                 return err(name.start, format!("function `{text}` has more than {MAX_PARAMS} parameters, which is not supported yet"));
             }
-            if generics.len > 0 {
+            if generics.len > 0 || in_prelude {
                 if text == "main" {
                     return err(name.start, "`main` cannot have type parameters");
                 }
@@ -1501,9 +1556,18 @@ impl<'a> Checker<'a> {
                 let index = self.generic_fns.len() as u32;
                 let mut shown = text;
                 if in_prelude {
-                    let (_, method) = text.split_once('_').expect("a standard library function is named `type_method`");
-                    self.generic_methods.insert(method, index);
-                    shown = method;
+                    if shapes.is_empty() {
+                        // A plain function of the library. One of the
+                        // program's own with the same name hides it.
+                        if self.fn_names.contains_key(text) || self.generic_names.contains_key(text) {
+                            continue;
+                        }
+                        self.generic_names.insert(text, index);
+                    } else {
+                        let (_, method) = text.split_once('_').expect("a standard library method is named `type_method`");
+                        self.library.entry(method).or_default().push(index);
+                        shown = method;
+                    }
                 } else if self.fn_names.contains_key(text) || self.generic_names.insert(text, index).is_some() {
                     return err(name.start, format!("function `{text}` is defined more than once"));
                 }
@@ -1520,7 +1584,7 @@ impl<'a> Checker<'a> {
                 Some(id) => self.ty(id)?,
                 None => Ty::Unit,
             };
-            if text == "main" && !in_prelude {
+            if text == "main" {
                 if !infos.is_empty() {
                     return err(name.start, "`main` cannot take parameters");
                 }
@@ -1529,11 +1593,7 @@ impl<'a> Checker<'a> {
                 }
             }
             let index = self.fns.len() as u32;
-            if in_prelude {
-                let (_, method) = text.split_once('_').expect("a standard library function is named `type_method`");
-                let receiver = infos.first().expect("a method has a receiver").ty;
-                self.methods.insert((receiver, method), index);
-            } else if self.generic_names.contains_key(text) || self.fn_names.insert(text, index).is_some() {
+            if self.generic_names.contains_key(text) || self.fn_names.insert(text, index).is_some() {
                 return err(name.start, format!("function `{text}` is defined more than once"));
             }
             self.fns.push(FnInfo {
@@ -1585,7 +1645,9 @@ impl<'a> Checker<'a> {
                     format!("`{param}` = `{name}`")
                 })
                 .collect();
-            error.message = format!("{} (in `{}` with {})", error.message, self.generic_fns[generic as usize].name, types.join(", "));
+            if !types.is_empty() {
+                error.message = format!("{} (in `{}` with {})", error.message, self.generic_fns[generic as usize].name, types.join(", "));
+            }
             // A mistake inside the standard library's code is shown where
             // the program asked for these types.
             if error.offset >= self.prelude_start {
@@ -1603,6 +1665,9 @@ impl<'a> Checker<'a> {
         self.borrows.clear();
         self.pending.clear();
         self.late.clear();
+        self.tries.clear();
+        self.in_list = 0;
+        self.owned_siblings = 0;
         self.wishes.clear();
         self.zero_slots.clear();
         self.next_slot = 0;
@@ -1662,6 +1727,12 @@ impl<'a> Checker<'a> {
     fn stmt_returns(&self, id: StmtId) -> bool {
         match self.ast.stmts[id as usize] {
             Stmt::Return(_) => true,
+            // `exit` ends the program; nothing comes back from it. The
+            // name is built in, so no function of the program has it.
+            Stmt::Expr(expr) => match self.ast.exprs[expr as usize] {
+                Expr::Call { callee, .. } => matches!(self.ast.exprs[callee as usize], Expr::Ident(name) if name.text(self.src) == "exit"),
+                _ => false,
+            },
             Stmt::If { then_block, else_branch, .. } => {
                 self.always_returns(then_block)
                     && match else_branch {
@@ -1803,6 +1874,7 @@ impl<'a> Checker<'a> {
                     None => err(pos, format!("`{text}` is not a constant; a constant is made of literals and other constants")),
                 }
             }
+            Expr::Unary { op: UnOp::Neg, operand } if self.is_min_literal(operand) => Ok(ConstValue::Int(i64::MIN)),
             Expr::Unary { op, operand } => {
                 let value = self.const_eval(operand)?;
                 match (op, value) {
@@ -1816,8 +1888,21 @@ impl<'a> Checker<'a> {
                 let left = self.const_eval(lhs)?;
                 let right = self.const_eval(rhs)?;
                 let what = format!("`{}`", op.symbol());
-                if let ConstValue::Str(_) = left {
-                    return err(pos, "a string constant must be a single string literal");
+                if let ConstValue::Str(first) = left {
+                    // Two string constants joined into a new one.
+                    if op != BinOp::Add {
+                        return err(pos, "string constants can be joined with `+`; no other operator works on them in a constant");
+                    }
+                    let ConstValue::Str(second) = right else {
+                        return wrong(self, rhs, &what, Ty::Str, right);
+                    };
+                    let offset = self.data.len() as u32;
+                    for part in [first, second] {
+                        let (start, len) = self.strings[part as usize];
+                        self.data.extend_from_within(start as usize..(start + len) as usize);
+                    }
+                    self.strings.push((offset, self.data.len() as u32 - offset));
+                    return Ok(ConstValue::Str(self.strings.len() as u32 - 1));
                 }
                 match op {
                     BinOp::And | BinOp::Or => {
@@ -1870,6 +1955,18 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// True for the digits `9223372036854775808`, which are a number
+    /// only with a `-` in front: the smallest `i64`.
+    fn is_min_literal(&self, id: ExprId) -> bool {
+        match self.ast.exprs[id as usize] {
+            Expr::Int(span) => {
+                let text = span.text(self.src);
+                text.len() >= 19 && text.bytes().filter(|&byte| byte != b'_').eq("9223372036854775808".bytes())
+            }
+            _ => false,
+        }
+    }
+
     fn block(&mut self, body: List) -> SResult<()> {
         let scope = self.locals.len();
         for &id in self.ast.list(body) {
@@ -1904,7 +2001,7 @@ impl<'a> Checker<'a> {
             Expr::Call { callee, args } => {
                 self.mentions(callee, name) || self.ast.list(args).iter().any(|&arg| self.mentions(arg, name))
             }
-            Expr::MutArg(inner) => self.mentions(inner, name),
+            Expr::MutArg(inner) | Expr::Try(inner) => self.mentions(inner, name),
             Expr::Field { base, .. } => self.mentions(base, name),
             Expr::Index { base, index } => self.mentions(base, name) || self.mentions(index, name),
             Expr::StructLit { fields, .. } => {
@@ -1986,7 +2083,70 @@ impl<'a> Checker<'a> {
             }
             self.drops.push((slot, ty));
         }
-        self.stmt_drops[self.sh.s(id)] = (start, self.drops.len() as u32 - start);
+        let len = self.drops.len() as u32 - start;
+        self.stmt_drops[self.sh.s(id)] = (start, len);
+        // A `?` that leaves the function frees the same temporaries.
+        for at in std::mem::take(&mut self.tries) {
+            self.expr_res[self.sh.e(at)] = start;
+            self.expr_aux[self.sh.e(at)] |= len << 1;
+        }
+    }
+
+    /// Notes that `value` was stored in a struct literal or a variant
+    /// that is still being put together.
+    fn sibling(&mut self, value: ExprId) {
+        if self.needs_drop(self.expr_ty[self.sh.e(value)]) {
+            self.owned_siblings += 1;
+        }
+    }
+
+    /// `value?`: what `Ok` or `Some` holds, or an early return of the
+    /// `Err` or the `None`.
+    fn try_expr(&mut self, id: ExprId, inner: ExprId) -> SResult<Ty> {
+        let pos = self.ast.expr_pos[id as usize];
+        let inner_ty = self.expr(inner)?;
+        let index = match inner_ty {
+            Ty::Enum(index) if self.enums[index as usize].template == OPTION || self.enums[index as usize].template == RESULT => index,
+            other => return err_expr(self.ast, inner, format!("`?` needs a `Result` or an `Option` but this is `{}`", self.ty_name(other))),
+        };
+        let template = self.enums[index as usize].template;
+        let fits = match self.ret {
+            Ty::Enum(ret) => {
+                let ret = &self.enums[ret as usize];
+                ret.template == template && (template == OPTION || ret.args[1] == self.enums[index as usize].args[1])
+            }
+            _ => false,
+        };
+        if !fits {
+            let wanted = if template == OPTION {
+                "an `Option`".to_string()
+            } else {
+                format!("a `Result` with the error type `{}`", self.ty_name(self.enums[index as usize].args[1]))
+            };
+            let returns = match self.ret {
+                Ty::Unit => "nothing".to_string(),
+                ret => format!("`{}`", self.ty_name(ret)),
+            };
+            return err(pos, format!("`?` on `{}` needs a function that returns {wanted}, but this function returns {returns}; use `match`", self.ty_name(inner_ty)));
+        }
+        // Leaving in the middle of a list literal would lose its buffer,
+        // and leaving after a part of a struct or variant was stored
+        // would lose what that part owns.
+        if self.in_list > 0 {
+            return err(pos, "`?` cannot be used inside a list literal; store its value in a variable first");
+        }
+        if self.owned_siblings > 0 {
+            return err(pos, "`?` cannot be used after a part of the same value that owns memory; store its value in a variable first");
+        }
+        let value_ty = self.enums[index as usize].args[0];
+        // A temporary gives what it holds away; anything else is copied.
+        let from_temp = self.pending.iter().any(|&(expr, ..)| expr == inner);
+        self.expr_aux[self.sh.e(id)] = from_temp as u32;
+        self.tries.push(id);
+        if value_ty.is_aggregate() {
+            self.expr_tmp[self.sh.e(id)] = self.temp(id, value_ty)?;
+        }
+        Ok(value_ty)
     }
 
     fn stmt(&mut self, id: StmtId) -> SResult<()> {
@@ -2252,6 +2412,13 @@ impl<'a> Checker<'a> {
             // of a constant. With it, how the value is written.
             let literal: Option<(ConstValue, String)> = match self.ast.patterns[pat] {
                 Pattern::Int { negative, digits } => {
+                    let written = digits.text(self.src).as_bytes();
+                    if written[0] != b'\'' {
+                        let prefixed = written.len() > 1 && matches!(written[1], b'x' | b'b');
+                        if let Err(message) = number_fault(written, if prefixed { 2 } else { 0 }) {
+                            return err(pat_pos, message);
+                        }
+                    }
                     let mut value: i128 = 0;
                     match special_literal(digits.text(self.src)) {
                         Some(Some(special)) => value = special as i128,
@@ -2659,6 +2826,7 @@ impl<'a> Checker<'a> {
                 Ok(Ty::I64)
             }
             Expr::Bool(_) => Ok(Ty::Bool),
+            Expr::Try(inner) => self.try_expr(id, inner),
             Expr::Str(span) => {
                 self.expr_res[self.sh.e(id)] = self.string_literal(span);
                 self.expr_tmp[self.sh.e(id)] = self.alloc(3, pos)?;
@@ -2708,6 +2876,14 @@ impl<'a> Checker<'a> {
                 Ok(ty)
             }
             Expr::Unary { op, operand } => match op {
+                UnOp::Neg if self.is_min_literal(operand) => {
+                    // The smallest number has no positive twin to write
+                    // down; negating it gives it back.
+                    self.expr_res[self.sh.e(operand)] = self.ints.len() as u32;
+                    self.ints.push(i64::MIN);
+                    self.expr_ty[self.sh.e(operand)] = Ty::I64;
+                    Ok(Ty::I64)
+                }
                 UnOp::Neg => {
                     self.expect(operand, Ty::I64, What::Text("`-`"))?;
                     Ok(Ty::I64)
@@ -2830,6 +3006,7 @@ impl<'a> Checker<'a> {
                     Some(Ty::List(list)) => Some(self.lists[list as usize]),
                     _ => None,
                 };
+                self.in_list += 1;
                 let elem = match (item_ids.first(), hinted) {
                     (_, Some(elem)) => elem,
                     (Some(&first), None) => self.expr(first)?,
@@ -2847,6 +3024,7 @@ impl<'a> Checker<'a> {
                     // The list takes a temporary's buffers over.
                     self.store_from(item);
                 }
+                self.in_list -= 1;
                 let ty = self.list_of(elem);
                 self.expr_tmp[self.sh.e(id)] = self.temp(id, ty)?;
                 Ok(ty)
@@ -2857,7 +3035,7 @@ impl<'a> Checker<'a> {
                 let fix = Fix::Replace { start: pos, end: self.ast.expr_pos[inner as usize], text: String::new() };
                 err(pos, "`mut` can only be used on a function argument").map_err(|error: SemaError| error.with_fix(Some(fix)))
             }
-            Expr::Float(_) => err(pos, "floating-point numbers are not supported by `azol build` yet"),
+            Expr::Float(_) => err(pos, "there are no floating-point numbers yet; the only number type is `i64`"),
         }
     }
 
@@ -2878,6 +3056,7 @@ impl<'a> Checker<'a> {
     /// generic struct come from the type the surroundings expect, or
     /// else from the values given.
     fn struct_literal(&mut self, id: ExprId, name: Span, fields: List, hint: Option<Ty>) -> SResult<Ty> {
+        let siblings = self.owned_siblings;
         let pos = self.ast.expr_pos[id as usize];
         let text = name.text(self.src);
         let Some(&template) = self.struct_names.get(text) else {
@@ -2904,6 +3083,7 @@ impl<'a> Checker<'a> {
                 self.expect(init.value, want, What::Field(field_name))?;
                 // The new struct takes a temporary's buffers over.
                 self.store_from(init.value);
+                self.sibling(init.value);
                 self.init_offset[self.sh.i(init_id)] = offset;
             }
             if let Some(missing) = seen.iter().position(|&given| !given) {
@@ -2911,6 +3091,7 @@ impl<'a> Checker<'a> {
                 return err(pos, format!("field `{field_name}` of `{text}` is missing"));
             }
             let ty = Ty::Struct(index);
+            self.owned_siblings = siblings;
             self.expr_tmp[self.sh.e(id)] = self.temp(id, ty)?;
             return Ok(ty);
         }
@@ -2956,6 +3137,7 @@ impl<'a> Checker<'a> {
             }
             // The new struct takes a temporary's buffers over.
             self.store_from(init.value);
+            self.sibling(init.value);
             filled.push((init_id, at));
         }
         if let Some(missing) = seen.iter().position(|&given| !given) {
@@ -2978,6 +3160,7 @@ impl<'a> Checker<'a> {
         for (init_id, at) in filled {
             self.init_offset[self.sh.i(init_id)] = self.structs[index as usize].fields[at].offset;
         }
+        self.owned_siblings = siblings;
         self.expr_tmp[self.sh.e(id)] = self.temp(id, ty)?;
         Ok(ty)
     }
@@ -3012,6 +3195,7 @@ impl<'a> Checker<'a> {
     /// come from the type the surroundings expect, or else from the
     /// values given.
     fn construct(&mut self, id: ExprId, template: u32, variant: u32, args: Option<&[u32]>, hint: Option<Ty>) -> SResult<Ty> {
+        let siblings = self.owned_siblings;
         let pos = self.ast.expr_pos[id as usize];
         let info = &self.templates[template as usize];
         let (name, shapes) = (info.variants[variant as usize].0, info.variants[variant as usize].1.clone());
@@ -3055,6 +3239,7 @@ impl<'a> Checker<'a> {
                     self.expect(arg, field, What::Argument(i + 1, name))?;
                     // The new value takes a temporary's buffers over.
                     self.store_from(arg);
+                    self.sibling(arg);
                 }
                 ty
             }
@@ -3087,6 +3272,7 @@ impl<'a> Checker<'a> {
                         }
                     }
                     self.store_from(arg);
+                    self.sibling(arg);
                 }
                 if bound.iter().any(Option::is_none) {
                     return err(
@@ -3101,6 +3287,7 @@ impl<'a> Checker<'a> {
             }
         };
         self.settle()?;
+        self.owned_siblings = siblings;
         self.expr_res[self.sh.e(id)] = if args.is_some() { BUILTIN_VARIANT } else { VARIANT };
         self.expr_aux[self.sh.e(id)] = variant;
         self.expr_tmp[self.sh.e(id)] = self.temp(id, ty)?;
@@ -3258,8 +3445,12 @@ impl<'a> Checker<'a> {
     ) -> SResult<()> {
         let arg_pos = self.ast.expr_pos[arg as usize];
         let what = What::Argument(number, text);
+        // The receiver of a method that changes it is written plainly,
+        // `xs.extend(ys)`, like the receiver of `push`.
+        let receiver = number == 0;
         let value = match (mutable, self.ast.exprs[arg as usize]) {
             (true, Expr::MutArg(inner)) => inner,
+            (true, _) if receiver => arg,
             (true, _) => {
                 // Writing `mut` in front is the whole repair when the
                 // argument is a changeable variable of the right type.
@@ -3320,20 +3511,34 @@ impl<'a> Checker<'a> {
         if mutable {
             self.expr_ty[self.sh.e(arg)] = ty;
             let Some(place) = self.place(value) else {
+                if receiver {
+                    return err(arg_pos, format!("`{text}` changes its receiver, so it needs a variable or a part of a variable"));
+                }
                 if let Some(name) = self.constant_name(value) {
                     return err(arg_pos, format!("cannot pass `{name}` as `mut`: it is a constant"));
                 }
                 return err(arg_pos, "`mut` needs a variable or a part of a variable");
             };
             if !place.mutable {
-                let message = format!("cannot pass `{}` as `mut`: {}", self.root_name(value), read_only(&place));
+                let message = if receiver {
+                    format!("cannot change `{}`: {}", self.root_name(value), read_only(&place))
+                } else {
+                    format!("cannot pass `{}` as `mut`: {}", self.root_name(value), read_only(&place))
+                };
                 return err(arg_pos, message).map_err(|error: SemaError| error.with_fix(self.var_fix(&place)));
             }
             // The function gets its address, so it must stay in memory.
             if let Some(local) = self.locals.iter_mut().rev().find(|local| local.slot == place.root) {
                 local.addressed = true;
             }
-            self.borrow(value, place, true)?;
+            self.borrow(value, place, true).map_err(|mut error| {
+                // A receiver is not written `mut`, so the message says
+                // what the method does to it.
+                if receiver && let Some(rest) = error.message.strip_prefix("cannot pass ") {
+                    error.message = format!("cannot change {}", rest.replacen(" as `mut`", "", 1));
+                }
+                error
+            })?;
         } else if ty.is_aggregate() {
             // Passed by reference: the place must not change meanwhile.
             if let Some(place) = self.place(arg) {
@@ -3447,25 +3652,32 @@ impl<'a> Checker<'a> {
         let Item::Fn { nodes, .. } = self.ast.items[item as usize] else {
             unreachable!("a function's item is a function");
         };
-        // Entries of its own in every per-node table.
-        let shift = Shift {
-            expr: (self.expr_res.len() as u32).wrapping_sub(nodes.exprs.0),
-            stmt: (self.stmt_slot.len() as u32).wrapping_sub(nodes.stmts.0),
-            pat: (self.pats.len() as u32).wrapping_sub(nodes.patterns.0),
-            init: (self.init_offset.len() as u32).wrapping_sub(nodes.field_inits.0),
+        // Entries of its own in every per-node table. A library function
+        // without type parameters is used with one set of types only and
+        // keeps the entries its nodes already have.
+        let shift = if type_args.is_empty() {
+            Shift::default()
+        } else {
+            let shift = Shift {
+                expr: (self.expr_res.len() as u32).wrapping_sub(nodes.exprs.0),
+                stmt: (self.stmt_slot.len() as u32).wrapping_sub(nodes.stmts.0),
+                pat: (self.pats.len() as u32).wrapping_sub(nodes.patterns.0),
+                init: (self.init_offset.len() as u32).wrapping_sub(nodes.field_inits.0),
+            };
+            let exprs = self.expr_res.len() + nodes.exprs.1 as usize;
+            self.expr_res.resize(exprs, 0);
+            self.expr_ty.resize(exprs, Ty::Unit);
+            self.expr_aux.resize(exprs, 0);
+            self.expr_tmp.resize(exprs, 0);
+            self.expr_moved.resize(exprs, false);
+            let stmts = self.stmt_slot.len() + nodes.stmts.1 as usize;
+            self.stmt_slot.resize(stmts, 0);
+            self.stmt_flag.resize(stmts, 0);
+            self.stmt_drops.resize(stmts, (0, 0));
+            self.pats.resize(self.pats.len() + nodes.patterns.1 as usize, PatInfo::default());
+            self.init_offset.resize(self.init_offset.len() + nodes.field_inits.1 as usize, 0);
+            shift
         };
-        let exprs = self.expr_res.len() + nodes.exprs.1 as usize;
-        self.expr_res.resize(exprs, 0);
-        self.expr_ty.resize(exprs, Ty::Unit);
-        self.expr_aux.resize(exprs, 0);
-        self.expr_tmp.resize(exprs, 0);
-        self.expr_moved.resize(exprs, false);
-        let stmts = self.stmt_slot.len() + nodes.stmts.1 as usize;
-        self.stmt_slot.resize(stmts, 0);
-        self.stmt_flag.resize(stmts, 0);
-        self.stmt_drops.resize(stmts, (0, 0));
-        self.pats.resize(self.pats.len() + nodes.patterns.1 as usize, PatInfo::default());
-        self.init_offset.resize(self.init_offset.len() + nodes.field_inits.1 as usize, 0);
 
         let index = self.fns.len() as u32;
         self.fn_ids.insert((generic, type_args.clone()), index);
@@ -3491,23 +3703,19 @@ impl<'a> Checker<'a> {
     /// ordinary function that takes the receiver as its first argument.
     fn library_method(&mut self, id: ExprId, base: ExprId, base_ty: Ty, name: Span, args: &[u32]) -> SResult<Ty> {
         let text = name.text(self.src);
-        let Some(&index) = self.methods.get(&(base_ty, text)) else {
-            if let Some(&generic) = self.generic_methods.get(text) {
-                let receiver = self.generic_fns[generic as usize].params[0].0.clone();
-                let type_count = self.generic_fns[generic as usize].type_params.len();
-                if self.unify(&receiver, base_ty, &mut vec![None; type_count]) {
-                    let mut all = Vec::with_capacity(args.len() + 1);
-                    all.push(base);
-                    all.extend_from_slice(args);
-                    return self.call_generic(id, generic, text, &all, None, true);
-                }
-            }
+        let found = self.library.get(text).and_then(|candidates| {
+            candidates.iter().copied().find(|&generic| {
+                let info = &self.generic_fns[generic as usize];
+                self.unify(&info.params[0].0, base_ty, &mut vec![None; info.type_params.len()])
+            })
+        });
+        let Some(generic) = found else {
             return err(name.start, format!("`{}` has no method `{text}`", self.ty_name(base_ty)));
         };
         let mut all = Vec::with_capacity(args.len() + 1);
         all.push(base);
         all.extend_from_slice(args);
-        self.call_function(id, index, text, &all, true)
+        self.call_generic(id, generic, text, &all, None, true)
     }
 
     /// A call written `value.name(...)`.
@@ -4145,6 +4353,92 @@ mod tests {
     }
 
     #[test]
+    fn library_methods_that_change_their_receiver() {
+        assert_eq!(library_error("var xs = [1]\nxs.extend([2, 3])\nxs.insert(0, 9)\nxs.truncate(2)\nlet n = xs.remove_at(0)"), None);
+        assert_eq!(library_error("var m: Map[i64] = new_map()\nm.set(\"a\", 1)\nlet gone = m.remove(\"a\")\nlet n = m.len()"), None);
+        // The receiver follows the rules of a `mut` argument.
+        assert_eq!(library_error("let xs = [1]\nxs.extend([2])").as_deref(), Some("cannot change `xs`: declare it with `var` to make it changeable"));
+        assert_eq!(library_error("[1].extend([2])").as_deref(), Some("`extend` changes its receiver, so it needs a variable or a part of a variable"));
+        assert_eq!(library_error("var xs = [1]\nxs.extend(xs)").as_deref(), Some("`xs` is passed twice in one call and one of the uses is `mut`; copy it into a variable first"));
+        assert_eq!(library_error("var xs = [1]\nfor x in xs {\n xs.extend([x])\n}").as_deref(), Some("cannot change `xs` while a loop is going through it"));
+        assert_eq!(library_error("var xs = [1]\nxs.extend(mut [2])").as_deref(), Some("argument 1 of `extend` is not a `mut` parameter; remove `mut`"));
+        assert_eq!(library_error_with("fn f(xs: List[i64]) {\n xs.truncate(0)\n}", "").as_deref(), Some("cannot change `xs`: a parameter is read-only unless it is declared `mut`"));
+        assert_eq!(library_error_with("fn f(xs: mut List[i64]) {\n xs.truncate(0)\n}", "var xs = [1]\nf(mut xs)"), None);
+        assert_eq!(library_error("let n = 5\nn.extend([1])").as_deref(), Some("`i64` has no method `extend`"));
+        // The same method name on different types.
+        assert_eq!(library_error("let a = 3.min(4)\nlet b = [3, 4].min()\nlet c = \"\".is_empty()\nlet d = [1].is_empty()"), None);
+        assert_eq!(library_error("let a = true.is_empty()").as_deref(), Some("`bool` has no method `is_empty`"));
+        assert_eq!(library_error("let a = 5.replace(\"a\", \"b\")").as_deref(), Some("`i64` has no method `replace`"));
+    }
+
+    #[test]
+    fn how_numbers_are_written() {
+        let underscore = "a `_` in a number stands between two digits, as in `1_000`";
+        let zero = "a decimal number does not start with `0`; other bases are written `0x1F` and `0b1010`";
+        for number in ["1__0", "1_", "0x_F", "0xF_", "0xF__F", "0b_1", "0b1_"] {
+            assert_eq!(error(&in_main(&format!("let a = {number}"))), underscore, "{number}");
+        }
+        for number in ["007", "00", "0_1"] {
+            assert_eq!(error(&in_main(&format!("let a = {number}"))), zero, "{number}");
+        }
+        assert!(check_src(&in_main("let a = 0 + 10 + 1_000 + 0x0F + 0xff_ff + 0b0_1 + 'a' + '_'")).is_ok());
+        // In a pattern and in a constant too.
+        assert_eq!(error(&in_main("match 7 {\n 007 => {}\n _ => {}\n}")), zero);
+        assert_eq!(error("const A = 1__0\nfn main() {\n}"), underscore);
+    }
+
+    #[test]
+    fn the_smallest_number_can_be_written() {
+        assert!(check_src(&in_main("let a = -9223372036854775808\nlet b = -9_223_372_036_854_775_808\nlet c = - 9223372036854775808")).is_ok());
+        assert!(check_src("const LOW = -9223372036854775808\nconst NEXT = LOW + 1\nfn main() {\n}").is_ok());
+        assert_eq!(error(&in_main("let a = 9223372036854775808")), "this number does not fit in `i64`");
+        assert_eq!(error(&in_main("let a = 1 - 9223372036854775808")), "this number does not fit in `i64`");
+        assert_eq!(error(&in_main("let a = -9223372036854775809")), "this number does not fit in `i64`");
+    }
+
+    #[test]
+    fn the_try_operator() {
+        let number = "fn number(s: str) -> Result[i64, str] {\n return Ok(1)\n}\nfn words(s: str) -> Result[List[str], str] {\n return Ok([s])\n}\nfn maybe() -> Option[i64] {\n return None\n}\nstruct P {\n a: List[str]\n n: i64\n}\nstruct Q {\n n: i64\n a: List[str]\n}";
+        let ok = |function: &str| check_src(&format!("{number}\n{function}\nfn main() {{\n}}")).is_ok();
+        let bad = |function: &str| error(&format!("{number}\n{function}\nfn main() {{\n}}"));
+        assert!(ok("fn f() -> Result[i64, str] {\n let n = number(\"1\")? + number(\"2\")?\n number(\"3\")?\n return Ok(n)\n}"));
+        assert!(ok("fn f() -> Result[str, str] {\n let w = words(\"a\")?\n return Ok(w[0])\n}"));
+        assert!(ok("fn f() -> Option[str] {\n let n = maybe()?\n return Some(str(n))\n}"));
+        assert!(ok("fn f(r: Result[List[i64], str]) -> Result[i64, str] {\n return Ok(r?.len())\n}"));
+        // The first part of a struct or variant, and after parts that own nothing.
+        assert!(ok("fn f() -> Result[Q, str] {\n return Ok(Q { n: number(\"1\")?, a: words(\"a\")? })\n}"));
+        assert!(ok("fn f() -> Result[P, str] {\n return Ok(P { a: words(\"a\")?, n: 1 })\n}"));
+        // What it follows, and what the function returns.
+        assert_eq!(bad("fn f() -> Result[i64, str] {\n let n = 1?\n return Ok(n)\n}"), "`?` needs a `Result` or an `Option` but this is `i64`");
+        assert_eq!(bad("fn f() -> i64 {\n return number(\"1\")?\n}"), "`?` on `Result[i64, str]` needs a function that returns a `Result` with the error type `str`, but this function returns `i64`; use `match`");
+        assert_eq!(bad("fn f() {\n number(\"1\")?\n}"), "`?` on `Result[i64, str]` needs a function that returns a `Result` with the error type `str`, but this function returns nothing; use `match`");
+        assert_eq!(bad("fn f() -> Result[i64, i64] {\n return Ok(number(\"1\")?)\n}"), "`?` on `Result[i64, str]` needs a function that returns a `Result` with the error type `str`, but this function returns `Result[i64, i64]`; use `match`");
+        assert_eq!(bad("fn f() -> Result[i64, str] {\n return Ok(maybe()?)\n}"), "`?` on `Option[i64]` needs a function that returns an `Option`, but this function returns `Result[i64, str]`; use `match`");
+        assert_eq!(bad("fn f() -> Option[i64] {\n return Some(number(\"1\")?)\n}"), "`?` on `Result[i64, str]` needs a function that returns a `Result` with the error type `str`, but this function returns `Option[i64]`; use `match`");
+        // Where leaving would lose memory.
+        assert_eq!(bad("fn f() -> Result[List[i64], str] {\n return Ok([number(\"1\")?])\n}"), "`?` cannot be used inside a list literal; store its value in a variable first");
+        assert_eq!(bad("fn f() -> Result[i64, str] {\n let n = [1, 2].len() + [number(\"1\")?].len()\n return Ok(n)\n}"), "`?` cannot be used inside a list literal; store its value in a variable first");
+        assert_eq!(bad("fn f() -> Result[P, str] {\n return Ok(P { a: words(\"a\")?, n: number(\"1\")? })\n}"), "`?` cannot be used after a part of the same value that owns memory; store its value in a variable first");
+        assert_eq!(bad("fn f(s: str) -> Result[P, str] {\n return Ok(P { a: [s], n: number(s)? })\n}"), "`?` cannot be used after a part of the same value that owns memory; store its value in a variable first");
+        // A list literal that is finished does not count.
+        assert!(ok("fn f() -> Result[i64, str] {\n let n = [1, 2].len() + number(\"1\")?\n return Ok(n)\n}"));
+        assert!(ok("fn f(s: str) -> Result[Q, str] {\n let q = Q { n: 1, a: [s] }\n return Ok(Q { n: number(s)?, a: q.a })\n}"));
+    }
+
+    #[test]
+    fn library_names_and_the_programs_own() {
+        // A type of the library cannot be declared again.
+        assert_eq!(library_error_with("struct Map {\n n: i64\n}", "").as_deref(), Some("`Map` is a type of the standard library; choose another name"));
+        assert_eq!(library_error_with("enum Map {\n A\n}", "").as_deref(), Some("`Map` is a type of the standard library; choose another name"));
+        // A plain function of the library gives way to the program's.
+        assert_eq!(library_error_with("fn new_map() -> i64 {\n return 7\n}", "let n: i64 = new_map()"), None);
+        assert_eq!(library_error_with("fn new_map[T](x: T) -> T {\n return x\n}", "let n: i64 = new_map(1)"), None);
+        assert_eq!(library_error("let m = new_map()").as_deref(), Some("cannot tell what `V` is in this call to `new_map`: no argument settles it; store the result in a variable with a type"));
+        // Methods are not plain functions, and a program may use their names.
+        assert_eq!(library_error("var m: Map[i64] = new_map()\nmap_set(mut m, \"a\", 1)").as_deref(), Some("unknown function `map_set`"));
+    }
+
+    #[test]
     fn generic_functions() {
         let with = |functions: &str, body: &str| format!("{functions}\n{}", in_main(body));
         let id = "fn id[T](x: T) -> T {\n return x\n}";
@@ -4361,8 +4655,13 @@ mod tests {
         assert_eq!(error(&with("const A = x", "")), "`x` is not a constant; a constant is made of literals and other constants");
         assert_eq!(error(&with("const A = [1]", "")), "a constant must be made of literals and other constants");
         assert_eq!(error("fn f() -> i64 {\n return 1\n}\nconst A = f()\nfn main() {\n}"), "a constant must be made of literals and other constants");
-        assert_eq!(error(&with("const A = \"a\" + \"b\"", "")), "a string constant must be a single string literal");
-        assert_eq!(error(&with("const A = \"a\" == \"a\"", "")), "a string constant must be a single string literal");
+        assert!(check_src(&with("const A = \"a\" + \"b\"\nconst B = A + A + \"!\"", "let s: str = B")).is_ok());
+        assert_eq!(error(&with("const A = \"a\" == \"a\"", "")), "string constants can be joined with `+`; no other operator works on them in a constant");
+        assert_eq!(error(&with("const A = \"a\" + 1", "")), "`+` needs `str` but this is `i64`");
+        assert_eq!(error(&with("const A = 1 + \"a\"", "")), "`+` needs `i64` but this is `str`");
+        // `exit` ends a path like `return`.
+        assert!(check_src("fn f(n: i64) -> i64 {\n if n > 0 {\n  return n\n }\n exit(2)\n}\nfn main() {\n}").is_ok());
+        assert_eq!(error("fn f(n: i64) -> i64 {\n if n > 0 {\n  return n\n }\n eprint(\"no\")\n}\nfn main() {\n}"), "function `f` must return a value of type `i64` on every path");
         assert_eq!(error(&with("const A = 1 + true", "")), "`+` needs `i64` but this is `bool`");
         assert_eq!(error(&with("const A = true + 1", "")), "`+` needs `i64` but this is `bool`");
         assert_eq!(error(&with("const A = 1 && true", "")), "`&&` needs `bool` but this is `i64`");
@@ -4422,7 +4721,7 @@ mod tests {
 
     #[test]
     fn features_not_built_yet_are_reported_clearly() {
-        assert_eq!(error(&in_main("let a = 1.5")), "floating-point numbers are not supported by `azol build` yet");
+        assert_eq!(error(&in_main("let a = 1.5")), "there are no floating-point numbers yet; the only number type is `i64`");
         assert_eq!(error("fn f(a: i32) {\n}\nfn main() {\n}"), "unknown type `i32`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`");
     }
 }

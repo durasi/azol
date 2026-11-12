@@ -162,6 +162,20 @@ fn uleb(out: &mut Vec<u8>, mut value: u64) {
 /// data), `__DATA_CONST` (one pointer per imported function, filled in by
 /// the system loader) and `__LINKEDIT` (the loader's instructions for
 /// those pointers, the symbol table and the signature).
+/// Makes the program start in the runtime's `_rt_start` instead of its
+/// `main`: the routine prepares for a stack that runs out and then calls
+/// `main`, through a word that is filled in here. The runtime is the last
+/// thing in the code, which is how it is found.
+pub fn start_through_runtime(code: &mut Code) {
+    use crate::runtime::{RUNTIME, START, START_MAIN};
+    let runtime_start = code.words.len() as u32 - RUNTIME.len() as u32;
+    let call = runtime_start + START_MAIN;
+    debug_assert_eq!(code.words[call as usize], 0xD420_0000 | 0x800 << 5, "the marker `brk #0x800`");
+    let distance = code.entry as i64 - call as i64;
+    code.words[call as usize] = 0x9400_0000 | (distance as u32 & 0x03FF_FFFF); // bl main
+    code.entry = runtime_start + START;
+}
+
 pub fn build_executable(code: &Code, imports: &[&str], ident: &str) -> Vec<u8> {
     const NCMDS: u32 = 12;
     const SIZEOFCMDS: u32 = 72 + 232 + 152 + 72 + 48 + 24 + 80 + 32 + 24 + 24 + 56 + 16;
@@ -358,6 +372,28 @@ mod tests {
 
     fn le32(data: &[u8], at: usize) -> u32 {
         u32::from_le_bytes(data[at..at + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn a_program_starts_in_the_runtime_which_calls_main() {
+        use crate::runtime::{RUNTIME, START, START_MAIN};
+        // Three words of program, `main` at the second, then the runtime.
+        let mut words = vec![0xD503_201F; 3];
+        words.extend_from_slice(&RUNTIME);
+        let mut code = Code { words, entry: 1, data: Vec::new(), relocs: Vec::new() };
+        start_through_runtime(&mut code);
+        assert_eq!(code.entry, 3 + START);
+        // The marker became `bl main`: a call backwards over the runtime
+        // so far and two words of program.
+        let call = (3 + START_MAIN) as usize;
+        let back = (1 - call as i64) as u32 & 0x03FF_FFFF;
+        assert_eq!(code.words[call], 0x9400_0000 | back);
+        // Nothing else changed.
+        assert!(code.words[..3].iter().all(|&word| word == 0xD503_201F));
+        assert_eq!(code.words[3..call], RUNTIME[..START_MAIN as usize]);
+        assert_eq!(code.words[call + 1..], RUNTIME[START_MAIN as usize + 1..]);
+        assert_eq!(RUNTIME[START_MAIN as usize], 0xD420_0000 | 0x800 << 5);
+        assert!(START < START_MAIN);
     }
 
     #[test]

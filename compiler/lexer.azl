@@ -263,6 +263,7 @@ fn lex(src: str, tokens: mut Tokens) -> Option[LexError] {
                 '*' => kind = TOK_STAR
                 '%' => kind = TOK_PERCENT
                 '^' => kind = TOK_CARET
+                '?' => kind = TOK_QUESTION
                 '-' => {
                     kind = TOK_MINUS
                     if second == '>' {

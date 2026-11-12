@@ -123,6 +123,23 @@ pub static TABLE: &[Entry] = &[
         explain: "Inside a function a fixed value is declared with `let`.",
     },
     Entry {
+        code: "E0112",
+        patterns: &["a struct literal here needs parentheses around it, `({} { ... })`: this `{` starts the block"],
+        rule: "Between `if`, `while`, `for ... in` or `match` and the `{` of its block, a struct literal is written in parentheses.",
+        help: "Put the struct literal in parentheses.",
+        explain: "Wrong:\n\n    if p == Point { x: 1, y: 2 } {\n    }\n\nRight:\n\n    if p == (Point { x: 1, y: 2 }) {\n    }",
+    },
+    Entry {
+        code: "E0113",
+        patterns: &[
+            "a `_` in a number stands between two digits, as in `1_000`",
+            "a decimal number does not start with `0`; other bases are written `0x1F` and `0b1010`",
+        ],
+        rule: "In a number a `_` stands between two digits, and a decimal number other than `0` does not start with `0`.",
+        help: "",
+        explain: "`1_000_000`, `0xFFFF_FFFF` and `0b1010_1010` are fine; `1__0`, `1_`, `0x_F` and `007` are not. There are no octal numbers.",
+    },
+    Entry {
         code: "E0106",
         patterns: &["expected {} but found {}"],
         rule: "The program must follow the grammar; here something else was required.",
@@ -206,7 +223,11 @@ pub static TABLE: &[Entry] = &[
     },
     Entry {
         code: "E0209",
-        patterns: &["`{}` is a built-in type and cannot be redefined", "`{}` is built in and cannot be redefined"],
+        patterns: &[
+            "`{}` is a built-in type and cannot be redefined",
+            "`{}` is built in and cannot be redefined",
+            "`{}` is a type of the standard library; choose another name",
+        ],
         rule: "The names of built-in types and functions cannot be declared again.",
         help: "",
         explain: "",
@@ -376,6 +397,16 @@ pub static TABLE: &[Entry] = &[
         explain: "Decimal literals go up to 9223372036854775807. Hexadecimal and binary literals may use all 64 bits and then mean the same bits as an `i64`.",
     },
     Entry {
+        code: "E0318",
+        patterns: &[
+            "`?` needs a `Result` or an `Option` but this is `{}`",
+            "`?` on `{}` needs a function that returns {}, but this function returns {}; use `match`",
+        ],
+        rule: "`value?` follows a `Result` or an `Option`, in a function that returns the same kind: an `Option`, or a `Result` with the same error type.",
+        help: "Use `match` to handle the other case here.",
+        explain: "`value?` is what an `Ok` or a `Some` holds. For an `Err` or a `None` the function returns that `Err` or `None` at once, so its own result type must be able to hold it.\n\nWrong:\n\n    fn main() {\n        let text = read_file(\"a.txt\")?\n    }\n\nRight:\n\n    fn main() {\n        match read_file(\"a.txt\") {\n            Ok(text) => print(text)\n            Err(why) => eprint(why)\n        }\n    }",
+    },
+    Entry {
         code: "E0301",
         patterns: &["expected `{}` but this is `{}`"],
         rule: "A value stored in a variable or a place has exactly the type of that variable or place; nothing is converted silently.",
@@ -440,6 +471,7 @@ pub static TABLE: &[Entry] = &[
         patterns: &[
             "`mut` needs a variable or a part of a variable",
             "`{}` changes the list, so it needs a variable or a part of a variable",
+            "`{}` changes its receiver, so it needs a variable or a part of a variable",
             "only a variable or a part of a variable can be assigned",
         ],
         rule: "Only a variable, a field of one or an element of one can be changed; a computed value has no owner to change.",
@@ -499,6 +531,16 @@ pub static TABLE: &[Entry] = &[
         rule: "A value is stored inline in its owner, so a type cannot contain itself directly; it can through a `List`.",
         help: "",
         explain: "Wrong:\n\n    struct Node {\n        value: i64\n        next: Option[Node]\n    }\n\nRight:\n\n    struct Node {\n        value: i64\n        children: List[Node]\n    }",
+    },
+    Entry {
+        code: "E0414",
+        patterns: &[
+            "`?` cannot be used inside a list literal; store its value in a variable first",
+            "`?` cannot be used after a part of the same value that owns memory; store its value in a variable first",
+        ],
+        rule: "`?` may leave the function, so it cannot stand inside a list literal, or in a struct literal or variant after a part that owns memory: the half-built value would have no owner.",
+        help: "Compute the value with `?` in a `let` before the literal.",
+        explain: "Wrong:\n\n    return Ok([first()?, second()?])\n\nRight:\n\n    let a = first()?\n    let b = second()?\n    return Ok([a, b])",
     },
     // ---- E05: patterns --------------------------------------------------
     Entry {
@@ -582,7 +624,7 @@ pub static TABLE: &[Entry] = &[
         patterns: &[
             "`{}` is not a constant; a constant is made of literals and other constants",
             "a constant must be made of literals and other constants",
-            "a string constant must be a single string literal",
+            "string constants can be joined with `+`; no other operator works on them in a constant",
         ],
         rule: "The value of a constant is computed when the program is compiled: from literals, other constants and operators on numbers and `bool`s.",
         help: "",
@@ -640,7 +682,7 @@ pub static TABLE: &[Entry] = &[
     },
     Entry {
         code: "E0804",
-        patterns: &["floating-point numbers are not supported by `azol build` yet"],
+        patterns: &["there are no floating-point numbers yet; the only number type is `i64`"],
         rule: "The only number type so far is `i64`.",
         help: "",
         explain: "",
@@ -845,6 +887,15 @@ fn expr_end(ast: &Ast, tokens: &[Token], id: ExprId) -> u32 {
         Expr::Unary { operand, .. } => expr_end(ast, tokens, operand),
         Expr::Binary { rhs, .. } => expr_end(ast, tokens, rhs),
         Expr::MutArg(inner) => expr_end(ast, tokens, inner),
+        Expr::Try(inner) => {
+            // The `?` follows what it is applied to.
+            let after = expr_end(ast, tokens, inner);
+            let next = tokens.partition_point(|token| token.start < after);
+            match tokens.get(next) {
+                Some(token) if token.kind == K::Question => token.start + 1,
+                _ => after,
+            }
+        }
         Expr::Field { name, .. } => name.start + name.len,
         Expr::Call { callee, .. } => bracket_end(tokens, expr_end(ast, tokens, callee)),
         Expr::Index { base, .. } => bracket_end(tokens, expr_end(ast, tokens, base)),
@@ -1215,8 +1266,7 @@ mod tests {
             "declare it with `var` to make it changeable",
             "the lexer accepted only digits",
             "the caller checked that the parameter is known",
-            "a standard library function is named `type_method`",
-            "a method has a receiver",
+            "a standard library method is named `type_method`",
             "`{param}` = `{name}`",
             "{} (in `{}` with {})",
             "a function's item is a function",
@@ -1239,6 +1289,10 @@ mod tests {
             "a variant name",
             "a field name",
             "a method or field name",
+            // A message about a `mut` argument, reworded for a receiver.
+            "cannot change {}",
+            // What `?` says the function should return.
+            "a `Result` with the error type `{}`",
         ];
         let mut checked = 0;
         let mut missing = Vec::new();
