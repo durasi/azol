@@ -1,15 +1,13 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
-    <img src="assets/logo.svg" alt="azoL" height="104">
-  </picture>
+  <img src="assets/logo.svg#gh-light-mode-only" alt="azoL" height="104">
+  <img src="assets/logo-dark.svg#gh-dark-mode-only" alt="azoL" height="104">
 </p>
 
 <p align="center"><em>The rust remover.</em></p>
 
 <p align="center">
   <strong>A memory-safe systems language with no garbage collector and no lifetime annotations,<br>
-  whose compiler turns 44,000 lines into an executable in 10 milliseconds.</strong>
+  whose compiler turns 44,000 lines into an executable in 40 milliseconds.</strong>
 </p>
 
 <p align="center">
