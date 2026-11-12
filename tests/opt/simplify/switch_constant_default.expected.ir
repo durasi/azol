@@ -1,0 +1,5 @@
+fn main(p0: i64) -> i64 {
+b0:
+    callrt print_i64(p0)
+    ret -1
+}

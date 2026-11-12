@@ -1,0 +1,1595 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Instruction selection for ARM64, macOS and Linux alike: from the
+// intermediate form of one function to the machine-level view of
+// `mach.azl`, ready for the register allocator. `emit_arm64.azl` turns
+// the result into instructions. docs/design/optimizer.md section 6.3;
+// what differs from `sel_x64.azl` is in docs/design/optimizer-notes.md.
+//
+// What is folded into its user instead of getting a register:
+//
+//   - `iconst`, `bconst`, `addr` and `frame` never get one: a constant
+//     becomes an immediate where the instruction has room for it, and
+//     is otherwise made again right before each use;
+//   - a `gep` whose every use is as the address of a `load` or `store`
+//     becomes the addressing mode of each of them, when that costs no
+//     instruction (`[base, #offset]`, `[base, index, lsl #n]`) or when
+//     it has one use only;
+//   - a comparison whose only use is the condition of a `br` or of a
+//     `select` is done there, and its flags are used directly;
+//   - an `and` whose only use is such a comparison with zero becomes a
+//     `tst`, or a `tbz` or `tbnz` when it tests one bit;
+//   - a comparison with zero of the result of an `add`, `sub` or `and`
+//     of the same block, at the `br` that ends it, uses the flags that
+//     operation sets (`adds`, `subs`, `ands`) when nothing in between
+//     changes them;
+//   - a `mul` whose only use is an `add`, or the right side of a `sub`,
+//     becomes a `madd` or `msub`;
+//   - a `shl` by a constant whose only use is an operand of an `add`,
+//     `and`, `or` or `xor`, or the right side of a `sub`, becomes a
+//     shifted operand;
+//   - two `store`s, or two `load`s, of eight bytes that follow each
+//     other and are eight bytes apart become a `stp` or an `ldp`.
+//
+// A constant that an instruction inside a loop needs in a register (it
+// has no room for it as an immediate) is not made again at each use:
+// the first few such constants of a function are made once, when the
+// function starts, and live in a register like any other value.
+//
+// The internal calling convention (section 6.2), in its simple fixed
+// form: the first eight arguments in x0 to x7, the rest in the caller's
+// frame at the bottom of its stack; the first four results in x0 to x3,
+// the rest in the same place the stack arguments were. x19 to x28
+// survive a call, like in the platform's convention, which the runtime
+// uses. x16 is the allocator's scratch register, x17 the emitter's; x18
+// belongs to the system and x29 is left alone.
+//
+// The machine instructions. `d` is the register defined; operands are
+// listed in the order they are added. A memory operand is described by
+// `y` and `z` (see `sa_mem_y`) and adds a base register, an index
+// register, both or neither. No operand is read after a definition is
+// written, so none is ever marked MF_LATE. Where an instruction reads
+// more than three registers, the last ones may be in a slot (MF_ANY):
+// the emitter fetches them into its own two registers.
+//
+//   SA_ENTRY           defines the registers the arguments arrive in
+//   SA_MOVI    d       d = imm
+//   SA_LEA     d mem   d = the address
+//   SA_COPY    d s     d = s (s may be in a slot)
+//   SA_ALU     d a b   d = a x b, x one of SA_K_*; `y` is how far b is
+//                      shifted left first (add, sub, and, or, xor); with
+//                      `z` 1 the flags are set
+//   SA_ALUI    d a     d = a x imm, x one of SA_K_ADD .. SA_K_XOR; `z`
+//                      as for SA_ALU
+//   SA_MADD    d a b c d = c + a * b, or c - a * b when x is 1
+//   SA_REM     d a b   d = what is left of a / b
+//   SA_NEG     d a
+//   SA_SHI     d a     d = a shifted by imm; x is SA_K_LSL .. SA_K_ASR
+//   SA_EXT     d a     x is the IR operation (ext8u ... trunc32)
+//   SA_LOAD    d mem   x is the IR width
+//   SA_LOADP   d e mem d and e = the two words at the address
+//   SA_STORE   [v] mem x is the IR width; the value is zero when y says so
+//   SA_STOREP  [v] [w] mem   two words; bit 0 of x: v is zero, bit 1: w
+//   SA_CMPSET  d a [b] d = a x b as 0 or 1; x is the condition; b is
+//                      `imm` when y is 1
+//   SA_SELECT  d a [b] [p] [q]   d = (a x b) ? p : q; y bit 0: b is
+//                      `imm`; bit 1: the test is `a & b` against zero;
+//                      bit 2: p is zero; bit 3: q is zero
+//   SA_CMPBR   a [b]   to the first way out when a x b, else the second;
+//                      y bit 0: b is `imm`
+//   SA_TSTBR   a [b]   the same for `a & b` against zero: x is AX_EQ or
+//                      AX_NE
+//   SA_BCC             the same on the flags as they are; x is the
+//                      condition
+//   SA_JMP
+//   SA_SWITCH  v       the keys of its ways out are x entries of the
+//                      function's `consts` from imm; the last way out
+//                      is the default
+//   SA_RET     ...     reads the result registers
+//   SA_TRAP            imm is the IR_TRAP_* kind
+//   SA_CALL    ...     imm is the function; reads the argument registers
+//   SA_CALLRT  ...     imm is where the routine starts in the runtime
+//                      (ART_*)
+//   SA_CALLIMP ...     imm is the imported function (its place in
+//                      `art_imports`); the program stops when it gives 0
+//   SA_NOP     d       nothing: a constant that was made ready for the
+//                      loops and that no loop needed
+
+const SA_ENTRY = 1
+const SA_MOVI = 2
+const SA_LEA = 3
+const SA_COPY = 4
+const SA_ALU = 5
+const SA_ALUI = 6
+const SA_MADD = 7
+const SA_REM = 8
+const SA_NEG = 9
+const SA_SHI = 10
+const SA_EXT = 11
+const SA_LOAD = 12
+const SA_LOADP = 13
+const SA_STORE = 14
+const SA_STOREP = 15
+const SA_CMPSET = 16
+const SA_SELECT = 17
+const SA_CMPBR = 18
+const SA_TSTBR = 19
+const SA_BCC = 20
+const SA_JMP = 21
+const SA_SWITCH = 22
+const SA_RET = 23
+const SA_TRAP = 24
+const SA_CALL = 25
+const SA_CALLRT = 26
+const SA_CALLIMP = 27
+const SA_NOP = 28
+
+// Kinds of SA_ALU; the first five also of SA_ALUI, the last three of
+// SA_SHI.
+const SA_K_ADD = 0
+const SA_K_SUB = 1
+const SA_K_AND = 2
+const SA_K_OR = 3
+const SA_K_XOR = 4
+const SA_K_MUL = 5
+const SA_K_SDIV = 6
+const SA_K_UMULH = 7
+const SA_K_SMULH = 8
+const SA_K_LSL = 9
+const SA_K_LSR = 10
+const SA_K_ASR = 11
+
+// Kinds of memory operand.
+const SA_M_REG = 0
+const SA_M_FRAME = 1
+const SA_M_DATA = 2
+const SA_M_SCRATCH = 3
+const SA_M_ARGIN = 4
+const SA_M_ARGOUT = 5
+
+// x0 to x17: what a call may destroy.
+const SA_CALLER_SAVED = 0x3FFFF
+// x19 to x28.
+const SA_CALLEE_SAVED = 0x1FF80000
+
+// Bytes for the two string headers a runtime call may need.
+const SA_SCRATCH_BYTES = 48
+
+const SA_ARG_REGS = 8
+const SA_RESULT_REGS = 4
+
+// The register a runtime routine takes the address for its result in.
+const SA_OUT_REG = 8
+
+// The place of `realloc` in `art_imports`.
+const SA_IMPORT_REALLOC = 3
+
+// How many constants are kept in registers for the loops of a function.
+const SA_POOL = 8
+
+// What `fold` says of a value.
+const SA_F_ADDRESS = 1
+const SA_F_COMPARE = 2
+const SA_F_MADD = 4
+const SA_F_SHIFTED = 5
+const SA_F_TEST = 6
+const SA_F_FLAGS = 7
+
+// The registers the allocator may use, most wanted first: those a call
+// destroys (the ones no argument arrives in before the others), then
+// those that must be saved. x16 is the scratch register.
+fn sa_target() -> RaTarget {
+    return RaTarget {
+        order: [9, 10, 11, 12, 13, 14, 15, 8, 0, 1, 2, 3, 4, 5, 6, 7, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28],
+        scratch: 16
+    }
+}
+
+// Three registers only, to make every function spill, split and move:
+// for tests.
+fn sa_stress_target() -> RaTarget {
+    return RaTarget { order: [1, 2, 19], scratch: 16 }
+}
+
+// The power of two `value` is, or -1.
+fn sa_log2(value: i64) -> i64 {
+    if value <= 0 || value & (value - 1) != 0 { return -1 }
+    var n = 0
+    while (value >> n) & 1 == 0 {
+        n = n + 1
+    }
+    return n
+}
+
+// `y` of an instruction with a memory operand: the kind, the scale of
+// the index (as a power of two), whether there is an index register,
+// and for SA_M_FRAME the frame object. `z` is the displacement, for
+// SA_M_DATA the offset in the data.
+fn sa_mem_y(kind: i64, scale: i64, has_index: bool, n: i64) -> i64 {
+    var y = kind | (sa_log2(scale) << 4) | (n << 16)
+    if has_index { y = y | 1024 }
+    return y
+}
+
+fn sa_y_kind(y: i64) -> i64 {
+    return y & 15
+}
+
+// The scale as a power of two.
+fn sa_y_shift(y: i64) -> i64 {
+    return (y >> 4) & 63
+}
+
+fn sa_y_has_index(y: i64) -> bool {
+    return y & 1024 != 0
+}
+
+// Bit 11 of `y` of an SA_STORE: the value is zero.
+const SA_Y_ZERO = 2048
+
+fn sa_y_object(y: i64) -> i64 {
+    return y >> 16
+}
+
+// The condition an IR comparison stands for.
+fn sa_cc(op: i64) -> i64 {
+    match op {
+        18 => return AX_EQ
+        19 => return AX_NE
+        20 => return AX_LT
+        21 => return AX_LE
+        22 => return AX_GT
+        23 => return AX_GE
+        24 => return AX_LO
+        25 => return AX_LS
+        26 => return AX_HI
+        _ => return AX_HS
+    }
+}
+
+// The condition that holds for (b, a) when `cc` holds for (a, b).
+fn sa_cc_swapped(cc: i64) -> i64 {
+    match cc {
+        11 => return AX_GT
+        12 => return AX_LT
+        13 => return AX_GE
+        10 => return AX_LE
+        3 => return AX_HI
+        8 => return AX_LO
+        9 => return AX_HS
+        2 => return AX_LS
+        _ => return cc
+    }
+}
+
+struct Sa {
+    // For each IR value its virtual register, or -1.
+    vr: List[i64]
+    // SA_F_* for a value that is done where it is used, or 0.
+    fold: List[i64]
+    // 1 for a value whose operation also sets the flags.
+    flags: List[i64]
+    // For each IR block its machine block, or -1.
+    blk: List[i64]
+    // The function each entry of the IR function's `callees` is.
+    targets: List[i64]
+    memcpy_fn: i64
+    // The memory operand that was prepared last.
+    mem_kind: i64
+    mem_base: i64
+    mem_index: i64
+    mem_scale: i64
+    mem_n: i64
+    mem_disp: i64
+    // The comparison that was prepared last.
+    cc: i64
+    ca: i64
+    cb: i64
+    cb_imm: i64
+    cb_is_imm: bool
+    c_test: bool
+    // The arguments of the ways out of the terminator being selected:
+    // 1 and a constant, or 0 and a virtual register.
+    ea_kind: List[i64]
+    ea_val: List[i64]
+    // The instruction that was done together with the one before it.
+    done: i64
+    // The constants made once for the loops: the value, its virtual
+    // register, the instruction that makes it, and whether a loop used
+    // it. `in_loop` says the block being selected is in a loop.
+    pool_val: List[i64]
+    pool_vr: List[i64]
+    pool_at: List[i64]
+    pool_used: List[bool]
+    in_loop: bool
+    // What the frame must have.
+    out_bytes: i64
+    scratch: bool
+    calls: bool
+    failed: bool
+    error: str
+}
+
+// What selection gives.
+struct SaFunc {
+    mf: MFunc
+    out_bytes: i64
+    scratch: bool
+    calls: bool
+    ok: bool
+    error: str
+}
+
+fn sa_fail(s: mut Sa, message: str) {
+    if !s.failed {
+        s.failed = true
+        s.error = message
+    }
+}
+
+// ---- operands ------------------------------------------------------------------------
+
+// Whether operand `x` is a known number.
+fn sa_is_imm(f: IrFunc, x: i64) -> bool {
+    if x < -1 { return true }
+    if x < 0 { return false }
+    let def = f.val_ins[x]
+    return def >= 0 && (f.ins_op[def] == IR_ICONST || f.ins_op[def] == IR_BCONST)
+}
+
+fn sa_imm(f: IrFunc, x: i64) -> i64 {
+    if x < -1 { return f.consts[0 - x - 2] }
+    return f.ins_imm[f.val_ins[x]]
+}
+
+fn sa_is_zero(f: IrFunc, x: i64) -> bool {
+    return sa_is_imm(f, x) && sa_imm(f, x) == 0
+}
+
+// Whether `cmp` takes `value` as its immediate.
+fn sa_cmp_fits(value: i64) -> bool {
+    return value > -4096 && value < 4096
+}
+
+// The operation that defines value `x`, or IR_NONE for a parameter.
+fn sa_def_op(f: IrFunc, x: i64) -> i64 {
+    if x < 0 || f.val_ins[x] < 0 { return IR_NONE }
+    return f.ins_op[f.val_ins[x]]
+}
+
+fn sa_fold_of(s: Sa, x: i64) -> i64 {
+    if x < 0 { return 0 }
+    return s.fold[x]
+}
+
+// The virtual register of an IR value that has one.
+fn sa_value(s: mut Sa, mf: mut MFunc, v: i64) -> i64 {
+    if s.vr[v] < 0 { s.vr[v] = mf_vreg(mut mf) }
+    return s.vr[v]
+}
+
+fn sa_movi(mf: mut MFunc, dst: i64, value: i64) {
+    mf_ins(mut mf, SA_MOVI, value, 0, 0, 0)
+    mf_operand(mut mf, dst, MF_DEF)
+}
+
+// `y` for the prepared memory operand.
+fn sa_mem_now(s: Sa) -> i64 {
+    return sa_mem_y(s.mem_kind, s.mem_scale, s.mem_index >= 0, s.mem_n)
+}
+
+// Gives the newest instruction the registers of the prepared memory
+// operand.
+fn sa_mem_regs(s: Sa, mf: mut MFunc) {
+    if s.mem_kind == SA_M_REG { mf_operand(mut mf, s.mem_base, MF_USE) }
+    if s.mem_index >= 0 { mf_operand(mut mf, s.mem_index, MF_USE) }
+}
+
+fn sa_set_mem(s: mut Sa, kind: i64, base: i64, n: i64, disp: i64) {
+    s.mem_kind = kind
+    s.mem_base = base
+    s.mem_index = -1
+    s.mem_scale = 1
+    s.mem_n = n
+    s.mem_disp = disp
+}
+
+// `dst` = the address of the prepared memory operand.
+fn sa_lea(s: Sa, mf: mut MFunc, dst: i64) {
+    mf_ins(mut mf, SA_LEA, 0, 0, sa_mem_now(s), s.mem_disp)
+    mf_operand(mut mf, dst, MF_DEF)
+    sa_mem_regs(s, mut mf)
+}
+
+// Puts operand `x` in register `dst`, a virtual one or not.
+fn sa_into(f: IrFunc, s: mut Sa, mf: mut MFunc, dst: i64, x: i64) {
+    if sa_is_imm(f, x) {
+        sa_movi(mut mf, dst, sa_imm(f, x))
+        return
+    }
+    let op = sa_def_op(f, x)
+    if op == IR_ADDR {
+        sa_set_mem(mut s, SA_M_DATA, -1, 0, f.ins_imm[f.val_ins[x]])
+        sa_lea(s, mut mf, dst)
+        return
+    }
+    if op == IR_FRAME {
+        sa_set_mem(mut s, SA_M_FRAME, -1, f.ins_imm[f.val_ins[x]], 0)
+        sa_lea(s, mut mf, dst)
+        return
+    }
+    let v = sa_value(mut s, mut mf, x)
+    mf_ins(mut mf, SA_COPY, 0, 0, 0, 0)
+    mf_operand(mut mf, dst, MF_DEF)
+    mf_operand(mut mf, v, MF_USE | MF_ANY)
+    mf_hint_first(mut mf, v, dst)
+    mf_hint(mut mf, dst, v)
+}
+
+// Operand `x` in a virtual register: its own, or a fresh one for
+// something that never has a register.
+fn sa_reg(f: IrFunc, s: mut Sa, mf: mut MFunc, x: i64) -> i64 {
+    if x == -1 {
+        sa_fail(mut s, "an operand is missing")
+        return mf_vreg(mut mf)
+    }
+    let op = sa_def_op(f, x)
+    if s.in_loop && sa_is_imm(f, x) {
+        let value = sa_imm(f, x)
+        var k = 0
+        while k < s.pool_val.len() {
+            if s.pool_val[k] == value {
+                s.pool_used[k] = true
+                return s.pool_vr[k]
+            }
+            k = k + 1
+        }
+    }
+    if x < -1 || op == IR_ICONST || op == IR_BCONST || op == IR_ADDR || op == IR_FRAME {
+        let t = mf_vreg(mut mf)
+        sa_into(f, mut s, mut mf, t, x)
+        return t
+    }
+    return sa_value(mut s, mut mf, x)
+}
+
+// `d = a x b` between registers.
+fn sa_alu(mf: mut MFunc, kind: i64, d: i64, a: i64, b: i64, shift: i64, flags: i64) {
+    mf_ins(mut mf, SA_ALU, 0, kind, shift, flags)
+    mf_operand(mut mf, d, MF_DEF)
+    mf_operand(mut mf, a, MF_USE)
+    mf_operand(mut mf, b, MF_USE)
+    mf_hint(mut mf, d, a)
+}
+
+// Prepares `[base + index * scale + disp]` as the memory operand, where
+// `base` and `index` are IR operands (`index` -1 for none).
+fn sa_address(f: IrFunc, s: mut Sa, mf: mut MFunc, base: i64, index: i64, scale: i64, disp: i64) {
+    var total = disp
+    var idx = index
+    var factor = scale
+    if idx != -1 && sa_is_imm(f, idx) {
+        total = total + sa_imm(f, idx) * factor
+        idx = -1
+    }
+    var index_reg = -1
+    if idx != -1 {
+        index_reg = sa_reg(f, mut s, mut mf, idx)
+        if sa_log2(factor) < 0 {
+            let by = mf_vreg(mut mf)
+            sa_movi(mut mf, by, factor)
+            let scaled = mf_vreg(mut mf)
+            sa_alu(mut mf, SA_K_MUL, scaled, index_reg, by, 0, 0)
+            index_reg = scaled
+            factor = 1
+        }
+    }
+    let op = sa_def_op(f, base)
+    if op == IR_FRAME {
+        sa_set_mem(mut s, SA_M_FRAME, -1, f.ins_imm[f.val_ins[base]], total)
+    } else if op == IR_ADDR && f.ins_imm[f.val_ins[base]] + total >= 0 && f.ins_imm[f.val_ins[base]] + total < 268435456 {
+        sa_set_mem(mut s, SA_M_DATA, -1, 0, f.ins_imm[f.val_ins[base]] + total)
+    } else {
+        let reg = sa_reg(f, mut s, mut mf, base)
+        sa_set_mem(mut s, SA_M_REG, reg, 0, total)
+    }
+    if index_reg >= 0 {
+        s.mem_index = index_reg
+        s.mem_scale = factor
+    }
+}
+
+// Prepares the memory operand for an access at `p + offset`.
+fn sa_access(f: IrFunc, s: mut Sa, mf: mut MFunc, p: i64, offset: i64) {
+    if p >= 0 && s.fold[p] == SA_F_ADDRESS {
+        let gep = f.val_ins[p]
+        sa_address(f, mut s, mut mf, f.ins_a[gep], f.ins_b[gep], f.ins_imm2[gep], f.ins_imm[gep] + offset)
+        return
+    }
+    sa_address(f, mut s, mut mf, p, -1, 1, offset)
+}
+
+// Prepares the comparison that the condition `c` of a `br` or `select`
+// stands for.
+fn sa_condition(f: IrFunc, s: mut Sa, mf: mut MFunc, c: i64) {
+    s.cb = -1
+    s.cb_imm = 0
+    s.cb_is_imm = false
+    s.c_test = false
+    if sa_fold_of(s, c) == SA_F_COMPARE {
+        let ins = f.val_ins[c]
+        var a = f.ins_a[ins]
+        var b = f.ins_b[ins]
+        s.cc = sa_cc(f.ins_op[ins])
+        if sa_is_imm(f, a) && !sa_is_imm(f, b) {
+            a = f.ins_b[ins]
+            b = f.ins_a[ins]
+            s.cc = sa_cc_swapped(s.cc)
+        }
+        if sa_fold_of(s, a) == SA_F_TEST {
+            let tested = f.val_ins[a]
+            var x = f.ins_a[tested]
+            var y = f.ins_b[tested]
+            if sa_is_imm(f, x) && !sa_is_imm(f, y) {
+                x = f.ins_b[tested]
+                y = f.ins_a[tested]
+            }
+            s.c_test = true
+            s.ca = sa_reg(f, mut s, mut mf, x)
+            if sa_is_imm(f, y) && ax_logical_imm(sa_imm(f, y)) >= 0 {
+                s.cb_is_imm = true
+                s.cb_imm = sa_imm(f, y)
+            } else {
+                s.cb = sa_reg(f, mut s, mut mf, y)
+            }
+            return
+        }
+        s.ca = sa_reg(f, mut s, mut mf, a)
+        if sa_is_imm(f, b) && sa_cmp_fits(sa_imm(f, b)) {
+            s.cb_is_imm = true
+            s.cb_imm = sa_imm(f, b)
+        } else {
+            s.cb = sa_reg(f, mut s, mut mf, b)
+        }
+        return
+    }
+    s.ca = sa_reg(f, mut s, mut mf, c)
+    s.cc = AX_NE
+    s.cb_is_imm = true
+}
+
+// ---- instructions ----------------------------------------------------------------------
+
+fn sa_alu_kind(op: i64) -> i64 {
+    match op {
+        4 => return SA_K_ADD
+        5 => return SA_K_SUB
+        6 => return SA_K_MUL
+        9 => return SA_K_AND
+        10 => return SA_K_OR
+        11 => return SA_K_XOR
+        7 => return SA_K_SDIV
+        15 => return SA_K_UMULH
+        16 => return SA_K_SMULH
+        12 => return SA_K_LSL
+        14 => return SA_K_LSR
+        _ => return SA_K_ASR
+    }
+}
+
+// Whether `value` can be the immediate of an SA_ALUI of kind `kind`.
+fn sa_alui_fits(kind: i64, value: i64) -> bool {
+    if kind == SA_K_ADD || kind == SA_K_SUB { return ax_addsub_fits(value) }
+    return ax_logical_imm(value) >= 0
+}
+
+// An operation with a folded operand: `folded` is the operand that is
+// a `mul` or a `shl` done here, `other` the other one.
+fn sa_binary_folded(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64, other: i64, folded: i64) {
+    let inner = f.val_ins[folded]
+    let kind = sa_alu_kind(f.ins_op[ins])
+    let res = f.ins_res[ins]
+    if s.fold[folded] == SA_F_MADD {
+        let x = sa_reg(f, mut s, mut mf, f.ins_a[inner])
+        let y = sa_reg(f, mut s, mut mf, f.ins_b[inner])
+        let c = sa_reg(f, mut s, mut mf, other)
+        let d = sa_value(mut s, mut mf, res)
+        var sub = 0
+        if kind == SA_K_SUB { sub = 1 }
+        mf_ins(mut mf, SA_MADD, 0, sub, 0, 0)
+        mf_operand(mut mf, d, MF_DEF)
+        mf_operand(mut mf, x, MF_USE)
+        mf_operand(mut mf, y, MF_USE)
+        mf_operand(mut mf, c, MF_USE | MF_ANY)
+        mf_hint(mut mf, d, c)
+        return
+    }
+    let left = sa_reg(f, mut s, mut mf, other)
+    let right = sa_reg(f, mut s, mut mf, f.ins_a[inner])
+    let d = sa_value(mut s, mut mf, res)
+    sa_alu(mut mf, kind, d, left, right, sa_imm(f, f.ins_b[inner]) & 63, s.flags[res])
+}
+
+fn sa_binary(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
+    let op = f.ins_op[ins]
+    var a = f.ins_a[ins]
+    var b = f.ins_b[ins]
+    let kind = sa_alu_kind(op)
+    let res = f.ins_res[ins]
+    let fb = sa_fold_of(s, b)
+    if fb == SA_F_MADD || fb == SA_F_SHIFTED {
+        sa_binary_folded(f, mut s, mut mf, ins, a, b)
+        return
+    }
+    let fa = sa_fold_of(s, a)
+    if fa == SA_F_MADD || fa == SA_F_SHIFTED {
+        sa_binary_folded(f, mut s, mut mf, ins, b, a)
+        return
+    }
+    let commutes = op != IR_SUB && op != IR_SDIV
+    if commutes && sa_is_imm(f, a) && !sa_is_imm(f, b) {
+        a = f.ins_b[ins]
+        b = f.ins_a[ins]
+    }
+    let left = sa_reg(f, mut s, mut mf, a)
+    if sa_is_imm(f, b) {
+        let value = sa_imm(f, b)
+        if kind <= SA_K_XOR && sa_alui_fits(kind, value) {
+            let d = sa_value(mut s, mut mf, res)
+            mf_ins(mut mf, SA_ALUI, value, kind, 0, s.flags[res])
+            mf_operand(mut mf, d, MF_DEF)
+            mf_operand(mut mf, left, MF_USE)
+            mf_hint(mut mf, d, left)
+            return
+        }
+        if kind == SA_K_MUL && sa_log2(value) >= 0 {
+            let d = sa_value(mut s, mut mf, res)
+            mf_ins(mut mf, SA_SHI, sa_log2(value), SA_K_LSL, 0, 0)
+            mf_operand(mut mf, d, MF_DEF)
+            mf_operand(mut mf, left, MF_USE)
+            mf_hint(mut mf, d, left)
+            return
+        }
+    }
+    let right = sa_reg(f, mut s, mut mf, b)
+    let d = sa_value(mut s, mut mf, res)
+    sa_alu(mut mf, kind, d, left, right, 0, s.flags[res])
+}
+
+fn sa_copy_from(mf: mut MFunc, dst: i64, reg: i64) {
+    mf_ins(mut mf, SA_COPY, 0, 0, 0, 0)
+    mf_operand(mut mf, dst, MF_DEF)
+    mf_operand(mut mf, reg, MF_USE)
+    mf_hint(mut mf, dst, reg)
+}
+
+// The one result of `ins` is what arrives in register `reg`.
+fn sa_result_from(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64, reg: i64) {
+    let d = sa_value(mut s, mut mf, f.ins_res[ins])
+    sa_copy_from(mut mf, d, reg)
+}
+
+fn sa_remainder(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
+    let a = sa_reg(f, mut s, mut mf, f.ins_a[ins])
+    let b = sa_reg(f, mut s, mut mf, f.ins_b[ins])
+    let d = sa_value(mut s, mut mf, f.ins_res[ins])
+    mf_ins(mut mf, SA_REM, 0, 0, 0, 0)
+    mf_operand(mut mf, d, MF_DEF)
+    mf_operand(mut mf, a, MF_USE)
+    mf_operand(mut mf, b, MF_USE)
+}
+
+fn sa_shift(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
+    let kind = sa_alu_kind(f.ins_op[ins])
+    let a = sa_reg(f, mut s, mut mf, f.ins_a[ins])
+    let b = f.ins_b[ins]
+    if sa_is_imm(f, b) {
+        let d = sa_value(mut s, mut mf, f.ins_res[ins])
+        mf_ins(mut mf, SA_SHI, sa_imm(f, b) & 63, kind, 0, 0)
+        mf_operand(mut mf, d, MF_DEF)
+        mf_operand(mut mf, a, MF_USE)
+        mf_hint(mut mf, d, a)
+        return
+    }
+    let count = sa_reg(f, mut s, mut mf, b)
+    let d = sa_value(mut s, mut mf, f.ins_res[ins])
+    sa_alu(mut mf, kind, d, a, count, 0, 0)
+}
+
+// A comparison that needs its result as a number.
+fn sa_compare(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
+    var a = f.ins_a[ins]
+    var b = f.ins_b[ins]
+    var cc = sa_cc(f.ins_op[ins])
+    if sa_is_imm(f, a) && !sa_is_imm(f, b) {
+        a = f.ins_b[ins]
+        b = f.ins_a[ins]
+        cc = sa_cc_swapped(cc)
+    }
+    let left = sa_reg(f, mut s, mut mf, a)
+    if sa_is_imm(f, b) && sa_cmp_fits(sa_imm(f, b)) {
+        let d = sa_value(mut s, mut mf, f.ins_res[ins])
+        mf_ins(mut mf, SA_CMPSET, sa_imm(f, b), cc, 1, 0)
+        mf_operand(mut mf, d, MF_DEF)
+        mf_operand(mut mf, left, MF_USE)
+        return
+    }
+    let right = sa_reg(f, mut s, mut mf, b)
+    let d = sa_value(mut s, mut mf, f.ins_res[ins])
+    mf_ins(mut mf, SA_CMPSET, 0, cc, 0, 0)
+    mf_operand(mut mf, d, MF_DEF)
+    mf_operand(mut mf, left, MF_USE)
+    mf_operand(mut mf, right, MF_USE)
+}
+
+fn sa_select(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
+    sa_condition(f, mut s, mut mf, f.ins_a[ins])
+    let cc = s.cc
+    let ca = s.ca
+    let cb = s.cb
+    let cb_imm = s.cb_imm
+    var flags = 0
+    if s.cb_is_imm { flags = flags | 1 }
+    if s.c_test { flags = flags | 2 }
+    let p = f.ins_b[ins]
+    let q = f.ins_c[ins]
+    var p_reg = -1
+    var q_reg = -1
+    if sa_is_zero(f, p) {
+        flags = flags | 4
+    } else {
+        p_reg = sa_reg(f, mut s, mut mf, p)
+    }
+    if sa_is_zero(f, q) {
+        flags = flags | 8
+    } else {
+        q_reg = sa_reg(f, mut s, mut mf, q)
+    }
+    let d = sa_value(mut s, mut mf, f.ins_res[ins])
+    mf_ins(mut mf, SA_SELECT, cb_imm, cc, flags, 0)
+    mf_operand(mut mf, d, MF_DEF)
+    mf_operand(mut mf, ca, MF_USE)
+    if flags & 1 == 0 { mf_operand(mut mf, cb, MF_USE) }
+    if p_reg >= 0 {
+        mf_operand(mut mf, p_reg, MF_USE | MF_ANY)
+        mf_hint(mut mf, d, p_reg)
+    }
+    if q_reg >= 0 {
+        mf_operand(mut mf, q_reg, MF_USE | MF_ANY)
+        mf_hint(mut mf, d, q_reg)
+    }
+}
+
+// Whether instruction `ins` reads or writes eight bytes.
+fn sa_is_word(f: IrFunc, ins: i64) -> bool {
+    return ir_type_bytes(f.ins_ty[ins]) == 8
+}
+
+// Whether the address `p` of an access can be that of a pair: it is not
+// a folded `gep` with an index register.
+fn sa_pairs(f: IrFunc, s: Sa, p: i64) -> bool {
+    if p >= 0 && s.fold[p] == SA_F_ADDRESS {
+        let gep = f.val_ins[p]
+        return f.ins_b[gep] == -1 || sa_is_imm(f, f.ins_b[gep])
+    }
+    return true
+}
+
+fn sa_load(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
+    let next = f.ins_next[ins]
+    if next >= 0 && f.ins_op[next] == IR_LOAD && sa_is_word(f, ins) && sa_is_word(f, next) && f.ins_a[next] == f.ins_a[ins] && sa_pairs(f, s, f.ins_a[ins]) {
+        let apart = f.ins_imm[next] - f.ins_imm[ins]
+        if apart == 8 || apart == -8 {
+            var low = ins
+            var high = next
+            if apart < 0 {
+                low = next
+                high = ins
+            }
+            sa_access(f, mut s, mut mf, f.ins_a[low], f.ins_imm[low])
+            let d = sa_value(mut s, mut mf, f.ins_res[low])
+            let e = sa_value(mut s, mut mf, f.ins_res[high])
+            mf_ins(mut mf, SA_LOADP, 0, 0, sa_mem_now(s), s.mem_disp)
+            mf_operand(mut mf, d, MF_DEF)
+            mf_operand(mut mf, e, MF_DEF)
+            sa_mem_regs(s, mut mf)
+            s.done = next
+            return
+        }
+    }
+    sa_access(f, mut s, mut mf, f.ins_a[ins], f.ins_imm[ins])
+    let d = sa_value(mut s, mut mf, f.ins_res[ins])
+    mf_ins(mut mf, SA_LOAD, 0, f.ins_ty[ins], sa_mem_now(s), s.mem_disp)
+    mf_operand(mut mf, d, MF_DEF)
+    sa_mem_regs(s, mut mf)
+}
+
+// A store in the width `ty` to the prepared memory operand, of register
+// `reg`, or of zero when `reg` is -1.
+fn sa_store_prepared(s: Sa, mf: mut MFunc, ty: i64, reg: i64) {
+    var y = sa_mem_now(s)
+    if reg < 0 { y = y | SA_Y_ZERO }
+    mf_ins(mut mf, SA_STORE, 0, ty, y, s.mem_disp)
+    if reg >= 0 { mf_operand(mut mf, reg, MF_USE) }
+    sa_mem_regs(s, mut mf)
+}
+
+// The register for a value that is stored: -1 for zero, which needs
+// none.
+fn sa_stored(f: IrFunc, s: mut Sa, mf: mut MFunc, x: i64) -> i64 {
+    if sa_is_zero(f, x) { return -1 }
+    return sa_reg(f, mut s, mut mf, x)
+}
+
+// Two words, `v` and then `w` (-1 for zero), to the prepared memory
+// operand.
+fn sa_store_pair(s: Sa, mf: mut MFunc, v: i64, w: i64) {
+    var zeros = 0
+    if v < 0 { zeros = zeros | 1 }
+    if w < 0 { zeros = zeros | 2 }
+    mf_ins(mut mf, SA_STOREP, 0, zeros, sa_mem_now(s), s.mem_disp)
+    if v >= 0 { mf_operand(mut mf, v, MF_USE) }
+    if w >= 0 { mf_operand(mut mf, w, MF_USE) }
+    sa_mem_regs(s, mut mf)
+}
+
+fn sa_store(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
+    let next = f.ins_next[ins]
+    if next >= 0 && f.ins_op[next] == IR_STORE && sa_is_word(f, ins) && sa_is_word(f, next) && f.ins_a[next] == f.ins_a[ins] && sa_pairs(f, s, f.ins_a[ins]) {
+        let apart = f.ins_imm[next] - f.ins_imm[ins]
+        if apart == 8 || apart == -8 {
+            var low = ins
+            var high = next
+            if apart < 0 {
+                low = next
+                high = ins
+            }
+            let v = sa_stored(f, mut s, mut mf, f.ins_b[low])
+            let w = sa_stored(f, mut s, mut mf, f.ins_b[high])
+            sa_access(f, mut s, mut mf, f.ins_a[low], f.ins_imm[low])
+            sa_store_pair(s, mut mf, v, w)
+            s.done = next
+            return
+        }
+    }
+    let reg = sa_stored(f, mut s, mut mf, f.ins_b[ins])
+    sa_access(f, mut s, mut mf, f.ins_a[ins], f.ins_imm[ins])
+    sa_store_prepared(s, mut mf, f.ins_ty[ins], reg)
+}
+
+// A store of IR operand `x`, eight bytes, at `offset` of the area of
+// kind `kind` in the frame.
+fn sa_store_area(f: IrFunc, s: mut Sa, mf: mut MFunc, kind: i64, offset: i64, x: i64) {
+    let reg = sa_stored(f, mut s, mut mf, x)
+    sa_set_mem(mut s, kind, -1, 0, offset)
+    sa_store_prepared(s, mut mf, IR_I64, reg)
+}
+
+fn sa_load_area(s: mut Sa, mf: mut MFunc, kind: i64, offset: i64, dst: i64) {
+    sa_set_mem(mut s, kind, -1, 0, offset)
+    mf_ins(mut mf, SA_LOAD, 0, IR_I64, sa_mem_now(s), s.mem_disp)
+    mf_operand(mut mf, dst, MF_DEF)
+}
+
+fn sa_need_out(s: mut Sa, bytes: i64) {
+    if bytes > s.out_bytes { s.out_bytes = bytes }
+}
+
+// A call of function `target` with the arguments of IR instruction
+// `ins`; the results go to the instruction's results.
+fn sa_call(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64, target: i64) {
+    let n = f.ins_an[ins]
+    s.calls = true
+    var k = SA_ARG_REGS
+    while k < n {
+        sa_store_area(f, mut s, mut mf, SA_M_ARGOUT, (k - SA_ARG_REGS) * 8, f.args[f.ins_as[ins] + k])
+        k = k + 1
+    }
+    if n > SA_ARG_REGS { sa_need_out(mut s, (n - SA_ARG_REGS) * 8) }
+    k = 0
+    while k < n && k < SA_ARG_REGS {
+        sa_into(f, mut s, mut mf, k, f.args[f.ins_as[ins] + k])
+        k = k + 1
+    }
+    let at = mf_ins(mut mf, SA_CALL, target, 0, 0, 0)
+    k = 0
+    while k < n && k < SA_ARG_REGS {
+        mf_operand(mut mf, k, MF_USE)
+        k = k + 1
+    }
+    mf.clob[at] = SA_CALLER_SAVED
+    let results = f.ins_rn[ins]
+    if results > SA_RESULT_REGS { sa_need_out(mut s, (results - SA_RESULT_REGS) * 8) }
+    k = 0
+    while k < results {
+        let d = sa_value(mut s, mut mf, f.results[f.ins_rs[ins] + k])
+        if k < SA_RESULT_REGS {
+            sa_copy_from(mut mf, d, k)
+        } else {
+            sa_load_area(mut s, mut mf, SA_M_ARGOUT, (k - SA_RESULT_REGS) * 8, d)
+        }
+        k = k + 1
+    }
+}
+
+// A call of the runtime routine at `routine` (ART_*), or of an imported
+// function when `op` is SA_CALLIMP, with the arguments of IR
+// instruction `ins` in x0, x1 and so on, in order; with `out` the last
+// of them goes to x8, where a routine takes the address for what it
+// gives. The result, when the instruction has one, comes from x0.
+fn sa_runtime(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64, op: i64, routine: i64, out: bool) {
+    let n = f.ins_an[ins]
+    if n > 8 {
+        sa_fail(mut s, "a runtime routine with more than eight arguments")
+        return
+    }
+    s.calls = true
+    var k = 0
+    while k < n {
+        var reg = k
+        if out && k == n - 1 { reg = SA_OUT_REG }
+        sa_into(f, mut s, mut mf, reg, f.args[f.ins_as[ins] + k])
+        k = k + 1
+    }
+    let at = mf_ins(mut mf, op, routine, 0, 0, 0)
+    k = 0
+    while k < n {
+        if out && k == n - 1 {
+            mf_operand(mut mf, SA_OUT_REG, MF_USE)
+        } else {
+            mf_operand(mut mf, k, MF_USE)
+        }
+        k = k + 1
+    }
+    mf.clob[at] = SA_CALLER_SAVED
+    if f.ins_res[ins] != -1 { sa_result_from(f, mut s, mut mf, ins, 0) }
+}
+
+// Writes a string header (address, length, capacity) into the scratch
+// area at `offset`; `cap` -1 stands for a capacity of zero.
+fn sa_header(f: IrFunc, s: mut Sa, mf: mut MFunc, offset: i64, p: i64, n: i64, cap: i64) {
+    s.scratch = true
+    let first = sa_stored(f, mut s, mut mf, p)
+    let second = sa_stored(f, mut s, mut mf, n)
+    sa_set_mem(mut s, SA_M_SCRATCH, -1, 0, offset)
+    sa_store_pair(s, mut mf, first, second)
+    var third = -1
+    if cap != -1 { third = sa_stored(f, mut s, mut mf, cap) }
+    sa_set_mem(mut s, SA_M_SCRATCH, -1, 0, offset + 16)
+    sa_store_prepared(s, mut mf, IR_I64, third)
+}
+
+// A call of a runtime routine that takes the addresses of one or two
+// string headers in the scratch area.
+fn sa_runtime_headers(s: mut Sa, mf: mut MFunc, routine: i64, two: bool) {
+    s.calls = true
+    sa_set_mem(mut s, SA_M_SCRATCH, -1, 0, 0)
+    sa_lea(s, mut mf, 0)
+    if two {
+        sa_set_mem(mut s, SA_M_SCRATCH, -1, 0, 24)
+        sa_lea(s, mut mf, 1)
+    }
+    let at = mf_ins(mut mf, SA_CALLRT, routine, 0, 0, 0)
+    mf_operand(mut mf, 0, MF_USE)
+    if two { mf_operand(mut mf, 1, MF_USE) }
+    mf.clob[at] = SA_CALLER_SAVED
+}
+
+// Where the routine the lowering stage calls by this name starts in
+// the runtime, or -1.
+fn sa_rt_by_name(name: str) -> i64 {
+    match name {
+        "list_push" => return ART_LIST_PUSH
+        "list_clone" => return ART_LIST_CLONE
+        "drop" => return ART_DROP
+        "str_concat" => return ART_STR_CONCAT
+        "str_eq_buf" => return ART_STR_EQ
+        "str_from_i64" => return ART_STR_FROM_I64
+        "str_from_bool" => return ART_STR_FROM_BOOL
+        "str_slice" => return ART_STR_SLICE
+        "chr" => return ART_CHR
+        "str_append_buf" => return ART_STR_APPEND
+        "args" => return ART_ARGS
+        "read_file" => return ART_READ_FILE
+        "write_file" => return ART_WRITE_FILE
+        "set_executable" => return ART_SET_EXECUTABLE
+        "remove_file" => return ART_REMOVE_FILE
+        "rename_file" => return ART_RENAME_FILE
+        "clock" => return ART_CLOCK
+        "str_is_utf8" => return ART_STR_IS_UTF8
+        "print_buf" => return ART_PRINT_STR
+        "eprint_buf" => return ART_EPRINT_STR
+        _ => return -1
+    }
+}
+
+// Whether the last argument of the routine is the address for what it
+// gives, which the ARM64 runtime takes in x8.
+fn sa_rt_has_out(routine: i64) -> bool {
+    return routine >= IR_RT_STR_CONCAT && routine <= IR_RT_RENAME_FILE && routine != IR_RT_STR_EQ_BUF && routine != IR_RT_STR_APPEND_BUF
+}
+
+fn sa_callrt(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
+    let routine = f.ins_imm[ins]
+    let a = f.ins_as[ins]
+    if routine == IR_RT_ALLOC {
+        sa_runtime(f, mut s, mut mf, ins, SA_CALLRT, ART_ALLOC, false)
+    } else if routine == IR_RT_FREE {
+        sa_runtime(f, mut s, mut mf, ins, SA_CALLRT, ART_FREE, false)
+    } else if routine == IR_RT_REALLOC {
+        sa_runtime(f, mut s, mut mf, ins, SA_CALLIMP, SA_IMPORT_REALLOC, false)
+    } else if routine == IR_RT_MEMCPY {
+        sa_call(f, mut s, mut mf, ins, s.memcpy_fn)
+    } else if routine == IR_RT_PRINT_I64 {
+        sa_runtime(f, mut s, mut mf, ins, SA_CALLRT, ART_PRINT_I64, false)
+    } else if routine == IR_RT_PRINT_BOOL {
+        sa_runtime(f, mut s, mut mf, ins, SA_CALLRT, ART_PRINT_BOOL, false)
+    } else if routine == IR_RT_EXIT {
+        sa_runtime(f, mut s, mut mf, ins, SA_CALLRT, ART_EXIT, false)
+    } else if routine == IR_RT_PRINT_STR || routine == IR_RT_EPRINT_STR {
+        sa_header(f, mut s, mut mf, 0, f.args[a], f.args[a + 1], -1)
+        if routine == IR_RT_PRINT_STR {
+            sa_runtime_headers(mut s, mut mf, ART_PRINT_STR, false)
+        } else {
+            sa_runtime_headers(mut s, mut mf, ART_EPRINT_STR, false)
+        }
+    } else if routine == IR_RT_STR_EQ {
+        sa_header(f, mut s, mut mf, 0, f.args[a], f.args[a + 1], -1)
+        sa_header(f, mut s, mut mf, 24, f.args[a + 2], f.args[a + 3], -1)
+        sa_runtime_headers(mut s, mut mf, ART_STR_EQ, true)
+        sa_result_from(f, mut s, mut mf, ins, 0)
+    } else if routine == IR_RT_STR_APPEND {
+        sa_header(f, mut s, mut mf, 0, f.args[a], f.args[a + 1], f.args[a + 2])
+        sa_header(f, mut s, mut mf, 24, f.args[a + 3], f.args[a + 4], -1)
+        sa_runtime_headers(mut s, mut mf, ART_STR_APPEND, true)
+        let d = sa_value(mut s, mut mf, f.results[f.ins_rs[ins]])
+        let e = sa_value(mut s, mut mf, f.results[f.ins_rs[ins] + 1])
+        sa_set_mem(mut s, SA_M_SCRATCH, -1, 0, 0)
+        mf_ins(mut mf, SA_LOADP, 0, 0, sa_mem_now(s), 0)
+        mf_operand(mut mf, d, MF_DEF)
+        mf_operand(mut mf, e, MF_DEF)
+        let c = sa_value(mut s, mut mf, f.results[f.ins_rs[ins] + 2])
+        sa_load_area(mut s, mut mf, SA_M_SCRATCH, 16, c)
+    } else {
+        let real = sa_rt_by_name(ir_rt_name(routine))
+        if real == -1 {
+            sa_fail(mut s, "the runtime routine `" + ir_rt_name(routine) + "` is not known to the ARM64 selector")
+            return
+        }
+        sa_runtime(f, mut s, mut mf, ins, SA_CALLRT, real, sa_rt_has_out(routine))
+    }
+}
+
+fn sa_gep(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
+    sa_address(f, mut s, mut mf, f.ins_a[ins], f.ins_b[ins], f.ins_imm2[ins], f.ins_imm[ins])
+    let d = sa_value(mut s, mut mf, f.ins_res[ins])
+    sa_lea(s, mut mf, d)
+    if s.mem_kind == SA_M_REG { mf_hint(mut mf, d, s.mem_base) }
+}
+
+fn sa_extend(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
+    let a = sa_reg(f, mut s, mut mf, f.ins_a[ins])
+    let d = sa_value(mut s, mut mf, f.ins_res[ins])
+    if f.ins_op[ins] == IR_NEG {
+        mf_ins(mut mf, SA_NEG, 0, 0, 0, 0)
+    } else {
+        mf_ins(mut mf, SA_EXT, 0, f.ins_op[ins], 0, 0)
+    }
+    mf_hint(mut mf, d, a)
+    mf_operand(mut mf, d, MF_DEF)
+    mf_operand(mut mf, a, MF_USE)
+}
+
+// ---- terminators -----------------------------------------------------------------------
+
+// Gets the arguments of every way out of terminator `ins` ready, which
+// may take instructions; they must come before the terminator.
+fn sa_prepare_edges(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
+    s.ea_kind.truncate(0)
+    s.ea_val.truncate(0)
+    var e = f.ins_es[ins]
+    while e < f.ins_es[ins] + f.ins_en[ins] {
+        var k = 0
+        while k < f.edge_an[e] {
+            let x = f.args[f.edge_as[e] + k]
+            if sa_is_imm(f, x) {
+                s.ea_kind.push(1)
+                s.ea_val.push(sa_imm(f, x))
+            } else {
+                s.ea_kind.push(0)
+                s.ea_val.push(sa_reg(f, mut s, mut mf, x))
+            }
+            k = k + 1
+        }
+        e = e + 1
+    }
+}
+
+// Gives the terminator that was just made its ways out.
+fn sa_edges(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
+    var at = 0
+    var e = f.ins_es[ins]
+    while e < f.ins_es[ins] + f.ins_en[ins] {
+        let to = f.edge_blk[e]
+        mf_succ(mut mf, s.blk[to])
+        var k = 0
+        while k < f.edge_an[e] {
+            if s.ea_kind[at] == 1 {
+                mf_edge_const(mut mf, s.ea_val[at])
+            } else {
+                let p = sa_value(mut s, mut mf, f.bparams[f.blk_ps[to] + k])
+                mf_edge_arg(mut mf, s.ea_val[at])
+                mf_hint(mut mf, p, s.ea_val[at])
+                mf_hint(mut mf, s.ea_val[at], p)
+            }
+            at = at + 1
+            k = k + 1
+        }
+        e = e + 1
+    }
+}
+
+// The condition on the flags an operation set that says what the
+// comparison `op` of its result with zero says.
+fn sa_flags_cc(op: i64) -> i64 {
+    match op {
+        18 => return AX_EQ
+        19 => return AX_NE
+        20 => return AX_MI
+        _ => return AX_PL
+    }
+}
+
+fn sa_terminator(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
+    let op = f.ins_op[ins]
+    if op == IR_JUMP {
+        sa_prepare_edges(f, mut s, mut mf, ins)
+        mf_ins(mut mf, SA_JMP, 0, 0, 0, 0)
+        sa_edges(f, mut s, mut mf, ins)
+    } else if op == IR_BR && sa_fold_of(s, f.ins_a[ins]) == SA_F_FLAGS {
+        sa_prepare_edges(f, mut s, mut mf, ins)
+        mf_ins(mut mf, SA_BCC, 0, sa_flags_cc(f.ins_op[f.val_ins[f.ins_a[ins]]]), 0, 0)
+        sa_edges(f, mut s, mut mf, ins)
+    } else if op == IR_BR {
+        sa_prepare_edges(f, mut s, mut mf, ins)
+        sa_condition(f, mut s, mut mf, f.ins_a[ins])
+        var flags = 0
+        if s.cb_is_imm { flags = 1 }
+        if s.c_test {
+            mf_ins(mut mf, SA_TSTBR, s.cb_imm, s.cc, flags, 0)
+        } else {
+            mf_ins(mut mf, SA_CMPBR, s.cb_imm, s.cc, flags, 0)
+        }
+        mf_operand(mut mf, s.ca, MF_USE)
+        if !s.cb_is_imm { mf_operand(mut mf, s.cb, MF_USE) }
+        sa_edges(f, mut s, mut mf, ins)
+    } else if op == IR_SWITCH {
+        sa_prepare_edges(f, mut s, mut mf, ins)
+        let v = sa_reg(f, mut s, mut mf, f.ins_a[ins])
+        let keys = mf.consts.len()
+        var e = f.ins_es[ins]
+        while e < f.ins_es[ins] + f.ins_en[ins] - 1 {
+            mf.consts.push(f.edge_key[e])
+            e = e + 1
+        }
+        mf_ins(mut mf, SA_SWITCH, keys, f.ins_en[ins] - 1, 0, 0)
+        mf_operand(mut mf, v, MF_USE)
+        sa_edges(f, mut s, mut mf, ins)
+    } else if op == IR_RET {
+        let n = f.ins_an[ins]
+        var k = SA_RESULT_REGS
+        while k < n {
+            sa_store_area(f, mut s, mut mf, SA_M_ARGIN, (k - SA_RESULT_REGS) * 8, f.args[f.ins_as[ins] + k])
+            k = k + 1
+        }
+        k = 0
+        while k < n && k < SA_RESULT_REGS {
+            sa_into(f, mut s, mut mf, k, f.args[f.ins_as[ins] + k])
+            k = k + 1
+        }
+        mf_ins(mut mf, SA_RET, 0, 0, 0, 0)
+        k = 0
+        while k < n && k < SA_RESULT_REGS {
+            mf_operand(mut mf, k, MF_USE)
+            k = k + 1
+        }
+    } else {
+        mf_ins(mut mf, SA_TRAP, f.ins_imm[ins], 0, 0, 0)
+    }
+}
+
+fn sa_instruction(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
+    let op = f.ins_op[ins]
+    if op == IR_ICONST || op == IR_BCONST || op == IR_ADDR || op == IR_FRAME || ins == s.done {
+        return
+    }
+    if ir_is_terminator(op) {
+        sa_terminator(f, mut s, mut mf, ins)
+        return
+    }
+    let fold = sa_fold_of(s, f.ins_res[ins])
+    if op == IR_SREM {
+        sa_remainder(f, mut s, mut mf, ins)
+    } else if op == IR_SHL || op == IR_SAR || op == IR_SHR {
+        if fold != SA_F_SHIFTED { sa_shift(f, mut s, mut mf, ins) }
+    } else if ir_is_compare(op) {
+        if fold != SA_F_COMPARE && fold != SA_F_FLAGS { sa_compare(f, mut s, mut mf, ins) }
+    } else if ir_is_binary(op) {
+        if fold != SA_F_MADD && fold != SA_F_TEST { sa_binary(f, mut s, mut mf, ins) }
+    } else if ir_is_unary(op) {
+        sa_extend(f, mut s, mut mf, ins)
+    } else if op == IR_SELECT {
+        sa_select(f, mut s, mut mf, ins)
+    } else if op == IR_LOAD {
+        sa_load(f, mut s, mut mf, ins)
+    } else if op == IR_STORE {
+        sa_store(f, mut s, mut mf, ins)
+    } else if op == IR_GEP {
+        if fold != SA_F_ADDRESS { sa_gep(f, mut s, mut mf, ins) }
+    } else if op == IR_CALL {
+        sa_call(f, mut s, mut mf, ins, s.targets[f.ins_imm[ins]])
+    } else if op == IR_CALLRT {
+        sa_callrt(f, mut s, mut mf, ins)
+    } else {
+        sa_fail(mut s, "the instruction `" + ir_op_name(op) + "` is not known to the ARM64 selector")
+    }
+}
+
+// ---- a function ------------------------------------------------------------------------
+
+// Whether the `gep` `gep` costs nothing as the address of the access
+// `user`.
+fn sa_gep_is_free(f: IrFunc, gep: i64, user: i64) -> bool {
+    let base = sa_def_op(f, f.ins_a[gep])
+    if base == IR_ADDR { return false }
+    let index = f.ins_b[gep]
+    if index == -1 || sa_is_imm(f, index) { return true }
+    if base == IR_FRAME || f.ins_imm[gep] + f.ins_imm[user] != 0 { return false }
+    return f.ins_imm2[gep] == 1 || f.ins_imm2[gep] == ir_type_bytes(f.ins_ty[user])
+}
+
+// Whether value `x` is used once and is a `mul` (`want` SA_F_MADD) or a
+// `shl` by a constant (`want` SA_F_SHIFTED) that nothing has claimed.
+fn sa_can_fold(f: IrFunc, s: Sa, uses: IrUses, x: i64, want: i64) -> bool {
+    if x < 0 || uses.count[x] != 1 || s.fold[x] != 0 { return false }
+    let op = sa_def_op(f, x)
+    if want == SA_F_MADD { return op == IR_MUL }
+    if op != IR_SHL { return false }
+    let inner = f.val_ins[x]
+    return sa_is_imm(f, f.ins_b[inner]) && !sa_is_imm(f, f.ins_a[inner])
+}
+
+// Decides what is folded into its users. `blocks` are the blocks that
+// can be reached.
+fn sa_folds(f: IrFunc, s: mut Sa, blocks: List[i64]) {
+    let uses = ir_uses(f)
+    var v = 0
+    while v < f.val_ty.len() {
+        let def = f.val_ins[v]
+        v = v + 1
+        if def < 0 || f.val_ty[v - 1] < 0 { continue }
+        let x = v - 1
+        let op = f.ins_op[def]
+        let from = uses.start[x]
+        let n = uses.count[x]
+        if op == IR_GEP && n > 0 {
+            var only_addresses = true
+            var free = true
+            var k = 0
+            while k < n {
+                let user = uses.ins[from + k]
+                let user_op = f.ins_op[user]
+                if user_op == IR_LOAD || user_op == IR_STORE && f.ins_b[user] != x {
+                    if !sa_gep_is_free(f, def, user) { free = false }
+                } else {
+                    only_addresses = false
+                }
+                k = k + 1
+            }
+            if only_addresses && (free || n == 1) { s.fold[x] = SA_F_ADDRESS }
+        } else if ir_is_compare(op) && n == 1 {
+            let user = uses.ins[from]
+            let user_op = f.ins_op[user]
+            if (user_op == IR_BR || user_op == IR_SELECT) && f.ins_a[user] == x {
+                s.fold[x] = SA_F_COMPARE
+            }
+        }
+    }
+    // An `and` that is only compared with zero.
+    v = 0
+    while v < f.val_ty.len() {
+        let x = v
+        v = v + 1
+        if s.fold[x] != SA_F_COMPARE { continue }
+        let cmp = f.val_ins[x]
+        if f.ins_op[cmp] != IR_EQ && f.ins_op[cmp] != IR_NE { continue }
+        var a = f.ins_a[cmp]
+        var b = f.ins_b[cmp]
+        if sa_is_imm(f, a) && !sa_is_imm(f, b) {
+            a = f.ins_b[cmp]
+            b = f.ins_a[cmp]
+        }
+        if a >= 0 && sa_is_zero(f, b) && sa_def_op(f, a) == IR_AND && uses.count[a] == 1 {
+            s.fold[a] = SA_F_TEST
+        }
+    }
+    for b in blocks {
+        // Operands that are done in the operation that uses them.
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            let op = f.ins_op[ins]
+            let x = f.ins_a[ins]
+            let y = f.ins_b[ins]
+            let plain = (op == IR_ADD || op == IR_SUB || op == IR_AND || op == IR_OR || op == IR_XOR) && s.fold[f.ins_res[ins]] != SA_F_TEST && x != y
+            if plain && !sa_is_imm(f, x) && !sa_is_imm(f, y) {
+                if (op == IR_ADD || op == IR_SUB) && sa_can_fold(f, s, uses, y, SA_F_MADD) {
+                    s.fold[y] = SA_F_MADD
+                } else if op == IR_ADD && sa_can_fold(f, s, uses, x, SA_F_MADD) {
+                    s.fold[x] = SA_F_MADD
+                } else if sa_can_fold(f, s, uses, y, SA_F_SHIFTED) {
+                    s.fold[y] = SA_F_SHIFTED
+                } else if op != IR_SUB && sa_can_fold(f, s, uses, x, SA_F_SHIFTED) {
+                    s.fold[x] = SA_F_SHIFTED
+                }
+            }
+            ins = f.ins_next[ins]
+        }
+        // The flags of the last `add`, `sub` or `and` for the `br`.
+        let last = f.blk_last[b]
+        if f.ins_op[last] != IR_BR || sa_fold_of(s, f.ins_a[last]) != SA_F_COMPARE { continue }
+        let cmp = f.val_ins[f.ins_a[last]]
+        let cmp_op = f.ins_op[cmp]
+        let a = f.ins_a[cmp]
+        if cmp_op != IR_EQ && cmp_op != IR_NE && cmp_op != IR_SLT && cmp_op != IR_SGE || a < 0 || !sa_is_zero(f, f.ins_b[cmp]) || s.fold[a] != 0 {
+            continue
+        }
+        let made = sa_def_op(f, a)
+        if made != IR_ADD && made != IR_SUB && made != IR_AND { continue }
+        let maker = f.val_ins[a]
+        if sa_fold_of(s, f.ins_a[maker]) == SA_F_MADD || sa_fold_of(s, f.ins_b[maker]) == SA_F_MADD {
+            continue
+        }
+        // It must be in this block, with nothing after it that changes
+        // the flags.
+        var found = false
+        var kept = true
+        ins = f.blk_first[b]
+        while ins >= 0 {
+            let op = f.ins_op[ins]
+            if ins == maker {
+                found = true
+                kept = true
+            } else if op == IR_CALL || op == IR_CALLRT || op == IR_SELECT {
+                kept = false
+            } else if ir_is_compare(op) && s.fold[f.ins_res[ins]] != SA_F_COMPARE {
+                kept = false
+            }
+            ins = f.ins_next[ins]
+        }
+        if found && kept {
+            s.fold[f.ins_a[last]] = SA_F_FLAGS
+            s.flags[a] = 1
+        }
+    }
+}
+
+// Finds the constants to make once for the loops: the first SA_POOL
+// different ones, zero aside, among the operands of the instructions in
+// loops. Which of them a loop really needs in a register is only known
+// once the instructions are selected.
+fn sa_pool(f: IrFunc, s: mut Sa, cfg: IrCfg, blocks: List[i64]) {
+    for b in blocks {
+        if b >= cfg.blk_loop.len() || cfg.blk_loop[b] < 0 { continue }
+        var ins = f.blk_first[b]
+        while ins >= 0 && s.pool_val.len() < SA_POOL {
+            let op = f.ins_op[ins]
+            var n = ir_fixed_operands(op)
+            if ir_is_terminator(op) { n = 0 }
+            var k = 0
+            while k < n {
+                var x = f.ins_a[ins]
+                if k == 1 {
+                    x = f.ins_b[ins]
+                } else if k == 2 {
+                    x = f.ins_c[ins]
+                }
+                if sa_is_imm(f, x) && sa_imm(f, x) != 0 && !s.pool_val.contains(sa_imm(f, x)) && s.pool_val.len() < SA_POOL {
+                    s.pool_val.push(sa_imm(f, x))
+                }
+                k = k + 1
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+}
+
+// How deep in loops block `b` is.
+fn sa_depth(cfg: IrCfg, b: i64) -> i64 {
+    if cfg.blk_loop[b] < 0 { return 0 }
+    return cfg.loop_depth[cfg.blk_loop[b]]
+}
+
+// Whether block `b` can follow the block being laid out: it is not
+// laid out yet and does not stop the program.
+fn sa_can_follow(f: IrFunc, placed: List[bool], b: i64) -> bool {
+    return !placed[b] && f.ins_op[f.blk_last[b]] != IR_TRAP
+}
+
+// The block to lay out after the block that `last` ends, or -1.
+fn sa_follower(f: IrFunc, cfg: IrCfg, placed: List[bool], last: i64) -> i64 {
+    let op = f.ins_op[last]
+    let e = f.ins_es[last]
+    if op == IR_JUMP {
+        if sa_can_follow(f, placed, f.edge_blk[e]) { return f.edge_blk[e] }
+        return -1
+    }
+    if op != IR_BR { return -1 }
+    let first = f.edge_blk[e]
+    let second = f.edge_blk[e + 1]
+    if !sa_can_follow(f, placed, first) {
+        if sa_can_follow(f, placed, second) { return second }
+        return -1
+    }
+    if !sa_can_follow(f, placed, second) || sa_depth(cfg, first) > sa_depth(cfg, second) {
+        return first
+    }
+    // Two values are rarely equal: after `br (eq a, b), x, y` comes y.
+    if sa_depth(cfg, second) > sa_depth(cfg, first) || sa_def_op(f, f.ins_a[last]) == IR_EQ {
+        return second
+    }
+    return first
+}
+
+// Selects the instructions of `f`, which is changed: its critical
+// edges are split. `targets` says which function of the module each
+// entry of its `callees` is; `memcpy_fn` is the function that stands in
+// for that runtime routine.
+fn sa_function(f: mut IrFunc, targets: List[i64], memcpy_fn: i64) -> SaFunc {
+    var s = Sa {
+        vr: [],
+        fold: [],
+        flags: [],
+        blk: [],
+        targets: targets,
+        memcpy_fn: memcpy_fn,
+        mem_kind: 0,
+        mem_base: -1,
+        mem_index: -1,
+        mem_scale: 1,
+        mem_n: 0,
+        mem_disp: 0,
+        cc: 0,
+        ca: -1,
+        cb: -1,
+        cb_imm: 0,
+        cb_is_imm: false,
+        c_test: false,
+        ea_kind: [],
+        ea_val: [],
+        done: -1,
+        pool_val: [],
+        pool_vr: [],
+        pool_at: [],
+        pool_used: [],
+        in_loop: false,
+        out_bytes: 0,
+        scratch: false,
+        calls: false,
+        failed: false,
+        error: ""
+    }
+    var mf = mf_new(f.name)
+    // Which blocks can be reached, and how many ways lead into each.
+    let cfg = ir_cfg(f)
+    let before = f.blk_first.len()
+    var ways_in = 0.filled(before)
+    for b in cfg.rpo {
+        let last = f.blk_last[b]
+        var e = f.ins_es[last]
+        while e < f.ins_es[last] + f.ins_en[last] {
+            ways_in[f.edge_blk[e]] = ways_in[f.edge_blk[e]] + 1
+            e = e + 1
+        }
+    }
+    // The layout. Blocks are laid out in chains: after a block comes
+    // the block it jumps to, or one of the two a `br` leads to (the one
+    // deeper in loops; else the first, or the second when the test is
+    // for equality), when that block is still to be laid out. A chain starts at the first such block in reverse
+    // postorder, so every block comes after the block that dominates
+    // it. Each block is followed by the blocks put on its critical
+    // edges; blocks that stop the program come last.
+    var layout: List[i64] = []
+    var cold: List[i64] = []
+    var placed = false.filled(before)
+    for start in cfg.rpo {
+        var b = start
+        while b >= 0 && !placed[b] {
+            placed[b] = true
+            let last = f.blk_last[b]
+            if f.ins_op[last] == IR_TRAP {
+                cold.push(b)
+                break
+            }
+            layout.push(b)
+            var split = false
+            if f.ins_en[last] > 1 {
+                var e = f.ins_es[last]
+                let end = e + f.ins_en[last]
+                while e < end {
+                    if ways_in[f.edge_blk[e]] > 1 {
+                        layout.push(ir_split_edge(mut f, e))
+                        split = true
+                    }
+                    e = e + 1
+                }
+            }
+            b = -1
+            if !split { b = sa_follower(f, cfg, placed, last) }
+        }
+    }
+    for b in cold {
+        layout.push(b)
+    }
+    s.vr = (-1).filled(f.val_ty.len())
+    s.fold = 0.filled(f.val_ty.len())
+    s.flags = 0.filled(f.val_ty.len())
+    s.blk = (-1).filled(f.blk_first.len())
+    var k = 0
+    while k < layout.len() {
+        s.blk[layout[k]] = k + 1
+        k = k + 1
+    }
+    sa_folds(f, mut s, layout)
+    sa_pool(f, mut s, cfg, layout)
+    // The first machine block: the arguments arrive.
+    mf_block(mut mf)
+    mf_ins(mut mf, SA_ENTRY, 0, 0, 0, 0)
+    k = 0
+    while k < f.param_count && k < SA_ARG_REGS {
+        mf_operand(mut mf, k, MF_DEF)
+        k = k + 1
+    }
+    k = 0
+    while k < f.param_count {
+        let p = sa_value(mut s, mut mf, k)
+        if k < SA_ARG_REGS {
+            sa_copy_from(mut mf, p, k)
+        } else {
+            sa_load_area(mut s, mut mf, SA_M_ARGIN, (k - SA_ARG_REGS) * 8, p)
+        }
+        k = k + 1
+    }
+    for value in s.pool_val {
+        let made = mf_vreg(mut mf)
+        s.pool_vr.push(made)
+        s.pool_at.push(mf.op.len())
+        s.pool_used.push(false)
+        sa_movi(mut mf, made, value)
+    }
+    mf_ins(mut mf, SA_JMP, 0, 0, 0, 0)
+    mf_succ(mut mf, 1)
+    k = 0
+    while k < layout.len() {
+        let b = layout[k]
+        k = k + 1
+        s.in_loop = b < cfg.blk_loop.len() && cfg.blk_loop[b] >= 0
+        mf_block(mut mf)
+        var j = 0
+        while j < f.blk_pn[b] {
+            let p = sa_value(mut s, mut mf, f.bparams[f.blk_ps[b] + j])
+            mf_param(mut mf, p)
+            j = j + 1
+        }
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            sa_instruction(f, mut s, mut mf, ins)
+            ins = f.ins_next[ins]
+        }
+    }
+    k = 0
+    while k < s.pool_at.len() {
+        if !s.pool_used[k] { mf.op[s.pool_at[k]] = SA_NOP }
+        k = k + 1
+    }
+    return SaFunc { mf: mf, out_bytes: s.out_bytes, scratch: s.scratch, calls: s.calls, ok: !s.failed, error: s.error }
+}

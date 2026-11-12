@@ -1,0 +1,416 @@
+# The short forms of docs/design/concise.md: every mistake they add, and the
+# repair where it is mechanical.
+==== `x++` is `x += 1`
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    x++
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1401 4:6
+---- apply-fix
+---- after-has a.azl
+    x += 1
+---- run check a.azl
+---- exit 0
+==== `x--` is `x -= 1`
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    x--
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1401 4:6
+---- apply-fix
+---- after-has a.azl
+    x -= 1
+---- run check a.azl
+---- exit 0
+==== `++x` has no single repair
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    ++x
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1401 4:5
+---- no-fix
+==== `x =+ 1` is `x += 1`
+---- file a.azl
+fn main() {
+    var x = 1
+    x =+ 1
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1401 3:7
+---- apply-fix
+---- after-has a.azl
+    x += 1
+---- run check a.azl
+---- exit 0
+==== `x =- 1` is `x -= 1`
+---- file a.azl
+fn main() {
+    var x = 5
+    x =- 1
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1401 3:7
+---- apply-fix
+---- after-has a.azl
+    x -= 1
+---- run check a.azl
+---- exit 0
+==== `x =-1` and `x = -1` stay the negative number
+---- file a.azl
+fn main() {
+    var x = 5
+    x =-1
+    x = -1
+    x =-x
+    print(x)
+}
+---- run check a.azl
+---- exit 0
+==== `range(n)` is `0..n`
+---- file a.azl
+fn main() {
+    for i in range(3) {
+        print(i)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1405 2:14
+---- no-fix
+==== `.step_by(k)` is `step k`
+---- file a.azl
+fn main() {
+    for i in 0..6.step_by(2) {
+        print(i)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1405 2:19
+---- no-fix
+==== a function of the program may be called `range`
+---- file a.azl
+fn range(n: i64) -> List[i64] {
+    return [n]
+}
+
+fn main() {
+    for i in range(3) {
+        print(i)
+    }
+}
+---- run check a.azl
+---- exit 0
+==== a range is not a value
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    let r = 0..3
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1402 4:14
+---- no-fix
+==== a range is not an index
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    let part = xs[0..1]
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1402 4:20
+---- no-fix
+==== the ends of a range are numbers
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    for i in 0..true {
+        x += i
+    }
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1403 4:17
+---- no-fix
+==== the step is not zero
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    for i in 0..4 step 0 {
+        x += i
+    }
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1404 4:24
+---- no-fix
+==== the step is written out
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    for i in 0..4 step x {
+        x += i
+    }
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1404 4:24
+---- no-fix
+==== a range loop has one variable
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    for i, v in 0..4 {
+        x += i
+    }
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1422 4:9
+---- no-fix
+==== a field by its name alone needs the variable
+---- file a.azl
+struct Pair { key: str, value: i64 }
+
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    let p = Pair { key, value: 1 }
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1419 6:20
+---- no-fix
+==== the place of `op=` is not worked out by a call
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    xs[next()] += 1
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1421 4:5
+---- no-fix
+==== a brace in a text that holds no name
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    print("a { b")
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1411 4:14
+---- apply-fix
+---- after-has a.azl
+    print("a \{ b")
+---- run check a.azl
+---- exit 0
+==== empty braces in a text
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    print("{}")
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1411 4:12
+---- apply-fix
+---- after-has a.azl
+    print("\{}")
+---- run check a.azl
+---- exit 0
+==== a text written before texts held values
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    print("{count} items")
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1410 4:13
+---- apply-fix
+---- after-has a.azl
+    print("\{count} items")
+---- run check a.azl
+---- exit 0
+==== a value that has no text
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    print("{xs}")
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1410 4:13
+---- no-fix
+==== a text inside a value
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    print("a {str_len("b")} c")
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1412 4:23
+---- no-fix
+==== a brace inside a value
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    print("{ {x} }")
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1412 4:14
+---- no-fix
+==== `${x}` from other languages
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    print("${x}")
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1413 4:12
+---- apply-fix
+---- after-has a.azl
+    print("{x}")
+---- run check a.azl
+---- exit 0
+==== `f"..."` from other languages
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    print(f"{x}")
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1413 4:11
+---- apply-fix
+---- after-has a.azl
+    print("{x}")
+---- run check a.azl
+---- exit 0
+==== a numbered value
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    print("{0}", x)
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1413 4:12
+---- no-fix
+==== a format after the value
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    print("{x:>5}")
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1413 4:12
+---- no-fix
+==== two expressions in one value
+---- file a.azl
+fn main() {
+    var x = 1
+    let xs = [1, 2]
+    print("{x xs}")
+    print(x + xs[0])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1413 4:15
+---- no-fix
+==== a constant text holds no values
+---- file a.azl
+const GREETING = "hello {name}"
+
+fn main() {
+    print(GREETING)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1410 1:25
+---- apply-fix
+---- after-has a.azl
+const GREETING = "hello \{name}"
+---- run check a.azl
+---- exit 0
+==== a pattern is a fixed text
+---- file a.azl
+fn main() {
+    let s = "{}"
+    match s {
+        "{}" => print(1)
+        _ => print(2)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1411 2:14
+---- apply-fix
+---- run check --json a.azl
+---- exit 1
+---- reports E1411 4:10
+---- apply-fix
+---- after-has a.azl
+        "\{}" => print(1)
+---- run check a.azl
+---- exit 0

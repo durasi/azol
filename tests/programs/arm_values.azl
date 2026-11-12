@@ -142,13 +142,9 @@ fn zeros() -> i64 {
         k = k + 1
     }
     for mark in marks {
-        if mark {
-            total = total + 1
-        }
+        if mark { total = total + 1 }
     }
-    if flags.on {
-        total = total + 1000
-    }
+    if flags.on { total = total + 1000 }
     return total + flags.count + n + marks.len() * 100000000
 }
 

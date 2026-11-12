@@ -1,0 +1,18 @@
+; Kept: the second test is reached from both sides of the first, so its condition is not known.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = slt p0, 10
+    br v0, b1, b2
+b1:
+    callrt print_i64(1)
+    jump b3
+b2:
+    callrt print_i64(2)
+    jump b3
+b3:
+    br v0, b4, b5
+b4:
+    ret 1
+b5:
+    ret 2
+}

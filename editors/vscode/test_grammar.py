@@ -131,6 +131,15 @@ SAMPLES = [
     ("let naïve = 1", [("1", "constant.numeric.decimal")], [("ve", "keyword"), ("na", "keyword")]),
     ("record(mut c, \"ann\")", [("record", "entity.name.function.call"), ("mut", "storage.modifier.mut"), ("\"ann\"", "string.quoted.double")], []),
     ("x = a * b / c % d ^ e", [("*", "keyword.operator.arithmetic"), ("/", "keyword.operator.arithmetic"), ("%", "keyword.operator.arithmetic"), ("^", "keyword.operator.bitwise")], []),
+    ("total += 1", [("+=", "keyword.operator.assignment.compound"), ("1", "constant.numeric.decimal")], [("+", "keyword.operator.arithmetic"), ("=", "keyword.operator.assignment.azol")]),
+    ("bits <<= 2", [("<<=", "keyword.operator.assignment.compound")], [("<<", "keyword.operator.bitwise"), ("<=", "keyword.operator.comparison")]),
+    ("x >>= 1", [(">>=", "keyword.operator.assignment.compound")], [(">=", "keyword.operator.comparison")]),
+    ("if a >= b { a -= b }", [(">=", "keyword.operator.comparison"), ("-=", "keyword.operator.assignment.compound")], []),
+    ("for i in 0..n {", [("for", "keyword.control"), ("..", "keyword.operator.range"), ("0", "constant.numeric.decimal")], [(".", "punctuation.accessor"), ("0.", "invalid")]),
+    ("for i in n - 1..=0 step -1 {", [("..=", "keyword.operator.range"), ("step", "keyword.control.step"), ("1", "constant.numeric.decimal")], [("=", "keyword.operator.assignment.azol")]),
+    ("let step = step + 1", [], [("step", "keyword")]),
+    ("print(\"total: {sum + 1} of {xs.len()}\")", [("{sum + 1}", "meta.interpolation"), ("{xs.len()}", "meta.interpolation"), ("+", "keyword.operator.arithmetic"), ("1", "constant.numeric.decimal"), ("len", "entity.name.function.method"), ("\"total: {sum + 1} of {xs.len()}\"", "string.quoted.double")], []),
+    ("print(\"a brace \\{ and }\")", [("\\{", "constant.character.escape")], [("{ and }", "meta.interpolation")]),
 ]
 
 

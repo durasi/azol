@@ -207,9 +207,7 @@ fn irm_object(mach: mut IrMachine, p: i64, bytes: i64, what: str) -> i64 {
 
 fn irm_load(mach: mut IrMachine, p: i64, bytes: i64) -> i64 {
     let obj = irm_object(mut mach, p, bytes, "a load")
-    if obj < 0 {
-        return 0
-    }
+    if obj < 0 { return 0 }
     let offset = p & 4294967295
     var value = 0
     var i = bytes - 1
@@ -226,9 +224,7 @@ fn irm_load(mach: mut IrMachine, p: i64, bytes: i64) -> i64 {
 
 fn irm_store(mach: mut IrMachine, p: i64, bytes: i64, value: i64) {
     let obj = irm_object(mut mach, p, bytes, "a store")
-    if obj < 0 {
-        return
-    }
+    if obj < 0 { return }
     if mach.obj_kind[obj] == IRM_DATA {
         irm_fail(mut mach, "a store to the read-only data")
         return
@@ -244,17 +240,13 @@ fn irm_store(mach: mut IrMachine, p: i64, bytes: i64, value: i64) {
 
 // The bytes of a string of `n` bytes at `p`.
 fn irm_text(mach: mut IrMachine, p: i64, n: i64) -> str {
-    if n == 0 {
-        return ""
-    }
+    if n == 0 { return "" }
     if n < 0 {
         irm_fail(mut mach, "a string of a negative length")
         return ""
     }
     let obj = irm_object(mut mach, p, n, "a read")
-    if obj < 0 {
-        return ""
-    }
+    if obj < 0 { return "" }
     let offset = p & 4294967295
     var i = 0
     while i < n {
@@ -269,13 +261,9 @@ fn irm_text(mach: mut IrMachine, p: i64, n: i64) -> str {
 
 // Stores the bytes of `text` at `p`.
 fn irm_put_text(mach: mut IrMachine, p: i64, text: str) {
-    if text.len() == 0 {
-        return
-    }
+    if text.len() == 0 { return }
     let obj = irm_object(mut mach, p, text.len(), "a write")
-    if obj < 0 {
-        return
-    }
+    if obj < 0 { return }
     if mach.obj_kind[obj] == IRM_DATA {
         irm_fail(mut mach, "a write to the read-only data")
         return
@@ -291,9 +279,7 @@ fn irm_put_text(mach: mut IrMachine, p: i64, text: str) {
 
 // Frees an allocated block; `p` must be its start.
 fn irm_free(mach: mut IrMachine, p: i64) {
-    if p == 0 {
-        return
-    }
+    if p == 0 { return }
     let obj = p >> 32
     if p < 0 || obj >= mach.obj_kind.len() || p & 4294967295 != 0 || mach.obj_kind[obj] != IRM_HEAP {
         irm_fail(mut mach, "`free` of something that is not the start of a live allocated block")
@@ -333,117 +319,61 @@ fn irm_unsigned_less(a: i64, b: i64) -> bool {
 }
 
 fn irm_bool(value: bool) -> i64 {
-    if value {
-        return 1
-    }
+    if value { return 1 }
     return 0
 }
 
 // The result of an instruction with two operands.
 fn irm_binary(mach: mut IrMachine, op: i64, a: i64, b: i64) -> i64 {
-    if op == IR_ADD {
-        return a + b
-    }
-    if op == IR_SUB {
-        return a - b
-    }
-    if op == IR_MUL {
-        return a * b
-    }
+    if op == IR_ADD { return a + b }
+    if op == IR_SUB { return a - b }
+    if op == IR_MUL { return a * b }
     if op == IR_SDIV || op == IR_SREM {
         if b == 0 {
             irm_fail(mut mach, "`" + ir_op_name(op) + "` by zero: the check before it is missing")
             return 0
         }
         if b == -1 {
-            if op == IR_SDIV {
-                return 0 - a
-            }
+            if op == IR_SDIV { return 0 - a }
             return 0
         }
-        if op == IR_SDIV {
-            return a / b
-        }
+        if op == IR_SDIV { return a / b }
         return a % b
     }
-    if op == IR_AND {
-        return a & b
-    }
-    if op == IR_OR {
-        return a | b
-    }
-    if op == IR_XOR {
-        return a ^ b
-    }
-    if op == IR_SHL {
-        return a << (b & 63)
-    }
-    if op == IR_SAR {
-        return a >> (b & 63)
-    }
+    if op == IR_AND { return a & b }
+    if op == IR_OR { return a | b }
+    if op == IR_XOR { return a ^ b }
+    if op == IR_SHL { return a << (b & 63) }
+    if op == IR_SAR { return a >> (b & 63) }
     if op == IR_SHR {
         let count = b & 63
-        if count == 0 {
-            return a
-        }
+        if count == 0 { return a }
         return a >> count & (1 << 64 - count) - 1
     }
-    if op == IR_UMULH {
-        return irm_umulh(a, b)
-    }
+    if op == IR_UMULH { return irm_umulh(a, b) }
     if op == IR_SMULH {
         var high = irm_umulh(a, b)
-        if a < 0 {
-            high = high - b
-        }
-        if b < 0 {
-            high = high - a
-        }
+        if a < 0 { high = high - b }
+        if b < 0 { high = high - a }
         return high
     }
-    if op == IR_EQ {
-        return irm_bool(a == b)
-    }
-    if op == IR_NE {
-        return irm_bool(a != b)
-    }
-    if op == IR_SLT {
-        return irm_bool(a < b)
-    }
-    if op == IR_SLE {
-        return irm_bool(a <= b)
-    }
-    if op == IR_SGT {
-        return irm_bool(a > b)
-    }
-    if op == IR_SGE {
-        return irm_bool(a >= b)
-    }
-    if op == IR_ULT {
-        return irm_bool(irm_unsigned_less(a, b))
-    }
-    if op == IR_ULE {
-        return irm_bool(!irm_unsigned_less(b, a))
-    }
-    if op == IR_UGT {
-        return irm_bool(irm_unsigned_less(b, a))
-    }
+    if op == IR_EQ { return irm_bool(a == b) }
+    if op == IR_NE { return irm_bool(a != b) }
+    if op == IR_SLT { return irm_bool(a < b) }
+    if op == IR_SLE { return irm_bool(a <= b) }
+    if op == IR_SGT { return irm_bool(a > b) }
+    if op == IR_SGE { return irm_bool(a >= b) }
+    if op == IR_ULT { return irm_bool(irm_unsigned_less(a, b)) }
+    if op == IR_ULE { return irm_bool(!irm_unsigned_less(b, a)) }
+    if op == IR_UGT { return irm_bool(irm_unsigned_less(b, a)) }
     return irm_bool(!irm_unsigned_less(a, b))
 }
 
 fn irm_unary(op: i64, a: i64) -> i64 {
-    if op == IR_NEG {
-        return 0 - a
-    }
-    if op == IR_EXT8U || op == IR_TRUNC8 {
-        return a & 255
-    }
-    if op == IR_EXT8S {
-        return a << 56 >> 56
-    }
-    if op == IR_EXT32U || op == IR_TRUNC32 {
-        return a & 4294967295
-    }
+    if op == IR_NEG { return 0 - a }
+    if op == IR_EXT8U || op == IR_TRUNC8 { return a & 255 }
+    if op == IR_EXT8S { return a << 56 >> 56 }
+    if op == IR_EXT32U || op == IR_TRUNC32 { return a & 4294967295 }
     return a << 32 >> 32
 }
 
@@ -482,9 +412,7 @@ fn irm_callrt(mach: mut IrMachine, routine: i64, x: List[i64], out: mut List[i64
                 return
             }
             var keep = mach.obj_bytes[old].len()
-            if keep > x[1] {
-                keep = x[1]
-            }
+            if keep > x[1] { keep = x[1] }
             var i = 0
             while i < keep {
                 mach.obj_bytes[fresh >> 32].set(i, mach.obj_bytes[old][i])
@@ -509,14 +437,10 @@ fn irm_callrt(mach: mut IrMachine, routine: i64, x: List[i64], out: mut List[i64
         print(x[0] == 1)
     } else if routine == IR_RT_PRINT_STR {
         let text = irm_text(mut mach, x[0], x[1])
-        if !mach.failed {
-            print(text)
-        }
+        if !mach.failed { print(text) }
     } else if routine == IR_RT_EPRINT_STR {
         let text = irm_text(mut mach, x[0], x[1])
-        if !mach.failed {
-            eprint(text)
-        }
+        if !mach.failed { eprint(text) }
     } else if routine == IR_RT_STR_EQ {
         let first = irm_text(mut mach, x[0], x[1])
         let second = irm_text(mut mach, x[2], x[3])
@@ -533,22 +457,14 @@ fn irm_callrt(mach: mut IrMachine, routine: i64, x: List[i64], out: mut List[i64
             return
         }
         var room = x[2] * 2
-        if room < need {
-            room = need
-        }
-        if room < 16 {
-            room = 16
-        }
+        if room < need { room = need }
+        if room < 16 { room = 16 }
         let old = irm_text(mut mach, x[0], x[1])
         let fresh = irm_alloc(mut mach, room)
-        if mach.failed {
-            return
-        }
+        if mach.failed { return }
         irm_put_text(mut mach, fresh, old)
         irm_put_text(mut mach, fresh + x[1], more)
-        if x[2] > 0 {
-            irm_free(mut mach, x[0])
-        }
+        if x[2] > 0 { irm_free(mut mach, x[0]) }
         out.push(fresh)
         out.push(need)
         out.push(room)
@@ -636,9 +552,7 @@ fn irm_run(mach: mut IrMachine, m: IrModule, f: IrFunc, arguments: List[i64]) ->
             let ty = f.ins_ty[ins]
             let bytes = ir_type_bytes(ty)
             var value = irm_load(mut mach, p, bytes)
-            if !mach.failed {
-                irm_check_region(mut mach, f, f.ins_reg[ins], p, vals, frames)
-            }
+            if !mach.failed { irm_check_region(mut mach, f, f.ins_reg[ins], p, vals, frames) }
             if ty == IR_I8 {
                 value = value << 56 >> 56
             } else if ty == IR_I32 {
@@ -650,9 +564,7 @@ fn irm_run(mach: mut IrMachine, m: IrModule, f: IrFunc, arguments: List[i64]) ->
         } else if op == IR_STORE {
             let p = a + f.ins_imm[ins]
             irm_store(mut mach, p, ir_type_bytes(f.ins_ty[ins]), b)
-            if !mach.failed {
-                irm_check_region(mut mach, f, f.ins_reg[ins], p, vals, frames)
-            }
+            if !mach.failed { irm_check_region(mut mach, f, f.ins_reg[ins], p, vals, frames) }
         } else if op == IR_GEP {
             vals[f.ins_res[ins]] = a + b * f.ins_imm2[ins] + f.ins_imm[ins]
         } else if op == IR_FRAME {
@@ -700,9 +612,7 @@ fn irm_run(mach: mut IrMachine, m: IrModule, f: IrFunc, arguments: List[i64]) ->
                     got = irm_run(mut mach, m, m.funcs[callee], given)
                 }
             }
-            if mach.failed || mach.stopped {
-                break
-            }
+            if mach.failed || mach.stopped { break }
             if got.len() != f.ins_rn[ins] {
                 irm_fail(mut mach, "a call gave " + str(got.len()) + " results where " + str(f.ins_rn[ins]) + " are taken")
                 break
@@ -716,9 +626,7 @@ fn irm_run(mach: mut IrMachine, m: IrModule, f: IrFunc, arguments: List[i64]) ->
             edge = f.ins_es[ins]
         } else if op == IR_BR {
             edge = f.ins_es[ins]
-            if a == 0 {
-                edge = edge + 1
-            }
+            if a == 0 { edge = edge + 1 }
         } else if op == IR_SWITCH {
             edge = f.ins_es[ins]
             let default = edge + f.ins_en[ins] - 1
@@ -774,9 +682,7 @@ fn irm_run(mach: mut IrMachine, m: IrModule, f: IrFunc, arguments: List[i64]) ->
         mach.obj_kind[object >> 32] = IRM_FREED
         mach.obj_bytes[object >> 32] = ""
         mach.obj_stored[object >> 32] = ""
-        if mach.reuse_frames {
-            mach.spare_objects.push(object >> 32)
-        }
+        if mach.reuse_frames { mach.spare_objects.push(object >> 32) }
     }
     mach.stack_used = mach.stack_used - cost
     mach.depth = mach.depth - 1
@@ -787,9 +693,7 @@ fn irm_run(mach: mut IrMachine, m: IrModule, f: IrFunc, arguments: List[i64]) ->
 fn irm_live_blocks(mach: IrMachine) -> i64 {
     var count = 0
     for kind in mach.obj_kind {
-        if kind == IRM_HEAP {
-            count = count + 1
-        }
+        if kind == IRM_HEAP { count = count + 1 }
     }
     return count
 }
@@ -818,17 +722,11 @@ fn irm_static(mach: mut IrMachine, text: str) -> i64 {
 // Copies `n` bytes as they are: a byte that was never stored stays
 // "never stored" in the copy.
 fn irm_copy_raw(mach: mut IrMachine, to: i64, from: i64, n: i64) {
-    if n <= 0 {
-        return
-    }
+    if n <= 0 { return }
     let source = irm_object(mut mach, from, n, "a read")
-    if source < 0 {
-        return
-    }
+    if source < 0 { return }
     let target = irm_object(mut mach, to, n, "a write")
-    if target < 0 {
-        return
-    }
+    if target < 0 { return }
     if mach.obj_kind[target] == IRM_DATA {
         irm_fail(mut mach, "a write to the read-only data")
         return
@@ -854,9 +752,7 @@ fn irm_set_buf(mach: mut IrMachine, p: i64, pointer: i64, len: i64, cap: i64) {
 fn irm_buf_text(mach: mut IrMachine, p: i64) -> str {
     let pointer = irm_load(mut mach, p, 8)
     let len = irm_load(mut mach, p + 8, 8)
-    if mach.failed {
-        return ""
-    }
+    if mach.failed { return "" }
     return irm_text(mut mach, pointer, len)
 }
 
@@ -867,9 +763,7 @@ fn irm_owned(mach: mut IrMachine, out: i64, text: str) {
         return
     }
     let fresh = irm_alloc(mut mach, text.len())
-    if mach.failed {
-        return
-    }
+    if mach.failed { return }
     irm_put_text(mut mach, fresh, text)
     irm_set_buf(mut mach, out, fresh, text.len(), text.len())
 }
@@ -908,18 +802,12 @@ fn irm_callrt_real(mach: mut IrMachine, routine: i64, x: List[i64], out: mut Lis
         var pointer = irm_load(mut mach, list, 8)
         let len = irm_load(mut mach, list + 8, 8)
         let cap = irm_load(mut mach, list + 16, 8)
-        if mach.failed {
-            return
-        }
+        if mach.failed { return }
         if len >= cap {
             var room = 4
-            if cap != 0 {
-                room = cap * 2
-            }
+            if cap != 0 { room = cap * 2 }
             let fresh = irm_alloc(mut mach, room * bytes)
-            if mach.failed {
-                return
-            }
+            if mach.failed { return }
             if cap != 0 {
                 irm_copy_raw(mut mach, fresh, pointer, len * bytes)
                 irm_free(mut mach, pointer)
@@ -934,9 +822,7 @@ fn irm_callrt_real(mach: mut IrMachine, routine: i64, x: List[i64], out: mut Lis
         // value, bytes of one element
         let value = x[0]
         let cap = irm_load(mut mach, value + 16, 8)
-        if mach.failed || cap == 0 {
-            return
-        }
+        if mach.failed || cap == 0 { return }
         let pointer = irm_load(mut mach, value, 8)
         let len = irm_load(mut mach, value + 8, 8)
         let bytes = len * x[1]
@@ -946,9 +832,7 @@ fn irm_callrt_real(mach: mut IrMachine, routine: i64, x: List[i64], out: mut Lis
             return
         }
         let fresh = irm_alloc(mut mach, bytes)
-        if mach.failed {
-            return
-        }
+        if mach.failed { return }
         irm_copy_raw(mut mach, fresh, pointer, bytes)
         irm_store(mut mach, value, 8, fresh)
     } else if routine == IR_RT_DROP {
@@ -973,32 +857,24 @@ fn irm_callrt_real(mach: mut IrMachine, routine: i64, x: List[i64], out: mut Lis
         irm_owned(mut mach, x[1], str(x[0]))
     } else if routine == IR_RT_STR_FROM_BOOL {
         if x[0] != 0 {
-            if mach.true_text == 0 {
-                mach.true_text = irm_static(mut mach, "true")
-            }
+            if mach.true_text == 0 { mach.true_text = irm_static(mut mach, "true") }
             irm_set_buf(mut mach, x[1], mach.true_text, 4, 0)
         } else {
-            if mach.false_text == 0 {
-                mach.false_text = irm_static(mut mach, "false")
-            }
+            if mach.false_text == 0 { mach.false_text = irm_static(mut mach, "false") }
             irm_set_buf(mut mach, x[1], mach.false_text, 5, 0)
         }
     } else if routine == IR_RT_STR_SLICE {
         // s, start, end, out
         let pointer = irm_load(mut mach, x[0], 8)
         let len = irm_load(mut mach, x[0] + 8, 8)
-        if mach.failed {
-            return
-        }
+        if mach.failed { return }
         // Unsigned, so that negative numbers are refused too.
         if irm_unsigned_less(len, x[2]) || irm_unsigned_less(x[2], x[1]) {
             irm_stop(mut mach, "azol: slice out of range")
             return
         }
         let part = irm_text(mut mach, pointer + x[1], x[2] - x[1])
-        if !mach.failed {
-            irm_owned(mut mach, x[3], part)
-        }
+        if !mach.failed { irm_owned(mut mach, x[3], part) }
     } else if routine == IR_RT_CHR {
         if irm_unsigned_less(255, x[0]) {
             irm_stop(mut mach, "azol: chr needs a number from 0 to 255")
@@ -1018,38 +894,24 @@ fn irm_callrt_real(mach: mut IrMachine, routine: i64, x: List[i64], out: mut Lis
         // dest, src
         let dest = x[0]
         let added = irm_load(mut mach, x[1] + 8, 8)
-        if mach.failed || added == 0 {
-            return
-        }
+        if mach.failed || added == 0 { return }
         var from = irm_load(mut mach, x[1], 8)
         var pointer = irm_load(mut mach, dest, 8)
         let old_len = irm_load(mut mach, dest + 8, 8)
         let cap = irm_load(mut mach, dest + 16, 8)
-        if mach.failed {
-            return
-        }
+        if mach.failed { return }
         // The text to add may sit in the buffer that is about to move.
         let own = cap != 0 && from == pointer
         let len = old_len + added
         if len > cap {
             var room = cap * 2
-            if room < len {
-                room = len
-            }
-            if room < 16 {
-                room = 16
-            }
+            if room < len { room = len }
+            if room < 16 { room = 16 }
             let fresh = irm_alloc(mut mach, room)
-            if mach.failed {
-                return
-            }
+            if mach.failed { return }
             irm_copy_raw(mut mach, fresh, pointer, old_len)
-            if cap != 0 {
-                irm_free(mut mach, pointer)
-            }
-            if own {
-                from = fresh
-            }
+            if cap != 0 { irm_free(mut mach, pointer) }
+            if own { from = fresh }
             pointer = fresh
             irm_store(mut mach, dest, 8, pointer)
             irm_store(mut mach, dest + 16, 8, room)
@@ -1072,9 +934,7 @@ fn irm_callrt_real(mach: mut IrMachine, routine: i64, x: List[i64], out: mut Lis
         irm_set_buf(mut mach, x[0], items, count, count)
     } else if routine == IR_RT_READ_FILE {
         let path = irm_buf_text(mut mach, x[0])
-        if mach.failed {
-            return
-        }
+        if mach.failed { return }
         match read_file(path) {
             Ok(text) => {
                 irm_owned(mut mach, x[1], text)
@@ -1088,25 +948,17 @@ fn irm_callrt_real(mach: mut IrMachine, routine: i64, x: List[i64], out: mut Lis
     } else if routine == IR_RT_WRITE_FILE {
         let path = irm_buf_text(mut mach, x[0])
         let text = irm_buf_text(mut mach, x[1])
-        if !mach.failed {
-            irm_answer(mut mach, write_file(path, text), x[2], mut out)
-        }
+        if !mach.failed { irm_answer(mut mach, write_file(path, text), x[2], mut out) }
     } else if routine == IR_RT_SET_EXECUTABLE {
         let path = irm_buf_text(mut mach, x[0])
-        if !mach.failed {
-            irm_answer(mut mach, set_executable(path), x[1], mut out)
-        }
+        if !mach.failed { irm_answer(mut mach, set_executable(path), x[1], mut out) }
     } else if routine == IR_RT_REMOVE_FILE {
         let path = irm_buf_text(mut mach, x[0])
-        if !mach.failed {
-            irm_answer(mut mach, remove_file(path), x[1], mut out)
-        }
+        if !mach.failed { irm_answer(mut mach, remove_file(path), x[1], mut out) }
     } else if routine == IR_RT_RENAME_FILE {
         let from = irm_buf_text(mut mach, x[0])
         let to = irm_buf_text(mut mach, x[1])
-        if !mach.failed {
-            irm_answer(mut mach, rename_file(from, to), x[2], mut out)
-        }
+        if !mach.failed { irm_answer(mut mach, rename_file(from, to), x[2], mut out) }
     } else if routine == IR_RT_CLOCK {
         out.push(clock())
     } else if routine == IR_RT_STR_IS_UTF8 {
@@ -1114,14 +966,10 @@ fn irm_callrt_real(mach: mut IrMachine, routine: i64, x: List[i64], out: mut Lis
         out.push(irm_bool(text.is_utf8()))
     } else if routine == IR_RT_PRINT_BUF {
         let text = irm_buf_text(mut mach, x[0])
-        if !mach.failed {
-            print(text)
-        }
+        if !mach.failed { print(text) }
     } else if routine == IR_RT_EPRINT_BUF {
         let text = irm_buf_text(mut mach, x[0])
-        if !mach.failed {
-            eprint(text)
-        }
+        if !mach.failed { eprint(text) }
     } else {
         irm_fail(mut mach, "the runtime routine `" + ir_rt_name(routine) + "` is not known to the interpreter")
     }

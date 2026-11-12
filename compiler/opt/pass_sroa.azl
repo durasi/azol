@@ -1,0 +1,1546 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The pass `sroa` of docs/design/optimizer.md section 5: frame memory
+// becomes values. The lowering stage keeps every variable and every
+// temporary in a frame object and reads and writes it with `load` and
+// `store`; this pass splits each object into its eight-byte cells and
+// turns every cell whose address stays inside the function into SSA
+// values, with block parameters where two definitions meet.
+//
+// In four steps:
+//
+//   1. Addresses. A value is a known address when it is `frame N`, a
+//      `ptr` parameter, or a `gep` with a constant index from a known
+//      address: an object (or parameter) and a constant offset.
+//   2. Cells. Every `load` and `store` through a known frame address
+//      touches one cell, and a cell is one of three things:
+//        a variable   Its address never leaves the function. Loads
+//                     become values, stores go.
+//        shadowed     Its address is passed to calls or runtime calls
+//                     and does nothing else. Memory stays the truth:
+//                     the stores stay. But a load takes the value that
+//                     reaches it as long as no call that may write the
+//                     cell lies in between; such a call makes the cell
+//                     "in memory" again, and the next load is a real
+//                     one and the new value. A call cannot keep the
+//                     address (fact M3), and what it writes is known
+//                     from the callee's parameter effects or the table
+//                     of runtime routines (fact M9).
+//        kept         Its address is stored, returned, compared, sent
+//                     along an edge or indexed with a value; or the
+//                     cell is read and written with different types;
+//                     or an access is narrow or not aligned. Nothing
+//                     changes for it.
+//      An address that leaves exposes its object from that offset to
+//      the end, not before: nothing in the intermediate form moves a
+//      pointer it was handed backwards (see the notes).
+//   3. SSA construction: block parameters at the iterated dominance
+//      frontier of the blocks that define a variable, only where the
+//      variable is alive (pruned SSA, Cytron et al.), then one walk
+//      over the dominator tree that replaces loads by the value that
+//      reaches them and removes the stores of variables. A load of a
+//      variable that no store reaches reads 0: the interpreter refuses
+//      such a load, so no program that runs can tell. For a shadowed
+//      cell a call that may write it is one more definition, of "in
+//      memory"; where that can reach a join the cell is in memory
+//      there and the join gets no parameter for it.
+//   4. What is left of an object: the range from its first cell that
+//      stays to its last, so an object of which two cells escape keeps
+//      those two. Accesses are rewritten to the object's new start; an
+//      object with nothing left gets size 0 and its `frame` goes.
+//
+// The same walk makes loads through `ptr` parameters common. Behind a
+// parameter the function may only read (no `write`, `resize` or `free`
+// among its effects) nothing changes while the function runs, so a
+// load that another load of the same bytes dominates takes its value.
+// Behind any other parameter what is known ends at a store over the
+// same bytes and at a call that may write the parameter: one that is
+// given its address to write through, or an address the pass cannot
+// name (`sroa_call_forgets`). Between blocks it is carried by a
+// forward problem over single values (`sroa_param_flow`): a load
+// takes a value only when every way into its block brings the same
+// one, so a loop that does not write a list's header reads it once.
+// `sroa_param_is_stable` and `sroa_arg_writes` are the two places to
+// change when the `effects` pass computes better summaries.
+//
+// Nothing observable moves: loads and stores are not instructions a
+// program can see, and every trap, call and remaining store stays
+// where it was.
+
+// Why a cell stays in memory.
+const SROA_WHY_CALL = 1
+const SROA_WHY_CALLRT = 2
+const SROA_WHY_STORED = 3
+const SROA_WHY_INDEXED = 4
+const SROA_WHY_OTHER = 5
+const SROA_WHY_MIXED = 6
+const SROA_WHY_NARROW = 7
+const SROA_WHY_COUNT = 8
+
+// More than any offset.
+const SROA_FAR = 1152921504606846976
+// The value of a shadowed cell that only memory knows.
+const SROA_MEM = -1152921504606846976
+
+fn sroa_why_name(why: i64) -> str {
+    match why {
+        1 => return "address passed to a function"
+        2 => return "address passed to a runtime routine"
+        3 => return "address stored in memory"
+        4 => return "indexed with a value"
+        5 => return "address returned, compared, selected or sent along an edge"
+        6 => return "read and written with different types"
+        7 => return "narrow, unaligned or out of range access"
+        _ => return "?"
+    }
+}
+
+// What the pass did, added up over the functions it ran on.
+struct SroaStats {
+    functions: i64
+    objects: i64
+    // Objects with nothing left in memory.
+    objects_gone: i64
+    // Cells that are read or written at all, and those that became values.
+    cells: i64
+    promoted: i64
+    // Cells whose loads take values while their stores stay.
+    shadowed: i64
+    // Loads put in because a shadowed cell was in memory where a block
+    // parameter needed its value; 0 when the two analyses agree.
+    late_loads: i64
+    // Loads put in after a store of the address of nothing to a `ptr`
+    // variable.
+    null_loads: i64
+    // Cells that stay, by SROA_WHY_*.
+    kept: List[i64]
+    loads: i64
+    stores: i64
+    loads_removed: i64
+    stores_removed: i64
+    block_params: i64
+    param_loads_removed: i64
+    bytes_before: i64
+    bytes_after: i64
+}
+
+fn sroa_new_stats() -> SroaStats {
+    return SroaStats {
+        functions: 0,
+        objects: 0,
+        objects_gone: 0,
+        cells: 0,
+        promoted: 0,
+        shadowed: 0,
+        late_loads: 0,
+        null_loads: 0,
+        kept: 0.filled(SROA_WHY_COUNT),
+        loads: 0,
+        stores: 0,
+        loads_removed: 0,
+        stores_removed: 0,
+        block_params: 0,
+        param_loads_removed: 0,
+        bytes_before: 0,
+        bytes_after: 0
+    }
+}
+
+// The working state for one function.
+struct Sroa {
+    frames: i64
+    // For every value: the object its address is in (a frame object, or
+    // `frames + K` for parameter K), or -1; the offset; and the `frame`
+    // value or parameter the address is computed from.
+    addr_obj: List[i64]
+    addr_off: List[i64]
+    addr_root: List[i64]
+    // Cells of frame object `o`: from `cell_s[o]`, one for every eight
+    // bytes. Its type (-1: never accessed), why it stays (0: it does
+    // not), and its variable or -1.
+    cell_s: List[i64]
+    cell_ty: List[i64]
+    cell_why: List[i64]
+    cell_var: List[i64]
+    // The lowest escaping offset of every object, per reason 1 to 5.
+    esc: List[i64]
+    // The bytes of each object that stay: from `lo` up to `hi`.
+    lo: List[i64]
+    hi: List[i64]
+    var_ty: List[i64]
+    // For every variable: its object and offset, and whether it is a
+    // shadowed cell.
+    var_obj: List[i64]
+    var_off: List[i64]
+    var_shadow: List[bool]
+    // The `frame` value of each object in the entry block, or -1.
+    obj_root: List[i64]
+    // For every entry of the function's `callees`: where the effects
+    // of that function's parameters start in `fx`, or -1 when unknown.
+    callee_s: List[i64]
+    callee_n: List[i64]
+    // Loads through parameters: the keys (parameter, offset, width),
+    // whether the parameter is stable, and the value known now.
+    pk_param: List[i64]
+    pk_off: List[i64]
+    pk_ty: List[i64]
+    pk_stable: List[bool]
+    pk_cur: List[i64]
+    // The entry's column in what flows between blocks, or -1.
+    pk_col: List[i64]
+    // Per parameter: its address goes somewhere the pass does not
+    // follow (stored, compared, returned), so any call may write
+    // behind it.
+    leaky: List[bool]
+}
+
+fn sroa_minus(n: i64) -> List[i64] {
+    let minus = 0 - 1
+    return minus.filled(n)
+}
+
+// Whether nothing can change what parameter `k` points to while the
+// function runs. Today: the parameter's own effects say it is only
+// read. With summaries from the `effects` pass this can also say yes
+// for a parameter that no call between two loads writes.
+fn sroa_param_is_stable(f: IrFunc, k: i64) -> bool {
+    return f.param_fx[k] & (IR_FX_WRITE | IR_FX_RESIZE | IR_FX_FREE) == 0
+}
+
+fn sroa_escape(s: mut Sroa, obj: i64, off: i64, why: i64) {
+    if obj < 0 || obj >= s.frames { return }
+    let at = obj * 5 + why - 1
+    var from = off
+    if from < 0 { from = 0 }
+    if from < s.esc[at] { s.esc[at] = from }
+}
+
+// One `load` or `store` of `ty` at byte `off` of frame object `obj`.
+fn sroa_access(s: mut Sroa, f: IrFunc, obj: i64, off: i64, ty: i64) {
+    let bytes = ir_type_bytes(ty)
+    let size = f.frames[obj]
+    if off < 0 || off + bytes > size {
+        // Not something a correct function does; keep the whole object.
+        sroa_escape(mut s, obj, 0, SROA_WHY_OTHER)
+        return
+    }
+    let first = s.cell_s[obj] + off / 8
+    if off % 8 != 0 || bytes != 8 {
+        var c = first
+        let last = s.cell_s[obj] + (off + bytes - 1) / 8
+        while c <= last {
+            if s.cell_ty[c] < 0 { s.cell_ty[c] = IR_I64 }
+            s.cell_why[c] = SROA_WHY_NARROW
+            c = c + 1
+        }
+        return
+    }
+    let loaded = ir_loaded_type(ty)
+    if s.cell_ty[first] < 0 {
+        s.cell_ty[first] = loaded
+    } else if s.cell_ty[first] != loaded && s.cell_why[first] == 0 {
+        s.cell_why[first] = SROA_WHY_MIXED
+    }
+}
+
+// The variable a `load` or `store` reads or writes, or -1.
+fn sroa_ins_var(s: Sroa, f: IrFunc, ins: i64) -> i64 {
+    let a = f.ins_a[ins]
+    if a < 0 || a >= s.addr_obj.len() { return -1 }
+    let obj = s.addr_obj[a]
+    if obj < 0 || obj >= s.frames { return -1 }
+    let off = s.addr_off[a] + f.ins_imm[ins]
+    if off < 0 || off % 8 != 0 || off + 8 > f.frames[obj] { return -1 }
+    return s.cell_var[s.cell_s[obj] + off / 8]
+}
+
+// The entry of the parameter table for this load or store, or -1; a
+// new one is made when `make` is set.
+fn sroa_param_key(s: mut Sroa, f: IrFunc, ins: i64, make: bool) -> i64 {
+    let a = f.ins_a[ins]
+    if a < 0 || a >= s.addr_obj.len() { return -1 }
+    let obj = s.addr_obj[a]
+    if obj < s.frames { return -1 }
+    let k = obj - s.frames
+    let region = f.ins_reg[ins]
+    if region < 0 || f.reg_kind[region] != IR_REGION_PARAM || f.reg_n[region] != k { return -1 }
+    let off = s.addr_off[a] + f.ins_imm[ins]
+    let ty = f.ins_ty[ins]
+    var i = 0
+    while i < s.pk_param.len() {
+        if s.pk_param[i] == k && s.pk_off[i] == off && s.pk_ty[i] == ty { return i }
+        i = i + 1
+    }
+    if !make { return -1 }
+    s.pk_param.push(k)
+    s.pk_off.push(off)
+    s.pk_ty.push(ty)
+    s.pk_stable.push(sroa_param_is_stable(f, k))
+    s.pk_cur.push(-1)
+    s.pk_col.push(-1)
+    return s.pk_param.len() - 1
+}
+
+// Forgets what is known behind parameters that can change: all of
+// them, or only parameter `k`.
+fn sroa_forget(s: mut Sroa, k: i64) {
+    var i = 0
+    while i < s.pk_cur.len() {
+        if !s.pk_stable[i] && (k < 0 || s.pk_param[i] == k) { s.pk_cur[i] = -1 }
+        i = i + 1
+    }
+}
+
+// What every function of a module may do through its parameters, so
+// that a call site knows what its callee writes: `index` gives a
+// function's place, and its parameters' IR_FX_* bits are the `count`
+// entries of `fx` from `start`. Made once by `sroa_effects`, before
+// the functions are changed. An empty table means "nothing is known".
+struct SroaEffects {
+    index: Map[i64]
+    start: List[i64]
+    count: List[i64]
+    fx: List[i64]
+}
+
+fn sroa_no_effects() -> SroaEffects {
+    return SroaEffects { index: new_map(), start: [], count: [], fx: [] }
+}
+
+fn sroa_effects(m: IrModule) -> SroaEffects {
+    var table = sroa_no_effects()
+    for at, f in m.funcs {
+        table.index.set(f.name, at)
+        table.start.push(table.fx.len())
+        table.count.push(f.param_count)
+        for bits in f.param_fx {
+            table.fx.push(bits)
+        }
+    }
+    return table
+}
+
+// Whether argument `k` of the call or runtime call `ins`, an address,
+// lets the callee change the cells it points to.
+fn sroa_arg_writes(s: Sroa, f: IrFunc, effects: SroaEffects, ins: i64, k: i64) -> bool {
+    let changes = IR_FX_WRITE | IR_FX_RESIZE | IR_FX_FREE
+    if f.ins_op[ins] == IR_CALLRT { return ir_rt_arg_fx(f.ins_imm[ins], k) & changes != 0 }
+    let callee = f.ins_imm[ins]
+    if s.callee_s[callee] < 0 || k >= s.callee_n[callee] { return true }
+    return effects.fx[s.callee_s[callee] + k] & changes != 0
+}
+
+// What the call or runtime call `ins` makes unknown behind parameters
+// (M9: a callee writes only what its `mut` arguments reach): the
+// parameter whose address it is given to write through, every one
+// when it is given an address the pass cannot name, and always those
+// whose address went out of sight.
+fn sroa_call_forgets(s: mut Sroa, f: IrFunc, effects: SroaEffects, ins: i64) {
+    if s.pk_cur.len() == 0 { return }
+    var k = 0
+    while k < f.ins_an[ins] {
+        let x = f.args[f.ins_as[ins] + k]
+        if x >= 0 && f.val_ty[x] == IR_PTR && sroa_arg_writes(s, f, effects, ins, k) {
+            var obj = 0 - 1
+            if x < s.addr_obj.len() { obj = s.addr_obj[x] }
+            if obj < 0 {
+                sroa_forget(mut s, -1)
+                return
+            }
+            if obj >= s.frames { sroa_forget(mut s, obj - s.frames) }
+        }
+        k = k + 1
+    }
+    var i = 0
+    while i < s.pk_cur.len() {
+        if !s.pk_stable[i] && s.leaky[s.pk_param[i]] { s.pk_cur[i] = -1 }
+        i = i + 1
+    }
+}
+
+// What the store `ins` to the region of a parameter makes unknown:
+// the entries its bytes overlap when its address is the parameter
+// plus a constant, every entry of the parameter otherwise.
+fn sroa_store_forgets(s: mut Sroa, f: IrFunc, ins: i64) {
+    let n = f.reg_n[f.ins_reg[ins]]
+    let a = f.ins_a[ins]
+    if a < 0 || a >= s.addr_obj.len() || s.addr_obj[a] != s.frames + n {
+        sroa_forget(mut s, n)
+        return
+    }
+    let off = s.addr_off[a] + f.ins_imm[ins]
+    let end = off + ir_type_bytes(f.ins_ty[ins])
+    var i = 0
+    while i < s.pk_cur.len() {
+        if !s.pk_stable[i] && s.pk_param[i] == n && s.pk_off[i] < end && off < s.pk_off[i] + ir_type_bytes(s.pk_ty[i]) {
+            s.pk_cur[i] = -1
+        }
+        i = i + 1
+    }
+}
+
+// Whether the store `ins`, of entry `key` of the parameter table,
+// leaves a value the next load of that entry can take.
+fn sroa_store_forwards(s: Sroa, f: IrFunc, ins: i64, key: i64) -> bool {
+    if key < 0 || s.pk_stable[key] || ir_type_bytes(f.ins_ty[ins]) != 8 { return false }
+    return !(ir_is_const(f.ins_b[ins]) && ir_loaded_type(f.ins_ty[ins]) != IR_I64)
+}
+
+// What is known behind the parameters that can change when each block
+// ends: for block `b` and column `c`, at `b * columns + c`, the value
+// memory holds there, -1 for none, or SROA_FAR while not yet known. A
+// forward problem over single values: a block's `load` after nothing
+// known, or its last store, gives the value; a store over those bytes
+// or a call that may write the parameter takes it away; a join keeps a
+// value only when every way in brings the same one (`sroa_flow_in`).
+// Nothing is moved: the value is one a dominating block computed.
+// Only entries of the table that two blocks or more use get a column
+// (`pk_col`). Empty when there is none.
+fn sroa_param_flow(s: mut Sroa, f: IrFunc, cfg: IrCfg, effects: SroaEffects) -> List[i64] {
+    var none: List[i64] = []
+    // Per entry: the block that used it first, then -2 at the second.
+    var where: List[i64] = []
+    var columns = 0
+    for b in cfg.rpo {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            if f.ins_op[ins] == IR_LOAD || f.ins_op[ins] == IR_STORE {
+                let key = sroa_param_key(mut s, f, ins, true)
+                if key >= 0 && !s.pk_stable[key] {
+                    while where.len() <= key {
+                        where.push(-1)
+                    }
+                    if where[key] == -1 {
+                        where[key] = b
+                    } else if where[key] >= 0 && where[key] != b {
+                        where[key] = -2
+                        s.pk_col[key] = columns
+                        columns = columns + 1
+                    }
+                }
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    if columns == 0 { return none }
+    let keys = s.pk_cur.len()
+    let blocks = f.blk_first.len()
+    let top = SROA_FAR
+    // What a block does to a column: `same` when it leaves what it
+    // found, above `same` when it also reads it (its first load, plus
+    // `same` + 1, gives the value when the block starts with none),
+    // otherwise what it leaves whatever it found.
+    let same = SROA_FAR + 1
+    var does = same.filled(blocks * columns)
+    var first = sroa_minus(keys)
+    for b in cfg.rpo {
+        let base = b * columns
+        var key = 0
+        while key < keys {
+            s.pk_cur[key] = same
+            first[key] = -1
+            key = key + 1
+        }
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            let op = f.ins_op[ins]
+            if op == IR_LOAD {
+                key = sroa_param_key(mut s, f, ins, false)
+                if key >= 0 && s.pk_col[key] >= 0 {
+                    if s.pk_cur[key] == same {
+                        if first[key] < 0 { first[key] = f.ins_res[ins] }
+                    } else if s.pk_cur[key] == -1 {
+                        s.pk_cur[key] = f.ins_res[ins]
+                    }
+                }
+            } else if op == IR_STORE {
+                let region = f.ins_reg[ins]
+                if region >= 0 && f.reg_kind[region] == IR_REGION_PARAM {
+                    sroa_store_forgets(mut s, f, ins)
+                    key = sroa_param_key(mut s, f, ins, false)
+                    if sroa_store_forwards(s, f, ins, key) { s.pk_cur[key] = f.ins_b[ins] }
+                }
+            } else if op == IR_CALL || op == IR_CALLRT {
+                sroa_call_forgets(mut s, f, effects, ins)
+            }
+            ins = f.ins_next[ins]
+        }
+        key = 0
+        while key < keys {
+            if s.pk_col[key] >= 0 {
+                var leaves = s.pk_cur[key]
+                if leaves == same && first[key] >= 0 { leaves = same + 1 + first[key] }
+                does[base + s.pk_col[key]] = leaves
+            }
+            s.pk_cur[key] = -1
+            key = key + 1
+        }
+    }
+    var out = top.filled(blocks * columns)
+    var changed = true
+    while changed {
+        changed = false
+        for b in cfg.rpo {
+            let base = b * columns
+            var c = 0
+            while c < columns {
+                var leaves = does[base + c]
+                if leaves >= same {
+                    let value = sroa_flow_in(out, cfg, b, columns, c)
+                    if leaves == same || value != -1 {
+                        leaves = value
+                    } else {
+                        leaves = leaves - same - 1
+                    }
+                }
+                if leaves != out[base + c] {
+                    out[base + c] = leaves
+                    changed = true
+                }
+                c = c + 1
+            }
+        }
+    }
+    return out
+}
+
+// What column `c` holds when block `b` starts, from what the blocks
+// before it leave: a value, -1 for none (the entry block; two ways in
+// that differ), SROA_FAR while nothing is known yet.
+fn sroa_flow_in(out: List[i64], cfg: IrCfg, b: i64, columns: i64, c: i64) -> i64 {
+    var p = cfg.pred_s[b]
+    let end = p + cfg.pred_n[b]
+    if p == end { return -1 }
+    var value = SROA_FAR
+    while p < end {
+        let from = out[cfg.pred_blk[p] * columns + c]
+        if value == SROA_FAR {
+            value = from
+        } else if from != SROA_FAR && from != value {
+            return -1
+        }
+        p = p + 1
+    }
+    return value
+}
+
+// Steps 1 and 2: addresses, accesses, escapes, and which cells become
+// variables. Gives the number of variables.
+fn sroa_analyse(s: mut Sroa, f: IrFunc, cfg: IrCfg, stats: mut SroaStats) -> i64 {
+    var k = 0
+    while k < f.param_count {
+        if f.val_ty[k] == IR_PTR {
+            s.addr_obj[k] = s.frames + k
+            s.addr_off[k] = 0
+            s.addr_root[k] = k
+        }
+        k = k + 1
+    }
+    let entry = cfg.rpo[0]
+    for b in cfg.rpo {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            let op = f.ins_op[ins]
+            if op == IR_FRAME {
+                let r = f.ins_res[ins]
+                s.addr_obj[r] = f.ins_imm[ins]
+                s.addr_off[r] = 0
+                s.addr_root[r] = r
+                if b == entry && s.obj_root[f.ins_imm[ins]] < 0 { s.obj_root[f.ins_imm[ins]] = r }
+            } else if op == IR_GEP {
+                let a = f.ins_a[ins]
+                let index = f.ins_b[ins]
+                if a >= 0 && s.addr_obj[a] >= 0 && index < 0 {
+                    var step = 0
+                    if ir_is_const(index) { step = ir_const_value(f, index) * f.ins_imm2[ins] }
+                    let r = f.ins_res[ins]
+                    s.addr_obj[r] = s.addr_obj[a]
+                    s.addr_off[r] = s.addr_off[a] + step + f.ins_imm[ins]
+                    s.addr_root[r] = s.addr_root[a]
+                }
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    for b in cfg.rpo {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            let op = f.ins_op[ins]
+            let a = f.ins_a[ins]
+            if op == IR_LOAD || op == IR_STORE {
+                if op == IR_LOAD {
+                    stats.loads = stats.loads + 1
+                } else {
+                    stats.stores = stats.stores + 1
+                    let value = f.ins_b[ins]
+                    if value >= 0 && s.addr_obj[value] >= 0 {
+                        sroa_escape(mut s, s.addr_obj[value], s.addr_off[value], SROA_WHY_STORED)
+                        if s.addr_obj[value] >= s.frames {
+                            s.leaky[s.addr_obj[value] - s.frames] = true
+                        }
+                    }
+                }
+                if a >= 0 && s.addr_obj[a] >= 0 && s.addr_obj[a] < s.frames {
+                    sroa_access(mut s, f, s.addr_obj[a], s.addr_off[a] + f.ins_imm[ins], f.ins_ty[ins])
+                }
+            } else if op == IR_GEP {
+                if a >= 0 && s.addr_obj[a] >= 0 && f.ins_b[ins] >= 0 {
+                    sroa_escape(mut s, s.addr_obj[a], s.addr_off[a], SROA_WHY_INDEXED)
+                }
+            } else if op != IR_FRAME {
+                var why = SROA_WHY_OTHER
+                if op == IR_CALL {
+                    why = SROA_WHY_CALL
+                } else if op == IR_CALLRT {
+                    why = SROA_WHY_CALLRT
+                }
+                let n = ir_operand_count(f, ins)
+                var i = 0
+                while i < n {
+                    let x = ir_operand(f, ins, i)
+                    if x >= 0 && s.addr_obj[x] >= 0 {
+                        sroa_escape(mut s, s.addr_obj[x], s.addr_off[x], why)
+                        if why == SROA_WHY_OTHER && s.addr_obj[x] >= s.frames {
+                            s.leaky[s.addr_obj[x] - s.frames] = true
+                        }
+                    }
+                    i = i + 1
+                }
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    // Which cells are variables, and what stays of every object.
+    var vars = 0
+    var obj = 0
+    while obj < s.frames {
+        let size = f.frames[obj]
+        stats.objects = stats.objects + 1
+        stats.bytes_before = stats.bytes_before + size
+        // From `soft` on the object is passed to calls; from `hard` on
+        // its address is used in ways the pass does not follow.
+        var soft = s.esc[obj * 5]
+        if s.esc[obj * 5 + 1] < soft { soft = s.esc[obj * 5 + 1] }
+        var hard = SROA_FAR
+        var why = 3
+        while why <= 5 {
+            if s.esc[obj * 5 + why - 1] < hard { hard = s.esc[obj * 5 + why - 1] }
+            why = why + 1
+        }
+        if s.obj_root[obj] < 0 && soft < hard {
+            // Without a `frame` in the entry block there is no address
+            // for a late load; treat the calls as the unknown.
+            hard = soft
+        }
+        var lo = SROA_FAR
+        var hi = 0
+        if soft < size || hard < size {
+            lo = soft
+            if hard < lo { lo = hard }
+            lo = lo / 8 * 8
+            hi = size
+        }
+        var c = 0
+        let cells = (size + 7) / 8
+        while c < cells {
+            let at = s.cell_s[obj] + c
+            let off = c * 8
+            if s.cell_ty[at] >= 0 {
+                stats.cells = stats.cells + 1
+                var stays = s.cell_why[at]
+                if off + 8 > hard {
+                    // The first reason whose escape reaches this cell.
+                    why = 5
+                    while why >= 1 {
+                        if s.esc[obj * 5 + why - 1] < off + 8 && (why >= 3 || s.obj_root[obj] < 0) {
+                            stays = why
+                        }
+                        why = why - 1
+                    }
+                }
+                if stays == 0 {
+                    let shadow = off + 8 > soft
+                    s.cell_var[at] = vars
+                    s.var_ty.push(s.cell_ty[at])
+                    s.var_obj.push(obj)
+                    s.var_off.push(off)
+                    s.var_shadow.push(shadow)
+                    vars = vars + 1
+                    if shadow {
+                        stats.shadowed = stats.shadowed + 1
+                    } else {
+                        stats.promoted = stats.promoted + 1
+                    }
+                }
+                if stays != 0 || off + 8 > soft {
+                    if stays != 0 { stats.kept[stays] = stats.kept[stays] + 1 }
+                    if off < lo { lo = off }
+                    if off + 8 > hi { hi = off + 8 }
+                }
+            }
+            c = c + 1
+        }
+        if hi > size { hi = size }
+        if lo > hi {
+            lo = 0
+            hi = 0
+        }
+        s.lo[obj] = lo
+        s.hi[obj] = hi
+        obj = obj + 1
+    }
+    return vars
+}
+
+// Gives edge `e` the arguments it has and then `more`.
+fn sroa_extend_edge(f: mut IrFunc, e: i64, more: List[i64]) {
+    let from = f.edge_as[e]
+    let n = f.edge_an[e]
+    f.edge_as[e] = f.args.len()
+    var i = 0
+    while i < n {
+        f.args.push(f.args[from + i])
+        i = i + 1
+    }
+    for x in more {
+        f.args.push(x)
+    }
+    f.edge_an[e] = n + more.len()
+}
+
+// Step 4: accesses and addresses of what stays, new sizes, and the
+// `frame` and `gep` instructions nothing uses any more.
+fn sroa_shrink(s: Sroa, f: mut IrFunc, cfg: IrCfg, stats: mut SroaStats) {
+    let zero = ir_const(mut f, 0)
+    var uses = 0.filled(f.val_ty.len())
+    var geps: List[i64] = []
+    var frames: List[i64] = []
+    for b in cfg.rpo {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            let op = f.ins_op[ins]
+            let a = f.ins_a[ins]
+            let known = a >= 0 && a < s.addr_obj.len() && s.addr_obj[a] >= 0 && s.addr_obj[a] < s.frames
+            if (op == IR_LOAD || op == IR_STORE) && known {
+                // Straight from the object's start.
+                let obj = s.addr_obj[a]
+                f.ins_imm[ins] = s.addr_off[a] + f.ins_imm[ins] - s.lo[obj]
+                f.ins_a[ins] = s.addr_root[a]
+            } else if op == IR_GEP && known && f.ins_b[ins] < 0 {
+                let obj = s.addr_obj[a]
+                let r = f.ins_res[ins]
+                f.ins_imm[ins] = s.addr_off[r] - s.lo[obj]
+                f.ins_imm2[ins] = 1
+                f.ins_b[ins] = zero
+                f.ins_a[ins] = s.addr_root[a]
+                geps.push(ins)
+            } else if op == IR_FRAME {
+                frames.push(ins)
+            }
+            if f.ins_a[ins] >= 0 { uses[f.ins_a[ins]] = uses[f.ins_a[ins]] + 1 }
+            if f.ins_b[ins] >= 0 { uses[f.ins_b[ins]] = uses[f.ins_b[ins]] + 1 }
+            if f.ins_c[ins] >= 0 { uses[f.ins_c[ins]] = uses[f.ins_c[ins]] + 1 }
+            var k = f.ins_as[ins]
+            var stop = k + f.ins_an[ins]
+            while k < stop {
+                if f.args[k] >= 0 { uses[f.args[k]] = uses[f.args[k]] + 1 }
+                k = k + 1
+            }
+            var e = f.ins_es[ins]
+            let edges = e + f.ins_en[ins]
+            while e < edges {
+                k = f.edge_as[e]
+                stop = k + f.edge_an[e]
+                while k < stop {
+                    if f.args[k] >= 0 { uses[f.args[k]] = uses[f.args[k]] + 1 }
+                    k = k + 1
+                }
+                e = e + 1
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    for ins in geps {
+        if uses[f.ins_res[ins]] == 0 {
+            uses[f.ins_a[ins]] = uses[f.ins_a[ins]] - 1
+            ir_remove(mut f, ins)
+        }
+    }
+    for ins in frames {
+        if uses[f.ins_res[ins]] == 0 { ir_remove(mut f, ins) }
+    }
+    var obj = 0
+    while obj < s.frames {
+        f.frames[obj] = s.hi[obj] - s.lo[obj]
+        if f.frames[obj] == 0 { stats.objects_gone = stats.objects_gone + 1 }
+        stats.bytes_after = stats.bytes_after + f.frames[obj]
+        obj = obj + 1
+    }
+}
+
+// Whether this store puts a constant into a `ptr` variable. A constant
+// cannot be the address of a `load`, a `store` or a `gep` (the
+// verifier's rule), so such a variable never takes a constant as its
+// value: the store stays and the value is read back from memory.
+fn sroa_null_store(s: Sroa, f: IrFunc, ins: i64, v: i64) -> bool {
+    return s.var_ty[v] == IR_PTR && ir_is_const(f.ins_b[ins])
+}
+
+// A `bconst` just before instruction `at`; gives its value. A `bool`
+// variable takes this and not a bare constant, which has no type.
+fn sroa_bool_before(f: mut IrFunc, at: i64, n: i64) -> i64 {
+    let ins = ir_make(mut f, IR_BCONST, IR_BOOL, -1, -1, -1, n)
+    let v = ir_add_result(mut f, ins, IR_BOOL)
+    ir_link_before(mut f, at, ins)
+    return v
+}
+
+// Makes sure the cell of variable `v` is among the bytes that stay.
+fn sroa_keep_cell(s: mut Sroa, v: i64) {
+    let obj = s.var_obj[v]
+    let off = s.var_off[v]
+    if s.hi[obj] == s.lo[obj] {
+        s.lo[obj] = off
+        s.hi[obj] = off + 8
+        return
+    }
+    if off < s.lo[obj] { s.lo[obj] = off }
+    if off + 8 > s.hi[obj] { s.hi[obj] = off + 8 }
+}
+
+// Sets bit `v` of block `b` in a table of `words` words per block.
+fn sroa_set(bits: mut List[i64], at: i64, v: i64) {
+    bits[at + (v >> 6)] = bits[at + (v >> 6)] | 1 << (v & 63)
+}
+
+fn sroa_clear(bits: mut List[i64], at: i64, v: i64) {
+    bits[at + (v >> 6)] = bits[at + (v >> 6)] & (1 << (v & 63) ^ -1)
+}
+
+fn sroa_bit(bits: List[i64], at: i64, v: i64) -> bool {
+    return bits[at + (v >> 6)] >> (v & 63) & 1 != 0
+}
+
+// Runs the pass on one function. `effects` says what the functions it
+// calls may write (`sroa_effects`, or `sroa_no_effects`). Gives the
+// number of loads and stores it removed.
+fn ir_sroa(f: mut IrFunc, effects: SroaEffects, stats: mut SroaStats) -> i64 {
+    if f.order.len() == 0 { return 0 }
+    stats.functions = stats.functions + 1
+    var cfg = ir_cfg(f)
+    // Blocks nothing reaches would keep loads of objects that go.
+    var dead: List[i64] = []
+    for b in f.order {
+        if cfg.rpo_at[b] < 0 { dead.push(b) }
+    }
+    if dead.len() > 0 {
+        for b in dead {
+            ir_remove_block(mut f, b)
+        }
+        cfg = ir_cfg(f)
+    }
+    if cfg.pred_n[cfg.rpo[0]] > 0 {
+        // A jump back to the entry would need a parameter there, and
+        // the entry has none. Lowering never makes one.
+        return 0
+    }
+    let blocks = f.blk_first.len()
+    let values = f.val_ty.len()
+    var cell_s: List[i64] = []
+    var cells = 0
+    for bytes in f.frames {
+        cell_s.push(cells)
+        cells = cells + (bytes + 7) / 8
+    }
+    var s = Sroa {
+        frames: f.frames.len(),
+        addr_obj: sroa_minus(values),
+        addr_off: 0.filled(values),
+        addr_root: sroa_minus(values),
+        cell_s: cell_s,
+        cell_ty: sroa_minus(cells),
+        cell_why: 0.filled(cells),
+        cell_var: sroa_minus(cells),
+        esc: SROA_FAR.filled(f.frames.len() * 5),
+        lo: 0.filled(f.frames.len()),
+        hi: 0.filled(f.frames.len()),
+        var_ty: [],
+        var_obj: [],
+        var_off: [],
+        var_shadow: [],
+        obj_root: sroa_minus(f.frames.len()),
+        callee_s: [],
+        callee_n: [],
+        pk_param: [],
+        pk_off: [],
+        pk_ty: [],
+        pk_stable: [],
+        pk_cur: [],
+        pk_col: [],
+        leaky: false.filled(f.param_count)
+    }
+    for name in f.callees {
+        match effects.index.get(name) {
+            Some(at) => {
+                s.callee_s.push(effects.start[at])
+                s.callee_n.push(effects.count[at])
+            }
+            None => {
+                s.callee_s.push(-1)
+                s.callee_n.push(0)
+            }
+        }
+    }
+    let vars = sroa_analyse(mut s, f, cfg, mut stats)
+    // Most variables are stored and then read inside one block and
+    // need nothing from what follows. The others, read in some block
+    // before that block writes them, are the "wide" ones: only they
+    // get a place in the tables per block, numbered from 0 in `wide`.
+    var wide = sroa_minus(vars)
+    var wide_var: List[i64] = []
+    if vars > 0 {
+        var stored_in = 0.filled(vars)
+        for b in cfg.rpo {
+            var ins = f.blk_first[b]
+            while ins >= 0 {
+                let op = f.ins_op[ins]
+                if op == IR_LOAD || op == IR_STORE {
+                    let var_at = sroa_ins_var(s, f, ins)
+                    if var_at >= 0 {
+                        if op == IR_STORE {
+                            stored_in[var_at] = b + 1
+                        } else if stored_in[var_at] != b + 1 && wide[var_at] < 0 {
+                            wide[var_at] = wide_var.len()
+                            wide_var.push(var_at)
+                        }
+                    }
+                }
+                ins = f.ins_next[ins]
+            }
+        }
+    }
+    let wides = wide_var.len()
+    let words = (wides + 63) / 64
+
+    // Per block and variable: read before written (`used`), written
+    // (`defined`), exposed to a call that may write it (`clobbered`),
+    // and how the block leaves a shadowed cell: as a value
+    // (`ends_clean`) or in memory (`ends_mem`).
+    var used = 0.filled(blocks * words)
+    var defined = 0.filled(blocks * words)
+    var clobbered = 0.filled(blocks * words)
+    var ends_clean = 0.filled(blocks * words)
+    var ends_mem = 0.filled(blocks * words)
+    var shadows = 0.filled(words)
+    var v = 0
+    while v < wides {
+        if s.var_shadow[wide_var[v]] { sroa_set(mut shadows, 0, v) }
+        v = v + 1
+    }
+    if wides > 0 {
+        for b in cfg.rpo {
+            let base = b * words
+            var ins = f.blk_first[b]
+            while ins >= 0 {
+                let op = f.ins_op[ins]
+                if op == IR_LOAD || op == IR_STORE {
+                    let var_at = sroa_ins_var(s, f, ins)
+                    v = -1
+                    if var_at >= 0 { v = wide[var_at] }
+                    if v >= 0 {
+                        if op == IR_STORE {
+                            sroa_set(mut defined, base, v)
+                        } else if !sroa_bit(defined, base, v) {
+                            sroa_set(mut used, base, v)
+                        }
+                        if op == IR_STORE && s.var_shadow[var_at] && sroa_null_store(s, f, ins, var_at) {
+                            // Memory has the address of nothing; no
+                            // value stands for it (see the walk).
+                            sroa_set(mut ends_mem, base, v)
+                            sroa_clear(mut ends_clean, base, v)
+                        } else {
+                            sroa_set(mut ends_clean, base, v)
+                            sroa_clear(mut ends_mem, base, v)
+                        }
+                    }
+                } else if op == IR_CALL || op == IR_CALLRT {
+                    var k = 0
+                    while k < f.ins_an[ins] {
+                        let x = f.args[f.ins_as[ins] + k]
+                        if x >= 0 && s.addr_obj[x] >= 0 && s.addr_obj[x] < s.frames && sroa_arg_writes(s, f, effects, ins, k) {
+                            let obj = s.addr_obj[x]
+                            var c = s.addr_off[x] / 8
+                            if c < 0 { c = 0 }
+                            let end = (f.frames[obj] + 7) / 8
+                            while c < end {
+                                v = s.cell_var[s.cell_s[obj] + c]
+                                if v >= 0 { v = wide[v] }
+                                if v >= 0 {
+                                    sroa_set(mut clobbered, base, v)
+                                    sroa_set(mut ends_mem, base, v)
+                                    sroa_clear(mut ends_clean, base, v)
+                                }
+                                c = c + 1
+                            }
+                        }
+                        k = k + 1
+                    }
+                }
+                ins = f.ins_next[ins]
+            }
+        }
+    }
+    // Which variables are alive on the way into each block.
+    var live_in = 0.filled(blocks * words)
+    var changed = wides > 0
+    while changed {
+        changed = false
+        var i = cfg.rpo.len() - 1
+        while i >= 0 {
+            let b = cfg.rpo[i]
+            let base = b * words
+            let last = f.blk_last[b]
+            var w = 0
+            while w < words {
+                var out = 0
+                var e = f.ins_es[last]
+                let end = e + f.ins_en[last]
+                while e < end {
+                    out = out | live_in[f.edge_blk[e] * words + w]
+                    e = e + 1
+                }
+                let into = used[base + w] | out & (defined[base + w] ^ -1)
+                if into != live_in[base + w] {
+                    live_in[base + w] = into
+                    changed = true
+                }
+                w = w + 1
+            }
+            i = i - 1
+        }
+    }
+    // Which shadowed cells may be in memory on the way into each block;
+    // at the start of the function all of them are.
+    var mem_in = 0.filled(blocks * words)
+    var mem_out = 0.filled(blocks * words)
+    changed = wides > 0
+    while changed {
+        changed = false
+        for b in cfg.rpo {
+            let base = b * words
+            var w = 0
+            while w < words {
+                var into = 0
+                if b == cfg.rpo[0] { into = shadows[w] }
+                var p = cfg.pred_s[b]
+                let end = p + cfg.pred_n[b]
+                while p < end {
+                    into = into | mem_out[cfg.pred_blk[p] * words + w]
+                    p = p + 1
+                }
+                let out = ends_mem[base + w] | into & (ends_clean[base + w] ^ -1)
+                if into != mem_in[base + w] || out != mem_out[base + w] {
+                    mem_in[base + w] = into
+                    mem_out[base + w] = out
+                    changed = true
+                }
+                w = w + 1
+            }
+        }
+    }
+
+    // Dominance frontiers (Cooper, Harvey and Kennedy), as pairs and
+    // then as one list per block.
+    var df_from: List[i64] = []
+    var df_to: List[i64] = []
+    var df_n = 0.filled(blocks)
+    if wides > 0 {
+        var seen = sroa_minus(blocks)
+        for b in cfg.rpo {
+            if cfg.pred_n[b] >= 2 {
+                var p = cfg.pred_s[b]
+                let end = p + cfg.pred_n[b]
+                while p < end {
+                    var runner = cfg.pred_blk[p]
+                    while cfg.rpo_at[runner] >= 0 && runner != cfg.idom[b] && seen[runner] != b {
+                        seen[runner] = b
+                        df_from.push(runner)
+                        df_to.push(b)
+                        df_n[runner] = df_n[runner] + 1
+                        runner = cfg.idom[runner]
+                    }
+                    p = p + 1
+                }
+            }
+        }
+    }
+    var df_s = 0.filled(blocks)
+    var total = 0
+    var b = 0
+    while b < blocks {
+        df_s[b] = total
+        total = total + df_n[b]
+        df_n[b] = 0
+        b = b + 1
+    }
+    var df = 0.filled(total)
+    var i = 0
+    while i < df_from.len() {
+        let from = df_from[i]
+        df[df_s[from] + df_n[from]] = df_to[i]
+        df_n[from] = df_n[from] + 1
+        i = i + 1
+    }
+
+    // The blocks that define each variable: a store, a call that may
+    // write it, or a load that finds it in memory.
+    var def_n = 0.filled(wides)
+    var def_var: List[i64] = []
+    var def_blk: List[i64] = []
+    if wides > 0 {
+        for blk in cfg.rpo {
+            var w = 0
+            while w < words {
+                let at = blk * words + w
+                var bits = defined[at] | clobbered[at] | mem_in[at] & used[at]
+                v = w * 64
+                while bits != 0 {
+                    if bits & 1 != 0 {
+                        def_var.push(v)
+                        def_blk.push(blk)
+                        def_n[v] = def_n[v] + 1
+                    }
+                    bits = bits >> 1 & 9223372036854775807
+                    v = v + 1
+                }
+                w = w + 1
+            }
+        }
+    }
+    var def_s = 0.filled(wides)
+    total = 0
+    v = 0
+    while v < wides {
+        def_s[v] = total
+        total = total + def_n[v]
+        def_n[v] = 0
+        v = v + 1
+    }
+    var defs = 0.filled(total)
+    i = 0
+    while i < def_var.len() {
+        let var_at = def_var[i]
+        defs[def_s[var_at] + def_n[var_at]] = def_blk[i]
+        def_n[var_at] = def_n[var_at] + 1
+        i = i + 1
+    }
+
+    // Where each variable needs a block parameter.
+    var phi_blk: List[i64] = []
+    var phi_var: List[i64] = []
+    var phi_n = 0.filled(blocks)
+    var has_phi = 0.filled(blocks)
+    var in_work = 0.filled(blocks)
+    var work: List[i64] = []
+    v = 0
+    while v < wides {
+        i = 0
+        while i < def_n[v] {
+            let blk = defs[def_s[v] + i]
+            in_work[blk] = v + 1
+            work.push(blk)
+            i = i + 1
+        }
+        while work.len() > 0 {
+            let x = work.pop()
+            var at = df_s[x]
+            let end = at + df_n[x]
+            while at < end {
+                let y = df[at]
+                if has_phi[y] != v + 1 {
+                    has_phi[y] = v + 1
+                    if sroa_bit(live_in, y * words, v) {
+                        phi_blk.push(y)
+                        phi_var.push(v)
+                        phi_n[y] = phi_n[y] + 1
+                        if in_work[y] != v + 1 {
+                            in_work[y] = v + 1
+                            work.push(y)
+                        }
+                    }
+                }
+                at = at + 1
+            }
+        }
+        v = v + 1
+    }
+    var phi_s = 0.filled(blocks)
+    total = 0
+    b = 0
+    while b < blocks {
+        phi_s[b] = total
+        total = total + phi_n[b]
+        phi_n[b] = 0
+        b = b + 1
+    }
+    // `phis` holds wide numbers until the parameters are made, then
+    // the variables themselves.
+    var phis = 0.filled(total)
+    // The parameter's value, or SROA_MEM for a join where a shadowed
+    // cell may be in memory: no parameter then.
+    var phi_val = 0.filled(total)
+    i = 0
+    while i < phi_blk.len() {
+        let blk = phi_blk[i]
+        phis[phi_s[blk] + phi_n[blk]] = phi_var[i]
+        phi_n[blk] = phi_n[blk] + 1
+        i = i + 1
+    }
+    for blk in cfg.rpo {
+        i = 0
+        while i < phi_n[blk] {
+            let var_at = wide_var[phis[phi_s[blk] + i]]
+            if sroa_bit(mem_in, blk * words, phis[phi_s[blk] + i]) {
+                phi_val[phi_s[blk] + i] = SROA_MEM
+            } else {
+                phi_val[phi_s[blk] + i] = ir_add_block_param(mut f, blk, s.var_ty[var_at])
+                stats.block_params = stats.block_params + 1
+            }
+            phis[phi_s[blk] + i] = var_at
+            i = i + 1
+        }
+    }
+
+    // The dominator tree as lists of children.
+    var kid_n = 0.filled(blocks)
+    for blk in cfg.rpo {
+        if cfg.idom[blk] != blk { kid_n[cfg.idom[blk]] = kid_n[cfg.idom[blk]] + 1 }
+    }
+    var kid_s = 0.filled(blocks)
+    total = 0
+    b = 0
+    while b < blocks {
+        kid_s[b] = total
+        total = total + kid_n[b]
+        kid_n[b] = 0
+        b = b + 1
+    }
+    var kids = 0.filled(total)
+    for blk in cfg.rpo {
+        let up = cfg.idom[blk]
+        if up != blk {
+            kids[kid_s[up] + kid_n[up]] = blk
+            kid_n[up] = kid_n[up] + 1
+        }
+    }
+
+    // The walk. `cur[v]` is the value of variable `v` here: -1 before
+    // any store, SROA_MEM for a shadowed cell that only memory knows.
+    // `repl[x]` is what stands for value `x` now.
+    let zero = ir_const(mut f, 0)
+    let flow = sroa_param_flow(mut s, f, cfg, effects)
+    let keys = s.pk_cur.len()
+    let columns = flow.len() / blocks
+    var cur = sroa_minus(vars)
+    v = 0
+    while v < vars {
+        if s.var_shadow[v] { cur[v] = SROA_MEM }
+        v = v + 1
+    }
+    var repl = 0.filled(values)
+    i = 0
+    while i < values {
+        repl[i] = i
+        i = i + 1
+    }
+    // What to put back when the walk leaves a block: a variable (or,
+    // from `vars` up, an entry of the parameter table) and its value.
+    var log_at: List[i64] = []
+    var log_old: List[i64] = []
+    // The stack of the walk: a block to enter, or -1 - mark to leave.
+    var stack: List[i64] = [cfg.rpo[0]]
+    var removed = 0
+    while stack.len() > 0 {
+        let top = stack.pop()
+        if top < 0 {
+            let mark = 0 - 1 - top
+            while log_at.len() > mark {
+                let at = log_at.pop()
+                let old = log_old.pop()
+                if at < vars {
+                    cur[at] = old
+                } else {
+                    s.pk_cur[at - vars] = old
+                }
+            }
+        } else {
+            let blk = top
+            stack.push(0 - 1 - log_at.len())
+            i = kid_n[blk] - 1
+            while i >= 0 {
+                stack.push(kids[kid_s[blk] + i])
+                i = i - 1
+            }
+            sroa_forget(mut s, -1)
+            if columns > 0 {
+                i = 0
+                while i < keys {
+                    if s.pk_col[i] >= 0 {
+                        let known = sroa_flow_in(flow, cfg, blk, columns, s.pk_col[i])
+                        if known >= 0 && known < SROA_FAR {
+                            s.pk_cur[i] = repl[known]
+                        } else if known < -1 {
+                            s.pk_cur[i] = known
+                        }
+                    }
+                    i = i + 1
+                }
+            }
+            i = 0
+            while i < phi_n[blk] {
+                let var_at = phis[phi_s[blk] + i]
+                log_at.push(var_at)
+                log_old.push(cur[var_at])
+                cur[var_at] = phi_val[phi_s[blk] + i]
+                i = i + 1
+            }
+            var ins = f.blk_first[blk]
+            while ins >= 0 {
+                let next = f.ins_next[ins]
+                let op = f.ins_op[ins]
+                // Every operand through `repl`: the three fixed ones
+                // (-1 when not used), the arguments, the edges'.
+                var x = f.ins_a[ins]
+                if x >= 0 && x < values && repl[x] != x { f.ins_a[ins] = repl[x] }
+                x = f.ins_b[ins]
+                if x >= 0 && x < values && repl[x] != x { f.ins_b[ins] = repl[x] }
+                x = f.ins_c[ins]
+                if x >= 0 && x < values && repl[x] != x { f.ins_c[ins] = repl[x] }
+                var k = f.ins_as[ins]
+                var stop = k + f.ins_an[ins]
+                while k < stop {
+                    x = f.args[k]
+                    if x >= 0 && x < values && repl[x] != x { f.args[k] = repl[x] }
+                    k = k + 1
+                }
+                var edge = f.ins_es[ins]
+                let edges = edge + f.ins_en[ins]
+                while edge < edges {
+                    k = f.edge_as[edge]
+                    stop = k + f.edge_an[edge]
+                    while k < stop {
+                        x = f.args[k]
+                        if x >= 0 && x < values && repl[x] != x { f.args[k] = repl[x] }
+                        k = k + 1
+                    }
+                    edge = edge + 1
+                }
+                if op == IR_LOAD {
+                    let var_at = sroa_ins_var(s, f, ins)
+                    if var_at >= 0 {
+                        if cur[var_at] == SROA_MEM || cur[var_at] == -1 && s.var_ty[var_at] == IR_PTR {
+                            // A real load, and the cell's value from
+                            // here. (A `ptr` that nothing stored: no
+                            // constant can stand for it, and the load
+                            // is as wrong as it was.)
+                            if cur[var_at] == -1 { sroa_keep_cell(mut s, var_at) }
+                            log_at.push(var_at)
+                            log_old.push(cur[var_at])
+                            cur[var_at] = f.ins_res[ins]
+                        } else {
+                            var value = cur[var_at]
+                            if value == -1 {
+                                value = zero
+                                if s.var_ty[var_at] == IR_BOOL {
+                                    value = sroa_bool_before(mut f, ins, 0)
+                                }
+                            }
+                            repl[f.ins_res[ins]] = value
+                            ir_remove(mut f, ins)
+                            removed = removed + 1
+                            stats.loads_removed = stats.loads_removed + 1
+                        }
+                    } else {
+                        let key = sroa_param_key(mut s, f, ins, true)
+                        if key >= 0 {
+                            if s.pk_cur[key] != -1 {
+                                repl[f.ins_res[ins]] = s.pk_cur[key]
+                                ir_remove(mut f, ins)
+                                removed = removed + 1
+                                stats.param_loads_removed = stats.param_loads_removed + 1
+                            } else {
+                                if s.pk_stable[key] {
+                                    log_at.push(vars + key)
+                                    log_old.push(-1)
+                                }
+                                s.pk_cur[key] = f.ins_res[ins]
+                            }
+                        }
+                    }
+                } else if op == IR_STORE {
+                    let var_at = sroa_ins_var(s, f, ins)
+                    if var_at >= 0 {
+                        log_at.push(var_at)
+                        log_old.push(cur[var_at])
+                        if sroa_null_store(s, f, ins, var_at) {
+                            if s.var_shadow[var_at] {
+                                cur[var_at] = SROA_MEM
+                            } else {
+                                // Keep the store and read it back.
+                                let back = ir_make(mut f, IR_LOAD, IR_PTR, f.ins_a[ins], -1, -1, f.ins_imm[ins])
+                                f.ins_reg[back] = f.ins_reg[ins]
+                                cur[var_at] = ir_add_result(mut f, back, IR_PTR)
+                                if next >= 0 {
+                                    ir_link_before(mut f, next, back)
+                                } else {
+                                    ir_link_end(mut f, blk, back)
+                                }
+                                sroa_keep_cell(mut s, var_at)
+                                stats.null_loads = stats.null_loads + 1
+                            }
+                        } else {
+                            cur[var_at] = f.ins_b[ins]
+                            if s.var_ty[var_at] == IR_BOOL && ir_is_const(f.ins_b[ins]) {
+                                // A constant has no type of its own, and
+                                // `xor 0, 1` would be a number.
+                                let n = ir_const_value(f, f.ins_b[ins])
+                                cur[var_at] = sroa_bool_before(mut f, ins, n)
+                            }
+                            if !s.var_shadow[var_at] {
+                                ir_remove(mut f, ins)
+                                removed = removed + 1
+                                stats.stores_removed = stats.stores_removed + 1
+                            }
+                        }
+                    } else {
+                        let region = f.ins_reg[ins]
+                        if region >= 0 && f.reg_kind[region] == IR_REGION_PARAM {
+                            // Whatever was known behind this parameter
+                            // is gone, except what this store wrote.
+                            sroa_store_forgets(mut s, f, ins)
+                            let key = sroa_param_key(mut s, f, ins, true)
+                            if sroa_store_forwards(s, f, ins, key) { s.pk_cur[key] = f.ins_b[ins] }
+                        }
+                    }
+                } else if op == IR_CALL || op == IR_CALLRT {
+                    sroa_call_forgets(mut s, f, effects, ins)
+                    k = 0
+                    while k < f.ins_an[ins] {
+                        x = f.args[f.ins_as[ins] + k]
+                        if x >= 0 && x < values && s.addr_obj[x] >= 0 && s.addr_obj[x] < s.frames && sroa_arg_writes(s, f, effects, ins, k) {
+                            let obj = s.addr_obj[x]
+                            var c = s.addr_off[x] / 8
+                            if c < 0 { c = 0 }
+                            let end = (f.frames[obj] + 7) / 8
+                            while c < end {
+                                let var_at = s.cell_var[s.cell_s[obj] + c]
+                                if var_at >= 0 && cur[var_at] != SROA_MEM {
+                                    log_at.push(var_at)
+                                    log_old.push(cur[var_at])
+                                    cur[var_at] = SROA_MEM
+                                }
+                                c = c + 1
+                            }
+                        }
+                        k = k + 1
+                    }
+                } else if f.ins_en[ins] > 0 {
+                    var e = f.ins_es[ins]
+                    let end = e + f.ins_en[ins]
+                    while e < end {
+                        let target = f.edge_blk[e]
+                        var more: List[i64] = []
+                        k = 0
+                        while k < phi_n[target] {
+                            if phi_val[phi_s[target] + k] != SROA_MEM {
+                                let var_at = phis[phi_s[target] + k]
+                                var value = cur[var_at]
+                                if value == -1 {
+                                    value = zero
+                                } else if value == SROA_MEM {
+                                    // The two analyses disagree: read
+                                    // the cell here, where memory has it.
+                                    let late = ir_make(mut f, IR_LOAD, s.var_ty[var_at], s.obj_root[s.var_obj[var_at]], -1, -1, s.var_off[var_at])
+                                    f.ins_reg[late] = ir_region(mut f, IR_REGION_FRAME, s.var_obj[var_at])
+                                    value = ir_add_result(mut f, late, s.var_ty[var_at])
+                                    ir_link_before(mut f, ins, late)
+                                    stats.late_loads = stats.late_loads + 1
+                                }
+                                more.push(value)
+                            }
+                            k = k + 1
+                        }
+                        if more.len() > 0 { sroa_extend_edge(mut f, e, more) }
+                        e = e + 1
+                    }
+                }
+                ins = next
+            }
+        }
+    }
+    if vars > 0 {
+        sroa_shrink(s, mut f, cfg, mut stats)
+    } else {
+        for bytes in f.frames {
+            stats.bytes_after = stats.bytes_after + bytes
+        }
+    }
+    return removed
+}
+
+// Runs the pass on every function of a module.
+fn ir_sroa_module(m: mut IrModule, stats: mut SroaStats) -> i64 {
+    let effects = sroa_effects(m)
+    var removed = 0
+    var i = 0
+    while i < m.funcs.len() {
+        removed = removed + ir_sroa(mut m.funcs[i], effects, mut stats)
+        i = i + 1
+    }
+    return removed
+}
+
+fn sroa_percent(part: i64, whole: i64) -> str {
+    if whole == 0 { return "0.0%" }
+    let tenths = part * 1000 / whole
+    return str(tenths / 10) + "." + str(tenths % 10) + "%"
+}
+
+// The numbers as lines of text.
+fn sroa_stats_text(stats: SroaStats) -> str {
+    var out = "functions " + str(stats.functions) + "\n"
+    out = out + "frame objects " + str(stats.objects)
+    out = out + ", gone " + str(stats.objects_gone)
+    out = out + ", bytes " + str(stats.bytes_before)
+    out = out + " -> " + str(stats.bytes_after) + "\n"
+    out = out + "cells " + str(stats.cells)
+    out = out + ", variables " + str(stats.promoted)
+    out = out + " (" + sroa_percent(stats.promoted, stats.cells)
+    out = out + "), shadowed " + str(stats.shadowed)
+    out = out + " (" + sroa_percent(stats.shadowed, stats.cells)
+    out = out + ")\n"
+    var why = 1
+    while why < SROA_WHY_COUNT {
+        if stats.kept[why] > 0 {
+            out = out + "  kept " + str(stats.kept[why])
+            out = out + " (" + sroa_percent(stats.kept[why], stats.cells)
+            out = out + "): " + sroa_why_name(why)
+            out = out + "\n"
+        }
+        why = why + 1
+    }
+    out = out + "loads " + str(stats.loads)
+    out = out + ", removed " + str(stats.loads_removed + stats.param_loads_removed)
+    out = out + " (" + sroa_percent(stats.loads_removed + stats.param_loads_removed, stats.loads)
+    out = out + "), of which through parameters " + str(stats.param_loads_removed)
+    out = out + "\n"
+    out = out + "stores " + str(stats.stores)
+    out = out + ", removed " + str(stats.stores_removed)
+    out = out + " (" + sroa_percent(stats.stores_removed, stats.stores)
+    out = out + ")\n"
+    out = out + "block parameters added " + str(stats.block_params)
+    out = out + ", late loads " + str(stats.late_loads)
+    out = out + ", loads after a store of no address " + str(stats.null_loads)
+    out = out + "\n"
+    return out
+}

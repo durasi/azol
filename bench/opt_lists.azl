@@ -12,9 +12,7 @@ fn main() {
         total = total + n
     }
     for at, n in numbers {
-        if n > 50 {
-            total = total + at
-        }
+        if n > 50 { total = total + at }
     }
     var k = 0
     while k < numbers.len() {

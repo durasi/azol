@@ -1,0 +1,7 @@
+; A division by a constant that is not 0 cannot stop the program: unused, it goes.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = sdiv p0, 3
+    v1 = srem p0, -1
+    ret p0
+}

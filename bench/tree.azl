@@ -7,9 +7,7 @@ enum Tree {
 }
 
 fn build(depth: i64, seed: i64) -> Tree {
-    if depth == 0 {
-        return Leaf(seed % 10)
-    }
+    if depth == 0 { return Leaf(seed % 10) }
     return Node([build(depth - 1, seed * 3 + 1), build(depth - 1, seed * 5 + 2)])
 }
 

@@ -1,0 +1,15 @@
+; Kept: the bound is a value of the loop itself, so the count need not reach it.
+fn main(p0: i64) -> i64 {
+b0:
+    jump b1(0, p0)
+b1(v0: i64, v1: i64):
+    v2 = slt v0, v1
+    br v2, b2, b3
+b2:
+    v3 = add v0, 1
+    v4 = add v1, 1
+    v5 = and v4, 7
+    jump b1(v3, v5)
+b3:
+    ret p0
+}

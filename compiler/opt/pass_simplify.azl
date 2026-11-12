@@ -1,0 +1,1033 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The pass `simplify` (docs/design/optimizer.md, section 5.1): constant
+// folding with azoL's arithmetic, algebraic identities and one
+// canonical form for each of them, and the same for the shape of the
+// function: a branch on what is known becomes a jump, blocks that only
+// pass on are skipped, a chain of comparisons of one value becomes a
+// `switch`.
+//
+//     fn ir_simplify(f: mut IrFunc) -> i64        how many things changed
+//
+// It runs many times between the other passes, so every step is one
+// walk over the function, and nothing looks for the users of a value:
+// a value that is replaced is noted in `rep`, and every operand is
+// looked up there when its instruction is next visited. The walks are
+// repeated until one changes nothing; that is two or three times for
+// lowered code.
+//
+// What it never does, and why:
+//
+//   - A division or remainder by a constant zero stays. The check that
+//     the lowering stage puts before it stops the program first, and
+//     removing the instruction is `dce`'s business once the branch on
+//     that check is folded.
+//   - A division by a power of two is not an arithmetic shift alone: a
+//     shift rounds down and azoL's division rounds towards zero, so the
+//     sign is added in first.
+//   - Nothing that can be observed is moved, removed or put in another
+//     order: a `store`, a call, a `trap`.
+
+struct Simp {
+    // For value `v`, the operand to use instead, or -1.
+    rep: List[i64]
+    changed: i64
+}
+
+// What stands for operand `x` now.
+fn sm_resolve(s: Simp, x: i64) -> i64 {
+    var y = x
+    while y >= 0 && y < s.rep.len() && s.rep[y] != -1 {
+        y = s.rep[y]
+    }
+    return y
+}
+
+fn sm_grow(f: IrFunc, s: mut Simp) {
+    while s.rep.len() < f.val_ty.len() {
+        s.rep.push(-1)
+    }
+}
+
+// The single result of `ins` is `x` from now on; the instruction goes.
+fn sm_replace(f: mut IrFunc, s: mut Simp, ins: i64, x: i64) {
+    s.rep[f.ins_res[ins]] = x
+    ir_remove(mut f, ins)
+    s.changed = s.changed + 1
+}
+
+fn sm_replace_const(f: mut IrFunc, s: mut Simp, ins: i64, n: i64) {
+    let x = ir_const(mut f, n)
+    sm_replace(mut f, mut s, ins, x)
+}
+
+// A new instruction with two operands and an `i64` result, just before
+// `at`. Gives the result.
+fn sm_before(f: mut IrFunc, s: mut Simp, at: i64, op: i64, a: i64, b: i64) -> i64 {
+    let ins = ir_make(mut f, op, IR_I64, a, b, -1, 0)
+    let v = ir_add_result(mut f, ins, IR_I64)
+    ir_link_before(mut f, at, ins)
+    sm_grow(f, mut s)
+    return v
+}
+
+// Whether two operands are the same value or the same number.
+fn sm_same(f: IrFunc, a: i64, b: i64) -> bool {
+    if a == b { return a != -1 }
+    return a < -1 && b < -1 && ir_const_value(f, a) == ir_const_value(f, b)
+}
+
+// The instruction that defines `x` when it is the operation `op` with a
+// constant as its second operand; otherwise -1.
+fn sm_def_with_const(f: IrFunc, s: Simp, x: i64, op: i64) -> i64 {
+    let d = su_def(f, x)
+    if d < 0 || f.ins_op[d] != op { return -1 }
+    if !ir_is_const(sm_resolve(s, f.ins_b[d])) { return -1 }
+    return d
+}
+
+// Whether `x` is a `bool` turned round: `xor y, 1`. Gives `y` or -1.
+fn sm_negated(f: IrFunc, s: Simp, x: i64) -> i64 {
+    if x < 0 || f.val_ty[x] != IR_BOOL { return -1 }
+    let d = sm_def_with_const(f, s, x, IR_XOR)
+    if d < 0 || ir_const_value(f, sm_resolve(s, f.ins_b[d])) != 1 { return -1 }
+    return sm_resolve(s, f.ins_a[d])
+}
+
+// ---- instructions with two operands ----------------------------------------
+
+// `x / 2^k` and `x % 2^k` without a division. A shift alone rounds
+// down; adding `2^k - 1` to a negative `x` first makes it round towards
+// zero, as the language says.
+fn sm_divide_by_power(f: mut IrFunc, s: mut Simp, ins: i64, a: i64, k: i64) {
+    let all = ir_const(mut f, 63)
+    let sign = sm_before(mut f, mut s, ins, IR_SAR, a, all)
+    let rest = ir_const(mut f, 64 - k)
+    let bias = sm_before(mut f, mut s, ins, IR_SHR, sign, rest)
+    let sum = sm_before(mut f, mut s, ins, IR_ADD, a, bias)
+    let by = ir_const(mut f, k)
+    if f.ins_op[ins] == IR_SDIV {
+        f.ins_op[ins] = IR_SAR
+        f.ins_a[ins] = sum
+        f.ins_b[ins] = by
+    } else {
+        let mask = ir_const(mut f, 0 - (1 << k))
+        let whole = sm_before(mut f, mut s, ins, IR_AND, sum, mask)
+        f.ins_op[ins] = IR_SUB
+        f.ins_a[ins] = a
+        f.ins_b[ins] = whole
+    }
+    s.changed = s.changed + 1
+}
+
+// A comparison with a constant on the right, in one form: `<=` and
+// `>=` become `<` and `>` of the neighbouring number, and what no
+// number can do is answered.
+fn sm_compare_const(f: mut IrFunc, s: mut Simp, ins: i64, a: i64, c: i64) -> bool {
+    let op = f.ins_op[ins]
+    let smallest = 1 << 63
+    let largest = smallest - 1
+    if ir_operand_type(f, a) == IR_BOOL {
+        if op == IR_EQ && c == 1 || op == IR_NE && c == 0 {
+            sm_replace(mut f, mut s, ins, a)
+            return true
+        }
+        if op == IR_EQ && c == 0 || op == IR_NE && c == 1 {
+            f.ins_op[ins] = IR_XOR
+            f.ins_b[ins] = ir_const(mut f, 1)
+            s.changed = s.changed + 1
+            return true
+        }
+        return false
+    }
+    if ir_operand_type(f, a) != IR_I64 { return false }
+    var answer = -1
+    var to = -1
+    var with = 0
+    if op == IR_SLE {
+        if c == largest {
+            answer = 1
+        } else {
+            to = IR_SLT
+            with = c + 1
+        }
+    } else if op == IR_SGE {
+        if c == smallest {
+            answer = 1
+        } else {
+            to = IR_SGT
+            with = c - 1
+        }
+    } else if op == IR_ULE {
+        if c == -1 {
+            answer = 1
+        } else {
+            to = IR_ULT
+            with = c + 1
+        }
+    } else if op == IR_UGE {
+        if c == 0 {
+            answer = 1
+        } else {
+            to = IR_UGT
+            with = c - 1
+        }
+    } else if op == IR_SLT && c == smallest || op == IR_SGT && c == largest || op == IR_ULT && c == 0 || op == IR_UGT && c == -1 {
+        answer = 0
+    }
+    if answer != -1 {
+        sm_replace_const(mut f, mut s, ins, answer)
+        return true
+    }
+    if to != -1 {
+        f.ins_op[ins] = to
+        f.ins_b[ins] = ir_const(mut f, with)
+        s.changed = s.changed + 1
+        return true
+    }
+    return false
+}
+
+// An operation whose second operand is the number `c`. True when the
+// instruction changed or went.
+fn sm_binary_const(f: mut IrFunc, s: mut Simp, ins: i64, a: i64, c: i64) -> bool {
+    let op = f.ins_op[ins]
+    let ty = f.val_ty[f.ins_res[ins]]
+    if ir_is_compare(op) { return sm_compare_const(mut f, mut s, ins, a, c) }
+    if op == IR_SUB {
+        f.ins_op[ins] = IR_ADD
+        f.ins_b[ins] = ir_const(mut f, 0 - c)
+        s.changed = s.changed + 1
+        return true
+    }
+    // `(x op c1) op c2` is `x op (c1 op c2)` for the operations where
+    // the order does not matter.
+    if op == IR_ADD || op == IR_MUL || op == IR_AND || op == IR_OR || op == IR_XOR {
+        let inner = sm_def_with_const(f, s, a, op)
+        if inner >= 0 {
+            let first = ir_const_value(f, sm_resolve(s, f.ins_b[inner]))
+            let both = ir_const(mut f, su_fold_binary(op, first, c))
+            f.ins_a[ins] = sm_resolve(s, f.ins_a[inner])
+            f.ins_b[ins] = both
+            s.changed = s.changed + 1
+            return true
+        }
+    }
+    if op == IR_ADD || op == IR_OR || op == IR_XOR {
+        if c == 0 {
+            sm_replace(mut f, mut s, ins, a)
+            return true
+        }
+    }
+    if op == IR_OR && (ty == IR_I64 && c == -1 || ty == IR_BOOL && c == 1) {
+        sm_replace_const(mut f, mut s, ins, c)
+        return true
+    }
+    if op == IR_AND {
+        if c == 0 {
+            sm_replace_const(mut f, mut s, ins, 0)
+            return true
+        }
+        if ty == IR_I64 && c == -1 || ty == IR_BOOL && c == 1 {
+            sm_replace(mut f, mut s, ins, a)
+            return true
+        }
+        // An arithmetic shift whose copies of the sign are masked away
+        // is a shift that brings in zeros.
+        let shift = sm_def_with_const(f, s, a, IR_SAR)
+        if shift >= 0 && ty == IR_I64 {
+            let k = ir_const_value(f, sm_resolve(s, f.ins_b[shift])) & 63
+            if k > 0 && c == (1 << 64 - k) - 1 {
+                f.ins_op[ins] = IR_SHR
+                f.ins_a[ins] = sm_resolve(s, f.ins_a[shift])
+                f.ins_b[ins] = ir_const(mut f, k)
+                s.changed = s.changed + 1
+                return true
+            }
+        }
+    }
+    if op == IR_MUL {
+        if c == 0 {
+            sm_replace_const(mut f, mut s, ins, 0)
+            return true
+        }
+        if c == 1 {
+            sm_replace(mut f, mut s, ins, a)
+            return true
+        }
+        if c == -1 {
+            f.ins_op[ins] = IR_NEG
+            f.ins_b[ins] = -1
+            s.changed = s.changed + 1
+            return true
+        }
+        var k = su_power_of_two(c)
+        if c == 1 << 63 { k = 63 }
+        if k > 0 {
+            f.ins_op[ins] = IR_SHL
+            f.ins_b[ins] = ir_const(mut f, k)
+            s.changed = s.changed + 1
+            return true
+        }
+    }
+    if op == IR_SDIV || op == IR_SREM {
+        if c == 0 { return false }
+        if c == 1 || c == -1 {
+            if op == IR_SREM {
+                sm_replace_const(mut f, mut s, ins, 0)
+            } else if c == 1 {
+                sm_replace(mut f, mut s, ins, a)
+            } else {
+                f.ins_op[ins] = IR_NEG
+                f.ins_b[ins] = -1
+                s.changed = s.changed + 1
+            }
+            return true
+        }
+        if c < 0 && c != 1 << 63 && su_power_of_two(0 - c) > 0 {
+            // The sign of the divisor does not show in a remainder, and
+            // negates a quotient.
+            let positive = ir_const(mut f, 0 - c)
+            if op == IR_SREM {
+                f.ins_b[ins] = positive
+            } else {
+                let quotient = sm_before(mut f, mut s, ins, IR_SDIV, a, positive)
+                f.ins_op[ins] = IR_NEG
+                f.ins_a[ins] = quotient
+                f.ins_b[ins] = -1
+            }
+            s.changed = s.changed + 1
+            return true
+        }
+        let k = su_power_of_two(c)
+        if k > 0 {
+            sm_divide_by_power(mut f, mut s, ins, a, k)
+            return true
+        }
+        return false
+    }
+    if op == IR_UMULH || op == IR_SMULH {
+        if c == 0 {
+            sm_replace_const(mut f, mut s, ins, 0)
+            return true
+        }
+        return false
+    }
+    if op == IR_SHL || op == IR_SAR || op == IR_SHR {
+        let count = c & 63
+        if count == 0 {
+            sm_replace(mut f, mut s, ins, a)
+            return true
+        }
+        if count != c {
+            f.ins_b[ins] = ir_const(mut f, count)
+            s.changed = s.changed + 1
+            return true
+        }
+        // Two shifts the same way are one.
+        let inner = sm_def_with_const(f, s, a, op)
+        if inner >= 0 {
+            let first = ir_const_value(f, sm_resolve(s, f.ins_b[inner])) & 63
+            var total = first + count
+            if total > 63 {
+                if op != IR_SAR {
+                    sm_replace_const(mut f, mut s, ins, 0)
+                    return true
+                }
+                total = 63
+            }
+            f.ins_a[ins] = sm_resolve(s, f.ins_a[inner])
+            f.ins_b[ins] = ir_const(mut f, total)
+            s.changed = s.changed + 1
+            return true
+        }
+        return false
+    }
+    return false
+}
+
+// An operation on one value twice.
+fn sm_binary_same(f: mut IrFunc, s: mut Simp, ins: i64, a: i64) -> bool {
+    let op = f.ins_op[ins]
+    if op == IR_SUB || op == IR_XOR || op == IR_NE || op == IR_SLT || op == IR_SGT || op == IR_ULT || op == IR_UGT {
+        sm_replace_const(mut f, mut s, ins, 0)
+        return true
+    }
+    if op == IR_AND || op == IR_OR {
+        sm_replace(mut f, mut s, ins, a)
+        return true
+    }
+    if op == IR_EQ || op == IR_SLE || op == IR_SGE || op == IR_ULE || op == IR_UGE {
+        sm_replace_const(mut f, mut s, ins, 1)
+        return true
+    }
+    return false
+}
+
+fn sm_binary(f: mut IrFunc, s: mut Simp, ins: i64) -> bool {
+    let op = f.ins_op[ins]
+    var a = f.ins_a[ins]
+    var b = f.ins_b[ins]
+    if ir_is_const(a) && ir_is_const(b) {
+        let x = ir_const_value(f, a)
+        let y = ir_const_value(f, b)
+        if (op == IR_SDIV || op == IR_SREM) && y == 0 { return false }
+        sm_replace_const(mut f, mut s, ins, su_fold_binary(op, x, y))
+        return true
+    }
+    if ir_is_const(a) {
+        // The constant goes to the right, where every rule looks.
+        let commutes = op == IR_ADD || op == IR_MUL || op == IR_AND || op == IR_OR || op == IR_XOR || op == IR_EQ || op == IR_NE || op == IR_UMULH || op == IR_SMULH
+        if commutes || ir_is_compare(op) {
+            f.ins_op[ins] = su_swapped_compare(op)
+            f.ins_a[ins] = b
+            f.ins_b[ins] = a
+            s.changed = s.changed + 1
+            return true
+        }
+        let x = ir_const_value(f, a)
+        if op == IR_SUB && x == 0 {
+            f.ins_op[ins] = IR_NEG
+            f.ins_a[ins] = b
+            f.ins_b[ins] = -1
+            s.changed = s.changed + 1
+            return true
+        }
+        if x == 0 && (op == IR_SHL || op == IR_SAR || op == IR_SHR) {
+            sm_replace_const(mut f, mut s, ins, 0)
+            return true
+        }
+        return false
+    }
+    if ir_is_const(b) {
+        let c = ir_const_value(f, b)
+        return sm_binary_const(mut f, mut s, ins, a, c)
+    }
+    if a == b { return sm_binary_same(mut f, mut s, ins, a) }
+    return false
+}
+
+// ---- the other instructions -------------------------------------------------
+
+fn sm_unary(f: mut IrFunc, s: mut Simp, ins: i64) -> bool {
+    let op = f.ins_op[ins]
+    let a = f.ins_a[ins]
+    if ir_is_const(a) {
+        let folded = su_fold_unary(op, ir_const_value(f, a))
+        sm_replace_const(mut f, mut s, ins, folded)
+        return true
+    }
+    let d = su_def(f, a)
+    if d < 0 { return false }
+    let inner = f.ins_op[d]
+    if op == IR_NEG && inner == IR_NEG {
+        let under = sm_resolve(s, f.ins_a[d])
+        sm_replace(mut f, mut s, ins, under)
+        return true
+    }
+    // Cutting to a width twice is cutting once.
+    let bytes = op == IR_EXT8U || op == IR_TRUNC8
+    let words = op == IR_EXT32U || op == IR_TRUNC32
+    if bytes && (inner == IR_EXT8U || inner == IR_TRUNC8) || words && (inner == IR_EXT32U || inner == IR_TRUNC32 || inner == IR_EXT8U || inner == IR_TRUNC8) {
+        sm_replace(mut f, mut s, ins, a)
+        return true
+    }
+    if op == inner && (op == IR_EXT8S || op == IR_EXT32S) {
+        sm_replace(mut f, mut s, ins, a)
+        return true
+    }
+    return false
+}
+
+fn sm_select(f: mut IrFunc, s: mut Simp, ins: i64) -> bool {
+    let cond = f.ins_a[ins]
+    let x = f.ins_b[ins]
+    let y = f.ins_c[ins]
+    if ir_is_const(cond) {
+        if ir_const_value(f, cond) != 0 {
+            sm_replace(mut f, mut s, ins, x)
+        } else {
+            sm_replace(mut f, mut s, ins, y)
+        }
+        return true
+    }
+    if sm_same(f, x, y) {
+        sm_replace(mut f, mut s, ins, x)
+        return true
+    }
+    if f.val_ty[f.ins_res[ins]] == IR_BOOL && ir_is_const(x) && ir_is_const(y) {
+        // The two numbers differ, so they are 1 and 0 or 0 and 1.
+        if ir_const_value(f, x) == 1 {
+            sm_replace(mut f, mut s, ins, cond)
+        } else {
+            f.ins_op[ins] = IR_XOR
+            f.ins_b[ins] = ir_const(mut f, 1)
+            f.ins_c[ins] = -1
+            s.changed = s.changed + 1
+        }
+        return true
+    }
+    let plain = sm_negated(f, s, cond)
+    if plain != -1 {
+        f.ins_a[ins] = plain
+        f.ins_b[ins] = y
+        f.ins_c[ins] = x
+        s.changed = s.changed + 1
+        return true
+    }
+    return false
+}
+
+// An address: a constant index goes into the offset, two steps become
+// one, and a step of nothing is the address it started from.
+fn sm_gep(f: mut IrFunc, s: mut Simp, ins: i64) -> bool {
+    let index = f.ins_b[ins]
+    if ir_is_const(index) && (ir_const_value(f, index) != 0 || f.ins_imm2[ins] != 1) {
+        f.ins_imm[ins] = f.ins_imm[ins] + ir_const_value(f, index) * f.ins_imm2[ins]
+        f.ins_b[ins] = ir_const(mut f, 0)
+        f.ins_imm2[ins] = 1
+        s.changed = s.changed + 1
+        return true
+    }
+    let d = su_def(f, f.ins_a[ins])
+    if d >= 0 && f.ins_op[d] == IR_GEP {
+        let inner_index = sm_resolve(s, f.ins_b[d])
+        if ir_is_const(inner_index) {
+            // The inner one adds a number only.
+            f.ins_a[ins] = sm_resolve(s, f.ins_a[d])
+            f.ins_imm[ins] = f.ins_imm[ins] + f.ins_imm[d] + ir_const_value(f, inner_index) * f.ins_imm2[d]
+            s.changed = s.changed + 1
+            return true
+        }
+        if ir_is_const(index) {
+            // This one adds a number only: take the inner one's index.
+            f.ins_a[ins] = sm_resolve(s, f.ins_a[d])
+            f.ins_b[ins] = inner_index
+            f.ins_imm2[ins] = f.ins_imm2[d]
+            f.ins_imm[ins] = f.ins_imm[ins] + f.ins_imm[d]
+            s.changed = s.changed + 1
+            return true
+        }
+    }
+    if ir_is_const(index) && f.ins_imm[ins] == 0 {
+        sm_replace(mut f, mut s, ins, f.ins_a[ins])
+        return true
+    }
+    return false
+}
+
+// A `load` or a `store` through an address that is another one plus a
+// number takes the number into its own offset.
+fn sm_access(f: mut IrFunc, s: mut Simp, ins: i64) -> bool {
+    let d = su_def(f, f.ins_a[ins])
+    if d < 0 || f.ins_op[d] != IR_GEP { return false }
+    let index = sm_resolve(s, f.ins_b[d])
+    if !ir_is_const(index) { return false }
+    f.ins_a[ins] = sm_resolve(s, f.ins_a[d])
+    f.ins_imm[ins] = f.ins_imm[ins] + f.ins_imm[d] + ir_const_value(f, index) * f.ins_imm2[d]
+    s.changed = s.changed + 1
+    return true
+}
+
+// One instruction: its operands are brought up to date, then the rules
+// are tried until none applies.
+fn sm_instruction(f: mut IrFunc, s: mut Simp, ins: i64) {
+    let n = ir_operand_count(f, ins)
+    var k = 0
+    while k < n {
+        let x = ir_operand(f, ins, k)
+        if x >= 0 {
+            let y = sm_resolve(s, x)
+            if y != x { ir_set_operand(mut f, ins, k, y) }
+        }
+        k = k + 1
+    }
+    var again = true
+    while again && f.ins_op[ins] != IR_NONE {
+        let op = f.ins_op[ins]
+        again = false
+        if op == IR_ICONST || op == IR_BCONST {
+            sm_replace_const(mut f, mut s, ins, f.ins_imm[ins])
+        } else if ir_is_binary(op) {
+            again = sm_binary(mut f, mut s, ins)
+        } else if ir_is_unary(op) {
+            again = sm_unary(mut f, mut s, ins)
+        } else if op == IR_SELECT {
+            again = sm_select(mut f, mut s, ins)
+        } else if op == IR_GEP {
+            again = sm_gep(mut f, mut s, ins)
+        } else if op == IR_LOAD || op == IR_STORE {
+            again = sm_access(mut f, mut s, ins)
+        }
+    }
+}
+
+// ---- the shape of the function -----------------------------------------------
+
+fn sm_swap_edges(f: mut IrFunc, a: i64, b: i64) {
+    let blk = f.edge_blk[a]
+    let key = f.edge_key[a]
+    let start = f.edge_as[a]
+    let n = f.edge_an[a]
+    f.edge_blk[a] = f.edge_blk[b]
+    f.edge_key[a] = f.edge_key[b]
+    f.edge_as[a] = f.edge_as[b]
+    f.edge_an[a] = f.edge_an[b]
+    f.edge_blk[b] = blk
+    f.edge_key[b] = key
+    f.edge_as[b] = start
+    f.edge_an[b] = n
+}
+
+// Whether two edges go to the same block with the same arguments.
+fn sm_same_edge(f: IrFunc, s: Simp, a: i64, b: i64) -> bool {
+    if f.edge_blk[a] != f.edge_blk[b] || f.edge_an[a] != f.edge_an[b] { return false }
+    var k = 0
+    while k < f.edge_an[a] {
+        if !sm_same(f, sm_resolve(s, f.args[f.edge_as[a] + k]), sm_resolve(s, f.args[f.edge_as[b] + k])) {
+            return false
+        }
+        k = k + 1
+    }
+    return true
+}
+
+// Branches whose way is known: on a constant, on a `bool` turned round
+// (the ways out change places instead), with both ways the same, and a
+// `switch` on a constant.
+fn sm_branches(f: mut IrFunc, s: mut Simp) {
+    var at = 0
+    while at < f.order.len() {
+        let last = f.blk_last[f.order[at]]
+        at = at + 1
+        if last < 0 { continue }
+        let op = f.ins_op[last]
+        if op == IR_BR {
+            var cond = sm_resolve(s, f.ins_a[last])
+            let first = f.ins_es[last]
+            var plain = sm_negated(f, s, cond)
+            while plain != -1 {
+                cond = plain
+                f.ins_a[last] = cond
+                sm_swap_edges(mut f, first, first + 1)
+                s.changed = s.changed + 1
+                plain = sm_negated(f, s, cond)
+            }
+            if ir_is_const(cond) {
+                if ir_const_value(f, cond) != 0 {
+                    su_to_jump(mut f, last, first)
+                } else {
+                    su_to_jump(mut f, last, first + 1)
+                }
+                s.changed = s.changed + 1
+            } else if sm_same_edge(f, s, first, first + 1) {
+                su_to_jump(mut f, last, first)
+                s.changed = s.changed + 1
+            }
+        } else if op == IR_SWITCH {
+            let value = sm_resolve(s, f.ins_a[last])
+            let first = f.ins_es[last]
+            let default = first + f.ins_en[last] - 1
+            if ir_is_const(value) {
+                var way = default
+                var e = first
+                while e < default {
+                    if f.edge_key[e] == ir_const_value(f, value) {
+                        way = e
+                        break
+                    }
+                    e = e + 1
+                }
+                su_to_jump(mut f, last, way)
+                s.changed = s.changed + 1
+            } else if f.ins_en[last] == 1 {
+                su_to_jump(mut f, last, default)
+                s.changed = s.changed + 1
+            }
+        }
+    }
+}
+
+// A branch on a condition that a block above has already branched on:
+// when the only way into this block is one way out of that branch, the
+// condition is known here. Looks up a few blocks, not the whole tree.
+fn sm_known_conditions(f: mut IrFunc, s: mut Simp, preds: SuPreds) {
+    var at = 0
+    while at < f.order.len() {
+        let b = f.order[at]
+        at = at + 1
+        let last = f.blk_last[b]
+        if last < 0 || f.ins_op[last] != IR_BR { continue }
+        let cond = sm_resolve(s, f.ins_a[last])
+        if cond < 0 { continue }
+        var cur = b
+        var steps = 0
+        while steps < 8 && preds.count[cur] == 1 {
+            let e = preds.edge[preds.start[cur]]
+            let above = preds.from[preds.start[cur]]
+            let branch = f.blk_last[above]
+            if above == cur { break }
+            if f.ins_op[branch] == IR_BR && sm_resolve(s, f.ins_a[branch]) == cond {
+                let first = f.ins_es[last]
+                if e == f.ins_es[branch] {
+                    su_to_jump(mut f, last, first)
+                } else {
+                    su_to_jump(mut f, last, first + 1)
+                }
+                s.changed = s.changed + 1
+                break
+            }
+            cur = above
+            steps = steps + 1
+        }
+    }
+}
+
+// How often each value is an operand, with what `rep` says applied.
+fn sm_use_counts(f: IrFunc, s: Simp) -> List[i64] {
+    var count = 0.filled(f.val_ty.len())
+    for b in f.order {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            let n = ir_operand_count(f, ins)
+            var k = 0
+            while k < n {
+                let x = sm_resolve(s, ir_operand(f, ins, k))
+                if x >= 0 { count[x] = count[x] + 1 }
+                k = k + 1
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    return count
+}
+
+// Blocks that only pass on. Three kinds, each handled at the edges that
+// lead to them:
+//
+//   - a block that holds a `trap` alone: every block of one kind of
+//     stop but the first is left for the first;
+//   - a block that holds a `jump` alone, whose parameters (if any) are
+//     used by that jump only: its predecessors jump where it jumps,
+//     with its arguments, their own put in for its parameters;
+//   - a block with one parameter that holds only a `br` on it: a
+//     predecessor that passes a constant goes straight to the way that
+//     constant chooses.
+//
+// A block that passes on to another such block waits a round, so that
+// two empty blocks jumping to each other are left alone.
+fn sm_thread(f: mut IrFunc, s: mut Simp) {
+    let blocks = f.blk_first.len()
+    let uses = sm_use_counts(f, s)
+    // 0: nothing; 1: a jump alone; 2: a `br` on its parameter alone;
+    // otherwise 3 + the block to go to instead (a second `trap`).
+    var kind = 0.filled(blocks)
+    var first_trap = (0 - 1).filled(IR_TRAP_COUNT)
+    var at = 1
+    while at < f.order.len() {
+        let b = f.order[at]
+        at = at + 1
+        let only = f.blk_first[b]
+        if only < 0 || only != f.blk_last[b] { continue }
+        let op = f.ins_op[only]
+        if op == IR_TRAP {
+            let stop = f.ins_imm[only]
+            if first_trap[stop] < 0 {
+                first_trap[stop] = b
+            } else {
+                kind[b] = 3 + first_trap[stop]
+            }
+        } else if op == IR_JUMP {
+            let e = f.ins_es[only]
+            if f.edge_blk[e] == b { continue }
+            // Every use of a parameter must be an argument of the jump.
+            var in_jump = 0
+            var k = 0
+            while k < f.edge_an[e] {
+                let x = sm_resolve(s, f.args[f.edge_as[e] + k])
+                if x >= 0 && f.val_blk[x] == b { in_jump = in_jump + 1 }
+                k = k + 1
+            }
+            var used = 0
+            k = 0
+            while k < f.blk_pn[b] {
+                used = used + uses[f.bparams[f.blk_ps[b] + k]]
+                k = k + 1
+            }
+            if used == in_jump { kind[b] = 1 }
+        } else if op == IR_BR && f.blk_pn[b] == 1 {
+            let p = f.bparams[f.blk_ps[b]]
+            if sm_resolve(s, f.ins_a[only]) == p && uses[p] == 1 { kind[b] = 2 }
+        }
+    }
+    at = 0
+    while at < f.order.len() {
+        let source = f.order[at]
+        at = at + 1
+        let last = f.blk_last[source]
+        if last < 0 { continue }
+        var e = f.ins_es[last]
+        let end = e + f.ins_en[last]
+        while e < end {
+            let through = f.edge_blk[e]
+            let what = kind[through]
+            if what >= 3 {
+                f.edge_blk[e] = what - 3
+                s.changed = s.changed + 1
+            } else if what == 1 && through != source {
+                let onward = f.ins_es[f.blk_last[through]]
+                let target = f.edge_blk[onward]
+                if kind[target] != 1 && kind[target] != 2 {
+                    var passed: List[i64] = []
+                    var k = 0
+                    while k < f.edge_an[onward] {
+                        var x = sm_resolve(s, f.args[f.edge_as[onward] + k])
+                        if x >= 0 && f.val_blk[x] == through {
+                            // Which parameter it is, and what this edge
+                            // passes for it.
+                            var j = 0
+                            while f.bparams[f.blk_ps[through] + j] != x {
+                                j = j + 1
+                            }
+                            x = f.args[f.edge_as[e] + j]
+                        }
+                        passed.push(x)
+                        k = k + 1
+                    }
+                    ir_set_edge_args(mut f, e, passed)
+                    f.edge_blk[e] = target
+                    s.changed = s.changed + 1
+                }
+            } else if what == 2 && through != source && f.edge_an[e] == 1 {
+                let given = sm_resolve(s, f.args[f.edge_as[e]])
+                if ir_is_const(given) {
+                    let branch = f.blk_last[through]
+                    var way = f.ins_es[branch] + 1
+                    if ir_const_value(f, given) != 0 { way = f.ins_es[branch] }
+                    var passed: List[i64] = []
+                    var k = 0
+                    while k < f.edge_an[way] {
+                        passed.push(f.args[f.edge_as[way] + k])
+                        k = k + 1
+                    }
+                    ir_set_edge_args(mut f, e, passed)
+                    f.edge_blk[e] = f.edge_blk[way]
+                    s.changed = s.changed + 1
+                }
+            }
+            e = e + 1
+        }
+    }
+}
+
+// The comparison `eq x, K` that block `b` ends on a `br` of, when the
+// block may be a link of a chain: gives the `eq`, or -1.
+fn sm_chain_test(f: IrFunc, s: Simp, b: i64) -> i64 {
+    let last = f.blk_last[b]
+    if last < 0 || f.ins_op[last] != IR_BR { return -1 }
+    let d = sm_def_with_const(f, s, sm_resolve(s, f.ins_a[last]), IR_EQ)
+    if d < 0 || ir_operand_type(f, sm_resolve(s, f.ins_a[d])) != IR_I64 { return -1 }
+    return d
+}
+
+// `x == 1`, else `x == 2`, else `x == 3`, each in a block of its own
+// that holds nothing else: one `switch` on `x`. Three comparisons or
+// more; the lowering stage writes a `match` this way.
+fn sm_switches(f: mut IrFunc, s: mut Simp, preds: SuPreds) {
+    let uses = sm_use_counts(f, s)
+    var at = 0
+    while at < f.order.len() {
+        let head = f.order[at]
+        at = at + 1
+        let test = sm_chain_test(f, s, head)
+        if test < 0 { continue }
+        let x = sm_resolve(s, f.ins_a[test])
+        // The links: blocks that hold a comparison of `x` and its `br`
+        // and nothing else, reached from the block before only.
+        var links: List[i64] = [head]
+        var cur = head
+        while true {
+            let other = f.ins_es[f.blk_last[cur]] + 1
+            let next = f.edge_blk[other]
+            if f.edge_an[other] != 0 || preds.count[next] != 1 || f.blk_pn[next] != 0 || next == head {
+                break
+            }
+            let link = sm_chain_test(f, s, next)
+            if link < 0 || sm_resolve(s, f.ins_a[link]) != x || f.blk_first[next] != link || f.ins_next[link] != f.blk_last[next] || uses[f.ins_res[link]] != 1 {
+                break
+            }
+            links.push(next)
+            cur = next
+        }
+        if links.len() < 3 { continue }
+        let old = f.blk_last[head]
+        let table = ir_make(mut f, IR_SWITCH, IR_I64, x, -1, -1, 0)
+        var keys: List[i64] = []
+        for link in links {
+            let branch = f.blk_last[link]
+            let compare = f.val_ins[sm_resolve(s, f.ins_a[branch])]
+            let key = ir_const_value(f, sm_resolve(s, f.ins_b[compare]))
+            // A number tested twice is taken the first time.
+            if keys.contains(key) { continue }
+            keys.push(key)
+            let taken = f.ins_es[branch]
+            let e = ir_add_edge(mut f, table, f.edge_blk[taken], key)
+            var k = 0
+            while k < f.edge_an[taken] {
+                ir_add_edge_arg(mut f, e, f.args[f.edge_as[taken] + k])
+                k = k + 1
+            }
+        }
+        let other = f.ins_es[f.blk_last[cur]] + 1
+        let e = ir_add_edge(mut f, table, f.edge_blk[other], 0)
+        var k = 0
+        while k < f.edge_an[other] {
+            ir_add_edge_arg(mut f, e, f.args[f.edge_as[other] + k])
+            k = k + 1
+        }
+        ir_remove(mut f, old)
+        ir_link_end(mut f, head, table)
+        s.changed = s.changed + 1
+    }
+}
+
+// A block parameter that gets one and the same value on every way in
+// (or itself, round a loop) is that value.
+fn sm_same_params(f: mut IrFunc, s: mut Simp, preds: SuPreds) {
+    var dead = false.filled(f.val_ty.len())
+    var found = 0
+    var at = 1
+    while at < f.order.len() {
+        let b = f.order[at]
+        at = at + 1
+        if preds.count[b] == 0 { continue }
+        var k = 0
+        while k < f.blk_pn[b] {
+            let p = f.bparams[f.blk_ps[b] + k]
+            var one = -1
+            var ok = true
+            var i = 0
+            while i < preds.count[b] && ok {
+                let e = preds.edge[preds.start[b] + i]
+                let x = sm_resolve(s, f.args[f.edge_as[e] + k])
+                if x != p {
+                    if one == -1 {
+                        one = x
+                    } else if !sm_same(f, one, x) {
+                        ok = false
+                    }
+                }
+                i = i + 1
+            }
+            if ok && one != -1 {
+                s.rep[p] = one
+                dead[p] = true
+                found = found + 1
+            }
+            k = k + 1
+        }
+    }
+    if found > 0 {
+        su_remove_block_params(mut f, dead)
+        s.changed = s.changed + found
+    }
+}
+
+// A block that ends in a jump to a block nothing else leads to takes
+// that block's instructions; its arguments stand for the parameters.
+fn sm_merge_blocks(f: mut IrFunc, s: mut Simp, preds: SuPreds) {
+    var merged = 0
+    var at = 0
+    while at < f.order.len() {
+        let b = f.order[at]
+        at = at + 1
+        if !f.blk_live[b] { continue }
+        while true {
+            let last = f.blk_last[b]
+            if last < 0 || f.ins_op[last] != IR_JUMP { break }
+            let e = f.ins_es[last]
+            let next = f.edge_blk[e]
+            if next == b || next == f.order[0] || preds.count[next] != 1 || !f.blk_live[next] {
+                break
+            }
+            // A `trap` stays alone in its block.
+            if f.ins_op[f.blk_first[next]] == IR_TRAP && (f.blk_first[b] != last || f.blk_pn[b] != 0) {
+                break
+            }
+            var k = 0
+            while k < f.blk_pn[next] {
+                let p = f.bparams[f.blk_ps[next] + k]
+                s.rep[p] = sm_resolve(s, f.args[f.edge_as[e] + k])
+                f.val_ty[p] = -1
+                f.val_blk[p] = -1
+                k = k + 1
+            }
+            f.blk_pn[next] = 0
+            ir_remove(mut f, last)
+            var ins = f.blk_first[next]
+            while ins >= 0 {
+                let after = f.ins_next[ins]
+                ir_unlink(mut f, ins)
+                ir_link_end(mut f, b, ins)
+                ins = after
+            }
+            f.blk_live[next] = false
+            merged = merged + 1
+        }
+    }
+    if merged > 0 {
+        var kept: List[i64] = []
+        for b in f.order {
+            if f.blk_live[b] { kept.push(b) }
+        }
+        f.order = kept
+        s.changed = s.changed + merged
+    }
+}
+
+// ---- the pass -----------------------------------------------------------------
+
+fn ir_simplify(f: mut IrFunc) -> i64 {
+    var s = Simp { rep: [], changed: 0 }
+    sm_grow(f, mut s)
+    var total = su_remove_unreachable(mut f)
+    var rounds = 0
+    while rounds < 50 {
+        rounds = rounds + 1
+        s.changed = 0
+        var at = 0
+        while at < f.order.len() {
+            var ins = f.blk_first[f.order[at]]
+            while ins >= 0 {
+                let next = f.ins_next[ins]
+                sm_instruction(mut f, mut s, ins)
+                ins = next
+            }
+            at = at + 1
+        }
+        // The lists of ways in are made again only after a step that
+        // changed an edge.
+        var mark = s.changed
+        sm_branches(mut f, mut s)
+        if s.changed != mark { s.changed = s.changed + su_remove_unreachable(mut f) }
+        var preds = su_preds(f)
+        mark = s.changed
+        sm_known_conditions(mut f, mut s, preds)
+        sm_thread(mut f, mut s)
+        if s.changed != mark {
+            s.changed = s.changed + su_remove_unreachable(mut f)
+            preds = su_preds(f)
+        }
+        mark = s.changed
+        sm_switches(mut f, mut s, preds)
+        if s.changed != mark {
+            s.changed = s.changed + su_remove_unreachable(mut f)
+            preds = su_preds(f)
+        }
+        sm_same_params(mut f, mut s, preds)
+        sm_merge_blocks(mut f, mut s, preds)
+        total = total + s.changed
+        if s.changed == 0 { break }
+    }
+    return total
+}

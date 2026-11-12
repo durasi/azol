@@ -25,9 +25,7 @@ fn parse_part(p: mut Parser, start: i64, len: i64) -> ParseError {
         None => {}
     }
     parse_tokens(mut p)
-    if p.failed {
-        return ParseError { message: p.error.message, offset: p.error.offset }
-    }
+    if p.failed { return ParseError { message: p.error.message, offset: p.error.offset } }
     return ParseError { message: "", offset: 0 }
 }
 
@@ -52,9 +50,7 @@ fn report_error(path: str, src: str, offset: i64, message: str) {
 fn report_error_as(head: str, path: str, src: str, offset: i64, message: str) {
     let at = line_column(src, offset)
     var end = offset
-    if end > src.len() {
-        end = src.len()
-    }
+    if end > src.len() { end = src.len() }
     // The line the position is in, without its line ending.
     var line_start = end
     while line_start > 0 && src[line_start - 1] != '\n' {
@@ -74,12 +70,8 @@ fn report_error_as(head: str, path: str, src: str, offset: i64, message: str) {
         shown = src.slice(line_start, line_end)
     } else {
         var first = at.column - 1 - REPORT_WIDTH / 2
-        if first < 0 {
-            first = 0
-        }
-        if first > characters - REPORT_WIDTH {
-            first = characters - REPORT_WIDTH
-        }
+        if first < 0 { first = 0 }
+        if first > characters - REPORT_WIDTH { first = characters - REPORT_WIDTH }
         let last = first + REPORT_WIDTH
         // Where the characters `first` and `last` start in the text.
         var from = line_start
@@ -88,12 +80,8 @@ fn report_error_as(head: str, path: str, src: str, offset: i64, message: str) {
         var i = line_start
         while i < line_end {
             if starts_character(src[i]) {
-                if seen == first {
-                    from = i
-                }
-                if seen == last {
-                    to = i
-                }
+                if seen == first { from = i }
+                if seen == last { to = i }
                 seen = seen + 1
             }
             i = i + 1
@@ -104,9 +92,7 @@ fn report_error_as(head: str, path: str, src: str, offset: i64, message: str) {
             caret = caret + 3
         }
         shown = shown + src.slice(from, to)
-        if last < characters {
-            shown = shown + "..."
-        }
+        if last < characters { shown = shown + "..." }
     }
     let line = str(at.line)
     let gutter = line.len()
@@ -164,9 +150,7 @@ fn token_listing(src: str, tokens: Tokens) -> str {
             out = out + src.slice(start, start + tokens.lens[i])
         }
         i = i + 1
-        if i < count {
-            out = out + "\n"
-        }
+        if i < count { out = out + "\n" }
     }
     return out
 }

@@ -1,0 +1,6 @@
+; Kept: subtraction does not commute, so 5 - x stays as written.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = sub 5, p0
+    ret v0
+}

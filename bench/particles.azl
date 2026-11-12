@@ -58,9 +58,7 @@ fn main() {
     var total = 0
     while round < 50000 {
         step(mut ps)
-        if round % 500 == 0 {
-            total = total + energy(ps) % 1000003
-        }
+        if round % 500 == 0 { total = total + energy(ps) % 1000003 }
         round = round + 1
     }
     print(total + energy(ps))

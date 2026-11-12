@@ -1,0 +1,408 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The pass `dce` (docs/design/optimizer.md, section 5.10): what nothing
+// needs goes.
+//
+//     fn ir_dce(f: mut IrFunc) -> i64        how many things were removed
+//
+// In this order:
+//
+//   1. Blocks no path from the entry reaches.
+//   2. Loops that do nothing (the rule is at `dc_loops`).
+//   3. Memory that is allocated, written to and freed but never read.
+//   4. Everything whose result nothing alive uses. What is alive to
+//      begin with: every terminator, every `store`, every call of a
+//      function, and every call of a runtime routine that prints,
+//      writes through an address, changes the allocator's state or can
+//      stop the program. A value is alive when something alive uses
+//      it. A block parameter is alive when something alive uses it,
+//      and only then are the arguments passed for it alive: a counter
+//      that is only ever counted goes, with its parameter.
+//
+// What it never removes: a loop it cannot prove finite. Removing one
+// that runs for ever would turn a program that hangs into one that
+// goes on, and what comes after it may print.
+
+// Whether the call of a runtime routine may go when its results are
+// unused: it prints nothing, cannot stop the program, leaves the
+// allocator alone and only reads through its arguments.
+fn dc_routine_is_pure(f: IrFunc, ins: i64) -> bool {
+    let id = f.ins_imm[ins]
+    if id == IR_RT_STR_EQ {
+        // Reads its two buffers and nothing else.
+        return true
+    }
+    if ir_rt_has_output(id) || ir_rt_can_stop(id) || ir_rt_touches_rt(id) { return false }
+    var k = 0
+    while k < f.ins_an[ins] {
+        let x = f.args[f.ins_as[ins] + k]
+        if ir_operand_type(f, x) == IR_PTR && ir_rt_arg_fx(id, k) != IR_FX_READ { return false }
+        k = k + 1
+    }
+    return true
+}
+
+// Whether the instruction has to stay whatever becomes of its results.
+fn dc_is_root(f: IrFunc, ins: i64) -> bool {
+    let op = f.ins_op[ins]
+    if ir_is_terminator(op) || op == IR_STORE || op == IR_CALL { return true }
+    if op == IR_CALLRT { return !dc_routine_is_pure(f, ins) }
+    return false
+}
+
+// Memory from `alloc` that is only ever stored to and freed: nothing
+// can tell that it was there, so the allocation, the stores and the
+// `free` all go. (`alloc` stops the program when memory runs out; a
+// program that no longer asks for memory it never read does not stop
+// there. That is the one difference, and it is not one a program can
+// rely on.) Gives how many instructions went.
+fn dc_dead_allocations(f: mut IrFunc) -> i64 {
+    var any = false
+    for b in f.order {
+        var ins = f.blk_first[b]
+        while ins >= 0 && !any {
+            any = f.ins_op[ins] == IR_CALLRT && f.ins_imm[ins] == IR_RT_ALLOC
+            ins = f.ins_next[ins]
+        }
+    }
+    if !any { return 0 }
+    let uses = ir_uses(f)
+    var removed = 0
+    var at = 0
+    while at < f.order.len() {
+        var ins = f.blk_first[f.order[at]]
+        at = at + 1
+        while ins >= 0 {
+            let next = f.ins_next[ins]
+            if f.ins_op[ins] == IR_CALLRT && f.ins_imm[ins] == IR_RT_ALLOC {
+                // Every address made from the block, and every
+                // instruction that uses one.
+                var addresses: List[i64] = [f.ins_res[ins]]
+                var users: List[i64] = []
+                var ok = true
+                var i = 0
+                while i < addresses.len() && ok {
+                    let p = addresses[i]
+                    i = i + 1
+                    var u = 0
+                    while u < uses.count[p] && ok {
+                        let user = uses.ins[uses.start[p] + u]
+                        u = u + 1
+                        let op = f.ins_op[user]
+                        if op == IR_STORE && f.ins_a[user] == p && f.ins_b[user] != p {
+                            users.push(user)
+                        } else if op == IR_GEP && f.ins_a[user] == p && f.ins_b[user] != p {
+                            users.push(user)
+                            if !addresses.contains(f.ins_res[user]) {
+                                addresses.push(f.ins_res[user])
+                            }
+                        } else if op == IR_CALLRT && f.ins_imm[user] == IR_RT_FREE {
+                            users.push(user)
+                        } else {
+                            ok = false
+                        }
+                    }
+                }
+                if ok {
+                    for user in users {
+                        if f.ins_op[user] != IR_NONE {
+                            ir_remove(mut f, user)
+                            removed = removed + 1
+                        }
+                    }
+                    ir_remove(mut f, ins)
+                    removed = removed + 1
+                    // `next` may have been one of them.
+                    return removed + dc_dead_allocations(mut f)
+                }
+            }
+            ins = next
+        }
+    }
+    return removed
+}
+
+// Whether value `x` is defined inside loop `l`.
+fn dc_defined_in(f: IrFunc, cfg: IrCfg, x: i64, l: i64) -> bool {
+    if x < f.param_count { return false }
+    var b = f.val_blk[x]
+    if b < 0 { b = f.ins_blk[f.val_ins[x]] }
+    return b >= 0 && ir_in_loop(cfg, b, l)
+}
+
+// A loop goes when all of this holds:
+//
+//   - it changes nothing: no `store`, no call of any kind;
+//   - the only way out is from its header, a `br` on `slt i, n` with
+//     the loop the taken way, or on `sgt i, n` likewise; so no check
+//     inside it can stop the program either;
+//   - `i` is a parameter of the header that every way round passes on
+//     as `i + 1` (for `slt`) or `i - 1` (for `sgt`), and `n` is not
+//     made in the loop: `i` moves one step at a time towards `n` and
+//     cannot pass it or wrap round, so the loop ends;
+//   - there is no loop inside it;
+//   - nothing made in the loop is used after it.
+//
+// Every way into the loop then goes to where the loop left for. Loops
+// counted in other steps, or with `<=`, are left alone: with a step of
+// two and a bound next to the largest number the counter can wrap and
+// never arrive.
+fn dc_loops(f: mut IrFunc) -> i64 {
+    // A loop needs an edge that goes back in the order of the blocks;
+    // most functions have none, and need no analysis.
+    var place = 0.filled(f.blk_first.len())
+    var at = 0
+    while at < f.order.len() {
+        place[f.order[at]] = at
+        at = at + 1
+    }
+    var back = false
+    at = 0
+    while at < f.order.len() && !back {
+        let last = f.blk_last[f.order[at]]
+        if last >= 0 {
+            var e = f.ins_es[last]
+            while e < f.ins_es[last] + f.ins_en[last] {
+                back = back || place[f.edge_blk[e]] <= at
+                e = e + 1
+            }
+        }
+        at = at + 1
+    }
+    if !back { return 0 }
+    var removed = 0
+    var tries = 0
+    while tries < 64 {
+        tries = tries + 1
+        let cfg = ir_cfg(f)
+        if cfg.loop_header.len() == 0 || cfg.irreducible > 0 { return removed }
+        // Where each value is used outside the loop it is made in is
+        // found by one walk per loop; loops are few.
+        var gone = false
+        var l = 0
+        while l < cfg.loop_header.len() && !gone {
+            let header = cfg.loop_header[l]
+            let branch = f.blk_last[header]
+            let this = l
+            l = l + 1
+            if f.ins_op[branch] != IR_BR { continue }
+            let stay = f.ins_es[branch]
+            let leave = stay + 1
+            let after = f.edge_blk[leave]
+            if !ir_in_loop(cfg, f.edge_blk[stay], this) || ir_in_loop(cfg, after, this) { continue }
+            let test = su_def(f, f.ins_a[branch])
+            if test < 0 || f.ins_op[test] != IR_SLT && f.ins_op[test] != IR_SGT { continue }
+            let counter = f.ins_a[test]
+            let bound = f.ins_b[test]
+            if counter < 0 || f.val_blk[counter] != header || ir_is_value(bound) && dc_defined_in(f, cfg, bound, this) {
+                continue
+            }
+            var step = 1
+            if f.ins_op[test] == IR_SGT { step = -1 }
+            var place = 0
+            while f.bparams[f.blk_ps[header] + place] != counter {
+                place = place + 1
+            }
+            // The blocks: nothing with an effect, no other way out, and
+            // every way round steps the counter.
+            var ok = true
+            var i = 0
+            while i < cfg.loop_bn[this] && ok {
+                let b = cfg.loop_blocks[cfg.loop_bs[this] + i]
+                i = i + 1
+                // A loop inside it would need a proof of its own.
+                if cfg.blk_loop[b] != this { ok = false }
+                var ins = f.blk_first[b]
+                while ins >= 0 && ok {
+                    let op = f.ins_op[ins]
+                    if op == IR_STORE || op == IR_CALL || op == IR_CALLRT || op == IR_RET || op == IR_TRAP {
+                        ok = false
+                    }
+                    ins = f.ins_next[ins]
+                }
+                let last = f.blk_last[b]
+                var e = f.ins_es[last]
+                let end = e + f.ins_en[last]
+                while e < end && ok {
+                    let target = f.edge_blk[e]
+                    if !ir_in_loop(cfg, target, this) {
+                        ok = b == header && e == leave
+                    } else if target == header {
+                        let stepped = su_def(f, f.args[f.edge_as[e] + place])
+                        ok = stepped >= 0 && f.ins_op[stepped] == IR_ADD && f.ins_a[stepped] == counter && ir_is_const(f.ins_b[stepped]) && ir_const_value(f, f.ins_b[stepped]) == step
+                    }
+                    e = e + 1
+                }
+            }
+            // Nothing made in the loop is passed on at the way out...
+            var k = 0
+            while k < f.edge_an[leave] && ok {
+                let x = f.args[f.edge_as[leave] + k]
+                ok = x < 0 || !dc_defined_in(f, cfg, x, this)
+                k = k + 1
+            }
+            // ... or used by any block outside it.
+            var at = 0
+            while at < f.order.len() && ok {
+                let b = f.order[at]
+                at = at + 1
+                if ir_in_loop(cfg, b, this) { continue }
+                var ins = f.blk_first[b]
+                while ins >= 0 && ok {
+                    let n = ir_operand_count(f, ins)
+                    k = 0
+                    while k < n && ok {
+                        let x = ir_operand(f, ins, k)
+                        ok = x < 0 || !dc_defined_in(f, cfg, x, this)
+                        k = k + 1
+                    }
+                    ins = f.ins_next[ins]
+                }
+            }
+            if !ok { continue }
+            var passed: List[i64] = []
+            k = 0
+            while k < f.edge_an[leave] {
+                passed.push(f.args[f.edge_as[leave] + k])
+                k = k + 1
+            }
+            at = 0
+            while at < f.order.len() {
+                let b = f.order[at]
+                at = at + 1
+                if ir_in_loop(cfg, b, this) { continue }
+                let last = f.blk_last[b]
+                var e = f.ins_es[last]
+                let end = e + f.ins_en[last]
+                while e < end {
+                    if f.edge_blk[e] == header {
+                        ir_set_edge_args(mut f, e, passed)
+                        f.edge_blk[e] = after
+                    }
+                    e = e + 1
+                }
+            }
+            removed = removed + su_remove_unreachable(mut f)
+            gone = true
+        }
+        if !gone { return removed }
+    }
+    return removed
+}
+
+fn dc_mark(live: mut List[bool], work: mut List[i64], x: i64) {
+    if x >= 0 && !live[x] {
+        live[x] = true
+        work.push(x)
+    }
+}
+
+// The operands of an instruction that are not arguments of its edges.
+fn dc_mark_operands(f: IrFunc, ins: i64, live: mut List[bool], work: mut List[i64]) {
+    let fixed = ir_fixed_operands(f.ins_op[ins])
+    if fixed > 0 { dc_mark(mut live, mut work, f.ins_a[ins]) }
+    if fixed > 1 { dc_mark(mut live, mut work, f.ins_b[ins]) }
+    if fixed > 2 { dc_mark(mut live, mut work, f.ins_c[ins]) }
+    var k = 0
+    while k < f.ins_an[ins] {
+        dc_mark(mut live, mut work, f.args[f.ins_as[ins] + k])
+        k = k + 1
+    }
+}
+
+fn ir_dce(f: mut IrFunc) -> i64 {
+    var removed = su_remove_unreachable(mut f)
+    removed = removed + dc_loops(mut f)
+    removed = removed + dc_dead_allocations(mut f)
+    let preds = su_preds(f)
+    var live = false.filled(f.val_ty.len())
+    var needed = false.filled(f.ins_op.len())
+    var work: List[i64] = []
+    for b in f.order {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            if dc_is_root(f, ins) {
+                needed[ins] = true
+                dc_mark_operands(f, ins, mut live, mut work)
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    while work.len() > 0 {
+        let v = work.pop()
+        if v < f.param_count { continue }
+        let b = f.val_blk[v]
+        if b >= 0 {
+            // A block parameter: what every way in passes for it.
+            var k = 0
+            while f.bparams[f.blk_ps[b] + k] != v {
+                k = k + 1
+            }
+            var i = 0
+            while i < preds.count[b] {
+                let e = preds.edge[preds.start[b] + i]
+                dc_mark(mut live, mut work, f.args[f.edge_as[e] + k])
+                i = i + 1
+            }
+        } else {
+            let ins = f.val_ins[v]
+            if ins >= 0 && !needed[ins] {
+                needed[ins] = true
+                dc_mark_operands(f, ins, mut live, mut work)
+            }
+        }
+    }
+    var dead = false.filled(f.val_ty.len())
+    var params = 0
+    var at = 0
+    while at < f.order.len() {
+        let b = f.order[at]
+        at = at + 1
+        var k = 0
+        while k < f.blk_pn[b] {
+            let v = f.bparams[f.blk_ps[b] + k]
+            if !live[v] {
+                dead[v] = true
+                params = params + 1
+            }
+            k = k + 1
+        }
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            let next = f.ins_next[ins]
+            if !needed[ins] {
+                ir_remove(mut f, ins)
+                removed = removed + 1
+            }
+            ins = next
+        }
+    }
+    if params > 0 { removed = removed + su_remove_block_params(mut f, dead) }
+    return removed + dc_unused_objects(mut f)
+}
+
+// A frame object that no `frame` instruction names any more takes no
+// room: its size becomes 0. (`sroa` does the same for the objects it
+// empties, but it runs before the passes that remove the last readers
+// of others.) Gives how many objects it emptied.
+fn dc_unused_objects(f: mut IrFunc) -> i64 {
+    if f.frames.len() == 0 { return 0 }
+    var named = false.filled(f.frames.len())
+    for b in f.order {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            if f.ins_op[ins] == IR_FRAME { named[f.ins_imm[ins]] = true }
+            ins = f.ins_next[ins]
+        }
+    }
+    var emptied = 0
+    var obj = 0
+    while obj < f.frames.len() {
+        if !named[obj] && f.frames[obj] != 0 {
+            f.frames[obj] = 0
+            emptied = emptied + 1
+        }
+        obj = obj + 1
+    }
+    return emptied
+}

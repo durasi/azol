@@ -1,0 +1,25 @@
+; A constant tested twice in a chain: the first test wins, as in the chain.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = eq p0, 0
+    br v0, b1, b2
+b1:
+    ret 100
+b2:
+    v1 = eq p0, 0
+    br v1, b3, b4
+b3:
+    ret 200
+b4:
+    v2 = eq p0, 5
+    br v2, b5, b6
+b5:
+    ret 300
+b6:
+    v3 = eq p0, 6
+    br v3, b7, b8
+b7:
+    ret 400
+b8:
+    ret -1
+}

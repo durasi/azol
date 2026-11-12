@@ -1,0 +1,5 @@
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = sdiv p0, 7
+    ret v0
+}

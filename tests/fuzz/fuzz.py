@@ -52,8 +52,12 @@ def emulator_repo():
         else:
             import shutil, tempfile
             folder = tempfile.mkdtemp(prefix='azol-facts-')
+            # Under both names: an emulator reads one or the other.
+            facts = os.path.join(REPO, 'runtime', 'linux_arm64', 'runtime.facts')
             os.makedirs(os.path.join(folder, 'src'))
-            shutil.copy(os.path.join(REPO, 'runtime', 'linux_arm64', 'runtime.facts'), os.path.join(folder, 'src', 'runtime_linux_arm64.rs'))
+            shutil.copy(facts, os.path.join(folder, 'src', 'runtime_linux_arm64.rs'))
+            os.makedirs(os.path.join(folder, 'runtime', 'linux_arm64'))
+            shutil.copy(facts, os.path.join(folder, 'runtime', 'linux_arm64', 'runtime.facts'))
             _EMULATOR_REPO.append(folder)
     return _EMULATOR_REPO[0]
 
@@ -250,10 +254,77 @@ def str_text(b):
             out.append('\\r')
         elif c == 0:
             out.append('\\0')
+        elif c == 123:
+            # A brace that is only a brace.
+            out.append('\\{')
         else:
             out.append(chr(c))
     out.append('"')
     return ''.join(out)
+
+
+class Sugar:
+    """Which of two ways to write the same thing the printer takes: the
+    short forms (`a += b`, `"{value}"`, `Name { field }`) or the long ones.
+    The choice follows from the seed of the program, so a program is the
+    same text every time, and it does not change what the program means:
+    the oracle never sees it."""
+    r = random.Random(0)
+    on = True
+
+
+COMPOUND = ('+', '-', '*', '/', '%', '&', '|', '^', '<<', '>>')
+
+
+def text_chain(e):
+    """The parts of `a + b + c` on strings, left to right."""
+    parts = []
+    while e.k == 'bin' and e.a[0] == '+' and e.t == STR:
+        parts.append(e.a[2])
+        e = e.a[1]
+    parts.append(e)
+    parts.reverse()
+    return parts
+
+
+def value_text(x):
+    """`{...}` for a part of a text that can stand in a literal as a value, or None."""
+    if x.k == 'builtin' and x.a[0] == 'str':
+        inner = rx(x.a[1][0])
+    elif x.t == STR and x.k != 'str':
+        inner = rx(x)
+    else:
+        return None
+    if any(c in inner for c in '"{}:\\\n') or inner.isdigit() or not inner.strip():
+        return None
+    return '{' + inner + '}'
+
+
+def rtext(parts):
+    """The parts of a text added together, with runs of literals and
+    values written as one literal with values now and then."""
+    r = Sugar.r
+    segs = []
+    buf = None
+    for part in parts:
+        piece = None
+        if part.k == 'str':
+            if buf is not None or r.random() < 0.7:
+                piece = str_text(part.a[0])[1:-1]
+        elif r.random() < 0.75:
+            piece = value_text(part)
+            if piece is not None and buf is not None and buf.endswith('$'):
+                piece = None
+        if piece is None:
+            if buf is not None:
+                segs.append('"' + buf + '"')
+                buf = None
+            segs.append(rx(part, 10))
+        else:
+            buf = (buf or '') + piece
+    if buf is not None:
+        segs.append('"' + buf + '"')
+    return ' + '.join(segs)
 
 
 def rx(e, p=0):
@@ -269,6 +340,11 @@ def rx(e, p=0):
         s = str_text(a[0])
     elif k in ('var', 'const'):
         s = a[0]
+    elif k == 'bin' and a[0] == '+' and e.t == STR and Sugar.on and Sugar.r.random() < 0.6:
+        s = rtext(text_chain(e))
+        q = 9 if ' + ' in s else 12
+    elif k == 'builtin' and a[0] == 'str' and Sugar.on and Sugar.r.random() < 0.12 and value_text(e):
+        s = '"' + value_text(e) + '"'
     elif k == 'bin':
         op = a[0]
         q = PREC[op]
@@ -302,7 +378,7 @@ def rx(e, p=0):
         s = rx(a[1], 12) + '.' + a[0] + '(' + ', '.join(rx(x) for x in a[2]) + ')'
     elif k == 'slit':
         q = 11
-        s = a[0] + ' { ' + ', '.join(f + ': ' + rx(x) for f, x in a[1]) + ' }'
+        s = a[0] + ' { ' + ', '.join(f if x.k == 'var' and x.a[0] == f and Sugar.on else f + ': ' + rx(x) for f, x in a[1]) + ' }'
     elif k == 'llit':
         s = '[' + ', '.join(rx(x) for x in a[0]) + ']'
     elif k == 'ctor':
@@ -360,7 +436,18 @@ def rs(st, ind, out):
     if k == 'let':
         out.append(pad + ('var ' if st[2] else 'let ') + st[1] + (': ' + ty(st[4]) if st[3] else '') + ' = ' + rtop(st[5], pad))
     elif k == 'assign':
-        out.append(pad + rx(st[1]) + ' = ' + rtop(st[2], pad))
+        place = rx(st[1])
+        v = st[2]
+        short = None
+        if Sugar.on and v.k == 'bin' and v.a[0] in COMPOUND and '(' not in place and Sugar.r.random() < 0.7:
+            # `a = a op b` as `a op= b`.
+            if v.a[0] == '+' and v.t == STR:
+                parts = text_chain(v)
+                if len(parts) > 1 and parts[0].k != 'str' and rx(parts[0]) == place:
+                    short = pad + place + ' += ' + rtext(parts[1:])
+            elif rx(v.a[1]) == place:
+                short = pad + place + ' ' + v.a[0] + '= ' + rtop(v.a[2], pad)
+        out.append(short or pad + place + ' = ' + rtop(v, pad))
     elif k in ('print', 'eprint', 'exit'):
         out.append(pad + k + '(' + rx(st[1]) + ')')
     elif k == 'expr':
@@ -382,6 +469,11 @@ def rs(st, ind, out):
         names = (st[1] + ', ' if st[1] else '') + st[2]
         out.append(pad + 'for ' + names + ' in ' + rcond(st[3]) + ' {')
         rblock(st[4], ind + 1, out)
+        out.append(pad + '}')
+    elif k == 'range':
+        step = ' step ' + str(st[5]) if st[5] != 1 or Sugar.r.random() < 0.05 else ''
+        out.append(pad + 'for ' + st[1] + ' in ' + rcond(st[2]) + ('..=' if st[4] else '..') + rcond(st[3]) + step + ' {')
+        rblock(st[6], ind + 1, out)
         out.append(pad + '}')
     elif k in ('break', 'continue'):
         out.append(pad + k)
@@ -410,6 +502,7 @@ def rblock(blk, ind, out):
 
 
 def render(prog):
+    Sugar.r = random.Random(prog.seed * 7919 + 13)
     out = ['// Written by tests/fuzz/fuzz.py, seed ' + str(prog.seed) + '.', '']
     d = prog.decls
     for kind, name in d.order:
@@ -426,8 +519,11 @@ def render(prog):
                 out.append('    ' + v + ('(' + ', '.join(ty(p) for p in ps) + ')' if ps else ''))
             out.append('}')
         out.append('')
+    # A constant holds no values, so its texts are written in full.
+    Sugar.on = False
     for name, _, e in prog.consts:
         out.append('const ' + name + ' = ' + rx(e))
+    Sugar.on = True
     if prog.consts:
         out.append('')
     for f in prog.fns:
@@ -1050,6 +1146,23 @@ class Interp:
                     break
                 if r is not None and r is not CNT:
                     return r
+        elif k == 'range':
+            # Both ends once, the first one first; nothing wraps around.
+            i = self.ev(st[2], env)
+            end = self.ev(st[3], env)
+            step = st[5]
+            while (i <= end if st[4] else i < end) if step > 0 else (i >= end if st[4] else i > end):
+                self.tick()
+                env.append({st[1]: Cell(i)})
+                try:
+                    r = self.block(st[6], env)
+                finally:
+                    env.pop()
+                if r is BRK:
+                    break
+                if r is not None and r is not CNT:
+                    return r
+                i += step
         elif k == 'for':
             lst = self.ev(st[3], env)
             for i in range(len(lst)):
@@ -1155,6 +1268,7 @@ class Gen:
         self.makers = {}
         self.banned = ()
         self.loop = 0
+        self.fn_names = set()
         self.budget = 0
         self.ret = None
         self.cur = None
@@ -1172,7 +1286,7 @@ class Gen:
             self.maxd = r.choice([4, 5, 6])
         self.weights = {
             'let': 22 * r.uniform(0.5, 1.5), 'print': 14, 'assign': 16 * r.uniform(0.5, 1.5),
-            'if': 9, 'while': 5 * r.uniform(0.3, 1.7), 'for': 8 * r.uniform(0.3, 1.7),
+            'if': 9, 'while': 5 * r.uniform(0.3, 1.7), 'for': 8 * r.uniform(0.3, 1.7), 'range': 6 * r.uniform(0.3, 1.7),
             'match': 8 * r.uniform(0.3, 1.7), 'push': 7 * r.uniform(0.3, 1.7), 'call': 6 * r.uniform(0.3, 1.7),
             'ctl': 3, 'ret': 2, 'known': 3, 'show': 3, 'stop': 0.12, 'exit': 0.05, 'eprint': 0.3, 'grow': 1.2,
             'elems': 5 * r.uniform(0.2, 1.8), 'map': 3 * r.uniform(0.2, 1.8), 'mrecv': 5 * r.uniform(0.3, 1.7),
@@ -1971,7 +2085,7 @@ class Gen:
         w = self.weights
         kinds = list(w)
         k = r.choices(kinds, [w[x] for x in kinds])[0]
-        if d <= 0 and k in ('if', 'while', 'for', 'match', 'known', 'grow', 'elems', 'map', 'reads'):
+        if d <= 0 and k in ('if', 'while', 'for', 'range', 'match', 'known', 'grow', 'elems', 'map', 'reads'):
             k = r.choice(['let', 'print', 'assign', 'push'])
         self.stats['statement ' + k] += 1
         return getattr(self, 's_' + k)(d)
@@ -1988,8 +2102,9 @@ class Gen:
             ann = True
         name = self.let_name()
         mut = r.random() < 0.65
+        before = self.hoist_fields(e)
         self.declare(name, t, mut)
-        return [['let', name, mut, ann, t, e]]
+        return before + [['let', name, mut, ann, t, e]]
 
     def s_print(self, d):
         r = self.r
@@ -2136,6 +2251,63 @@ class Gen:
         finally:
             self.loop -= 1
         return [['let', i, True, False, I64, self.lit(0)], ['while', cond, body]]
+
+    def s_range(self, d):
+        """`for i in a..b`, `a..=b` and `step`: both ends are worked out
+        once, so the body may change what they were made from."""
+        r = self.r
+        step = r.choice([1, 1, 1, 1, 1, 2, 3, 5, -1, -1, -2, -3])
+        incl = r.random() < 0.4
+        x = r.random()
+        if x < 0.08:
+            # At the ends of the numbers, where a counter must not wrap around.
+            self.stats['range at the edge of i64'] += 1
+            if step > 0:
+                lo, hi, incl = self.lit(MAX - r.randint(0, 6)), self.lit(MAX), r.random() < 0.8
+            else:
+                lo, hi, incl = self.lit(MIN + r.randint(0, 6)), self.lit(MIN), r.random() < 0.8
+        else:
+            small = lambda: E('bin', I64, '&', self.expr(I64, 1, False), self.lit(r.choice([3, 7, 7, 15])))
+            a = self.lit(r.randint(-4, 6)) if r.random() < 0.6 else small()
+            b = self.lit(r.randint(-4, 9)) if r.random() < 0.5 else small()
+            if r.random() < 0.3:
+                ls = [v for v in self.visible() if v.t[0] == 'list' or v.t == STR]
+                if ls:
+                    self.stats['range up to a length'] += 1
+                    b = E('m', I64, 'len', self.use(r.choice(ls)), [])
+                    if r.random() < 0.3:
+                        b = E('bin', I64, '-', b, self.lit(1))
+            lo, hi = (a, b) if step > 0 or r.random() < 0.15 else (b, a)
+        self.stats['range' + (' inclusive' if incl else '') + (' with a step' if step != 1 else '') + (' down' if step < 0 else '')] += 1
+        i = self.fresh('i')
+        self.loop += 1
+        self.scopes.append({})
+        try:
+            self.declare(i, I64, False)
+            body = self.block(r.randint(1, 4), d - 1)
+        finally:
+            self.scopes.pop()
+            self.loop -= 1
+        return [['range', i, lo, hi, incl, step, body]]
+
+    def hoist_fields(self, e):
+        """Now and then the first fields of a struct literal get variables
+        named like them, so that the literal is written `Name { field }`.
+        The order in which the values are worked out stays the same."""
+        r = self.r
+        out = []
+        if e.k != 'slit' or r.random() > 0.35:
+            return out
+        fns = set(g.name for g in self.prog.fns) | self.fn_names
+        for at, (f, x) in enumerate(e.a[1]):
+            m = re.fullmatch(r'f(\d+)', f)
+            if f in self.scopes[-1] or f in fns or (m and int(m.group(1)) > self.n) or x.k == 'var' or r.random() < 0.3:
+                break
+            self.declare(f, x.t, False)
+            out.append(['let', f, False, True, x.t, x])
+            e.a[1][at] = (f, E('var', x.t, f))
+            self.stats['field shorthand'] += 1
+        return out
 
     def s_grow(self, d):
         """A loop that makes a list or a string grow well past its first buffer."""
@@ -2926,6 +3098,7 @@ class Gen:
 
     def function(self, name, ret='pick', params=None, size=None):
         r = self.r
+        self.fn_names.add(name)
         if ret == 'pick':
             ret = None if r.random() < 0.12 else self.pick_type()
             if r.random() < 0.3:
@@ -3268,6 +3441,11 @@ class Runner:
     # The `azol-lower` tool to run every program with as well, or None.
     lower = None
     ran_lower = 0
+    # The `sroa-tool` to run every program with as well, or None.
+    sroa = None
+    # With `lower`: the `azol-opt` tool (compiler/opt/opt_build_main.azl), or None.
+    opt = None
+    ran_opt = 0
 
     def lowered(self, path, want, info):
         self.ran_lower += 1
@@ -3281,6 +3459,29 @@ class Runner:
             return 'lower-crash (signal %d)' % -p.returncode
         if info['lower'] != want:
             return 'lower-mismatch'
+        if self.opt:
+            # --opt: through the passes too, interpreted and as native code.
+            exe = os.path.join(self.dir, 'p.opt')
+            built = subprocess.run([self.opt, 'build', path, '-o', exe, '--fixpoint', '--verify-each', '--check'], capture_output=True, timeout=120)
+            if built.returncode != 0:
+                info['lower'] = (built.stdout, built.stderr, built.returncode)
+                return 'opt-build'
+            # And with the allocator held to three registers.
+            tight = os.path.join(self.dir, 'p.opt3')
+            built = subprocess.run([self.opt, 'build', path, '-o', tight, '--fixpoint', '--check', '--stress'], capture_output=True, timeout=120)
+            if built.returncode != 0:
+                info['lower'] = (built.stdout, built.stderr, built.returncode)
+                return 'opt-build-three-registers'
+            deep = ['sh', '-c', 'ulimit -s unlimited 2>/dev/null; exec "$@"', 'sh', self.opt, 'run', path, '--fixpoint']
+            for label, command in (('opt-interpreted', deep), ('opt-native', [exe]), ('opt-native-three-registers', [tight])):
+                try:
+                    p = subprocess.run(command, capture_output=True, timeout=120)
+                except subprocess.TimeoutExpired:
+                    return label + '-hang'
+                info['lower'] = (p.stdout, p.stderr, p.returncode)
+                if info['lower'] != want:
+                    return label + '-mismatch'
+            self.ran_opt += 1
         return None
 
     def build(self, src, out, target):
@@ -3336,6 +3537,13 @@ class Runner:
             kind = self.lowered(path, want, info)
             if kind:
                 return kind, info
+        if self.sroa:
+            # --sroa: lowered, through the pass `sroa`, verified and run.
+            self.lower, tool = self.sroa, self.lower
+            kind = self.lowered(path, want, info)
+            self.lower = tool
+            if kind:
+                return kind.replace('lower', 'sroa'), info
         if prog.native_only:
             return None, info
         if self.arm:
@@ -3393,6 +3601,8 @@ def all_blocks(prog):
                 walk(st[2])
             elif k == 'for':
                 walk(st[4])
+            elif k == 'range':
+                walk(st[6])
             elif k == 'match':
                 for arm in st[2]:
                     walk(arm[1])
@@ -3433,6 +3643,10 @@ def all_exprs(prog):
             elif k == 'for':
                 ex(st[3])
                 walk(st[4])
+            elif k == 'range':
+                ex(st[2])
+                ex(st[3])
+                walk(st[6])
             elif k == 'match':
                 ex(st[1])
                 for arm in st[2]:
@@ -3631,6 +3845,8 @@ def main():
     ap.add_argument('--show', type=int, help='print the program of one seed and stop')
     ap.add_argument('--only', type=int, help='run the program of one seed and print what happened')
     ap.add_argument('--lower', help='an `azol-lower` executable (compiler/opt/lower_tool_main.azl): also lower every program and run it in the IR interpreter')
+    ap.add_argument('--sroa', help='a `sroa-tool` executable (compiler/opt/sroa_tool_main.azl): also lower every program, run the pass `sroa` on it and run the result in the IR interpreter')
+    ap.add_argument('--opt', help='with --lower, an `azol-opt` executable (compiler/opt/opt_build_main.azl): also run every program through the passes, interpreted and built by the optimising back end')
     ap.add_argument('--quiet', action='store_true')
     a = ap.parse_args()
 
@@ -3645,6 +3861,8 @@ def main():
         load_linux_emulator()
     runner = Runner(a.azol, arm=have_emu, linux_every=a.linux_arm_every)
     runner.lower = a.lower
+    runner.sroa = a.sroa
+    runner.opt = a.opt
     if a.only is not None:
         try:
             prog, _ = generate(a.only)
@@ -3708,8 +3926,10 @@ def main():
     print()
     print('programs run: %d (x86_64-linux: %d, aarch64-macos under the emulator: %d, aarch64-linux under the emulator: %d), skipped: %d, seeds %d..%d, %.0f s'
           % (ran, runner.ran_x64, runner.ran_arm, runner.ran_linux_arm, skipped, a.seed, seed - 1, took))
-    if a.lower:
+    if a.lower or a.sroa:
         print('lowered and interpreted: %d' % runner.ran_lower)
+    if a.opt:
+        print('through the passes, interpreted and native: %d' % runner.ran_opt)
     print('programs that ended in a predicted run-time stop or wrote to stderr: %d' % stops)
     if broken:
         print('programs the oracle rejected (generator bugs): %d' % broken)

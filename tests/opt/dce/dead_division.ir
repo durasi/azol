@@ -1,0 +1,6 @@
+; An unused division goes: the stop for a divisor of 0 is the `trap` of the check before it, not the division.
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v0 = sdiv p0, p1
+    ret p0
+}

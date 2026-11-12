@@ -254,17 +254,13 @@ fn a_read_tree(g: mut AGen, p: Parser) {
             ExprStr(_) => kind = K_STR
             ExprBool(value) => {
                 kind = K_BOOL
-                if value {
-                    a = 1
-                }
+                if value { a = 1 }
             }
             ExprIdent(_) => kind = K_IDENT
             ExprUnary(op, operand) => {
                 kind = K_UNARY
                 a = operand
-                if op == OpNot {
-                    c = 1
-                }
+                if op == OpNot { c = 1 }
             }
             ExprBinary(op, lhs, rhs) => {
                 kind = K_BINARY
@@ -508,32 +504,18 @@ fn a_cmp(left: i64, right: i64) -> i64 {
 
 // The condition code of a comparison operator, or -1.
 fn a_comparison(op: i64) -> i64 {
-    if op == OP_EQ {
-        return A_EQ
-    }
-    if op == OP_NE {
-        return A_NE
-    }
-    if op == OP_LT {
-        return A_LT
-    }
-    if op == OP_LE {
-        return A_LE
-    }
-    if op == OP_GT {
-        return A_GT
-    }
-    if op == OP_GE {
-        return A_GE
-    }
+    if op == OP_EQ { return A_EQ }
+    if op == OP_NE { return A_NE }
+    if op == OP_LT { return A_LT }
+    if op == OP_LE { return A_LE }
+    if op == OP_GT { return A_GT }
+    if op == OP_GE { return A_GE }
     return -1
 }
 
 // Which power of two `n` is, or -1 when it is none. `n` is positive.
 fn a_log2(n: i64) -> i64 {
-    if (n & (n - 1)) != 0 {
-        return -1
-    }
+    if (n & (n - 1)) != 0 { return -1 }
     var bits = 0
     while (n >> bits) > 1 {
         bits = bits + 1
@@ -551,9 +533,7 @@ fn a_placeholder(g: mut AGen) -> i64 {
 fn a_patch_cbz_reg(g: mut AGen, at: i64, nonzero: bool, reg: i64) {
     let delta = g.words.len() - at
     var op = 0xB4000000
-    if nonzero {
-        op = 0xB5000000
-    }
+    if nonzero { op = 0xB5000000 }
     g.words[at] = op | (delta & 0x7FFFF) << 5 | reg
     a_forget_since(mut g, at)
 }
@@ -590,9 +570,7 @@ fn a_forget(g: mut AGen) {
 // known on a path that left before, or it concerns a variable that no
 // longer exists.
 fn a_forget_since(g: mut AGen, from: i64) {
-    if g.known_len == 0 && !g.held_ok {
-        return
-    }
+    if g.known_len == 0 && !g.held_ok { return }
     var kept = 0
     var i = 0
     while i < g.known_len {
@@ -607,9 +585,7 @@ fn a_forget_since(g: mut AGen, from: i64) {
         i = i + 1
     }
     g.known_len = kept
-    if g.held_ok && g.held_since > from {
-        g.held_ok = false
-    }
+    if g.held_ok && g.held_since > from { g.held_ok = false }
 }
 
 // The variable that lives in `reg` has just been given a new value.
@@ -628,9 +604,7 @@ fn a_writes(g: mut AGen, reg: i64) {
         i = i + 1
     }
     g.known_len = kept
-    if g.held_ok && g.held_at == reg {
-        g.held_ok = false
-    }
+    if g.held_ok && g.held_at == reg { g.held_ok = false }
 }
 
 fn a_jump_back(g: mut AGen, to: i64) {
@@ -658,9 +632,7 @@ fn a_mov_imm(g: mut AGen, reg: i64, value: i64) {
         if part != 0 || (first && chunk == 3) {
             // movz / movk
             var op = 0xF2800000
-            if first {
-                op = 0xD2800000
-            }
+            if first { op = 0xD2800000 }
             g.words.push(op | chunk << 21 | part << 5 | reg)
             first = false
         }
@@ -698,12 +670,8 @@ fn a_kind(g: AGen, c: Checker, id: i64) -> i64 {
     if kind == K_IDENT {
         let aux = c.expr_aux[g.sh_e + id]
         if aux >= CONST_STR {
-            if aux == CONST_INT {
-                return K_INT
-            }
-            if aux == CONST_STR {
-                return K_STR
-            }
+            if aux == CONST_INT { return K_INT }
+            if aux == CONST_STR { return K_STR }
             return K_BOOL
         }
     }
@@ -712,12 +680,8 @@ fn a_kind(g: AGen, c: Checker, id: i64) -> i64 {
 
 // The value of a `bool` written in the program or named by a constant.
 fn a_bool_value(g: AGen, c: Checker, id: i64) -> i64 {
-    if g.kinds[id] == K_BOOL {
-        return g.ea[id]
-    }
-    if c.expr_aux[g.sh_e + id] == CONST_TRUE {
-        return 1
-    }
+    if g.kinds[id] == K_BOOL { return g.ea[id] }
+    if c.expr_aux[g.sh_e + id] == CONST_TRUE { return 1 }
     return 0
 }
 
@@ -789,9 +753,7 @@ fn a_function_body(g: mut AGen, c: Checker, p: Parser, index: i64, body: IdRange
         var any_by_ref = false
         i = 0
         while i < params {
-            if c.fns[index].param_by_ref[i] {
-                any_by_ref = true
-            }
+            if c.fns[index].param_by_ref[i] { any_by_ref = true }
             i = i + 1
         }
         if any_by_ref && a_has_loop(p, first_stmt, end_stmt) {
@@ -839,9 +801,7 @@ fn a_function_body(g: mut AGen, c: Checker, p: Parser, index: i64, body: IdRange
     // `if n < 2 { return n }`, decides that before it sets up its frame:
     // those calls then cost a compare, a branch and `ret`.
     var skip = 0
-    if a_guard(mut g, c, p, index, body) {
-        skip = 1
-    }
+    if a_guard(mut g, c, p, index, body) { skip = 1 }
 
     if g.frame_bytes <= SMALL_FRAME {
         // One instruction makes room and saves the two registers.
@@ -868,9 +828,7 @@ fn a_function_body(g: mut AGen, c: Checker, p: Parser, index: i64, body: IdRange
     i = 0
     while i < params {
         var reg = a_slot_register(g, i)
-        if reg < 0 {
-            reg = a_param_register(g, i)
-        }
+        if reg < 0 { reg = a_param_register(g, i) }
         if reg >= 0 {
             g.words.push(a_mov(reg, i))
         } else {
@@ -878,9 +836,7 @@ fn a_function_body(g: mut AGen, c: Checker, p: Parser, index: i64, body: IdRange
         }
         i = i + 1
     }
-    if g.sret_slot >= 0 {
-        g.words.push(a_str(X8, FP, g.sret_slot + 2))
-    }
+    if g.sret_slot >= 0 { g.words.push(a_str(X8, FP, g.sret_slot + 2)) }
     // A temporary may be freed without having been filled, when the
     // expression that fills it was skipped. Null makes that harmless.
     i = 0
@@ -962,9 +918,7 @@ fn a_epilogue(g: mut AGen) {
 // Whether a block ends by leaving it, so that nothing runs past its last
 // statement and no jump over what follows is needed.
 fn a_leaves(p: Parser, body: IdRange) -> bool {
-    if body.len == 0 {
-        return false
-    }
+    if body.len == 0 { return false }
     match p.ast.stmts[p.ast.lists[body.start + body.len - 1]] {
         StmtReturn(_) => return true
         StmtBreak => return true
@@ -976,23 +930,13 @@ fn a_leaves(p: Parser, body: IdRange) -> bool {
 // The register a parameter arrives in, when `id` names one that is a
 // number or a `bool` passed by value; -1 otherwise.
 fn a_arriving(g: AGen, c: Checker, id: i64, index: i64) -> i64 {
-    if a_kind(g, c, id) != K_IDENT {
-        return -1
-    }
+    if a_kind(g, c, id) != K_IDENT { return -1 }
     let place = a_place(g, c, id)
-    if place < 0 || place >= 4096 {
-        return -1
-    }
-    if place >= c.fns[index].param_tys.len() {
-        return -1
-    }
-    if c.fns[index].param_by_ref[place] {
-        return -1
-    }
+    if place < 0 || place >= 4096 { return -1 }
+    if place >= c.fns[index].param_tys.len() { return -1 }
+    if c.fns[index].param_by_ref[place] { return -1 }
     let ty = c.fns[index].param_tys[place]
-    if ty == TY_I64 || ty == TY_BOOL {
-        return place
-    }
+    if ty == TY_I64 || ty == TY_BOOL { return place }
     return -1
 }
 
@@ -1001,9 +945,7 @@ fn a_arriving(g: AGen, c: Checker, id: i64, index: i64) -> i64 {
 // straight from the registers the arguments arrive in, and says so: the
 // body then starts at its second statement.
 fn a_guard(g: mut AGen, c: Checker, p: Parser, index: i64, body: IdRange) -> bool {
-    if body.len == 0 {
-        return false
-    }
+    if body.len == 0 { return false }
     let first = p.ast.lists[body.start]
     var cond = -1
     var only = -1
@@ -1021,9 +963,7 @@ fn a_guard(g: mut AGen, c: Checker, p: Parser, index: i64, body: IdRange) -> boo
         }
         _ => {}
     }
-    if cond < 0 {
-        return false
-    }
+    if cond < 0 { return false }
     var value = -1
     var returns = false
     match p.ast.stmts[only] {
@@ -1033,38 +973,26 @@ fn a_guard(g: mut AGen, c: Checker, p: Parser, index: i64, body: IdRange) -> boo
         }
         _ => {}
     }
-    if !returns {
-        return false
-    }
+    if !returns { return false }
     if c.stmt_drops_len[g.sh_s + first] != 0 || c.stmt_drops_len[g.sh_s + only] != 0 {
         return false
     }
-    if a_kind(g, c, cond) != K_BINARY {
-        return false
-    }
+    if a_kind(g, c, cond) != K_BINARY { return false }
     let lhs = g.ea[cond]
     let rhs = g.eb[cond]
     let code = a_comparison(g.ec[cond])
-    if code < 0 {
-        return false
-    }
+    if code < 0 { return false }
     let left = a_arriving(g, c, lhs, index)
-    if left < 0 {
-        return false
-    }
+    if left < 0 { return false }
     // What to compare with: another parameter or a small constant.
     var right_reg = -1
     var right_value = 0
     if a_kind(g, c, rhs) == K_INT {
         right_value = a_int_value(g, c, rhs)
-        if right_value < 0 || right_value >= 4096 {
-            return false
-        }
+        if right_value < 0 || right_value >= 4096 { return false }
     } else {
         right_reg = a_arriving(g, c, rhs, index)
-        if right_reg < 0 {
-            return false
-        }
+        if right_reg < 0 { return false }
     }
     // What to hand back: nothing, a parameter or a constant.
     var result_reg = -1
@@ -1077,9 +1005,7 @@ fn a_guard(g: mut AGen, c: Checker, p: Parser, index: i64, body: IdRange) -> boo
             result_value = a_bool_value(g, c, value)
         } else {
             result_reg = a_arriving(g, c, value, index)
-            if result_reg < 0 {
-                return false
-            }
+            if result_reg < 0 { return false }
         }
     }
     if right_reg >= 0 {
@@ -1129,9 +1055,7 @@ fn a_slot_register(g: AGen, slot: i64) -> i64 {
     let count = g.nreg + g.nloop
     var i = 0
     while i < count {
-        if g.reg_slots[i] == slot {
-            return FIRST_REGISTER + i
-        }
+        if g.reg_slots[i] == slot { return FIRST_REGISTER + i }
         i = i + 1
     }
     return -1
@@ -1140,15 +1064,11 @@ fn a_slot_register(g: AGen, slot: i64) -> i64 {
 // The register the address that arrived as parameter `slot` lives in,
 // or -1.
 fn a_param_register(g: AGen, slot: i64) -> i64 {
-    if g.nparam == 0 {
-        return -1
-    }
+    if g.nparam == 0 { return -1 }
     var i = g.nreg + g.nloop
     let end = i + g.nparam
     while i < end {
-        if g.reg_slots[i] == slot {
-            return FIRST_REGISTER + i
-        }
+        if g.reg_slots[i] == slot { return FIRST_REGISTER + i }
         i = i + 1
     }
     return -1
@@ -1156,9 +1076,7 @@ fn a_param_register(g: AGen, slot: i64) -> i64 {
 
 // The register a place lives in, or -1: only whole variables have one.
 fn a_register(g: AGen, place: i64) -> i64 {
-    if place >= 4096 || (g.nreg == 0 && g.nloop == 0) {
-        return -1
-    }
+    if place >= 4096 || (g.nreg == 0 && g.nloop == 0) { return -1 }
     return a_slot_register(g, place)
 }
 
@@ -1166,13 +1084,9 @@ fn a_register(g: AGen, place: i64) -> i64 {
 // -1. Such a variable cannot change while an expression is evaluated:
 // only a statement can assign to it, and nothing has its address.
 fn a_in_register(g: AGen, c: Checker, id: i64) -> i64 {
-    if (g.nreg == 0 && g.nloop == 0) || g.kinds[id] != K_IDENT {
-        return -1
-    }
+    if (g.nreg == 0 && g.nloop == 0) || g.kinds[id] != K_IDENT { return -1 }
     let place = a_place(g, c, id)
-    if place < 0 || place >= 4096 {
-        return -1
-    }
+    if place < 0 || place >= 4096 { return -1 }
     return a_slot_register(g, place)
 }
 
@@ -1207,9 +1121,7 @@ fn a_clone_value(g: mut AGen, c: Checker, ty: i64) {
 // written if this is its first use.
 fn a_glue_call(g: mut AGen, ty: i64, copy: bool) {
     var key = ty * 2
-    if copy {
-        key = key + 1
-    }
+    if copy { key = key + 1 }
     var id = int_map_get(g.glue_ids, key)
     if id < 0 {
         id = g.glue_tys.len()
@@ -1397,12 +1309,8 @@ fn a_drop_temps(g: mut AGen, c: Checker, id: i64, keep_x0: bool) {
 
 // Frees the temporaries listed in `drops[start .. start + len]`.
 fn a_drop_range(g: mut AGen, c: Checker, start: i64, len: i64, keep_x0: bool) {
-    if len == 0 {
-        return
-    }
-    if keep_x0 {
-        g.words.push(A_PUSH_X0)
-    }
+    if len == 0 { return }
+    if keep_x0 { g.words.push(A_PUSH_X0) }
     var i = start
     while i < start + len {
         let slot = c.drop_slots[i]
@@ -1413,9 +1321,7 @@ fn a_drop_range(g: mut AGen, c: Checker, start: i64, len: i64, keep_x0: bool) {
         a_zero_idle(mut g, c, slot, ty)
         i = i + 1
     }
-    if keep_x0 {
-        g.words.push(a_pop(X0))
-    }
+    if keep_x0 { g.words.push(a_pop(X0)) }
 }
 
 // The value in frame slot `slot` was copied bit by bit from another

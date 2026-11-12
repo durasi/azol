@@ -1,0 +1,4 @@
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    ret p0
+}

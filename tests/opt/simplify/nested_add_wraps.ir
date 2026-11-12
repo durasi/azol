@@ -1,0 +1,7 @@
+; The constants of a nested sum are added with wrapping.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = add p0, 9223372036854775807
+    v1 = add v0, 9223372036854775807
+    ret v1
+}

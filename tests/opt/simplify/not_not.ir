@@ -1,0 +1,8 @@
+; A negation of a negation of a bool is the bool.
+fn main(p0: i64) -> bool {
+b0:
+    v0 = slt p0, 5
+    v1 = xor v0, 1
+    v2 = xor v1, 1
+    ret v2
+}

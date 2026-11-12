@@ -9,9 +9,7 @@
 const SMALL = false
 
 fn size(full: i64, small: i64) -> i64 {
-    if SMALL {
-        return small
-    }
+    if SMALL { return small }
     return full
 }
 
@@ -43,18 +41,14 @@ fn grow(m: mut IntMap) {
     var bigger = new_int_map((m.mask + 1) * 2)
     var i = 0
     while i <= m.mask {
-        if m.state[i] == FULL {
-            put(mut bigger, m.keys[i], m.values[i])
-        }
+        if m.state[i] == FULL { put(mut bigger, m.keys[i], m.values[i]) }
         i = i + 1
     }
     m = bigger
 }
 
 fn put(m: mut IntMap, key: i64, value: i64) {
-    if (m.used + 1) * 2 > m.mask + 1 {
-        grow(mut m)
-    }
+    if (m.used + 1) * 2 > m.mask + 1 { grow(mut m) }
     var at = slot_of(key, m.mask)
     var free = -1
     while m.state[at] != EMPTY {
@@ -62,9 +56,7 @@ fn put(m: mut IntMap, key: i64, value: i64) {
             m.values[at] = value
             return
         }
-        if m.state[at] == REMOVED && free < 0 {
-            free = at
-        }
+        if m.state[at] == REMOVED && free < 0 { free = at }
         at = (at + 1) & m.mask
     }
     if free >= 0 {
@@ -81,9 +73,7 @@ fn put(m: mut IntMap, key: i64, value: i64) {
 fn find(m: IntMap, key: i64) -> i64 {
     var at = slot_of(key, m.mask)
     while m.state[at] != EMPTY {
-        if m.state[at] == FULL && m.keys[at] == key {
-            return at
-        }
+        if m.state[at] == FULL && m.keys[at] == key { return at }
         at = (at + 1) & m.mask
     }
     return -1
@@ -91,9 +81,7 @@ fn find(m: IntMap, key: i64) -> i64 {
 
 fn take(m: mut IntMap, key: i64) -> bool {
     let at = find(m, key)
-    if at < 0 {
-        return false
-    }
+    if at < 0 { return false }
     m.state[at] = REMOVED
     m.live = m.live - 1
     return true
@@ -107,13 +95,9 @@ fn lookups(m: IntMap, count: i64) -> i64 {
     while n < count {
         hit = hit * 48271 % 2147483647
         let at = find(m, hit)
-        if at >= 0 {
-            total = total + m.values[at]
-        }
+        if at >= 0 { total = total + m.values[at] }
         miss = miss * 16807 % 2147483647
-        if find(m, miss + 2147483647) >= 0 {
-            total = total + 1
-        }
+        if find(m, miss + 2147483647) >= 0 { total = total + 1 }
         n = n + 1
     }
     return total
@@ -135,9 +119,7 @@ fn main() {
     n = 0
     while n < count {
         seed = seed * 48271 % 2147483647
-        if n % 2 == 0 && take(mut m, seed) {
-            removed = removed + 1
-        }
+        if n % 2 == 0 && take(mut m, seed) { removed = removed + 1 }
         n = n + 1
     }
     let second = lookups(m, count)

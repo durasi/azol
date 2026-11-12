@@ -1,0 +1,12 @@
+; A constant that is no case takes the default edge.
+fn main(p0: i64) -> i64 {
+b0:
+    switch 9, 1 -> b1, 2 -> b2, default b3
+b1:
+    ret 100
+b2:
+    ret 200
+b3:
+    callrt print_i64(p0)
+    ret -1
+}

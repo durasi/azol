@@ -10,9 +10,7 @@
 const SMALL = false
 
 fn size(full: i64, small: i64) -> i64 {
-    if SMALL {
-        return small
-    }
+    if SMALL { return small }
     return full
 }
 
@@ -22,9 +20,7 @@ struct Heap {
 }
 
 fn smaller(h: Heap, i: i64, j: i64) -> bool {
-    if h.distance[i] != h.distance[j] {
-        return h.distance[i] < h.distance[j]
-    }
+    if h.distance[i] != h.distance[j] { return h.distance[i] < h.distance[j] }
     return h.node[i] < h.node[j]
 }
 
@@ -57,15 +53,9 @@ fn move_smallest_last(h: mut Heap) {
         var least = i
         let left = i * 2 + 1
         let right = i * 2 + 2
-        if left < last && smaller(h, left, least) {
-            least = left
-        }
-        if right < last && smaller(h, right, least) {
-            least = right
-        }
-        if least == i {
-            return
-        }
+        if left < last && smaller(h, left, least) { least = left }
+        if right < last && smaller(h, right, least) { least = right }
+        if least == i { return }
         swap(mut h, i, least)
         i = least
     }
@@ -99,9 +89,7 @@ fn main() {
             total = (total + d) % 1000000007
             var e = at * 4
             while e < at * 4 + 4 {
-                if best[target[e]] < 0 {
-                    add(mut heap, d + weight[e], target[e])
-                }
+                if best[target[e]] < 0 { add(mut heap, d + weight[e], target[e]) }
                 e = e + 1
             }
         }

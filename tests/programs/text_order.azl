@@ -22,9 +22,7 @@ fn show(a: str, b: str) -> str {
 fn smallest(items: List[str]) -> str {
     var best = items[0]
     for item in items {
-        if item < best {
-            best = item
-        }
+        if item < best { best = item }
     }
     return best
 }
@@ -48,9 +46,7 @@ fn main() {
         sorted.push(least)
         var rest: List[str] = []
         for name in names {
-            if name != least {
-                rest.push(name)
-            }
+            if name != least { rest.push(name) }
         }
         names = rest
     }
@@ -58,16 +54,12 @@ fn main() {
     var count = 0
     var i = 0
     while i < 10 {
-        if str(i) < "5" {
-            count = count + 1
-        }
+        if str(i) < "5" { count = count + 1 }
         i = i + 1
     }
     print(str(count))
     var answer = "no"
-    if "Zebra" < "apple" {
-        answer = "yes"
-    }
+    if "Zebra" < "apple" { answer = "yes" }
     var other = "yes"
     if !("a" >= "B") {
         other = "wrong"

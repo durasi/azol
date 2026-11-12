@@ -6,18 +6,18 @@ starts from the one for your machine and needs nothing else.
 
 | File | Runs on | Bytes | SHA-256 |
 |---|---|---|---|
-| `aarch64-macos/azol` | Apple Silicon macOS | 645120 | `efdc4e249b15ff95fe396e6a3e055680bd602b9e383bcf954b535623463e7f94` |
-| `x86_64-linux/azol` | x86-64 Linux | 778240 | `2b29f9826e5ddeb2c6decf53e3c59cb5a9f7de3b40fdb91ab798195c0cf2f395` |
-| `aarch64-linux/azol` | ARM64 Linux | 622083 | `01631a13890215a342b37850b8d678479598965400e59c9557cd125876f7ac9d` |
+| `aarch64-macos/azol` | Apple Silicon macOS | 678144 | `6e6b303c4882e2a68739e243a037f719ae35800ad18e752ab954eec34e8afc7a` |
+| `x86_64-linux/azol` | x86-64 Linux | 823296 | `07d10d0f677835c99f9e8228970996f3a96b2b5391c1fee75d4834523d2a9916` |
+| `aarch64-linux/azol` | ARM64 Linux | 659081 | `62abf4ab3fb62e8a80e1b8f333cf8216aca8222490cd7872963b7be9c8ee57ad` |
 
 Each file is named `azol` in a folder of its own, not `azol-<target>`:
 on macOS the file's name is part of its signature, and only under this
 name is a seed the same file as the compiler `build.sh` leaves.
 
 The three files in this table were built from the sources as they are in
-commit `2e7a418` (later commits up to the one that added this file
-changed comments and scripts only, which the compiler's bytes do not
-depend on).
+commit `2c14044` (the commit that refreshed them changed this file and
+the seeds only). These seeds know the short forms: `+=`, ranges in `for`,
+field shorthand, `\{` and values in a text.
 
 ## What they are
 

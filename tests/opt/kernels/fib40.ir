@@ -1,0 +1,23 @@
+; Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+; bench/fib40.azl, as lowering without any optimisation gives it.
+fn fib(p0: i64) -> i64 {
+b0:
+    v0 = slt p0, 2
+    br v0, b1, b2
+b1:
+    ret p0
+b2:
+    v1 = sub p0, 1
+    v2 = call fib(v1) -> i64
+    v3 = sub p0, 2
+    v4 = call fib(v3) -> i64
+    v5 = add v2, v4
+    ret v5
+}
+
+fn main() {
+b0:
+    v0 = call fib(40) -> i64
+    callrt print_i64(v0)
+    ret
+}

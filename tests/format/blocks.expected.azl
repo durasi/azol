@@ -24,9 +24,7 @@ fn loops(xs: List[i64]) {
         print(x)
     }
     for i, x in xs {
-        if i > x {
-            continue
-        }
+        if i > x { continue }
         print(i)
     }
     if xs.len() > 3 {

@@ -1,0 +1,9 @@
+fn main() -> i64 {
+    frames 24
+b0:
+    v0 = frame 0
+    store i64, v0, 16, 30  [frame 0]
+    v2 = gep v0, 0, 1, 16
+    v3 = load i64, v0, 16  [frame 0]
+    ret v3
+}

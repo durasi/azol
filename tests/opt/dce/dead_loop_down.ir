@@ -1,0 +1,13 @@
+; The same counting down.
+fn main(p0: i64) -> i64 {
+b0:
+    jump b1(p0)
+b1(v0: i64):
+    v1 = sgt v0, 0
+    br v1, b2, b3
+b2:
+    v2 = add v0, -1
+    jump b1(v2)
+b3:
+    ret p0
+}

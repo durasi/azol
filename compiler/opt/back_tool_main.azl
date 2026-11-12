@@ -1,0 +1,181 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// `azol-back`: from a file in the intermediate form to an executable for
+// x86-64 Linux, or for ARM64 macOS or Linux, through the optimising
+// back end, with no optimisation pass in between. For tests and
+// measurements.
+//
+//     azol-back build <file.ir> -o <out> [options]
+//
+//     --target TARGET           x86_64-linux (when not given),
+//                               aarch64-macos or aarch64-linux
+//     --run NAME [numbers...]   the function to start instead of `main`,
+//                               and what to call it with
+//     --program                 the file is a whole program: start `main`,
+//                               print nothing more, exit with its result
+//     --dump                    print the machine code and the allocation
+//     --check                   verify every allocation
+//     --stress                  allocate with three registers only
+//     --time                    print how long the back end took
+//
+// The program calls the function, prints `=>` and then every result on
+// a line of its own, and exits with 0.
+//
+// Exit codes: 0; 1 for a file that is wrong or cannot be built; 2 for a
+// wrong command line.
+//
+// Built from:
+//
+//     azol build compiler/bytes.azl compiler/code_file.azl compiler/elf.azl \
+//         compiler/runtime_x64.azl compiler/runtime_arm64.azl compiler/macho.azl \
+//         compiler/sha256.azl compiler/opt/ir.azl compiler/opt/ir_text.azl \
+//         compiler/opt/ir_cfg.azl compiler/opt/ir_verify.azl compiler/opt/mach.azl \
+//         compiler/opt/regalloc.azl compiler/opt/enc_x64.azl compiler/opt/sel_x64.azl \
+//         compiler/opt/emit_x64.azl compiler/opt/back_x64.azl compiler/opt/enc_arm64.azl \
+//         compiler/opt/sel_arm64.azl compiler/opt/emit_arm64.azl compiler/opt/back_arm64.azl \
+//         compiler/opt/back_tool_main.azl -o azol-back
+
+const BK_RUNTIME = embed("../../runtime/linux_x64/runtime.bin")
+const BK_RUNTIME_ARM64_DATA = embed("../../runtime/runtime_data.bin")
+const BK_RUNTIME_ARM64_LINUX = embed("../../runtime/linux_arm64/runtime.bin")
+
+fn bk_usage() {
+    eprint("usage: azol-back build <file.ir> -o <out> [--target TARGET] [--run NAME [numbers...]] [--program] [--dump] [--check] [--stress] [--time]")
+    exit(2)
+}
+
+fn bk_parse(text: str, path: str, m: mut IrModule) {
+    let problem = ir_parse_module(text, mut m)
+    if problem.message.len() > 0 {
+        eprint("error: " + path + ":" + str(problem.line) + ":" + str(problem.column) + ": " + problem.message)
+        exit(1)
+    }
+}
+
+fn bk_micros(ns: i64) -> str {
+    return str((ns + 500) / 1000)
+}
+
+fn main() {
+    let a = args()
+    if a.len() < 3 || a[1] != "build" { bk_usage() }
+    var path = ""
+    var out = ""
+    var name = "main"
+    var numbers: List[i64] = []
+    var options = BkOptions { stress: false, check: false, dump: false }
+    var time = false
+    var program = false
+    var target = "x86_64-linux"
+    var i = 2
+    while i < a.len() {
+        if a[i] == "-o" && i + 1 < a.len() {
+            out = a[i + 1]
+            i = i + 2
+        } else if a[i] == "--target" && i + 1 < a.len() {
+            target = a[i + 1]
+            i = i + 2
+        } else if a[i] == "--dump" {
+            options.dump = true
+            i = i + 1
+        } else if a[i] == "--check" {
+            options.check = true
+            i = i + 1
+        } else if a[i] == "--stress" {
+            options.stress = true
+            i = i + 1
+        } else if a[i] == "--time" {
+            time = true
+            i = i + 1
+        } else if a[i] == "--program" {
+            program = true
+            i = i + 1
+        } else if a[i] == "--run" && i + 1 < a.len() {
+            name = a[i + 1]
+            i = i + 2
+            while i < a.len() && !a[i].starts_with("--") && a[i] != "-o" {
+                match a[i].to_i64() {
+                    Some(n) => numbers.push(n)
+                    None => bk_usage()
+                }
+                i = i + 1
+            }
+        } else if path.len() == 0 {
+            path = a[i]
+            i = i + 1
+        } else {
+            bk_usage()
+        }
+    }
+    if path.len() == 0 || out.len() == 0 { bk_usage() }
+    if target != "x86_64-linux" && target != "aarch64-macos" && target != "aarch64-linux" {
+        eprint("error: the target is x86_64-linux, aarch64-macos or aarch64-linux")
+        exit(2)
+    }
+    var m = ir_new_module()
+    match read_file(path) {
+        Ok(text) => bk_parse(text, path, mut m)
+        Err(why) => {
+            eprint("error: cannot read '" + path + "': " + why)
+            exit(1)
+        }
+    }
+    let problem = ir_verify_module(m)
+    if problem.len() > 0 {
+        eprint("error: " + problem)
+        exit(1)
+    }
+    let at = ir_find_func(m, name)
+    if at < 0 {
+        eprint("error: there is no function `" + name + "`")
+        exit(1)
+    }
+    if numbers.len() != m.funcs[at].param_count {
+        eprint("error: `" + name + "` takes " + str(m.funcs[at].param_count) + " arguments")
+        exit(1)
+    }
+    bk_parse(BK_HELPERS, "(helpers)", mut m)
+    if program {
+        if m.funcs[at].ret_ty.len() > 1 || m.funcs[at].ret_ty.len() == 1 && m.funcs[at].ret_ty[0] != IR_I64 {
+            eprint("error: the `main` of a program gives a number or nothing")
+            exit(1)
+        }
+        bk_parse(bk_program_start(m, at), "(start)", mut m)
+    } else {
+        let harness = bk_harness(mut m, at, numbers)
+        bk_parse(harness, "(start)", mut m)
+    }
+    let again = ir_verify_module(m)
+    if again.len() > 0 {
+        eprint("error: " + again)
+        exit(1)
+    }
+    var built = bk_fail("")
+    if target == "x86_64-linux" {
+        let entry = ir_find_func(m, "__start")
+        built = bk_build(mut m, entry, options, BK_RUNTIME)
+    } else {
+        built = bka_build(m, ir_find_func(m, "__start"), options, target == "aarch64-macos", out, BK_RUNTIME_ARM64_DATA, BK_RUNTIME_ARM64_LINUX)
+    }
+    if !built.ok {
+        eprint("error: " + built.error)
+        exit(1)
+    }
+    if time {
+        print("functions " + str(m.funcs.len()) + " code " + str(built.code_bytes) + " select_us " + bk_micros(built.select_ns) + " allocate_us " + bk_micros(built.allocate_ns) + " emit_us " + bk_micros(built.emit_ns))
+    }
+    match write_file(out, built.image) {
+        Ok(_) => {}
+        Err(why) => {
+            eprint("error: cannot write '" + out + "': " + why)
+            exit(1)
+        }
+    }
+    match set_executable(out) {
+        Ok(_) => {}
+        Err(why) => {
+            eprint("error: cannot write '" + out + "': " + why)
+            exit(1)
+        }
+    }
+}

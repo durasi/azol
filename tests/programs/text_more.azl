@@ -130,9 +130,7 @@ fn show(found: Option[i64]) -> str {
 fn numbers(items: List[i64]) -> str {
     var out = "["
     for i, item in items {
-        if i > 0 {
-            out = out + ","
-        }
+        if i > 0 { out = out + "," }
         out = out + str(item)
     }
     return out + "]"
@@ -203,8 +201,8 @@ fn main() {
 
     print("Hello, World 123!".to_upper())
     print("Hello, World 123!".to_lower())
-    print("@AZ[`az{".to_upper())
-    print("@AZ[`az{".to_lower())
+    print("@AZ[`az\{".to_upper())
+    print("@AZ[`az\{".to_lower())
     print("[" + empty.to_upper() + empty.to_lower() + "]")
     // Letters outside ASCII are left alone.
     print("çay İÇ".to_upper())
@@ -285,9 +283,7 @@ fn main() {
         let wide = n * 1000003 * 1000003
         match wide.to_hex().parse_hex() {
             Some(back) => {
-                if back == wide {
-                    good = good + 1
-                }
+                if back == wide { good = good + 1 }
             }
             None => {}
         }

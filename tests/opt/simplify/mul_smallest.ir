@@ -1,0 +1,6 @@
+; x * min is x << 63: the smallest number is a power of two as a bit pattern.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = mul p0, -9223372036854775808
+    ret v0
+}

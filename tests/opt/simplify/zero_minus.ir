@@ -1,0 +1,6 @@
+; 0 - x is the negation.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = sub 0, p0
+    ret v0
+}

@@ -5,9 +5,7 @@
 // A function whose first test is decided before its frame exists still
 // checks every index it reaches afterwards.
 fn pick(n: i64, xs: List[i64]) -> i64 {
-    if n < 0 {
-        return n
-    }
+    if n < 0 { return n }
     return xs[n] + pick(n - 4, xs)
 }
 

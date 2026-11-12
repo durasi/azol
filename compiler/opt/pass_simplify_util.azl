@@ -1,0 +1,301 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// What the passes `simplify`, `dce` and `dse` share: the ways into each
+// block, removing what cannot be reached, removing several block
+// parameters at once, turning a terminator into a jump, and following
+// an address back to where it starts.
+//
+// Everything here is linear in the size of the function. The functions
+// of `ir.azl` that remove one block or one parameter look at the whole
+// function each time; these do a batch in one walk.
+
+// The ways into every block: for block `b`, the `count[b]` entries of
+// `edge` from `start[b]` are the edges that end in it, and `from` the
+// blocks they leave. Out of date as soon as a jump changes.
+struct SuPreds {
+    start: List[i64]
+    count: List[i64]
+    edge: List[i64]
+    from: List[i64]
+}
+
+fn su_preds(f: IrFunc) -> SuPreds {
+    let blocks = f.blk_first.len()
+    var count = 0.filled(blocks)
+    for b in f.order {
+        let last = f.blk_last[b]
+        if last >= 0 {
+            var e = f.ins_es[last]
+            let end = e + f.ins_en[last]
+            while e < end {
+                count[f.edge_blk[e]] = count[f.edge_blk[e]] + 1
+                e = e + 1
+            }
+        }
+    }
+    var start = 0.filled(blocks)
+    var total = 0
+    var b = 0
+    while b < blocks {
+        start[b] = total
+        total = total + count[b]
+        count[b] = 0
+        b = b + 1
+    }
+    var edge = 0.filled(total)
+    var from = 0.filled(total)
+    for source in f.order {
+        let last = f.blk_last[source]
+        if last >= 0 {
+            var e = f.ins_es[last]
+            let end = e + f.ins_en[last]
+            while e < end {
+                let target = f.edge_blk[e]
+                edge[start[target] + count[target]] = e
+                from[start[target] + count[target]] = source
+                count[target] = count[target] + 1
+                e = e + 1
+            }
+        }
+    }
+    return SuPreds { start: start, count: count, edge: edge, from: from }
+}
+
+// Removes every block that no path from the entry reaches, with its
+// instructions and parameters. Gives how many blocks went.
+fn su_remove_unreachable(f: mut IrFunc) -> i64 {
+    let blocks = f.blk_first.len()
+    var seen = false.filled(blocks)
+    var stack: List[i64] = []
+    seen[f.order[0]] = true
+    stack.push(f.order[0])
+    while stack.len() > 0 {
+        let b = stack.pop()
+        let last = f.blk_last[b]
+        if last >= 0 {
+            var e = f.ins_es[last]
+            let end = e + f.ins_en[last]
+            while e < end {
+                let target = f.edge_blk[e]
+                if !seen[target] {
+                    seen[target] = true
+                    stack.push(target)
+                }
+                e = e + 1
+            }
+        }
+    }
+    var removed = 0
+    var kept: List[i64] = []
+    var at = 0
+    while at < f.order.len() {
+        let b = f.order[at]
+        at = at + 1
+        if seen[b] {
+            kept.push(b)
+            continue
+        }
+        removed = removed + 1
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            let next = f.ins_next[ins]
+            ir_remove(mut f, ins)
+            ins = next
+        }
+        var k = 0
+        while k < f.blk_pn[b] {
+            let v = f.bparams[f.blk_ps[b] + k]
+            f.val_ty[v] = -1
+            f.val_blk[v] = -1
+            k = k + 1
+        }
+        f.blk_pn[b] = 0
+        f.blk_live[b] = false
+    }
+    if removed > 0 { f.order = kept }
+    return removed
+}
+
+// Removes every block parameter `v` with `dead[v]`, and the argument
+// each edge passes for it. Nothing may use those values any more.
+// Gives how many parameters went.
+fn su_remove_block_params(f: mut IrFunc, dead: List[bool]) -> i64 {
+    var removed = 0
+    // The arguments first: they are matched to the parameters by place.
+    var at = 0
+    while at < f.order.len() {
+        let last = f.blk_last[f.order[at]]
+        at = at + 1
+        if last < 0 { continue }
+        var e = f.ins_es[last]
+        let end = e + f.ins_en[last]
+        while e < end {
+            let target = f.edge_blk[e]
+            let params = f.blk_ps[target]
+            var kept = 0
+            var k = 0
+            while k < f.edge_an[e] {
+                if !dead[f.bparams[params + k]] {
+                    f.args[f.edge_as[e] + kept] = f.args[f.edge_as[e] + k]
+                    kept = kept + 1
+                }
+                k = k + 1
+            }
+            f.edge_an[e] = kept
+            e = e + 1
+        }
+    }
+    at = 0
+    while at < f.order.len() {
+        let b = f.order[at]
+        at = at + 1
+        var kept = 0
+        var k = 0
+        while k < f.blk_pn[b] {
+            let v = f.bparams[f.blk_ps[b] + k]
+            if dead[v] {
+                f.val_ty[v] = -1
+                f.val_blk[v] = -1
+                removed = removed + 1
+            } else {
+                f.bparams[f.blk_ps[b] + kept] = v
+                kept = kept + 1
+            }
+            k = k + 1
+        }
+        f.blk_pn[b] = kept
+    }
+    return removed
+}
+
+// Replaces the terminator `ins` by a jump along its edge `e`, with the
+// arguments that edge has.
+fn su_to_jump(f: mut IrFunc, ins: i64, e: i64) {
+    let b = f.ins_blk[ins]
+    let target = f.edge_blk[e]
+    let from = f.edge_as[e]
+    let n = f.edge_an[e]
+    let jump = ir_make(mut f, IR_JUMP, IR_I64, -1, -1, -1, 0)
+    let onward = ir_add_edge(mut f, jump, target, 0)
+    var k = 0
+    while k < n {
+        ir_add_edge_arg(mut f, onward, f.args[from + k])
+        k = k + 1
+    }
+    ir_remove(mut f, ins)
+    ir_link_end(mut f, b, jump)
+}
+
+// The instruction that defines value `x`, or -1 for a constant, a
+// parameter, or a definition that is gone.
+fn su_def(f: IrFunc, x: i64) -> i64 {
+    if x < 0 { return -1 }
+    let ins = f.val_ins[x]
+    if ins < 0 || f.ins_op[ins] == IR_NONE { return -1 }
+    return ins
+}
+
+// Whether `n` is a power of two from 2 up, and which.
+fn su_power_of_two(n: i64) -> i64 {
+    if n < 2 || n & n - 1 != 0 { return -1 }
+    var k = 1
+    while 1 << k != n {
+        k = k + 1
+    }
+    return k
+}
+
+// The high 64 bits of the unsigned product, as the interpreter and the
+// processors compute it.
+fn su_umulh(a: i64, b: i64) -> i64 {
+    let mask = 4294967295
+    let a_low = a & mask
+    let a_high = a >> 32 & mask
+    let b_low = b & mask
+    let b_high = b >> 32 & mask
+    let low_low = a_low * b_low
+    let low_high = a_low * b_high
+    let high_low = a_high * b_low
+    let high_high = a_high * b_high
+    let middle = (low_low >> 32 & mask) + (low_high & mask) + (high_low & mask)
+    return high_high + (low_high >> 32 & mask) + (high_low >> 32 & mask) + (middle >> 32 & mask)
+}
+
+fn su_unsigned_less(a: i64, b: i64) -> bool {
+    let top = 1 << 63
+    return a ^ top < b ^ top
+}
+
+fn su_bool(value: bool) -> i64 {
+    if value { return 1 }
+    return 0
+}
+
+// What an operation with two operands gives for two known numbers, by
+// azoL's rules: wrapping arithmetic, division that truncates, shift
+// counts of which only the low six bits count. Division and remainder
+// by zero have no value: the caller does not ask.
+fn su_fold_binary(op: i64, a: i64, b: i64) -> i64 {
+    if op == IR_ADD { return a + b }
+    if op == IR_SUB { return a - b }
+    if op == IR_MUL { return a * b }
+    if op == IR_SDIV {
+        // The smallest number divided by -1 wraps; the processor's own
+        // division would stop the program.
+        if b == -1 { return 0 - a }
+        return a / b
+    }
+    if op == IR_SREM {
+        if b == -1 { return 0 }
+        return a % b
+    }
+    if op == IR_AND { return a & b }
+    if op == IR_OR { return a | b }
+    if op == IR_XOR { return a ^ b }
+    if op == IR_SHL { return a << (b & 63) }
+    if op == IR_SAR { return a >> (b & 63) }
+    if op == IR_SHR {
+        let count = b & 63
+        if count == 0 { return a }
+        return a >> count & (1 << 64 - count) - 1
+    }
+    if op == IR_UMULH { return su_umulh(a, b) }
+    if op == IR_SMULH {
+        var high = su_umulh(a, b)
+        if a < 0 { high = high - b }
+        if b < 0 { high = high - a }
+        return high
+    }
+    if op == IR_EQ { return su_bool(a == b) }
+    if op == IR_NE { return su_bool(a != b) }
+    if op == IR_SLT { return su_bool(a < b) }
+    if op == IR_SLE { return su_bool(a <= b) }
+    if op == IR_SGT { return su_bool(a > b) }
+    if op == IR_SGE { return su_bool(a >= b) }
+    if op == IR_ULT { return su_bool(su_unsigned_less(a, b)) }
+    if op == IR_ULE { return su_bool(!su_unsigned_less(b, a)) }
+    if op == IR_UGT { return su_bool(su_unsigned_less(b, a)) }
+    return su_bool(!su_unsigned_less(a, b))
+}
+
+fn su_fold_unary(op: i64, a: i64) -> i64 {
+    if op == IR_NEG { return 0 - a }
+    if op == IR_EXT8U || op == IR_TRUNC8 { return a & 255 }
+    if op == IR_EXT8S { return a << 56 >> 56 }
+    if op == IR_EXT32U || op == IR_TRUNC32 { return a & 4294967295 }
+    return a << 32 >> 32
+}
+
+// The comparison that gives the same answer with its operands the
+// other way round.
+fn su_swapped_compare(op: i64) -> i64 {
+    if op == IR_SLT { return IR_SGT }
+    if op == IR_SGT { return IR_SLT }
+    if op == IR_SLE { return IR_SGE }
+    if op == IR_SGE { return IR_SLE }
+    if op == IR_ULT { return IR_UGT }
+    if op == IR_UGT { return IR_ULT }
+    if op == IR_ULE { return IR_UGE }
+    if op == IR_UGE { return IR_ULE }
+    return op
+}

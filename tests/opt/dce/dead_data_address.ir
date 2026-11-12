@@ -1,0 +1,8 @@
+; The address of data nothing reads.
+data "abc"
+
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = addr @data+1
+    ret p0
+}

@@ -34,9 +34,7 @@ struct Counts {
 fn show(xs: List[i64]) -> str {
     var out = "["
     for i, x in xs {
-        if i > 0 {
-            out = out + ","
-        }
+        if i > 0 { out = out + "," }
         out = out + str(x)
     }
     return out + "]"
@@ -106,9 +104,7 @@ fn main() {
     count(mut counts, "ada")
     var line = ""
     for key in counts.seen.keys() {
-        if line.len() > 0 {
-            line = line + " "
-        }
+        if line.len() > 0 { line = line + " " }
         match counts.seen.get(key) {
             Some(n) => line = line + key + "=" + str(n)
             None => {}

@@ -20,9 +20,7 @@ fn text(bytes: List[i64]) -> str {
 fn row(cases: List[List[i64]]) {
     var line = ""
     for bytes in cases {
-        if line.len() > 0 {
-            line = line + " "
-        }
+        if line.len() > 0 { line = line + " " }
         line = line + str(text(bytes).is_utf8())
     }
     print(line)
@@ -59,18 +57,10 @@ fn main() {
     var long = 0
     var count = 0
     while count < 20 {
-        if padded(count, [0xE2, 0x82, 0xAC], "z").is_utf8() {
-            good = good + 1
-        }
-        if !padded(count, [0xE2, 0x82], "z").is_utf8() {
-            cut = cut + 1
-        }
-        if !padded(count, [0x80], "zzzzzzzzz").is_utf8() {
-            stray = stray + 1
-        }
-        if !padded(count, [0xC3], "").is_utf8() {
-            short = short + 1
-        }
+        if padded(count, [0xE2, 0x82, 0xAC], "z").is_utf8() { good = good + 1 }
+        if !padded(count, [0xE2, 0x82], "z").is_utf8() { cut = cut + 1 }
+        if !padded(count, [0x80], "zzzzzzzzz").is_utf8() { stray = stray + 1 }
+        if !padded(count, [0xC3], "").is_utf8() { short = short + 1 }
         if padded(count, [0xF0, 0x9F, 0x98, 0x80, 0xC3, 0xA9], "zzzzzzzzzzzzzzzzz").is_utf8() {
             long = long + 1
         }
@@ -79,8 +69,6 @@ fn main() {
     print(str(good) + " " + str(cut) + " " + str(stray) + " " + str(short) + " " + str(long))
     let literal = "héllo €"
     var verdict = "good"
-    if !chr(200).is_utf8() {
-        verdict = "bad"
-    }
+    if !chr(200).is_utf8() { verdict = "bad" }
     print(str(literal.is_utf8()) + " " + str((literal + "!").is_utf8()) + " " + verdict)
 }

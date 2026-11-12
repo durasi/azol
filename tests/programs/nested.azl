@@ -173,8 +173,6 @@ fn main() {
     forest = []
     print(forest.len())
 
-    if total(identity(2)) == 3 && total(identity(50)) == 0 {
-        print(0)
-    }
+    if total(identity(2)) == 3 && total(identity(50)) == 0 { print(0) }
     print(size(tree(2, 1)))
 }

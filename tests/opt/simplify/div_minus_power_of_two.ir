@@ -1,0 +1,6 @@
+; x / -4 is the negation of x / 4.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = sdiv p0, -4
+    ret v0
+}

@@ -1,0 +1,13 @@
+; A branch on a negated condition swaps its edges.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = slt p0, 0
+    v1 = xor v0, 1
+    br v1, b1, b2
+b1:
+    callrt print_i64(1)
+    ret 1
+b2:
+    callrt print_i64(2)
+    ret 2
+}

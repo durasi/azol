@@ -68,11 +68,43 @@
           "patterns": [
             {
               "name": "constant.character.escape.azol",
-              "match": "\\\\[ntr0\\\\\\\"]"
+              "match": "\\\\[ntr0\\\\\\\"{]"
             },
             {
               "name": "invalid.illegal.escape.azol",
               "match": "\\\\."
+            },
+            {
+              "name": "meta.interpolation.azol",
+              "begin": "\\{",
+              "beginCaptures": {
+                "0": {
+                  "name": "punctuation.section.interpolation.begin.azol"
+                }
+              },
+              "end": "\\}|(?=\")|$",
+              "endCaptures": {
+                "0": {
+                  "name": "punctuation.section.interpolation.end.azol"
+                }
+              },
+              "patterns": [
+                {
+                  "include": "#numbers"
+                },
+                {
+                  "include": "#constants"
+                },
+                {
+                  "include": "#functions"
+                },
+                {
+                  "include": "#operators"
+                },
+                {
+                  "include": "#punctuation"
+                }
+              ]
             }
           ]
         }
@@ -155,6 +187,10 @@
           "match": "(?<![A-Za-z0-9_])(?:if|else|for|in|while|return|match|break|continue)(?![A-Za-z0-9_])"
         },
         {
+          "name": "keyword.control.step.azol",
+          "match": "(?<![A-Za-z0-9_])step(?=\\s+-?[0-9])"
+        },
+        {
           "name": "keyword.declaration.azol",
           "match": "(?<![A-Za-z0-9_])(?:fn|struct|enum|const|let|var)(?![A-Za-z0-9_])"
         },
@@ -224,6 +260,14 @@
         {
           "name": "keyword.operator.arrow.azol",
           "match": "->|=>"
+        },
+        {
+          "name": "keyword.operator.assignment.compound.azol",
+          "match": "(?:<<|>>|[+\\-*/%&|^])="
+        },
+        {
+          "name": "keyword.operator.range.azol",
+          "match": "\\.\\.=?"
         },
         {
           "name": "keyword.operator.try.azol",

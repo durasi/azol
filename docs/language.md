@@ -147,7 +147,7 @@ A block may be written on one line when it holds one statement:
 | Binary | `0b1010` | `i64` | The prefix is lower-case `0b`. |
 | Character | `'a'`, `'\n'` | `i64` | The byte value of one ASCII character. |
 | Boolean | `true`, `false` | `bool` | |
-| String | `"text"` | `str` | On one line. |
+| String | `"text"`, `"total: {sum}"` | `str` | On one line. `{value}` puts the text of a value there ([6.6](#66-text-with-values)); a brace itself is `\{`. |
 
 A decimal literal must be at most 9223372036854775807. A hexadecimal or
 binary literal may use all 64 bits; `0xFFFFFFFFFFFFFFFF` is -1. There are no
@@ -158,7 +158,7 @@ the `-` directly in front of the digits.
 A `_` in a number of any base stands between two digits: `1__0`, `1_`,
 `0x_F` and `0b1_` are errors.
 
-Escapes in strings: `\n` `\t` `\r` `\0` `\\` `\"`.
+Escapes in strings: `\n` `\t` `\r` `\0` `\\` `\"` `\{`.
 Escapes in character literals: `\n` `\t` `\r` `\0` `\\` `\'`. A `"` needs no
 escape inside `'...'`. Any other escape is an error.
 
@@ -703,8 +703,57 @@ place = expression
 
 A place is a `var` variable, a `mut` parameter, a field of a place, or an
 item of a list that is a place: `p.x = 1`, `xs[i] = 2`,
-`team.members[0].name = "ann"`. There are no compound assignments; `x += 1`
-is written `x = x + 1`.
+`team.members[0].name = "ann"`.
+
+```azol-fragment
+place op= expression
+```
+
+`a op= b` means `a = a op b` for `+`, `-`, `*`, `/`, `%`, `&`, `|`, `^`,
+`<<` and `>>`. It is a statement, not a value. `s += more` appends to a
+string in place, as `s = s + more` does. There is no `++` and no `--`:
+write `x += 1`. The sign comes first: `x =+ 1` and `x =- 1` are errors
+that carry `+=` and `-=` as their fix. The place is worked out twice, so an index in it is made of
+names, numbers, fields and arithmetic, not of a call: give `xs[next()]` a
+name first.
+
+```azol
+struct Counter { hits: i64 }
+
+fn main() {
+    var total = 10
+    total += 5
+    total *= 2
+    total -= 4
+    total /= 2
+    total %= 8
+    var bits = 1
+    bits <<= 4
+    bits |= 3
+    var xs = [1, 2, 3]
+    xs[total - 5] += 40
+    var c = Counter { hits: 0 }
+    c.hits += 1
+    var text = "a"
+    text += "b"
+    print("{total} {bits} {xs[0]} {c.hits} {text}")
+}
+```
+
+```output
+5 19 41 1 ab
+```
+
+```azol-error
+fn main() {
+    var x = 1
+    x++
+}
+```
+
+```error
+azoL has no `++`; write `x += 1`
+```
 
 A byte of a string is not a place.
 
@@ -732,7 +781,9 @@ if condition {
 ```
 
 The condition is a `bool`. It is not put in parentheses. The braces are
-required.
+required. An `if` without `else` whose block is one short `return`, `break`,
+`continue`, call or assignment may stand on one line, `if n < 0 { return }`,
+and `azol fmt` writes it so ([16.5](#165-fmt)).
 
 ### 5.4 `while`
 
@@ -751,11 +802,27 @@ for item in list {
 for index, item in list {
     statements
 }
+for i in first..end {
+    statements
+}
+for i in first..=last step 2 {
+    statements
+}
 ```
 
 `for` goes through a `List`. With two names, the first is the position,
-starting at 0. The loop variables are read-only. There are no ranges and no
-loop over the bytes of a string; count with `while`.
+starting at 0. The loop variables are read-only. There is no loop over the
+bytes of a string; count over `0..s.len()`.
+
+`for i in a..b` counts `a`, `a + 1`, and so on while `i < b`; `a..=b` goes on
+while `i <= b`. Both ends are `i64` and are worked out once, `a` first, so a
+list that the loop makes longer does not make the loop longer. `step k`
+adds `k` each time instead of 1; `k` is a number written out, not zero, and
+a negative one counts down: `for i in n - 1..=0 step -1`. A range whose
+first number is already past the end runs no times. A range is not a value:
+it is written only here, has one loop variable and no methods; there is no
+`range(n)`, `.rev()` or `.step_by(k)` (error E1405 names the form above). Nothing wraps around: a
+range that ends at the largest `i64` stops there.
 
 The list cannot be changed while the loop runs
 ([rule 2](#rule-2-a-list-cannot-be-changed-while-a-loop-is-going-through-it)).
@@ -769,14 +836,18 @@ fn main() {
     for i, word in words {
         print(str(i) + ": " + str(word.len()))
     }
-    var i = 0
-    while i < 3 {
-        i = i + 1
-        if i == 2 {
-            continue
-        }
+    for i in 1..4 {
+        if i == 2 { continue }
         print(i)
     }
+    var line = ""
+    for i in 10..=0 step -5 {
+        line += "{i} "
+    }
+    for i in 0..words.len() step 2 {
+        line += words[i]
+    }
+    print(line)
 }
 ```
 
@@ -789,6 +860,17 @@ ccc
 2: 3
 1
 3
+10 5 0 accc
+```
+
+```azol-error
+fn main() {
+    let r = 0..3
+}
+```
+
+```error
+a range exists only in `for i in a..b`; for a part of a list use `xs.slice(a, b)`
 ```
 
 ```azol-error
@@ -1108,7 +1190,9 @@ as an `i64`. An index below 0 or past the end stops the program.
 ### 6.4 Struct literals and conditions
 
 `Name { field: value, other: value }` makes a struct. Fields are separated
-by commas; the literal may span lines.
+by commas; the literal may span lines. A field written by its name alone
+takes the variable of that name: `Point { x, y }` is `Point { x: x, y: y }`,
+and both ways may be used in one literal.
 
 In the condition of `if` and `while`, in the value of `match`, and in the
 list of `for`, a `{` always starts the block. A struct literal there must be
@@ -1288,6 +1372,67 @@ fn main() {
 
 ```error
 `?` cannot be used inside a list literal; store its value in a variable first
+```
+
+### 6.6 Text with values
+
+In a string literal, `{value}` puts the text of a value there. The value is
+an `i64` or a `bool`, written as `str()` writes it, or a `str`. It may be any
+expression that holds no string literal and no brace of its own: a name, a
+field, an index, arithmetic, a call. The values are worked out once each,
+left to right. `"total: {sum}"` means `"total: " + str(sum)`, and a text
+that is added to a string, `out += "{key}={value}\n"`, is appended piece by
+piece, in place.
+
+A brace that is only a brace is written `\{`. A `}` needs nothing. There is
+no format language: width, padding and base are methods (`pad_left`,
+`to_hex`), used on a value that has a name. A constant holds no values, as
+constants are worked out before any variable exists.
+
+```azol
+struct Item { name: str, price: i64 }
+
+fn main() {
+    let item = Item { name: "tea", price: 450 }
+    let count = 3
+    print("{count} x {item.name} = {count * item.price}")
+    print("cheap: {item.price < 500}, name has {item.name.len()} bytes")
+    print("json: \{\"name\": \"{item.name}\"}")
+    let shown = str(item.price).pad_left(6, ".")
+    print("[{shown}]")
+}
+```
+
+```output
+3 x tea = 1350
+cheap: true, name has 3 bytes
+json: {"name": "tea"}
+[...450]
+```
+
+A literal written before texts held values, with a brace that was meant as
+a brace, does not change meaning without notice: it is an error, and the
+`fix` of `--json` writes the `\`.
+
+```azol-error
+fn main() {
+    print("usage: tool {file}")
+}
+```
+
+```error
+`{file}` in a text stands for the value of a variable, and there is no variable of that name; write `\{` for a brace
+```
+
+```azol-error
+fn main() {
+    let xs = [1, 2]
+    print("list: {xs}")
+}
+```
+
+```error
+a value in a text is an `i64`, a `bool` or a `str` but this is `List[i64]`; turn it into text first
 ```
 
 ## 7. Calls and `mut` arguments
@@ -2448,6 +2593,10 @@ let total=1+2*3
 
 
       if total>6{print( total )}
+if total>7{
+return
+}
+      if total>8{print( total )}else{print(0)}
 }
 ```
 
@@ -2455,11 +2604,22 @@ let total=1+2*3
 fn main() {
     let total = 1 + 2 * 3
 
-    if total > 6 {
+    if total > 6 { print(total) }
+    if total > 7 { return }
+    if total > 8 {
         print(total)
+    } else {
+        print(0)
     }
 }
 ```
+
+An `if` stands on one line when it has no `else` and is not itself an
+`else if`, its block is one statement that begins with `return`, `break`,
+`continue` or a name (a call or an assignment) and holds no block or comment
+of its own, and the line is at most 100 columns wide. Every other block is
+written over several lines. This is the one layout: `azol fmt` joins such an
+`if` that was written over three lines and splits every other one.
 
 `azol fmt --check` changes nothing: it lists the files that are not in the
 canonical layout and exits with 1 if there are any. `azol fmt -` reads
@@ -2502,7 +2662,7 @@ instead.
 | Semicolons | A newline. |
 | Block comments `/* */` | `//` on each line. |
 | `~` (bitwise not) | `x ^ -1`. |
-| `+=`, `-=`, `++` and the like | `x = x + 1`. |
+| `++`, `--` | `x += 1`, `x -= 1`. |
 | `if` and `match` as expressions, a ternary operator | A `var` assigned in each branch, or a function that returns from each branch. |
 | Implicit return of the last expression | `return`. |
 | A bare block `{ ... }` as a statement | A function, or `if true { ... }`. |
@@ -2516,12 +2676,12 @@ instead.
 | Several patterns in one arm, guards | Separate arms; `if` inside the arm. |
 | Tuples | A struct. |
 | Sets, maps with keys that are not `str` | `Map[bool]`, or a `List` of structs searched in a loop. |
-| Ranges, `for i in 0..n` | `while` with a counter. |
-| `for` over the bytes of a string | `while i < s.len()` and `s[i]`. |
+| Ranges as values, `let r = 0..n`, `xs[1..3]` | `for i in 0..n` is the only place for a range; `xs.slice(1, 3)`. |
+| `for` over the bytes of a string | `for i in 0..s.len()` and `s[i]`. |
 | `==` on structs, lists and enums that carry values | Compare fields; `match`. |
 | Assigning to a byte, `s[i] = b` | `s.set(i, b)`. |
 | Global variables | Constants, and `mut` parameters. |
-| Multi-line strings, string interpolation, formatting | `+`, `str(...)` and `\n`. |
+| Multi-line strings, a format language (`{x:>5}`, `%d`), `${x}`, `f"..."` | `"{x}"` for a value, `\n`, and methods such as `pad_left` and `to_hex` for the form. |
 | `print` with several arguments or without a newline | Build one string; one `print` per line. |
 | Reading standard input | `read_file` and `args()`. |
 | References, pointers, `null` | Values, `mut` parameters, `Option`. |
@@ -2545,12 +2705,12 @@ unexpected character
 ```azol-error
 fn main() {
     var x = 1
-    x += 1
+    x--
 }
 ```
 
 ```error
-expected an expression but found `=`
+azoL has no `--`; write `x -= 1`
 ```
 
 ```azol-error

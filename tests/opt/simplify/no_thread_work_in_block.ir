@@ -1,0 +1,19 @@
+; Kept: the block does work before it branches, so an edge cannot skip it.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = slt p0, 0
+    br v0, b1, b2
+b1:
+    callrt print_i64(1)
+    jump b3(1)
+b2:
+    callrt print_i64(2)
+    jump b3(0)
+b3(v1: bool):
+    callrt print_i64(3)
+    br v1, b4, b5
+b4:
+    ret 10
+b5:
+    ret 20
+}

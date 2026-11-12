@@ -220,15 +220,11 @@ fn sha256_into(out: mut str, data: str, start: i64, end: i64, k: List[i64]) {
     var tail = data.slice(at, end)
     tail.push(0x80)
     var tail_length = 64
-    if tail.len() > 56 {
-        tail_length = 128
-    }
+    if tail.len() > 56 { tail_length = 128 }
     pad_to(mut tail, tail_length - 8, 0)
     put64_be(mut tail, (end - start) * 8)
     sha256_compress(mut state, k, tail, 0)
-    if tail_length == 128 {
-        sha256_compress(mut state, k, tail, 64)
-    }
+    if tail_length == 128 { sha256_compress(mut state, k, tail, 64) }
     for word in state {
         put32_be(mut out, word)
     }

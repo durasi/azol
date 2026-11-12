@@ -19,12 +19,8 @@ fn lw_kind(lw: Lower, c: Checker, id: i64) -> i64 {
     if kind == LW_IDENT {
         let aux = c.expr_aux[lw.sh_e + id]
         if aux >= CONST_STR {
-            if aux == CONST_INT {
-                return LW_INT
-            }
-            if aux == CONST_STR {
-                return LW_STR
-            }
+            if aux == CONST_INT { return LW_INT }
+            if aux == CONST_STR { return LW_STR }
             return LW_BOOL
         }
     }
@@ -33,12 +29,8 @@ fn lw_kind(lw: Lower, c: Checker, id: i64) -> i64 {
 
 // The value of a `bool` written in the program or named by a constant.
 fn lw_bool_value(lw: Lower, c: Checker, id: i64) -> i64 {
-    if lw.kinds[id] == LW_BOOL {
-        return lw.ea[id]
-    }
-    if c.expr_aux[lw.sh_e + id] == CONST_TRUE {
-        return 1
-    }
+    if lw.kinds[id] == LW_BOOL { return lw.ea[id] }
+    if c.expr_aux[lw.sh_e + id] == CONST_TRUE { return 1 }
     return 0
 }
 
@@ -50,9 +42,7 @@ fn lw_int_value(lw: Lower, c: Checker, id: i64) -> i64 {
 // How many slots a value of this type takes where it is kept: one for
 // a number or a `bool`.
 fn lw_slots_of(c: Checker, ty: i64) -> i64 {
-    if ty < 3 {
-        return 1
-    }
+    if ty < 3 { return 1 }
     return ck_size_of(c, ty)
 }
 
@@ -66,24 +56,18 @@ fn lw_place(lw: Lower, c: Checker, id: i64) -> i64 {
     let kind = lw.kinds[id]
     if kind == LW_IDENT {
         let at = lw.sh_e + id
-        if c.expr_aux[at] >= CONST_STR {
-            return -1
-        }
+        if c.expr_aux[at] >= CONST_STR { return -1 }
         let res = c.expr_res[at]
         if res == VARIANT {
             // `None` and the like are values, not variables.
             return -1
         }
-        if res >= BY_REF {
-            return res - BY_REF + 4096
-        }
+        if res >= BY_REF { return res - BY_REF + 4096 }
         return res
     }
     if kind == LW_FIELD {
         let place = lw_place(lw, c, lw.ea[id])
-        if place < 0 {
-            return -1
-        }
+        if place < 0 { return -1 }
         return place + c.expr_res[lw.sh_e + id] * 8192
     }
     return -1
@@ -108,13 +92,9 @@ fn lw_place_address(lw: mut Lower, place: i64, len: i64) -> LwAddr {
 
 // The frame slot of `id` when it is a whole local variable, or -1.
 fn lw_variable_slot(lw: Lower, c: Checker, id: i64) -> i64 {
-    if lw.kinds[id] != LW_IDENT {
-        return -1
-    }
+    if lw.kinds[id] != LW_IDENT { return -1 }
     let place = lw_place(lw, c, id)
-    if place < 0 || (place & 4096) != 0 {
-        return -1
-    }
+    if place < 0 || (place & 4096) != 0 { return -1 }
     return place & 4095
 }
 
@@ -182,13 +162,9 @@ fn lw_store_value(lw: mut Lower, c: Checker, p: Parser, value: i64, slot: i64) {
 // a variable whose buffers the store took over, the variable is left
 // owning nothing, so that the end of its scope frees nothing.
 fn lw_moved_out(lw: mut Lower, c: Checker, id: i64) {
-    if c.expr_moved[lw.sh_e + id] != 1 {
-        return
-    }
+    if c.expr_moved[lw.sh_e + id] != 1 { return }
     let slot = lw_variable_slot(lw, c, id)
-    if slot >= 0 {
-        lw_zero_idle(mut lw, c, slot, c.expr_ty[lw.sh_e + id])
-    }
+    if slot >= 0 { lw_zero_idle(mut lw, c, slot, c.expr_ty[lw.sh_e + id]) }
 }
 
 // Writes string literal number `index` into three frame slots.
@@ -267,9 +243,7 @@ fn lw_eval(lw: mut Lower, c: Checker, p: Parser, id: i64) {
 fn lw_address(lw: mut Lower, c: Checker, p: Parser, id: i64) -> LwAddr {
     let ty = c.expr_ty[lw.sh_e + id]
     let place = lw_place(lw, c, id)
-    if place >= 0 {
-        return lw_place_address(mut lw, place, lw_slots_of(c, ty))
-    }
+    if place >= 0 { return lw_place_address(mut lw, place, lw_slots_of(c, ty)) }
     let path = lw_element_path(lw, c, id)
     if path.ok {
         let slots = ck_size_of(c, c.lists[ty_index(c.expr_ty[lw.sh_e + path.base])])
@@ -282,9 +256,7 @@ fn lw_address(lw: mut Lower, c: Checker, p: Parser, id: i64) -> LwAddr {
         lw_string_value(mut lw, c, c.expr_res[lw.sh_e + id], tmp)
         return lw_slot(mut lw, tmp, 3)
     }
-    if kind == LW_IDENT {
-        return lw_enum_value(mut lw, c, p, id, 0, 0)
-    }
+    if kind == LW_IDENT { return lw_enum_value(mut lw, c, p, id, 0, 0) }
     if kind == LW_BINARY {
         // `a + b` on strings: a new string in this expression's temporary.
         let left = lw_address(mut lw, c, p, lw.ea[id])
@@ -306,9 +278,7 @@ fn lw_address(lw: mut Lower, c: Checker, p: Parser, id: i64) -> LwAddr {
         }
         return lw_slot(mut lw, tmp, ck_size_of(c, ty))
     }
-    if kind == LW_ARRAY {
-        return lw_list_literal(mut lw, c, p, id)
-    }
+    if kind == LW_ARRAY { return lw_list_literal(mut lw, c, p, id) }
     if kind == LW_TRY {
         let value = lw_try(mut lw, c, p, id, lw.ea[id])
         return lw_slot(mut lw, tmp, lw_slots_of(c, ty))
@@ -444,9 +414,7 @@ fn lw_list_literal(lw: mut Lower, c: Checker, p: Parser, id: i64) -> LwAddr {
 fn lw_value(lw: mut Lower, c: Checker, p: Parser, id: i64) -> i64 {
     let kind = lw_kind(lw, c, id)
     let ty = c.expr_ty[lw.sh_e + id]
-    if kind == LW_TRY {
-        return lw_try(mut lw, c, p, id, lw.ea[id])
-    }
+    if kind == LW_TRY { return lw_try(mut lw, c, p, id, lw.ea[id]) }
     if kind == LW_INT {
         let number = lw_int_value(lw, c, id)
         return lw_const(mut lw, number)
@@ -468,9 +436,7 @@ fn lw_value(lw: mut Lower, c: Checker, p: Parser, id: i64) -> i64 {
     }
     if kind == LW_UNARY {
         let operand = lw_value(mut lw, c, p, lw.ea[id])
-        if lw.ec[id] == 0 {
-            return ir_unary(mut lw.f, lw.b, IR_NEG, operand)
-        }
+        if lw.ec[id] == 0 { return ir_unary(mut lw.f, lw.b, IR_NEG, operand) }
         if ir_is_const(operand) {
             // `xor` of two constants would be a number, not a `bool`.
             let flipped = 1 - ir_const_value(lw.f, operand)
@@ -479,9 +445,7 @@ fn lw_value(lw: mut Lower, c: Checker, p: Parser, id: i64) -> i64 {
         let one = lw_const(mut lw, 1)
         return lw_bin(mut lw, IR_XOR, operand, one)
     }
-    if kind == LW_BINARY {
-        return lw_binary(mut lw, c, p, lw.ec[id], lw.ea[id], lw.eb[id])
-    }
+    if kind == LW_BINARY { return lw_binary(mut lw, c, p, lw.ec[id], lw.ea[id], lw.eb[id]) }
     // A call: the checker rejected everything else that is not a scalar.
     return lw_call(mut lw, c, p, id)
 }
@@ -519,9 +483,7 @@ fn lw_binary(lw: mut Lower, c: Checker, p: Parser, op: i64, lhs: i64, rhs: i64) 
         let left_tag = lw_load(mut lw, IR_I64, left, 0)
         let right = lw_address(mut lw, c, p, rhs)
         let right_tag = lw_load(mut lw, IR_I64, right, 0)
-        if op == LW_EQ {
-            return lw_bin(mut lw, IR_EQ, left_tag, right_tag)
-        }
+        if op == LW_EQ { return lw_bin(mut lw, IR_EQ, left_tag, right_tag) }
         return lw_bin(mut lw, IR_NE, left_tag, right_tag)
     }
     if ty == TY_STR {
@@ -533,9 +495,7 @@ fn lw_binary(lw: mut Lower, c: Checker, p: Parser, op: i64, lhs: i64, rhs: i64) 
             // `==` and `!=` on strings compare the bytes.
             let call = lw_rt(mut lw, IR_RT_STR_EQ_BUF, left_at, right_at, -1, -1)
             let same = lw.f.ins_res[call]
-            if op == LW_EQ {
-                return same
-            }
+            if op == LW_EQ { return same }
             let one = lw_const(mut lw, 1)
             return lw_bin(mut lw, IR_XOR, same, one)
         }
@@ -561,9 +521,7 @@ fn lw_binary(lw: mut Lower, c: Checker, p: Parser, op: i64, lhs: i64, rhs: i64) 
     if op == LW_DIV || op == LW_REM {
         // Dividing by a constant other than zero needs no check.
         var checked = true
-        if lw_kind(lw, c, rhs) == LW_INT {
-            checked = lw_int_value(lw, c, rhs) == 0
-        }
+        if lw_kind(lw, c, rhs) == LW_INT { checked = lw_int_value(lw, c, rhs) == 0 }
         if checked {
             let zero = lw_const(mut lw, 0)
             let fine = lw_bin(mut lw, IR_NE, right, zero)
@@ -571,56 +529,28 @@ fn lw_binary(lw: mut Lower, c: Checker, p: Parser, op: i64, lhs: i64, rhs: i64) 
         }
         // Dividing the smallest number by -1 gives the number itself,
         // with remainder 0: `sdiv` and `srem` say so.
-        if op == LW_DIV {
-            return lw_bin(mut lw, IR_SDIV, left, right)
-        }
+        if op == LW_DIV { return lw_bin(mut lw, IR_SDIV, left, right) }
         return lw_bin(mut lw, IR_SREM, left, right)
     }
-    if op == LW_ADD {
-        return lw_bin(mut lw, IR_ADD, left, right)
-    }
-    if op == LW_SUB {
-        return lw_bin(mut lw, IR_SUB, left, right)
-    }
-    if op == LW_MUL {
-        return lw_bin(mut lw, IR_MUL, left, right)
-    }
-    if op == LW_BITAND {
-        return lw_bin(mut lw, IR_AND, left, right)
-    }
-    if op == LW_BITOR {
-        return lw_bin(mut lw, IR_OR, left, right)
-    }
-    if op == LW_BITXOR {
-        return lw_bin(mut lw, IR_XOR, left, right)
-    }
-    if op == LW_SHL {
-        return lw_bin(mut lw, IR_SHL, left, right)
-    }
+    if op == LW_ADD { return lw_bin(mut lw, IR_ADD, left, right) }
+    if op == LW_SUB { return lw_bin(mut lw, IR_SUB, left, right) }
+    if op == LW_MUL { return lw_bin(mut lw, IR_MUL, left, right) }
+    if op == LW_BITAND { return lw_bin(mut lw, IR_AND, left, right) }
+    if op == LW_BITOR { return lw_bin(mut lw, IR_OR, left, right) }
+    if op == LW_BITXOR { return lw_bin(mut lw, IR_XOR, left, right) }
+    if op == LW_SHL { return lw_bin(mut lw, IR_SHL, left, right) }
     // `>>` keeps the sign.
     return lw_bin(mut lw, IR_SAR, left, right)
 }
 
 // The comparison of two numbers that `op` asks for, or -1.
 fn lw_compare_op(op: i64) -> i64 {
-    if op == LW_EQ {
-        return IR_EQ
-    }
-    if op == LW_NE {
-        return IR_NE
-    }
-    if op == LW_LT {
-        return IR_SLT
-    }
-    if op == LW_LE {
-        return IR_SLE
-    }
-    if op == LW_GT {
-        return IR_SGT
-    }
-    if op == LW_GE {
-        return IR_SGE
-    }
+    if op == LW_EQ { return IR_EQ }
+    if op == LW_NE { return IR_NE }
+    if op == LW_LT { return IR_SLT }
+    if op == LW_LE { return IR_SLE }
+    if op == LW_GT { return IR_SGT }
+    if op == LW_GE { return IR_SGE }
     return -1
 }
 
@@ -646,9 +576,7 @@ fn lw_call(lw: mut Lower, c: Checker, p: Parser, id: i64) -> i64 {
     let args_len = lw.ec[id]
     // In `value.method(...)` the value is the receiver.
     var receiver = -1
-    if lw.kinds[callee] == LW_FIELD {
-        receiver = lw.ea[callee]
-    }
+    if lw.kinds[callee] == LW_FIELD { receiver = lw.ea[callee] }
     if target == BUILTIN_STR_PUSH || target == BUILTIN_STR_SET {
         lw_byte_method(mut lw, c, p, id, target, receiver)
         return -1
@@ -660,17 +588,13 @@ fn lw_call(lw: mut Lower, c: Checker, p: Parser, id: i64) -> i64 {
     // first argument is the receiver. Arguments are evaluated in the
     // order written.
     var first = 0
-    if receiver >= 0 {
-        first = 1
-    }
+    if receiver >= 0 { first = 1 }
     let count = first + args_len
     var arguments: List[i64] = []
     var i = 0
     while i < count {
         var arg = receiver
-        if i >= first {
-            arg = p.ast.lists[args_start + i - first]
-        }
+        if i >= first { arg = p.ast.lists[args_start + i - first] }
         if lw.kinds[arg] == LW_MUTARG {
             let at = lw_address(mut lw, c, p, lw.ea[arg])
             arguments.push(lw_ptr(mut lw, at))
@@ -791,9 +715,7 @@ fn lw_byte_method(lw: mut Lower, c: Checker, p: Parser, id: i64, method: i64, ba
     let args_start = lw.eb[id]
     let tmp = c.expr_tmp[lw.sh_e + id]
     var index = -1
-    if method == BUILTIN_STR_SET {
-        index = lw_value(mut lw, c, p, p.ast.lists[args_start])
-    }
+    if method == BUILTIN_STR_SET { index = lw_value(mut lw, c, p, p.ast.lists[args_start]) }
     var byte = -1
     if method == BUILTIN_STR_SET {
         byte = lw_value(mut lw, c, p, p.ast.lists[args_start + 1])
@@ -919,9 +841,7 @@ fn lw_list_method(lw: mut Lower, c: Checker, p: Parser, id: i64, method: i64, ba
             lw_jump(mut lw, done)
             lw.b = full
         }
-        if elem < 3 {
-            lw_store(mut lw, lw_scalar_ty(elem), aside, 0, value)
-        }
+        if elem < 3 { lw_store(mut lw, lw_scalar_ty(elem), aside, 0, value) }
         lw_rt(mut lw, IR_RT_LIST_PUSH, list_at, aside.p, bytes, -1)
         lw_jump(mut lw, done)
         lw.b = done

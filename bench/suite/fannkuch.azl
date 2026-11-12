@@ -7,9 +7,7 @@
 const SMALL = false
 
 fn size(full: i64, small: i64) -> i64 {
-    if SMALL {
-        return small
-    }
+    if SMALL { return small }
     return full
 }
 
@@ -52,9 +50,7 @@ fn main() {
             flips = flips + 1
             k = perm[0]
         }
-        if flips > most {
-            most = flips
-        }
+        if flips > most { most = flips }
         if odd {
             checksum = checksum - flips
         } else {

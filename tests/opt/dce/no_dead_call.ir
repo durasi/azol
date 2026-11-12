@@ -1,0 +1,12 @@
+; Kept: a call of a function may print, store or stop; its unused result does not make it dead.
+fn noisy(p0: i64) -> i64 {
+b0:
+    callrt print_i64(p0)
+    ret p0
+}
+
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = call noisy(p0) -> i64
+    ret p0
+}

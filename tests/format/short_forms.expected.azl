@@ -1,0 +1,40 @@
+struct Pair { key: str, value: i64 }
+fn sum(xs: List[i64], limit: i64) -> i64 {
+    var total = 0
+    for i in 0..xs.len() {
+        if xs[i] < 0 { continue }
+        if total > limit { break }
+        total += xs[i]
+        total <<= 1
+        total -=
+            2
+    }
+    for i in xs.len() - 1..=0 step -1 {
+        if xs[i] == 0 {
+            let seen = i
+            print(seen)
+        }
+        if xs[i] == 1 {
+            total = total + 1
+        } else {
+            total = total - 1
+        }
+        if xs[i] == 2 {
+            // counted twice
+            total += 2
+        }
+    }
+    for i in 0..10 step 2 {
+        total ^= i
+    }
+    let step = 3
+    let key = "k"
+    let value = total - step
+    let pair = Pair { key, value }
+    let other = Pair { key: "o", value }
+    if pair.value > 100000000 && other.value > 100000000 && pair.key.len() > 100000000 && total > 123456 {
+        return pair.value
+    }
+    if total == 0 { return 0 }
+    return total
+}

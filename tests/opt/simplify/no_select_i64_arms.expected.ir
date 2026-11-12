@@ -1,0 +1,6 @@
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = slt p0, 5
+    v1 = select v0, 1, 0
+    ret v1
+}

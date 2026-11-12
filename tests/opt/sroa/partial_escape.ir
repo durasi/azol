@@ -1,0 +1,33 @@
+; An object of three cells. The address of the second is passed to a
+; function that writes it: the first cell becomes a value and leaves
+; the object; the second and third stay (their stores stay, their loads
+; take values until the call).
+fn bump(p0: ptr [param 0 read write], p1: i64) {
+b0:
+    v0 = load i64, p0, 0  [param 0]
+    v1 = add v0, p1
+    store i64, p0, 0, v1  [param 0]
+    ret
+}
+
+fn f(p0: i64) -> i64 {
+    frames 24
+b0:
+    v0 = frame 0
+    v1 = gep v0, 0, 1, 8
+    jump b1
+b1:
+    store i64, v0, 0, p0  [frame 0]
+    store i64, v0, 8, 10  [frame 0]
+    store i64, v0, 16, 100  [frame 0]
+    v2 = load i64, v0, 8  [frame 0]
+    call bump(v1, v2)
+    v3 = load i64, v0, 0  [frame 0]
+    v4 = load i64, v1, 0  [frame 0]
+    v5 = load i64, v0, 16  [frame 0]
+    v6 = load i64, v1, 0  [frame 0]
+    v7 = add v3, v4
+    v8 = add v7, v5
+    v9 = add v8, v6
+    ret v9
+}

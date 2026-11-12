@@ -1,0 +1,6 @@
+; x * 8 is a shift.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = mul p0, 8
+    ret v0
+}

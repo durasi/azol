@@ -1,0 +1,35 @@
+; Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+; bench/loops.azl, as lowering without any optimisation gives it.
+fn main() {
+b0:
+    jump b1(0, 0)
+b1(v0: i64, v1: i64):
+    v2 = slt v1, 5000
+    br v2, b2, b9
+b2:
+    jump b3(v0, 0)
+b3(v3: i64, v4: i64):
+    v5 = slt v4, 5000
+    br v5, b4, b8
+b4:
+    v6 = mul v1, v4
+    v7 = srem v6, 7
+    v8 = eq v7, 3
+    br v8, b5, b6
+b5:
+    v9 = srem v6, 11
+    v10 = add v3, v9
+    jump b7(v10)
+b6:
+    v11 = add v3, 1
+    jump b7(v11)
+b7(v12: i64):
+    v13 = add v4, 1
+    jump b3(v12, v13)
+b8:
+    v14 = add v1, 1
+    jump b1(v3, v14)
+b9:
+    callrt print_i64(v0)
+    ret
+}

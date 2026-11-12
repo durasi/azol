@@ -1,0 +1,15 @@
+; Kept: the parameter gets two different values.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = slt p0, 0
+    br v0, b1, b2
+b1:
+    callrt print_i64(1)
+    jump b3(7)
+b2:
+    callrt print_i64(2)
+    jump b3(8)
+b3(v1: i64):
+    v2 = add v1, p0
+    ret v2
+}

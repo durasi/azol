@@ -20,12 +20,8 @@ fn num(n: i64) -> i64 {
 }
 
 fn sign(n: i64) -> i64 {
-    if n < 0 {
-        return 0 - 1
-    }
-    if n == 0 {
-        return 0
-    }
+    if n < 0 { return 0 - 1 }
+    if n == 0 { return 0 }
     return 1
 }
 
@@ -89,12 +85,8 @@ fn main() {
     print(c)
 
     // Calls on both sides of a comparison, left one first.
-    if num(31) < num(32) {
-        print(1)
-    }
-    if num(34) - num(33) > num(0) {
-        print(1)
-    }
+    if num(31) < num(32) { print(1) }
+    if num(34) - num(33) > num(0) { print(1) }
     print(num(40) - num(45))
     print(num(3) * (num(4) - num(6)))
 
@@ -119,29 +111,17 @@ fn main() {
     print(outside(5, 1, 10))
     print(outside(0 - 3, 0 - 2, 2))
     var f = Flags { on: true, count: 0, ready: false }
-    if f.on && !f.ready {
-        f.count = f.count + 1
-    }
-    if f.ready || f.count == 1 {
-        f.ready = true
-    }
-    if f.ready {
-        f.count = f.count + 10
-    }
-    if !f.on {
-        f.count = f.count + 100
-    }
+    if f.on && !f.ready { f.count = f.count + 1 }
+    if f.ready || f.count == 1 { f.ready = true }
+    if f.ready { f.count = f.count + 10 }
+    if !f.on { f.count = f.count + 100 }
     print(f.count)
     let marks = [true, false, true]
     var k = 0
     var set = 0
     while k < marks.len() {
-        if marks[k] {
-            set = set + 1
-        }
-        if !marks[k] || k == 2 {
-            set = set + 10
-        }
+        if marks[k] { set = set + 1 }
+        if !marks[k] || k == 2 { set = set + 10 }
         k = k + 1
     }
     print(set)
@@ -155,7 +135,5 @@ fn main() {
         rounds = rounds + 1
     }
     print(rounds)
-    if word + "c" == "abc" && rounds == 3 {
-        print(1)
-    }
+    if word + "c" == "abc" && rounds == 3 { print(1) }
 }

@@ -10,9 +10,7 @@
 const ON = true
 
 fn pick(flag: bool, other: bool) -> bool {
-    if flag {
-        return other
-    }
+    if flag { return other }
     return !other
 }
 
@@ -22,7 +20,5 @@ fn main() {
     print(true && false)
     print(ON != false)
     print(pick(!ON, !true))
-    if !(ON && !ON) {
-        print("yes")
-    }
+    if !(ON && !ON) { print("yes") }
 }

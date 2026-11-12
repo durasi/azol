@@ -1,0 +1,106 @@
+// expect-exit: 0
+// expect-line: 01234
+// expect-line: 12345
+// expect-line: :0:3:6:9
+// expect-line: :0:3:6:9
+// expect-line: 43210
+// expect-line: :10:6:2
+// expect-line: 0
+// expect-line: 023
+// expect-line: from
+// expect-line: to
+// expect-line: 2
+// expect-line: 3
+// expect-line: 3
+// expect-line: 2
+// expect-line: 2
+// expect-line: 4
+// expect-line: 012345
+// Ranges in `for`: both ends once and in order, `..` and `..=`, steps up
+// and down, empty ranges, `break` and `continue`, and loops that end at
+// the largest and smallest numbers without wrapping around.
+fn count(a: i64, b: i64) -> i64 {
+    var n = 0
+    for i in a..b {
+        n += 1
+    }
+    return n
+}
+
+fn bound(tag: str, value: i64) -> i64 {
+    print(tag)
+    return value
+}
+
+fn main() {
+    var out = ""
+    for i in 0..5 {
+        out += str(i)
+    }
+    print(out)
+    out = ""
+    for i in 1..=5 {
+        out += str(i)
+    }
+    print(out)
+    out = ""
+    for i in 0..10 step 3 {
+        out += ":" + str(i)
+    }
+    print(out)
+    out = ""
+    for i in 0..=9 step 3 {
+        out += ":" + str(i)
+    }
+    print(out)
+    out = ""
+    for i in 4..=0 step -1 {
+        out += str(i)
+    }
+    print(out)
+    out = ""
+    for i in 10..0 step -4 {
+        out += ":" + str(i)
+    }
+    print(out)
+    print(count(5, 5) + count(7, 3) * 10)
+    out = ""
+    for i in 0..6 {
+        if i == 1 { continue }
+        if i == 4 { break }
+        out += str(i)
+    }
+    print(out)
+    for i in bound("from", 2)..bound("to", 4) {
+        print(i)
+    }
+    let big = 9223372036854775807
+    var rounds = 0
+    for i in big - 2..=big {
+        rounds += 1
+    }
+    print(rounds)
+    rounds = 0
+    for i in big - 5..big step 4 {
+        rounds += 1
+    }
+    print(rounds)
+    let small = -9223372036854775807 - 1
+    rounds = 0
+    for i in small + 1..=small step -1 {
+        rounds += 1
+    }
+    print(rounds)
+    rounds = 0
+    for i in small..=big step 4611686018427387904 {
+        rounds += 1
+    }
+    print(rounds)
+    var grid = ""
+    for y in 0..2 {
+        for x in 0..3 {
+            grid += str(y * 3 + x)
+        }
+    }
+    print(grid)
+}

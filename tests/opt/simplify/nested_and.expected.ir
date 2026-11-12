@@ -1,0 +1,6 @@
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = and p0, 255
+    v1 = and p0, 15
+    ret v1
+}

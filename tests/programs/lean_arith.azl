@@ -20,9 +20,7 @@ fn pick(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64) -> i64 {
 }
 
 fn fib(n: i64) -> i64 {
-    if n < 2 {
-        return n
-    }
+    if n < 2 { return n }
     return fib(n - 1) + fib(n - 2)
 }
 
@@ -156,7 +154,5 @@ fn main() {
     print(id(id(3) + id(4)) * (id(2) - id(8)))
     print(id(9) / id(2) + id(9) % id(4) + (id(1) << id(5)))
     print(fib(15))
-    if id(3) + id(4) > id(2) * id(3) {
-        print(1)
-    }
+    if id(3) + id(4) > id(2) * id(3) { print(1) }
 }

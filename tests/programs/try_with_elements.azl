@@ -7,16 +7,12 @@
 struct P { a: i64, name: str, b: i64 }
 
 fn pick(xs: List[i64], i: i64) -> Option[i64] {
-    if i < 0 || i >= xs.len() {
-        return None
-    }
+    if i < 0 || i >= xs.len() { return None }
     return Some(xs[i])
 }
 
 fn named(ps: List[P], i: i64) -> Option[str] {
-    if i >= ps.len() {
-        return None
-    }
+    if i >= ps.len() { return None }
     return Some(ps[i].name)
 }
 

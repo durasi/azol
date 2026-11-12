@@ -1,0 +1,7 @@
+; A negation of a negation is the value.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = neg p0
+    v1 = neg v0
+    ret v1
+}

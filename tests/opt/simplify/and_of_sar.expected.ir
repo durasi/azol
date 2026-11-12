@@ -1,0 +1,6 @@
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = sar p0, 60
+    v1 = shr p0, 60
+    ret v1
+}

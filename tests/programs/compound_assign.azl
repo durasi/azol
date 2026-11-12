@@ -1,0 +1,49 @@
+// expect-exit: 0
+// expect-line: 2
+// expect-line: 492
+// expect-line: 51
+// expect-line: abc3
+// expect-line: -7abc3!
+// expect-line: 012
+// Compound assignment: `a op= b` is `a = a op b`, on variables, fields
+// and list elements, for every arithmetic and bit operator; on text it
+// is the same in-place append as `s = s + t`.
+struct P { n: i64, name: str }
+
+fn main() {
+    var x = 10
+    x += 5
+    x -= 3
+    x *= 4
+    x /= 5
+    x %= 7
+    print(x)
+    var b = 0b1100
+    b &= 0b1010
+    b |= 1
+    b ^= 0xFF
+    b <<= 2
+    b >>= 1
+    print(b)
+    var xs = [1, 2, 3]
+    let i = 1
+    xs[i] += 40
+    xs[i + 1] *= xs.len()
+    print(xs[1] + xs[2])
+    var p = P { n: 1, name: "a" }
+    p.n += 2
+    p.name += "bc"
+    p.name += str(p.n)
+    print(p.name)
+    var ps = [p]
+    ps[0].n -= 10
+    ps[0].name += "!"
+    print(str(ps[0].n) + ps[0].name)
+    var s = ""
+    var k = 0
+    while k < 3 {
+        s += str(k)
+        k += 1
+    }
+    print(s)
+}

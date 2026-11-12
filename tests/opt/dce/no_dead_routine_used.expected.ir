@@ -1,0 +1,9 @@
+data "abcabc"
+
+fn main(p0: i64) -> bool {
+b0:
+    v0 = addr @data+0
+    v1 = addr @data+3
+    v2 = callrt str_eq(v0, 3, v1, 3)
+    ret v2
+}

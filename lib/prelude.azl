@@ -18,9 +18,7 @@
 // Where `part` first occurs in `s`, as a byte position.
 fn str_find(s: str, part: str) -> Option[i64] {
     let n = part.len()
-    if n > s.len() {
-        return None
-    }
+    if n > s.len() { return None }
     let last = s.len() - n
     var i = 0
     while i <= last {
@@ -28,9 +26,7 @@ fn str_find(s: str, part: str) -> Option[i64] {
         while j < n && s[i + j] == part[j] {
             j = j + 1
         }
-        if j == n {
-            return Some(i)
-        }
+        if j == n { return Some(i) }
         i = i + 1
     }
     return None
@@ -45,14 +41,10 @@ fn str_contains(s: str, part: str) -> bool {
 
 fn str_starts_with(s: str, prefix: str) -> bool {
     let n = prefix.len()
-    if n > s.len() {
-        return false
-    }
+    if n > s.len() { return false }
     var i = 0
     while i < n {
-        if s[i] != prefix[i] {
-            return false
-        }
+        if s[i] != prefix[i] { return false }
         i = i + 1
     }
     return true
@@ -60,15 +52,11 @@ fn str_starts_with(s: str, prefix: str) -> bool {
 
 fn str_ends_with(s: str, suffix: str) -> bool {
     let n = suffix.len()
-    if n > s.len() {
-        return false
-    }
+    if n > s.len() { return false }
     let offset = s.len() - n
     var i = 0
     while i < n {
-        if s[offset + i] != suffix[i] {
-            return false
-        }
+        if s[offset + i] != suffix[i] { return false }
         i = i + 1
     }
     return true
@@ -80,16 +68,12 @@ fn str_trim(s: str) -> str {
     var end = s.len()
     while start < end {
         let c = s[start]
-        if c != 32 && c != 9 && c != 10 && c != 13 {
-            break
-        }
+        if c != 32 && c != 9 && c != 10 && c != 13 { break }
         start = start + 1
     }
     while end > start {
         let c = s[end - 1]
-        if c != 32 && c != 9 && c != 10 && c != 13 {
-            break
-        }
+        if c != 32 && c != 9 && c != 10 && c != 13 { break }
         end = end - 1
     }
     return s.slice(start, end)
@@ -128,17 +112,13 @@ fn str_lines(s: str) -> List[str] {
     while i < s.len() {
         if s[i] == 10 {
             var end = i
-            if end > start && s[end - 1] == 13 {
-                end = end - 1
-            }
+            if end > start && s[end - 1] == 13 { end = end - 1 }
             lines.push(s.slice(start, end))
             start = i + 1
         }
         i = i + 1
     }
-    if start < s.len() {
-        lines.push(s.slice(start, s.len()))
-    }
+    if start < s.len() { lines.push(s.slice(start, s.len())) }
     return lines
 }
 
@@ -151,29 +131,19 @@ fn str_to_i64(s: str) -> Option[i64] {
         negative = true
         i = 1
     }
-    if i == s.len() {
-        return None
-    }
+    if i == s.len() { return None }
     // Minus the number so far: below zero there is room for one more.
     var lowest = -9223372036854775807
-    if negative {
-        lowest = lowest - 1
-    }
+    if negative { lowest = lowest - 1 }
     var value = 0
     while i < s.len() {
         let digit = s[i] - 48
-        if digit < 0 || digit > 9 {
-            return None
-        }
-        if value < (lowest + digit) / 10 {
-            return None
-        }
+        if digit < 0 || digit > 9 { return None }
+        if value < (lowest + digit) / 10 { return None }
         value = value * 10 - digit
         i = i + 1
     }
-    if negative {
-        return Some(value)
-    }
+    if negative { return Some(value) }
     return Some(-value)
 }
 
@@ -181,9 +151,7 @@ fn str_to_i64(s: str) -> Option[i64] {
 fn list_join(parts: List[str], separator: str) -> str {
     var out = ""
     for i, part in parts {
-        if i > 0 {
-            out = out + separator
-        }
+        if i > 0 { out = out + separator }
         out = out + part
     }
     return out
@@ -192,24 +160,18 @@ fn list_join(parts: List[str], separator: str) -> str {
 // Whether some item of `items` equals `wanted`.
 fn list_contains[T](items: List[T], wanted: T) -> bool {
     for item in items {
-        if item == wanted {
-            return true
-        }
+        if item == wanted { return true }
     }
     return false
 }
 
 fn list_first[T](items: List[T]) -> Option[T] {
-    if items.len() == 0 {
-        return None
-    }
+    if items.len() == 0 { return None }
     return Some(items[0])
 }
 
 fn list_last[T](items: List[T]) -> Option[T] {
-    if items.len() == 0 {
-        return None
-    }
+    if items.len() == 0 { return None }
     return Some(items[items.len() - 1])
 }
 
@@ -228,25 +190,17 @@ fn list_reversed[T](items: List[T]) -> List[T] {
 // after, 0 when they are equal. A string comes after its own beginnings.
 fn str_compare(s: str, other: str) -> i64 {
     var n = s.len()
-    if other.len() < n {
-        n = other.len()
-    }
+    if other.len() < n { n = other.len() }
     var i = 0
     while i < n {
         if s[i] != other[i] {
-            if s[i] < other[i] {
-                return -1
-            }
+            if s[i] < other[i] { return -1 }
             return 1
         }
         i = i + 1
     }
-    if s.len() < other.len() {
-        return -1
-    }
-    if s.len() > other.len() {
-        return 1
-    }
+    if s.len() < other.len() { return -1 }
+    if s.len() > other.len() { return 1 }
     return 0
 }
 
@@ -255,18 +209,14 @@ fn str_compare(s: str, other: str) -> i64 {
 fn str_index_of_from(s: str, part: str, start: i64) -> Option[i64] {
     let n = part.len()
     var i = start
-    if i < 0 {
-        i = 0
-    }
+    if i < 0 { i = 0 }
     // `i <= len - n` and not `i + n <= len`: a huge `start` must not wrap.
     while i <= s.len() - n {
         var j = 0
         while j < n && s[i + j] == part[j] {
             j = j + 1
         }
-        if j == n {
-            return Some(i)
-        }
+        if j == n { return Some(i) }
         i = i + 1
     }
     return None
@@ -281,9 +231,7 @@ fn str_last_index_of(s: str, part: str) -> Option[i64] {
         while j < n && s[i + j] == part[j] {
             j = j + 1
         }
-        if j == n {
-            return Some(i)
-        }
+        if j == n { return Some(i) }
         i = i - 1
     }
     return None
@@ -293,9 +241,7 @@ fn str_last_index_of(s: str, part: str) -> Option[i64] {
 // left to right. An empty `old` gives `s` unchanged.
 fn str_replace(s: str, old: str, new: str) -> str {
     let n = old.len()
-    if n == 0 {
-        return s
-    }
+    if n == 0 { return s }
     var out = ""
     var start = 0
     var i = 0
@@ -336,9 +282,7 @@ fn str_to_upper(s: str) -> str {
     var i = 0
     while i < s.len() {
         var c = s[i]
-        if c >= 97 && c <= 122 {
-            c = c - 32
-        }
+        if c >= 97 && c <= 122 { c = c - 32 }
         out = out + chr(c)
         i = i + 1
     }
@@ -352,9 +296,7 @@ fn str_to_lower(s: str) -> str {
     var i = 0
     while i < s.len() {
         var c = s[i]
-        if c >= 65 && c <= 90 {
-            c = c + 32
-        }
+        if c >= 65 && c <= 90 { c = c + 32 }
         out = out + chr(c)
         i = i + 1
     }
@@ -396,26 +338,16 @@ fn str_bytes(s: str) -> List[i64] {
 // or capital letters; sixteen digits fill all 64 bits. `None` when it
 // is anything else.
 fn str_parse_hex(s: str) -> Option[i64] {
-    if s.len() == 0 || s.len() > 16 {
-        return None
-    }
+    if s.len() == 0 || s.len() > 16 { return None }
     var value = 0
     var i = 0
     while i < s.len() {
         let c = s[i]
         var digit = -1
-        if c >= 48 && c <= 57 {
-            digit = c - 48
-        }
-        if c >= 97 && c <= 102 {
-            digit = c - 87
-        }
-        if c >= 65 && c <= 70 {
-            digit = c - 55
-        }
-        if digit < 0 {
-            return None
-        }
+        if c >= 48 && c <= 57 { digit = c - 48 }
+        if c >= 97 && c <= 102 { digit = c - 87 }
+        if c >= 65 && c <= 70 { digit = c - 55 }
+        if digit < 0 { return None }
         value = (value << 4) | digit
         i = i + 1
     }
@@ -454,9 +386,7 @@ fn list_is_empty[T](items: List[T]) -> bool {
 // The position of the first item of `items` that equals `wanted`.
 fn list_index_of[T](items: List[T], wanted: T) -> Option[i64] {
     for i, item in items {
-        if item == wanted {
-            return Some(i)
-        }
+        if item == wanted { return Some(i) }
     }
     return None
 }
@@ -465,9 +395,7 @@ fn list_index_of[T](items: List[T], wanted: T) -> Option[i64] {
 fn list_count[T](items: List[T], wanted: T) -> i64 {
     var found = 0
     for item in items {
-        if item == wanted {
-            found = found + 1
-        }
+        if item == wanted { found = found + 1 }
     }
     return found
 }
@@ -489,9 +417,7 @@ fn list_take[T](items: List[T], count: i64) -> List[T] {
 fn list_skip[T](items: List[T], count: i64) -> List[T] {
     var out: List[T] = []
     var i = count
-    if i < 0 {
-        i = 0
-    }
+    if i < 0 { i = 0 }
     while i < items.len() {
         out.push(items[i])
         i = i + 1
@@ -502,15 +428,11 @@ fn list_skip[T](items: List[T], count: i64) -> List[T] {
 // The smallest item of `items` by `compare`: for numbers and strings.
 // The first one when several are equal; `None` for an empty list.
 fn list_min[T](items: List[T]) -> Option[T] {
-    if items.len() == 0 {
-        return None
-    }
+    if items.len() == 0 { return None }
     var best = 0
     var i = 1
     while i < items.len() {
-        if items[i].compare(items[best]) < 0 {
-            best = i
-        }
+        if items[i].compare(items[best]) < 0 { best = i }
         i = i + 1
     }
     return Some(items[best])
@@ -519,15 +441,11 @@ fn list_min[T](items: List[T]) -> Option[T] {
 // The largest item of `items` by `compare`: for numbers and strings.
 // The first one when several are equal; `None` for an empty list.
 fn list_max[T](items: List[T]) -> Option[T] {
-    if items.len() == 0 {
-        return None
-    }
+    if items.len() == 0 { return None }
     var best = 0
     var i = 1
     while i < items.len() {
-        if items[i].compare(items[best]) > 0 {
-            best = i
-        }
+        if items[i].compare(items[best]) > 0 { best = i }
         i = i + 1
     }
     return Some(items[best])
@@ -545,13 +463,9 @@ fn list_sorted[T](items: List[T]) -> List[T] {
         var start = 0
         while start < n {
             var middle = start + width
-            if middle > n {
-                middle = n
-            }
+            if middle > n { middle = n }
             var end = middle + width
-            if end > n {
-                end = n
-            }
+            if end > n { end = n }
             var a = start
             var b = middle
             while a < middle && b < end {
@@ -582,49 +496,35 @@ fn list_sorted[T](items: List[T]) -> List[T] {
 // -1 when `n` is less than `other`, 1 when it is greater, 0 when they
 // are equal.
 fn i64_compare(n: i64, other: i64) -> i64 {
-    if n < other {
-        return -1
-    }
-    if n > other {
-        return 1
-    }
+    if n < other { return -1 }
+    if n > other { return 1 }
     return 0
 }
 
 // `n` without its sign. The smallest `i64` has no positive twin and
 // stays as it is.
 fn i64_abs(n: i64) -> i64 {
-    if n < 0 {
-        return -n
-    }
+    if n < 0 { return -n }
     return n
 }
 
 // The smaller of `n` and `other`.
 fn i64_min(n: i64, other: i64) -> i64 {
-    if other < n {
-        return other
-    }
+    if other < n { return other }
     return n
 }
 
 // The larger of `n` and `other`.
 fn i64_max(n: i64, other: i64) -> i64 {
-    if other > n {
-        return other
-    }
+    if other > n { return other }
     return n
 }
 
 // `n`, or `low` when it is below `low`, or `high` when it is above
 // `high`.
 fn i64_clamp(n: i64, low: i64, high: i64) -> i64 {
-    if n < low {
-        return low
-    }
-    if n > high {
-        return high
-    }
+    if n < low { return low }
+    if n > high { return high }
     return n
 }
 
@@ -635,9 +535,7 @@ fn i64_pow(n: i64, exponent: i64) -> i64 {
     var base = n
     var left = exponent
     while left > 0 {
-        if left & 1 == 1 {
-            result = result * base
-        }
+        if left & 1 == 1 { result = result * base }
         base = base * base
         left = left >> 1
     }
@@ -751,9 +649,7 @@ fn map_slot_of[V](map: Map[V], key: str) -> i64 {
     var slot = key.hash() & mask
     while map.table[slot] != 0 {
         let entry = map.table[slot]
-        if entry > 0 && map.keys[entry - 1] == key {
-            return slot
-        }
+        if entry > 0 && map.keys[entry - 1] == key { return slot }
         slot = (slot + 1) & mask
     }
     return -1
@@ -794,9 +690,7 @@ fn map_set[V](map: mut Map[V], key: str, value: V) {
         return
     }
     // At most three quarters of the slots may be in use.
-    if (map.filled + 1) * 4 > map.table.len() * 3 {
-        map.rebuild()
-    }
+    if (map.filled + 1) * 4 > map.table.len() * 3 { map.rebuild() }
     map.keys.push(key)
     map.values.push(value)
     let mask = map.table.len() - 1
@@ -811,9 +705,7 @@ fn map_set[V](map: mut Map[V], key: str, value: V) {
 // A copy of the value of `key`, or `None` when the map does not have it.
 fn map_get[V](map: Map[V], key: str) -> Option[V] {
     let found = map.slot_of(key)
-    if found < 0 {
-        return None
-    }
+    if found < 0 { return None }
     return Some(map.values[map.table[found] - 1])
 }
 
@@ -827,9 +719,7 @@ fn map_has[V](map: Map[V], key: str) -> bool {
 // order of insertion after a removal.
 fn map_remove[V](map: mut Map[V], key: str) -> bool {
     let found = map.slot_of(key)
-    if found < 0 {
-        return false
-    }
+    if found < 0 { return false }
     let at = map.table[found] - 1
     map.table[found] = -1
     let last = map.keys.len() - 1
@@ -906,4 +796,9 @@ fn any_filled[T](value: T, count: i64) -> List[T] {
         i = i + 1
     }
     return items
+}
+
+// The text itself: what `"{s}"` puts there for a `str`.
+fn str_text(s: str) -> str {
+    return s
 }

@@ -1,0 +1,22 @@
+; Kept: the second test's block prints before it tests, so the chain is not only tests.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = eq p0, 0
+    br v0, b1, b2
+b1:
+    ret 100
+b2:
+    callrt print_i64(p0)
+    v1 = eq p0, 1
+    br v1, b3, b4
+b3:
+    ret 200
+b4:
+    callrt print_i64(p0)
+    v2 = eq p0, 5
+    br v2, b5, b6
+b5:
+    ret 300
+b6:
+    ret -1
+}

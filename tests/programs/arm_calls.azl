@@ -10,69 +10,51 @@ struct Box {
 }
 
 fn below(n: i64) -> i64 {
-    if n < 2 {
-        return n
-    }
+    if n < 2 { return n }
     return below(n - 1) + below(n - 2)
 }
 
 fn at_most(a: i64, b: i64, c: i64) -> i64 {
-    if b <= a {
-        return c
-    }
+    if b <= a { return c }
     return at_most(a + 1, b, c + b)
 }
 
 fn same(a: i64, b: i64) -> bool {
-    if a == b {
-        return true
-    }
+    if a == b { return true }
     return a + 1 == b
 }
 
 fn differs(a: i64, b: i64) -> i64 {
-    if a != 4095 {
-        return 7
-    }
+    if a != 4095 { return 7 }
     return a + b
 }
 
 fn above(a: i64, b: i64) -> i64 {
-    if a > b {
-        return b
-    }
+    if a > b { return b }
     return a
 }
 
 fn not_below(flag: bool, a: i64) -> bool {
-    if a >= 10 {
-        return flag
-    }
+    if a >= 10 { return flag }
     return !flag
 }
 
 fn quiet(n: i64, total: mut i64) {
-    if n == 0 {
-        return
-    }
+    if n == 0 { return }
     total = total + n
     quiet(n - 1, mut total)
 }
 
 fn not_a_guard(n: i64, total: mut i64) -> i64 {
     // Looks like one, but the test reads through an address.
-    if total > 5 {
-        return n
-    }
+    if total > 5 { return n }
     total = total + 10
     return not_a_guard(n + 1, mut total)
 }
 
 fn big_constant(n: i64) -> i64 {
     // Too large to sit in the compare: decided inside the frame.
-    if n > 5000 {
-        return 1
-    }
+    if n > 5000 { return 1 }
     return 2
 }
 

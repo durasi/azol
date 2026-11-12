@@ -1,0 +1,328 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The optimising back end for x86-64 Linux as one piece: from a module
+// in the intermediate form to the bytes of an executable. Selection
+// (`sel_x64.azl`), register allocation (`regalloc.azl`) and emission
+// (`emit_x64.azl`) for every function, then the calls between them and
+// the file (`../elf.azl`).
+
+struct BkOptions {
+    // Three registers only, so that everything spills.
+    stress: bool
+    // Verify every allocation with `ra_check`.
+    check: bool
+    // Print the machine code and the allocation of every function.
+    dump: bool
+}
+
+struct BkResult {
+    ok: bool
+    error: str
+    image: str
+    code_bytes: i64
+    // Nanoseconds spent in selection, allocation and emission.
+    select_ns: i64
+    allocate_ns: i64
+    emit_ns: i64
+    // Where each function's code starts, counted from the first one's:
+    // a line `<offset> <name>` for each (for profiles).
+    map: str
+}
+
+// The two runtime routines the Linux runtime has no entry for, in the
+// intermediate form itself. `__memcpy` copies forwards, eight bytes at
+// a time, or backwards when the destination starts inside the source.
+// `__realloc` reads how much room the block has from the header the
+// runtime's allocator keeps in front of every block
+// (runtime/linux_common/memory.h) and returns the same block when that
+// is enough. Otherwise it lets the runtime grow the block, which the
+// runtime does without copying for a large one: the only door to that
+// is `rt_str_append`, here with a string that claims to be one byte
+// short of the wanted size and gets one byte added.
+const BK_HELPERS = "fn __memcpy(p0: ptr [param 0 write], p1: ptr [param 1 read], p2: i64) \{\nb0:\n    v0 = ult p1, p0\n    br v0, b4, b1\nb1:\n    v13 = sub p2, 7\n    jump b8(0)\nb8(v14: i64):\n    v15 = slt v14, v13\n    br v15, b9, b2(v14)\nb9:\n    v16 = gep p1, v14, 1, 0\n    v17 = load i64, v16, 0  [param 1]\n    v18 = gep p0, v14, 1, 0\n    store i64, v18, 0, v17  [param 0]\n    v19 = add v14, 8\n    jump b8(v19)\nb2(v1: i64):\n    v2 = slt v1, p2\n    br v2, b3, b7\nb3:\n    v3 = gep p1, v1, 1, 0\n    v4 = load u8, v3, 0  [param 1]\n    v5 = gep p0, v1, 1, 0\n    store u8, v5, 0, v4  [param 0]\n    v6 = add v1, 1\n    jump b2(v6)\nb4:\n    jump b5(p2)\nb5(v7: i64):\n    v8 = sgt v7, 0\n    br v8, b6, b7\nb6:\n    v9 = sub v7, 1\n    v10 = gep p1, v9, 1, 0\n    v11 = load u8, v10, 0  [param 1]\n    v12 = gep p0, v9, 1, 0\n    store u8, v12, 0, v11  [param 0]\n    jump b5(v9)\nb7:\n    ret\n}\n\nfn __realloc(p0: ptr [param 0 read], p1: i64) -> ptr \{\n    frames 8\nb0:\n    v0 = eq p0, 0\n    br v0, b1, b2\nb1:\n    v1 = callrt alloc(p1)\n    ret v1\nb2:\n    v2 = load u64, p0, -16  [param 0]\n    v3 = eq v2, 65535\n    br v3, b3, b4\nb3:\n    v4 = load i64, p0, -8  [param 0]\n    v5 = sub v4, 16\n    jump b5(v5)\nb4:\n    v6 = add v2, 5\n    v7 = shl 1, v6\n    v8 = sub v7, 16\n    jump b5(v8)\nb5(v9: i64):\n    v10 = sle p1, v9\n    br v10, b6, b7\nb6:\n    ret p0\nb7:\n    v11 = frame 0\n    store i64, v11, 0, 0  [frame 0]\n    v12 = sub p1, 1\n    v13, v14, v15 = callrt str_append(p0, v12, 1, v11, 1)\n    ret v13\n}\n"
+
+fn bk_reg_name(reg: i64) -> str {
+    if reg >= MF_SLOT0 { return "slot" + str(reg - MF_SLOT0) }
+    if reg >= MF_VREG0 { return "%" + str(reg - MF_VREG0) }
+    let names = ["rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"]
+    if reg < 0 || reg >= 16 { return "?" + str(reg) }
+    return names[reg]
+}
+
+fn bk_op_name(op: i64) -> str {
+    let names = ["?", "entry", "movi", "lea", "copy", "alu", "alui", "neg", "shi", "shc", "mulh", "div", "ext", "load", "store", "cmpset", "select", "cmpbr", "jmp", "switch", "ret", "trap", "call", "callrt", "cmpbrm"]
+    if op < 0 || op >= names.len() { return "?" }
+    return names[op]
+}
+
+// The machine code of a function as text, with the moves the allocator
+// put before each instruction. Each operand shows the virtual register
+// it was and the place it got.
+fn bk_dump(m: MFunc, result: RaResult) -> str {
+    var out = "fn " + m.name + ": " + str(result.slots) + " slots\n"
+    var b = 0
+    while b < m.b_first.len() {
+        out = out + "  B" + str(b)
+        var k = 0
+        while k < m.b_pn[b] {
+            let p = m.b_ps[b] + k
+            out = out + " " + bk_reg_name(m.params[p]) + "@" + bk_reg_name(result.param_loc[p])
+            k = k + 1
+        }
+        out = out + "\n"
+        var i = m.b_first[b]
+        while i <= m.b_last[b] {
+            k = result.mv_start[i]
+            while k < result.mv_start[i + 1] {
+                let kind = result.mv_kind[k]
+                var from = bk_reg_name(result.mv_a[k])
+                var to = bk_reg_name(result.mv_b[k])
+                if kind == RA_MV_LOAD || kind == RA_MV_SLOTS { from = "slot" + str(result.mv_a[k]) }
+                if kind == RA_MV_STORE || kind == RA_MV_SLOTS || kind == RA_MV_CONST_S {
+                    to = "slot" + str(result.mv_b[k])
+                }
+                if kind == RA_MV_CONST_R || kind == RA_MV_CONST_S {
+                    from = str(m.consts[result.mv_a[k]])
+                }
+                out = out + "      move " + from + " -> " + to + "\n"
+                k = k + 1
+            }
+            out = out + "    " + bk_op_name(m.op[i]) + " imm=" + str(m.imm[i]) + " x=" + str(m.x[i]) + " y=" + str(m.y[i]) + " z=" + str(m.z[i]) + " :"
+            k = 0
+            while k < m.on[i] {
+                let o = m.os[i] + k
+                out = out + " "
+                if m.o_role[o] & MF_DEF != 0 { out = out + "=" }
+                if result.orig[o] >= MF_VREG0 { out = out + bk_reg_name(result.orig[o]) + "@" }
+                out = out + bk_reg_name(m.o_reg[o])
+                k = k + 1
+            }
+            if m.op[i] == SX_CMPBR || m.op[i] == SX_CMPBRM || m.op[i] == SX_JMP || m.op[i] == SX_SWITCH {
+                out = out + " ->"
+                k = 0
+                while k < m.b_sn[b] {
+                    out = out + " B" + str(m.s_blk[m.b_ss[b] + k])
+                    k = k + 1
+                }
+            }
+            out = out + "\n"
+            i = i + 1
+        }
+        b = b + 1
+    }
+    return out
+}
+
+fn bk_fail(message: str) -> BkResult {
+    return BkResult { ok: false, error: message, image: "", code_bytes: 0, select_ns: 0, allocate_ns: 0, emit_ns: 0, map: "" }
+}
+
+// Whether function `at` calls the runtime or a function marked in
+// `aligned`.
+fn bk_needs_alignment(m: IrModule, at: i64, aligned: List[bool]) -> bool {
+    var ins = 0
+    while ins < m.funcs[at].ins_op.len() {
+        let op = m.funcs[at].ins_op[ins]
+        if op == IR_CALLRT { return true }
+        if op == IR_CALL {
+            let callee = ir_find_func(m, m.funcs[at].callees[m.funcs[at].ins_imm[ins]])
+            if callee >= 0 && aligned[callee] { return true }
+        }
+        ins = ins + 1
+    }
+    return false
+}
+
+// Builds the executable whose entry is function `entry` of `m`. The
+// module must already hold `__memcpy` and `__realloc` (BK_HELPERS). The
+// functions of `m` are changed as selection changes them (their
+// critical edges are split): copying each one first cost a twentieth of
+// a whole build.
+fn bk_build(m: mut IrModule, entry: i64, options: BkOptions, runtime: str) -> BkResult {
+    var out = bk_fail("")
+    out.ok = true
+    var data = m.data
+    var trap_at: List[i64] = []
+    var kind = 0
+    while kind < 7 {
+        trap_at.push(data.len())
+        data = data + ir_trap_message(kind)
+        kind = kind + 1
+    }
+    let memcpy_fn = ir_find_func(m, "__memcpy")
+    let realloc_fn = ir_find_func(m, "__realloc")
+    var target = sx_target()
+    if options.stress { target = sx_stress_target() }
+    // Which functions must keep the stack pointer a multiple of 16 at
+    // their calls: those that call the runtime, whose code expects it,
+    // and those that call such a function. The others save the padding.
+    var aligned = false.filled(m.funcs.len())
+    var changed = true
+    while changed {
+        changed = false
+        var g = 0
+        while g < m.funcs.len() {
+            if !aligned[g] && bk_needs_alignment(m, g, aligned) {
+                aligned[g] = true
+                changed = true
+            }
+            g = g + 1
+        }
+    }
+    var code = ""
+    var starts: List[i64] = []
+    var call_at: List[i64] = []
+    var call_fn: List[i64] = []
+    var rt: List[Fixup] = []
+    var refs: List[Fixup] = []
+    var at = 0
+    while at < m.funcs.len() {
+        let cur = at
+        at = at + 1
+        var targets: List[i64] = []
+        for name in m.funcs[cur].callees {
+            let found = ir_find_func(m, name)
+            if found < 0 {
+                return bk_fail("`" + m.funcs[cur].name + "` calls `" + name + "`, which the module does not have")
+            }
+            targets.push(found)
+        }
+        let t0 = clock()
+        var sx = sx_function(mut m.funcs[cur], targets, memcpy_fn, realloc_fn)
+        if !sx.ok { return bk_fail(m.funcs[cur].name + ": " + sx.error) }
+        sx.calls = aligned[cur]
+        let t1 = clock()
+        let result = ra_allocate(mut sx.mf, target)
+        let t2 = clock()
+        if !result.ok { return bk_fail(m.funcs[cur].name + ": " + result.error) }
+        if options.check {
+            let problem = ra_check(sx.mf, result)
+            if problem.len() > 0 {
+                return bk_fail(m.funcs[cur].name + ": the allocation is wrong: " + problem)
+            }
+        }
+        if options.dump { print(bk_dump(sx.mf, result)) }
+        let t3 = clock()
+        let made = em_function(sx, result, m.funcs[cur].frames, trap_at)
+        pad_to(mut code, align_up(code.len(), 16), 0xCC)
+        let start = code.len()
+        starts.push(start)
+        code = code + made.code
+        var k = 0
+        while k < made.call_at.len() {
+            call_at.push(start + made.call_at[k])
+            call_fn.push(made.call_fn[k])
+            k = k + 1
+        }
+        for fix in made.rt {
+            rt.push(Fixup { field: start + fix.field, value: fix.value })
+        }
+        for fix in made.refs {
+            refs.push(Fixup { field: start + fix.field, value: fix.value })
+        }
+        let t4 = clock()
+        out.select_ns = out.select_ns + (t1 - t0)
+        out.allocate_ns = out.allocate_ns + (t2 - t1)
+        out.emit_ns = out.emit_ns + (t4 - t3)
+    }
+    var k = 0
+    while k < call_at.len() {
+        ex_patch(mut code, call_at[k], starts[call_fn[k]])
+        k = k + 1
+    }
+    let info = CodeFile {
+        target: "x86_64-linux",
+        entry: starts[entry],
+        code: "",
+        data: "",
+        ident: "",
+        imports: [],
+        relocs: [],
+        base: RT_BASE,
+        text_offset: RT_TEXT_OFFSET,
+        start: RT_START,
+        memory: RT_MEMORY,
+        memory_size: RT_MEMORY_SIZE,
+        entries: rt_entries(),
+        calls: rt,
+        refs: refs
+    }
+    var map = ""
+    var g = 0
+    while g < starts.len() {
+        let line = str(starts[g]) + " " + m.funcs[g].name + "\n"
+        map = map + line
+        g = g + 1
+    }
+    out.map = map
+    out.code_bytes = code.len()
+    out.image = build_elf_text(info, mut code, data, runtime)
+    return out
+}
+
+// The text of a function `__start` for a whole program: it calls
+// function `at` of `m`, the program's `main`, and gives its result back
+// as the exit code, or 0 when it has none.
+fn bk_program_start(m: IrModule, at: i64) -> str {
+    if m.funcs[at].ret_ty.len() == 1 && m.funcs[at].ret_ty[0] == IR_I64 {
+        return "fn __start() -> i64 \{\nb0:\n    v0 = call " + m.funcs[at].name + "() -> i64\n    ret v0\n}\n"
+    }
+    return "fn __start() -> i64 \{\nb0:\n    call " + m.funcs[at].name + "()\n    ret 0\n}\n"
+}
+
+// The text of a function `__start` that calls function `at` of `m` with
+// the given numbers, prints `=>` and then every result on a line of its
+// own (an address as `null` or `ptr`), and returns 0. It adds the words
+// it prints to the module's data.
+fn bk_harness(m: mut IrModule, at: i64, arguments: List[i64]) -> str {
+    let words = m.data.len()
+    m.data = m.data + "=>nullptr"
+    var text = "fn __start() -> i64 \{\nb0:\n    "
+    let results = m.funcs[at].ret_ty
+    var k = 0
+    while k < results.len() {
+        if k > 0 { text = text + ", " }
+        text = text + "v" + str(k)
+        k = k + 1
+    }
+    if results.len() > 0 { text = text + " = " }
+    text = text + "call " + m.funcs[at].name + "("
+    k = 0
+    while k < arguments.len() {
+        if k > 0 { text = text + ", " }
+        text = text + str(arguments[k])
+        k = k + 1
+    }
+    text = text + ")"
+    k = 0
+    while k < results.len() {
+        if k == 0 {
+            text = text + " -> "
+        } else {
+            text = text + ", "
+        }
+        text = text + ir_type_name(results[k])
+        k = k + 1
+    }
+    var next = results.len()
+    text = text + "\n    v" + str(next) + " = addr @data+" + str(words) + "\n    callrt print_str(v" + str(next) + ", 2)\n"
+    next = next + 1
+    k = 0
+    while k < results.len() {
+        if results[k] == IR_BOOL {
+            text = text + "    callrt print_bool(v" + str(k) + ")\n"
+        } else if results[k] == IR_PTR {
+            text = text + "    v" + str(next) + " = eq v" + str(k) + ", 0\n"
+            text = text + "    v" + str(next + 1) + " = addr @data+" + str(words + 2) + "\n"
+            text = text + "    v" + str(next + 2) + " = addr @data+" + str(words + 6) + "\n"
+            text = text + "    v" + str(next + 3) + " = select v" + str(next) + ", v" + str(next + 1) + ", v" + str(next + 2) + "\n"
+            text = text + "    v" + str(next + 4) + " = select v" + str(next) + ", 4, 3\n"
+            text = text + "    callrt print_str(v" + str(next + 3) + ", v" + str(next + 4) + ")\n"
+            next = next + 5
+        } else {
+            text = text + "    callrt print_i64(v" + str(k) + ")\n"
+        }
+        k = k + 1
+    }
+    return text + "    ret 0\n}\n"
+}

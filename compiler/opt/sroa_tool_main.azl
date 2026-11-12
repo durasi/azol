@@ -1,0 +1,277 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// `sroa-tool`: the pass `sroa` (compiler/opt/pass_sroa.azl) from the
+// command line, on a file of the text form or on a program.
+//
+//     sroa-tool <in.ir> [-o <out.ir>] [--stats]
+//         reads the text form, verifies it, runs the pass on every
+//         function, verifies again and writes the result (to standard
+//         output without `-o`). `--stats` prints what the pass did on
+//         standard error.
+//     sroa-tool emit <file.azl>...
+//         lowers the program, runs the pass, prints the text
+//     sroa-tool run [--argv0 NAME] [--steps N] [--depth N] [--stack BYTES] <file.azl>... [-- arguments]
+//         lowers the program, runs the pass and interprets the result:
+//         the same output, messages and exit code as the executable
+//     sroa-tool stats <file.azl>...
+//         what the pass did to the program, and for each function with
+//         `--each`
+//     sroa-tool time <file.azl>...     lowers and runs the pass, prints nothing
+//     sroa-tool lower <file.azl>...    lowers only: what `time` costs before the pass
+//
+// Exit codes: what the program exits with, for `run`; otherwise 0; 1
+// for a program or a text with mistakes; 2 for a wrong command line; 3
+// when the result breaks a rule of the intermediate form or the
+// interpreter caught it doing something it must not.
+//
+// Built like `azol-lower` (see compiler/opt/lower_tool_main.azl) with
+// pass_sroa.azl and this file in place of lower_tool_main.azl.
+
+fn sroa_tool_usage() {
+    eprint("usage: sroa-tool <in.ir> [-o <out.ir>] [--stats]")
+    eprint("       sroa-tool emit|stats|time|lower <file.azl>...")
+    eprint("       sroa-tool run [--argv0 NAME] [--steps N] [--depth N] [--stack BYTES] <file.azl>... [-- arguments]")
+    exit(2)
+}
+
+fn sroa_tool_number(text: str) -> i64 {
+    match text.to_i64() {
+        Some(n) => return n
+        None => sroa_tool_usage()
+    }
+    return 0
+}
+
+// Reads, parses, checks and lowers the files, as `azol-lower` does.
+fn sroa_tool_program(files: List[str]) -> Lower {
+    var src = ""
+    var starts: List[i64] = []
+    var lens: List[i64] = []
+    for path in files {
+        let text = read_or_exit(path)
+        if starts.len() > 0 { src = src + "\n" }
+        starts.push(src.len())
+        lens.push(text.len())
+        src = src + text
+    }
+    let prelude_start = src.len() + 1
+    src = src + "\n"
+    src = src + PRELUDE
+    var p = new_parser(src)
+    for k, start in starts {
+        let problem = parse_part(mut p, start, lens[k])
+        if problem.message.len() > 0 {
+            eprint("error: " + files[k] + ": offset " + str(problem.offset - start) + ": " + problem.message)
+            exit(1)
+        }
+    }
+    let problem = parse_part(mut p, prelude_start, PRELUDE.len())
+    if problem.message.len() > 0 {
+        eprint("error: the standard library does not parse: " + problem.message)
+        exit(1)
+    }
+    var c = new_checker(p, prelude_start)
+    c.file_starts = starts
+    c.file_paths = files
+    check_program(mut c, p)
+    if c.errors.len() > 0 {
+        for error in c.errors {
+            eprint("error: offset " + str(error.offset) + ": " + error.message)
+        }
+        exit(1)
+    }
+    var lw = lw_new()
+    lw_program(mut lw, c, p)
+    return lw
+}
+
+fn sroa_tool_verify(m: IrModule, when: str) {
+    let problem = ir_verify_module(m)
+    if problem.len() > 0 {
+        eprint("ir-verify (" + when + "): " + problem)
+        exit(3)
+    }
+}
+
+// The text form in, the text form out.
+fn sroa_tool_text(a: List[str]) {
+    var path = ""
+    var out = ""
+    var stats = false
+    var i = 1
+    while i < a.len() {
+        if a[i] == "-o" && i + 1 < a.len() {
+            out = a[i + 1]
+            i = i + 1
+        } else if a[i] == "--stats" {
+            stats = true
+        } else if path.len() == 0 {
+            path = a[i]
+        } else {
+            sroa_tool_usage()
+        }
+        i = i + 1
+    }
+    if path.len() == 0 { sroa_tool_usage() }
+    var m = ir_new_module()
+    match read_file(path) {
+        Ok(text) => {
+            let problem = ir_parse_module(text, mut m)
+            if problem.message.len() > 0 {
+                eprint("error: " + path + ":" + str(problem.line) + ":" + str(problem.column) + ": " + problem.message)
+                exit(1)
+            }
+        }
+        Err(why) => {
+            eprint("error: cannot read '" + path + "': " + why)
+            exit(1)
+        }
+    }
+    let before = ir_verify_module(m)
+    if before.len() > 0 {
+        eprint("error: " + before)
+        exit(1)
+    }
+    var numbers = sroa_new_stats()
+    ir_sroa_module(mut m, mut numbers)
+    sroa_tool_verify(m, "after sroa")
+    let text = ir_print_module(m)
+    if out.len() > 0 {
+        match write_file(out, text) {
+            Ok(n) => {}
+            Err(why) => {
+                eprint("error: cannot write '" + out + "': " + why)
+                exit(1)
+            }
+        }
+    } else if text.len() > 0 {
+        print(text.slice(0, text.len() - 1))
+    }
+    if stats {
+        let report = sroa_stats_text(numbers)
+        eprint(report.slice(0, report.len() - 1))
+    }
+}
+
+fn main() {
+    let a = args()
+    if a.len() < 2 { sroa_tool_usage() }
+    let command = a[1]
+    if command != "emit" && command != "run" && command != "stats" && command != "time" && command != "lower" {
+        sroa_tool_text(a)
+        return
+    }
+    var files: List[str] = []
+    var arguments: List[str] = []
+    var argv0 = ""
+    var steps = 4000000000000
+    var depth = 1000000
+    var stack = 8380000
+    var each = false
+    var i = 2
+    var after = false
+    while i < a.len() {
+        if after {
+            arguments.push(a[i])
+        } else if a[i] == "--" {
+            after = true
+        } else if a[i] == "--each" {
+            each = true
+        } else if a[i] == "--argv0" && i + 1 < a.len() {
+            argv0 = a[i + 1]
+            i = i + 1
+        } else if a[i] == "--steps" && i + 1 < a.len() {
+            steps = sroa_tool_number(a[i + 1])
+            i = i + 1
+        } else if a[i] == "--stack" && i + 1 < a.len() {
+            stack = sroa_tool_number(a[i + 1])
+            i = i + 1
+        } else if a[i] == "--depth" && i + 1 < a.len() {
+            depth = sroa_tool_number(a[i + 1])
+            i = i + 1
+        } else {
+            files.push(a[i])
+        }
+        i = i + 1
+    }
+    if files.len() == 0 { sroa_tool_usage() }
+    if argv0.len() == 0 { argv0 = files[0] }
+    var lw = sroa_tool_program(files)
+    if command == "lower" { return }
+    var numbers = sroa_new_stats()
+    if command == "stats" && each {
+        let effects = sroa_effects(lw.m)
+        var k = 0
+        while k < lw.m.funcs.len() {
+            var one = sroa_new_stats()
+            ir_sroa(mut lw.m.funcs[k], effects, mut one)
+            var line = lw.m.funcs[k].name + ": cells " + str(one.cells)
+            line = line + " variables " + str(one.promoted)
+            line = line + " shadowed " + str(one.shadowed)
+            line = line + " loads " + str(one.loads)
+            line = line + " -" + str(one.loads_removed + one.param_loads_removed)
+            line = line + " stores " + str(one.stores)
+            line = line + " -" + str(one.stores_removed)
+            line = line + " params +" + str(one.block_params)
+            print(line)
+            k = k + 1
+        }
+        return
+    }
+    ir_sroa_module(mut lw.m, mut numbers)
+    if command == "time" { return }
+    if command == "stats" {
+        let report = sroa_stats_text(numbers)
+        print(report.slice(0, report.len() - 1))
+        var instructions = 0
+        for f in lw.m.funcs {
+            for b in f.order {
+                var ins = f.blk_first[b]
+                while ins >= 0 {
+                    instructions = instructions + 1
+                    ins = f.ins_next[ins]
+                }
+            }
+        }
+        print("instructions after " + str(instructions))
+        return
+    }
+    if command == "emit" {
+        let text = ir_print_module(lw.m)
+        if text.len() > 0 { print(text.slice(0, text.len() - 1)) }
+        sroa_tool_verify(lw.m, "after sroa")
+        return
+    }
+    sroa_tool_verify(lw.m, "after sroa")
+    var mach = irm_new(lw.m)
+    mach.step_limit = steps
+    mach.depth_limit = depth
+    mach.overflow_stops = true
+    mach.stack_limit = stack
+    mach.reuse_frames = true
+    mach.arguments = [argv0]
+    for argument in arguments {
+        mach.arguments.push(argument)
+    }
+    let at = ir_find_func(lw.m, "main")
+    if at < 0 {
+        eprint("error: there is no function `main`")
+        exit(1)
+    }
+    let none: List[i64] = []
+    let returned = irm_run(mut mach, lw.m, lw.m.funcs[at], none)
+    if mach.failed {
+        eprint(mach.message)
+        exit(3)
+    }
+    if mach.stopped {
+        if mach.stop_message.len() > 0 { eprint(mach.stop_message) }
+        exit(mach.exit_code)
+    }
+    let left = irm_live_blocks(mach)
+    if left != 0 {
+        eprint("ir-interp: " + str(left) + " blocks were never freed")
+        exit(3)
+    }
+    if returned.len() > 0 { exit(returned[0] & 255) }
+}

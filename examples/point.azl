@@ -16,9 +16,7 @@ fn shift(p: mut Point, dx: f64) {
 
 fn find(list: List[i32], wanted: i32) -> Option[i32] {
     for i, value in list {
-        if value == wanted {
-            return Some(i)
-        }
+        if value == wanted { return Some(i) }
     }
     return None
 }

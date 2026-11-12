@@ -67,7 +67,8 @@ fn format_failed(message: str, offset: i64) -> Formatted {
 
 // Whether a line that ends in this token continues on the next one.
 fn fmt_continues(kind: i64) -> bool {
-    return (kind >= TOK_ASSIGN && kind <= TOK_PERCENT) || (kind >= TOK_AND_AND && kind <= TOK_SHR)
+    return (kind >= TOK_ASSIGN && kind <= TOK_PERCENT) || (kind >= TOK_AND_AND && kind <= TOK_SHR) ||
+        (kind >= TOK_PLUS_ASSIGN && kind <= TOK_SHR_ASSIGN)
 }
 
 // Whether an expression can end in this token, so that a `-` right
@@ -149,13 +150,9 @@ fn fmt_pieces(src: str, tokens: Tokens) -> Pieces {
         let kind = tokens.kinds[i]
         if kind != TOK_NEWLINE {
             var start = tokens.starts[i]
-            if kind == TOK_EOF {
-                start = src.len()
-            }
+            if kind == TOK_EOF { start = src.len() }
             newlines = fmt_comments_between(src, at, start, newlines, mut pieces)
-            if kind == TOK_EOF {
-                break
-            }
+            if kind == TOK_EOF { break }
             let end = start + tokens.lens[i]
             pieces.kinds.push(kind)
             pieces.starts.push(start)
@@ -167,6 +164,64 @@ fn fmt_pieces(src: str, tokens: Tokens) -> Pieces {
         i = i + 1
     }
     return pieces
+}
+
+// The longest line an `if` with its one statement may make and still
+// stay on one line.
+const FMT_ONE_LINE = 100
+
+// How wide the pieces `from..=to` are when written on one line.
+fn fmt_width(pieces: Pieces, from: i64, to: i64) -> i64 {
+    var width = 0
+    var last = -1
+    var last_is_unary = false
+    var k = from
+    while k <= to {
+        let kind = pieces.kinds[k]
+        if last >= 0 && fmt_space_between(last, last_is_unary, kind) { width = width + 1 }
+        width = width + pieces.ends[k] - pieces.starts[k]
+        if kind == TOK_BANG {
+            last_is_unary = true
+        } else if kind == TOK_MINUS {
+            last_is_unary = last < 0 || !fmt_ends_operand(last)
+        } else {
+            last_is_unary = false
+        }
+        last = kind
+        k = k + 1
+    }
+    return width
+}
+
+// Whether the `if` whose keyword is piece `keyword` and whose block is
+// `opener..closer` is written on one line: no `else` on either side, a
+// body of exactly one statement that is a `return`, `break`,
+// `continue`, an assignment or a call, and a line of at most
+// `FMT_ONE_LINE` columns at `depth` levels of indentation. The answer
+// depends on the tokens alone, so a long form is joined and a short
+// one that does not qualify is split.
+fn fmt_if_on_one_line(pieces: Pieces, shape: Shapes, keyword: i64, opener: i64, closer: i64, depth: i64) -> bool {
+    if closer <= opener + 1 { return false }
+    if keyword > 0 && (pieces.kinds[keyword - 1] == TOK_ELSE || pieces.kinds[keyword - 1] == TOK_FAT_ARROW) {
+        return false
+    }
+    if closer + 1 < pieces.kinds.len() && pieces.kinds[closer + 1] == TOK_ELSE { return false }
+    let first = pieces.kinds[opener + 1]
+    if first != TOK_RETURN && first != TOK_BREAK && first != TOK_CONTINUE && first != TOK_IDENT {
+        return false
+    }
+    // One statement: nothing in the body starts a new line, and nothing
+    // in the whole `if` is a comment or a block of its own.
+    var k = keyword + 1
+    while k < closer {
+        let kind = pieces.kinds[k]
+        if kind == PIECE_COMMENT { return false }
+        if k != opener && kind == TOK_LBRACE && shape.bracket[k] != BRACKET_FREE { return false }
+        if k > opener + 1 && pieces.newlines[k] > 0 { return false }
+        if k > keyword && k <= opener && pieces.newlines[k] > 0 { return false }
+        k = k + 1
+    }
+    return depth * 4 + fmt_width(pieces, keyword, closer) <= FMT_ONE_LINE
 }
 
 // Matches the brackets and works out what each one encloses.
@@ -187,21 +242,45 @@ fn fmt_shapes(pieces: Pieces) -> Shapes {
     var open: List[i64] = []
     var awaited: List[i64] = []
     var awaited_depth: List[i64] = []
+    // For each awaited `{`, the piece of the `if` it belongs to, or -1;
+    // and for each opening bracket the same, with how many blocks
+    // enclose that `if`.
+    var awaited_if: List[i64] = []
+    var if_keyword: List[i64] = []
+    var if_depth: List[i64] = []
+    i = 0
+    while i < count {
+        if_keyword.push(-1)
+        if_depth.push(0)
+        i = i + 1
+    }
     var previous = -1
     for index, kind in pieces.kinds {
-        if kind == PIECE_COMMENT {
-            continue
-        }
+        if kind == PIECE_COMMENT { continue }
         if kind == TOK_FN || kind == TOK_IF || kind == TOK_WHILE || kind == TOK_FOR || kind == TOK_MATCH {
             awaited.push(BRACKET_BODY)
             awaited_depth.push(open.len())
+            if kind == TOK_IF {
+                awaited_if.push(index)
+            } else {
+                awaited_if.push(-1)
+            }
         } else if kind == TOK_STRUCT || kind == TOK_ENUM {
             awaited.push(BRACKET_MEMBERS)
             awaited_depth.push(open.len())
+            awaited_if.push(-1)
         } else if kind == TOK_LBRACE {
             if awaited.len() > 0 && awaited_depth[awaited.len() - 1] == open.len() {
                 shape.bracket[index] = awaited.pop()
                 awaited_depth.pop()
+                if_keyword[index] = awaited_if.pop()
+                var blocks = 0
+                for outer in open {
+                    if pieces.kinds[outer] == TOK_LBRACE && shape.bracket[outer] != BRACKET_FREE {
+                        blocks = blocks + 1
+                    }
+                }
+                if_depth[index] = blocks
             } else if previous == TOK_IDENT || previous == TOK_RBRACKET {
                 shape.bracket[index] = BRACKET_FREE
             } else {
@@ -234,7 +313,8 @@ fn fmt_shapes(pieces: Pieces) -> Shapes {
         if opens_bracket(pieces.kinds[opener]) && closer >= 0 {
             let bracket = shape.bracket[opener]
             if bracket == BRACKET_BODY {
-                shape.multi[opener] = true
+                shape.multi[opener] = !(if_keyword[opener] >= 0 &&
+                        fmt_if_on_one_line(pieces, shape, if_keyword[opener], opener, closer, if_depth[opener]))
             } else {
                 // For a free bracket only up to its first token.
                 var last = closer
@@ -247,9 +327,7 @@ fn fmt_shapes(pieces: Pieces) -> Shapes {
                 }
                 var k = opener + 1
                 while k <= last {
-                    if pieces.newlines[k] > 0 {
-                        shape.multi[opener] = true
-                    }
+                    if pieces.newlines[k] > 0 { shape.multi[opener] = true }
                     k = k + 1
                 }
             }
@@ -265,7 +343,9 @@ fn fmt_space_between(previous: i64, previous_is_unary: bool, kind: i64) -> bool 
         // `- -a` keeps its space: `--a` would read as one operator.
         return previous == TOK_MINUS && kind == TOK_MINUS
     }
-    if previous == TOK_LPAREN || previous == TOK_LBRACKET || previous == TOK_DOT {
+    if previous == TOK_LPAREN || previous == TOK_LBRACKET || previous == TOK_DOT { return false }
+    // A range is written without spaces: `0..n`, `a..=b`.
+    if previous == TOK_DOT_DOT || previous == TOK_DOT_DOT_EQ || kind == TOK_DOT_DOT || kind == TOK_DOT_DOT_EQ {
         return false
     }
     if kind == TOK_RPAREN || kind == TOK_RBRACKET || kind == TOK_COMMA || kind == TOK_COLON || kind == TOK_DOT || kind == TOK_QUESTION {
@@ -278,9 +358,7 @@ fn fmt_space_between(previous: i64, previous_is_unary: bool, kind: i64) -> bool 
         return !(previous == TOK_IDENT || previous == TOK_RPAREN || previous == TOK_RBRACKET || previous == TOK_STR ||
                 previous == TOK_QUESTION)
     }
-    if kind == TOK_RBRACE {
-        return previous != TOK_LBRACE
-    }
+    if kind == TOK_RBRACE { return previous != TOK_LBRACE }
     return true
 }
 
@@ -305,6 +383,11 @@ fn fmt_layout(src: str, pieces: Pieces, shape: Shapes) -> str {
     var last_is_unary = false
     // True while the last token written is an opening bracket.
     var after_opener = false
+    // True from the sign of a range to the `{` of its loop, and whether
+    // the last token written is the word `step` there: a `-` after it
+    // belongs to the number.
+    var in_range = false
+    var after_step = false
 
     for index, kind in pieces.kinds {
         let newlines = pieces.newlines[index]
@@ -321,6 +404,9 @@ fn fmt_layout(src: str, pieces: Pieces, shape: Shapes) -> str {
                 breaks = partner >= 0 && partner != index - 1 && shape.multi[partner]
             } else if kind == TOK_ELSE && before == TOK_RBRACE {
                 breaks = false
+            } else if before == TOK_LBRACE && shape.bracket[index - 1] == BRACKET_BODY && !shape.multi[index - 1] {
+                // The one statement of an `if` that stays on its line.
+                breaks = false
             } else {
                 let after_body_opener = opens_bracket(before) && shape.bracket[index - 1] != BRACKET_FREE && shape.multi[index - 1]
                 let separator = shape.separates[index - 1]
@@ -328,21 +414,15 @@ fn fmt_layout(src: str, pieces: Pieces, shape: Shapes) -> str {
             }
         }
         var base = 0
-        if open.len() > 0 {
-            base = open[open.len() - 1] + 1
-        }
+        if open.len() > 0 { base = open[open.len() - 1] + 1 }
         if breaks {
             out = out + "\n"
-            if newlines > 1 && !after_opener && !closes {
-                out = out + "\n"
-            }
+            if newlines > 1 && !after_opener && !closes { out = out + "\n" }
             if kind == PIECE_COMMENT {
                 line_indent = base
             } else if closes {
                 line_indent = base - 1
-                if line_indent < 0 {
-                    line_indent = 0
-                }
+                if line_indent < 0 { line_indent = 0 }
             } else if kind == TOK_DOT || (last_token >= 0 && fmt_continues(last_token)) {
                 line_indent = base + 1
             } else {
@@ -373,7 +453,7 @@ fn fmt_layout(src: str, pieces: Pieces, shape: Shapes) -> str {
         if kind == TOK_BANG {
             last_is_unary = true
         } else if kind == TOK_MINUS {
-            last_is_unary = line_is_empty || !(last_token >= 0 && fmt_ends_operand(last_token))
+            last_is_unary = line_is_empty || after_step || !(last_token >= 0 && fmt_ends_operand(last_token))
         } else {
             last_is_unary = false
         }
@@ -388,32 +468,30 @@ fn fmt_layout(src: str, pieces: Pieces, shape: Shapes) -> str {
             open.pop()
         }
         after_opener = opens_bracket(kind)
+        if kind == TOK_DOT_DOT || kind == TOK_DOT_DOT_EQ {
+            in_range = true
+        } else if kind == TOK_LBRACE {
+            in_range = false
+        }
+        after_step = in_range && kind == TOK_IDENT && text == "step"
         last_token = kind
     }
-    if out.len() > 0 {
-        out = out + "\n"
-    }
+    if out.len() > 0 { out = out + "\n" }
     return out
 }
 
 // What must be the same before and after formatting: every token that
 // is not a newline, and every comment.
 fn fmt_same_pieces(a_src: str, a: Pieces, b_src: str, b: Pieces) -> bool {
-    if a.kinds.len() != b.kinds.len() {
-        return false
-    }
+    if a.kinds.len() != b.kinds.len() { return false }
     for index, kind in a.kinds {
         let start = a.starts[index]
         let len = a.ends[index] - start
         let other = b.starts[index]
-        if kind != b.kinds[index] || len != b.ends[index] - other {
-            return false
-        }
+        if kind != b.kinds[index] || len != b.ends[index] - other { return false }
         var k = 0
         while k < len {
-            if a_src[start + k] != b_src[other + k] {
-                return false
-            }
+            if a_src[start + k] != b_src[other + k] { return false }
             k = k + 1
         }
     }
@@ -434,9 +512,7 @@ fn fmt_tree(src: str, tokens: mut Tokens) -> Formatted {
     var p = new_parser(src)
     p.tokens = tokens
     parse_tokens(mut p)
-    if p.failed {
-        return format_failed(p.error.message, p.error.offset)
-    }
+    if p.failed { return format_failed(p.error.message, p.error.offset) }
     return Formatted { ok: true, text: dump_ast(p.ast, p.src), message: "", offset: 0 }
 }
 
@@ -449,24 +525,16 @@ fn fmt_internal(what: str) -> Formatted {
 fn format_source(src: str) -> Formatted {
     var tokens = new_tokens()
     let tree_before = fmt_tree(src, mut tokens)
-    if !tree_before.ok {
-        return tree_before
-    }
+    if !tree_before.ok { return tree_before }
     let before = fmt_pieces(src, tokens)
     let out = fmt_layout(src, before, fmt_shapes(before))
     var tokens_after = new_tokens()
     let tree_after = fmt_tree(out, mut tokens_after)
-    if tokens_after.kinds.len() == 0 {
-        return fmt_internal("the result does not lex")
-    }
+    if tokens_after.kinds.len() == 0 { return fmt_internal("the result does not lex") }
     if !fmt_same_pieces(src, before, out, fmt_pieces(out, tokens_after)) {
         return fmt_internal("the result has other tokens or comments")
     }
-    if !tree_after.ok {
-        return fmt_internal("the result does not parse")
-    }
-    if tree_after.text != tree_before.text {
-        return fmt_internal("the result parses differently")
-    }
+    if !tree_after.ok { return fmt_internal("the result does not parse") }
+    if tree_after.text != tree_before.text { return fmt_internal("the result parses differently") }
     return Formatted { ok: true, text: out, message: "", offset: 0 }
 }

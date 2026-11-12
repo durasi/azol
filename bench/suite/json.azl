@@ -9,9 +9,7 @@
 const SMALL = false
 
 fn size(full: i64, small: i64) -> i64 {
-    if SMALL {
-        return small
-    }
+    if SMALL { return small }
     return full
 }
 
@@ -62,9 +60,7 @@ fn parse_number(p: mut Parser) -> i64 {
         n = n * 10 + p.text[p.at] - 48
         p.at = p.at + 1
     }
-    if negative {
-        return 0 - n
-    }
+    if negative { return 0 - n }
     return n
 }
 
@@ -95,18 +91,14 @@ fn parse_value(p: mut Parser) -> Json {
         p.at = p.at + 1
         skip_spaces(mut p)
         while p.text[p.at] != 93 {
-            if p.text[p.at] == 44 {
-                p.at = p.at + 1
-            }
+            if p.text[p.at] == 44 { p.at = p.at + 1 }
             items.push(parse_value(mut p))
             skip_spaces(mut p)
         }
         p.at = p.at + 1
         return Array(items)
     }
-    if c == 34 {
-        return Text(parse_text(mut p))
-    }
+    if c == 34 { return Text(parse_text(mut p)) }
     if c == 116 {
         p.at = p.at + 4
         return Flag(true)
@@ -162,9 +154,7 @@ fn write(value: Json, out: mut str) {
         Array(items) => {
             out.push(91)
             for i, item in items {
-                if i > 0 {
-                    out.push(44)
-                }
+                if i > 0 { out.push(44) }
                 write(item, mut out)
             }
             out.push(93)
@@ -172,9 +162,7 @@ fn write(value: Json, out: mut str) {
         Object(members) => {
             out.push(123)
             for i, member in members {
-                if i > 0 {
-                    out.push(44)
-                }
+                if i > 0 { out.push(44) }
                 out.push(34)
                 out = out + member.key
                 out = out + "\":"
@@ -191,10 +179,8 @@ fn document(objects: i64) -> str {
     var n = 0
     while n < objects {
         seed = seed * 48271 % 2147483647
-        if n > 0 {
-            text = text + ","
-        }
-        text = text + "{\"id\":"
+        if n > 0 { text = text + "," }
+        text = text + "\{\"id\":"
         text = text + str(n)
         text = text + ",\"name\":\"item"
         text = text + str(seed % 100000)

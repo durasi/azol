@@ -1,0 +1,6 @@
+; x / 8, rounding toward zero: the sign's bits are added before the shift.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = sdiv p0, 8
+    ret v0
+}

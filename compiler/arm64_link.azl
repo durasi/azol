@@ -53,9 +53,7 @@ fn a_ident(out: str) -> str {
         }
         at = at + 1
     }
-    if !has_name {
-        return "azol-program"
-    }
+    if !has_name { return "azol-program" }
     return name
 }
 

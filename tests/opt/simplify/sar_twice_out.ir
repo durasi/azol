@@ -1,0 +1,7 @@
+; (x >> 40) >> 30 arithmetically is x >> 63: the sign stays.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = sar p0, 40
+    v1 = sar v0, 30
+    ret v1
+}

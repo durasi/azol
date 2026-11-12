@@ -1,0 +1,6 @@
+fn main(p0: i64) -> i64 {
+b0:
+    jump b3
+b3:
+    ret p0
+}

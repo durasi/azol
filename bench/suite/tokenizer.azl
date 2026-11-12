@@ -10,9 +10,7 @@
 const SMALL = false
 
 fn size(full: i64, small: i64) -> i64 {
-    if SMALL {
-        return small
-    }
+    if SMALL { return small }
     return full
 }
 
@@ -25,27 +23,21 @@ fn is_digit(c: i64) -> bool {
 }
 
 fn hex_value(c: i64) -> i64 {
-    if is_digit(c) {
-        return c - 48
-    }
-    if c >= 97 && c <= 102 {
-        return c - 87
-    }
-    if c >= 65 && c <= 70 {
-        return c - 55
-    }
+    if is_digit(c) { return c - 48 }
+    if c >= 97 && c <= 102 { return c - 87 }
+    if c >= 65 && c <= 70 { return c - 55 }
     return -1
 }
 
 fn source(lines: i64) -> str {
     let snippet = [
         "// Adds the weights of every edge that leaves a node.",
-        "fn total_weight(graph: Graph, node: i64) -> i64 {",
+        "fn total_weight(graph: Graph, node: i64) -> i64 \{",
         "    var sum = 0",
-        "    for edge in graph.edges {",
-        "        if edge.source == node && edge.weight >= 10 {",
+        "    for edge in graph.edges \{",
+        "        if edge.source == node && edge.weight >= 10 \{",
         "            sum = sum + edge.weight * 3 - 0x1F",
-        "        } else if edge.label != \"skip me\" || node << 2 > 4096 {",
+        "        } else if edge.label != \"skip me\" || node << 2 > 4096 \{",
         "            sum = sum - 1",
         "        }",
         "    }",

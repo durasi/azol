@@ -1,0 +1,7 @@
+; A `select` on a constant condition is one of its arms.
+fn main(p0: i64, p1: i64) -> i64, i64 {
+b0:
+    v0 = select 1, p0, p1
+    v1 = select 0, p0, p1
+    ret v0, v1
+}

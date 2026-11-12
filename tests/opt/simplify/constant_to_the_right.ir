@@ -1,0 +1,8 @@
+; A constant on the left of a commutative operation moves right.
+fn main(p0: i64) -> i64, i64, i64 {
+b0:
+    v0 = add 5, p0
+    v1 = mul 3, p0
+    v2 = xor 9, p0
+    ret v0, v1, v2
+}

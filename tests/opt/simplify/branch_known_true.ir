@@ -1,0 +1,15 @@
+; Inside the true side of a branch its condition is true: the second test goes.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = slt p0, 10
+    br v0, b1, b4
+b1:
+    callrt print_i64(p0)
+    br v0, b2, b3
+b2:
+    ret 1
+b3:
+    ret 2
+b4:
+    ret 3
+}

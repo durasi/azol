@@ -36,7 +36,8 @@ first time. It is short on purpose. The full reference is
 
 10. `let` cannot change. `var` can. There is no `let mut`, no `const` inside
     a function, no `:=`.
-11. No `+=`, `-=`, `++`. Write `x = x + 1`.
+11. `x += 1`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=` exist and
+    are statements. No `++`, no `--`.
 12. Parameters are read-only. To change one, write `mut` in both places:
     `fn add(xs: mut List[i64])` and `add(mut xs)`. The argument must be a
     `var`. There is no `&`, no `&mut`, no `*`.
@@ -56,8 +57,9 @@ first time. It is short on purpose. The full reference is
     The last expression is not returned.
 18. Conditions are `bool`, without parentheses, with braces:
     `if n > 0 {`. An `i64` is not a condition.
-19. `for x in list` and `for i, x in list` go through lists only. There are
-    no ranges. Count with `while`.
+19. `for x in list` and `for i, x in list` go through lists. `for i in 0..n`
+    counts up to `n - 1`, `0..=n` up to `n`, `n - 1..=0 step -1` down. A range
+    is written only there: it is not a value, not an index.
 20. A struct literal in the condition of `if`/`while`, the value of `match`
     or the list of `for` needs parentheses: `if p.x == (Point { x: 1 }).x {`.
 
@@ -91,7 +93,7 @@ first time. It is short on purpose. The full reference is
     temporaries, for the last use of a variable, for read-only arguments,
     and for `s = s + more`, which appends in place.
 29. You cannot change a list inside a `for` over it, not even `xs[i] = v`.
-    Use `while i < xs.len()`.
+    Use `for i in 0..xs.len()`.
 
 **Text**
 
@@ -223,25 +225,21 @@ or variant after a field that owns memory; use a `let` before it.
 ```azol
 fn repeat(part: str, times: i64) -> str {
     var out = ""
-    var i = 0
-    while i < times {
-        out = out + part
-        i = i + 1
+    for i in 0..times {
+        out += part
     }
     return out
 }
 
 fn upper(s: str) -> str {
     var out = ""
-    var i = 0
-    while i < s.len() {
+    for i in 0..s.len() {
         let c = s[i]
         if c >= 'a' && c <= 'z' {
-            out = out + chr(c - 32)
+            out += chr(c - 32)
         } else {
-            out = out + chr(c)
+            out += chr(c)
         }
-        i = i + 1
     }
     return out
 }
@@ -250,7 +248,8 @@ fn main() {
     print(repeat("ab", 3))
     print(upper("hello, azoL"))
     let total = 6
-    print("total: " + str(total) + ", even: " + str(total % 2 == 0))
+    print("total: {total}, even: {total % 2 == 0}")
+    print("a brace: \{, and a value in braces: \{{total}}")
     print(["a", "b"].join(", "))
 }
 ```
@@ -259,10 +258,14 @@ fn main() {
 ababab
 HELLO, AZOL
 total: 6, even: true
+a brace: {, and a value in braces: {6}
 a, b
 ```
 
-`out = out + part` appends in place; it is not quadratic.
+`out += part` appends in place; it is not quadratic. `"{value}"` in a text
+puts an `i64`, a `bool` or a `str` there; the value holds no text literal and
+no brace of its own, and has no format (`{x:>5}` does not exist). A brace
+that is only a brace is `\{`, always, also in JSON and in usage messages.
 
 ### A struct with a list
 

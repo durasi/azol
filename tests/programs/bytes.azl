@@ -69,9 +69,7 @@ fn main() {
     b.set_u32(2, 0xDEADBEEF)
     var line = ""
     for i, x in b.bytes() {
-        if i > 0 {
-            line.push(32)
-        }
+        if i > 0 { line.push(32) }
         line = line + str(x)
     }
     print(line)
@@ -83,8 +81,6 @@ fn main() {
     let texts = "ab".filled(3)
     print(texts.join(" ") + " " + str(texts.len()))
     let none: List[str] = "x".filled(0 - 2)
-    if none.len() != 0 {
-        print("wrong")
-    }
+    if none.len() != 0 { print("wrong") }
     t.set(6, 1)
 }

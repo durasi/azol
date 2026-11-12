@@ -1,0 +1,22 @@
+fn f(p0: i64) -> i64 {
+    frames 0, 0
+b0:
+    jump b1
+b1:
+    jump b2(0, 0)
+b2(v11: i64, v12: i64):
+    v3 = slt v11, p0
+    br v3, b3, b6
+b3:
+    v5 = add v11, 1
+    v6 = and v11, 1
+    v7 = eq v6, 0
+    br v7, b4, b5
+b4:
+    jump b2(v5, v12)
+b5:
+    v9 = add v12, v11
+    jump b2(v5, v9)
+b6:
+    ret v12
+}

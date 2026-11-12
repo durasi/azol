@@ -61,9 +61,7 @@ fn truthy(o: Option[str]) -> bool {
 }
 
 fn holder(id: i64) -> Holder {
-    if id % 2 == 0 {
-        return Holder { id: id, item: None, note: Err([id, id]) }
-    }
+    if id % 2 == 0 { return Holder { id: id, item: None, note: Err([id, id]) } }
     return Holder { id: id, item: Some(Record { title: "x" + str(id), tags: ["t"] }), note: Ok("nick") }
 }
 
@@ -71,9 +69,7 @@ fn search(words: List[str], want: str) -> Option[str] {
     for w in words {
         match Some(w + "") {
             Some(copy) => {
-                if copy == want {
-                    return Some("found " + copy)
-                }
+                if copy == want { return Some("found " + copy) }
             }
             None => {}
         }
@@ -88,9 +84,7 @@ fn depth(c: Chain) -> i64 {
             var best = 0
             for r in rest {
                 let d = depth(r)
-                if d > best {
-                    best = d
-                }
+                if d > best { best = d }
             }
             return best + name.len()
         }
@@ -98,16 +92,12 @@ fn depth(c: Chain) -> i64 {
 }
 
 fn build(n: i64) -> Chain {
-    if n == 0 {
-        return End
-    }
+    if n == 0 { return End }
     return Link("ab", [End, build(n - 1), End])
 }
 
 fn nodes(n: i64) -> Chain {
-    if n == 0 {
-        return End
-    }
+    if n == 0 { return End }
     return Link("", [nodes(n - 1), nodes(n - 1)])
 }
 
@@ -147,13 +137,9 @@ fn weigh(w: Wide) -> i64 {
 fn main() {
     // A temporary that is never built must not be freed.
     let off = false
-    if off && truthy(Some("a" + "b")) {
-        print(1)
-    }
+    if off && truthy(Some("a" + "b")) { print(1) }
     print(count(None))
-    if truthy(Some("a" + "bc")) || truthy(Some("never" + "built")) {
-        print(3)
-    }
+    if truthy(Some("a" + "bc")) || truthy(Some("never" + "built")) { print(3) }
 
     // The same temporaries, filled on some rounds and skipped on others.
     var round = 0
@@ -280,7 +266,5 @@ fn main() {
     let copy = wide
     wide = Small(4)
     print(weigh(wide))
-    if weigh(copy) == 10 && weigh(Large("", 0, [], "", None)) == 0 {
-        print("ok")
-    }
+    if weigh(copy) == 10 && weigh(Large("", 0, [], "", None)) == 0 { print("ok") }
 }

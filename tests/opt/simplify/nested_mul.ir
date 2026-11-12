@@ -1,0 +1,7 @@
+; (x * 3) * 5 is x * 15.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = mul p0, 3
+    v1 = mul v0, 5
+    ret v1
+}

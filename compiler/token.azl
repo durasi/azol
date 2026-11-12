@@ -68,6 +68,21 @@ const TOK_QUESTION = 53
 const TOK_NEWLINE = 54
 const TOK_EOF = 55
 
+// Added after the first tokens, so the numbers above keep their order:
+// `a op= b`, and the two signs of a range in `for`.
+const TOK_PLUS_ASSIGN = 56
+const TOK_MINUS_ASSIGN = 57
+const TOK_STAR_ASSIGN = 58
+const TOK_SLASH_ASSIGN = 59
+const TOK_PERCENT_ASSIGN = 60
+const TOK_AMP_ASSIGN = 61
+const TOK_PIPE_ASSIGN = 62
+const TOK_CARET_ASSIGN = 63
+const TOK_SHL_ASSIGN = 64
+const TOK_SHR_ASSIGN = 65
+const TOK_DOT_DOT = 66
+const TOK_DOT_DOT_EQ = 67
+
 // The tokens of one source text. The last one is always `TOK_EOF`.
 struct Tokens {
     kinds: List[i64]
@@ -137,6 +152,18 @@ fn token_kind_name(kind: i64) -> str {
         TOK_SHR => return "Shr"
         TOK_QUESTION => return "Question"
         TOK_NEWLINE => return "Newline"
+        TOK_PLUS_ASSIGN => return "PlusAssign"
+        TOK_MINUS_ASSIGN => return "MinusAssign"
+        TOK_STAR_ASSIGN => return "StarAssign"
+        TOK_SLASH_ASSIGN => return "SlashAssign"
+        TOK_PERCENT_ASSIGN => return "PercentAssign"
+        TOK_AMP_ASSIGN => return "AmpAssign"
+        TOK_PIPE_ASSIGN => return "PipeAssign"
+        TOK_CARET_ASSIGN => return "CaretAssign"
+        TOK_SHL_ASSIGN => return "ShlAssign"
+        TOK_SHR_ASSIGN => return "ShrAssign"
+        TOK_DOT_DOT => return "DotDot"
+        TOK_DOT_DOT_EQ => return "DotDotEq"
         _ => return "Eof"
     }
 }
@@ -168,7 +195,7 @@ fn describe_token(kind: i64) -> str {
         TOK_FALSE => return "`false`"
         TOK_LPAREN => return "`(`"
         TOK_RPAREN => return "`)`"
-        TOK_LBRACE => return "`{`"
+        TOK_LBRACE => return "`\{`"
         TOK_RBRACE => return "`}`"
         TOK_LBRACKET => return "`[`"
         TOK_RBRACKET => return "`]`"
@@ -199,6 +226,18 @@ fn describe_token(kind: i64) -> str {
         TOK_SHR => return "`>>`"
         TOK_QUESTION => return "`?`"
         TOK_NEWLINE => return "end of line"
+        TOK_PLUS_ASSIGN => return "`+=`"
+        TOK_MINUS_ASSIGN => return "`-=`"
+        TOK_STAR_ASSIGN => return "`*=`"
+        TOK_SLASH_ASSIGN => return "`/=`"
+        TOK_PERCENT_ASSIGN => return "`%=`"
+        TOK_AMP_ASSIGN => return "`&=`"
+        TOK_PIPE_ASSIGN => return "`|=`"
+        TOK_CARET_ASSIGN => return "`^=`"
+        TOK_SHL_ASSIGN => return "`<<=`"
+        TOK_SHR_ASSIGN => return "`>>=`"
+        TOK_DOT_DOT => return "`..`"
+        TOK_DOT_DOT_EQ => return "`..=`"
         _ => return "end of file"
     }
 }

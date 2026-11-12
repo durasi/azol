@@ -1,0 +1,110 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// `opt-tool`: runs the optimiser's passes on a file in the intermediate
+// form and writes the result.
+//
+//     opt-tool <in.ir> [-o <out.ir>] [options]
+//
+//     --passes a,b,c    these passes, in this order, instead of the
+//                       order of `pipeline.azl`
+//     --fixpoint        the whole list again until it changes nothing
+//     --verify-each     the verifier after every pass
+//     --stats           what each pass did, on standard error
+//
+// Without `-o` the result is printed. The file is verified before the
+// first pass and after the last.
+//
+// Exit codes: 0; 1 for a file that is wrong, a pass that does not
+// exist, or a pass that broke a rule; 2 for a wrong command line.
+//
+// Built from:
+//
+//     azol build compiler/opt/ir.azl compiler/opt/ir_text.azl compiler/opt/ir_cfg.azl \
+//         compiler/opt/ir_verify.azl compiler/opt/pass_simplify_util.azl \
+//         compiler/opt/pass_simplify.azl compiler/opt/pass_dce.azl compiler/opt/pass_dse.azl \
+//         compiler/opt/pipeline.azl compiler/opt/opt_tool_main.azl -o opt-tool
+
+fn opt_tool_usage() {
+    eprint("usage: opt-tool <in.ir> [-o <out.ir>] [--passes a,b,c] [--fixpoint] [--verify-each] [--stats]")
+    exit(2)
+}
+
+fn main() {
+    let a = args()
+    var path = ""
+    var out = ""
+    var options = pl_default_options()
+    var show = false
+    var i = 1
+    while i < a.len() {
+        if a[i] == "-o" && i + 1 < a.len() {
+            out = a[i + 1]
+            i = i + 2
+        } else if a[i] == "--passes" && i + 1 < a.len() {
+            options.passes = []
+            if a[i + 1].len() > 0 { options.passes = a[i + 1].split(",") }
+            i = i + 2
+        } else if a[i] == "--fixpoint" {
+            options.fixpoint = true
+            i = i + 1
+        } else if a[i] == "--verify-each" {
+            options.verify_each = true
+            i = i + 1
+        } else if a[i] == "--stats" {
+            show = true
+            i = i + 1
+        } else if path.len() == 0 && !a[i].starts_with("-") {
+            path = a[i]
+            i = i + 1
+        } else {
+            opt_tool_usage()
+        }
+    }
+    if path.len() == 0 { opt_tool_usage() }
+    var m = ir_new_module()
+    match read_file(path) {
+        Ok(text) => {
+            let problem = ir_parse_module(text, mut m)
+            if problem.message.len() > 0 {
+                eprint("error: " + path + ":" + str(problem.line) + ":" + str(problem.column) + ": " + problem.message)
+                exit(1)
+            }
+        }
+        Err(why) => {
+            eprint("error: cannot read '" + path + "': " + why)
+            exit(1)
+        }
+    }
+    let before = ir_verify_module(m)
+    if before.len() > 0 {
+        eprint("error: " + before)
+        exit(1)
+    }
+    var stats = pl_new_stats()
+    let problem = pl_run(mut m, options, mut stats)
+    if problem.len() > 0 {
+        eprint("error: " + problem)
+        exit(1)
+    }
+    let after = ir_verify_module(m)
+    if after.len() > 0 {
+        eprint("error: the passes broke the function: " + after)
+        exit(1)
+    }
+    if show {
+        let text = pl_stats_text(stats)
+        eprint(text.slice(0, text.len() - 1))
+    }
+    let text = ir_print_module(m)
+    if out.len() == 0 {
+        print(text.slice(0, text.len() - 1))
+        return
+    }
+    match write_file(out, text) {
+        Ok(_) => {}
+        Err(why) => {
+            eprint("error: cannot write '" + out + "': " + why)
+            exit(1)
+        }
+    }
+}

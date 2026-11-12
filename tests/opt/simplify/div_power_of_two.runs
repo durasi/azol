@@ -1,0 +1,13 @@
+main 0
+main 1
+main -1
+main 7
+main -9223372036854775808
+main 9223372036854775807
+main 100
+main -37
+main -8
+main -7
+main -9
+main 15
+main -16

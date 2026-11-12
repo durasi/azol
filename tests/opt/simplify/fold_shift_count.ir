@@ -1,0 +1,8 @@
+; A constant shift count is taken modulo 64 before the fold.
+fn main() -> i64, i64, i64 {
+b0:
+    v0 = shl 1, 65
+    v1 = sar -8, 64
+    v2 = shr -1, 127
+    ret v0, v1, v2
+}

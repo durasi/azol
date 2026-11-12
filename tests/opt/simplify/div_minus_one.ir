@@ -1,0 +1,7 @@
+; x / -1 is the wrapping negation and x % -1 is 0; neither faults on the smallest number.
+fn main(p0: i64) -> i64, i64 {
+b0:
+    v0 = sdiv p0, -1
+    v1 = srem p0, -1
+    ret v0, v1
+}

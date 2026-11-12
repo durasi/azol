@@ -1,0 +1,57 @@
+// expect-exit: 0
+// expect-line: total: 42
+// expect-line: 42
+// expect-line: azoL is true, twice 84 and 4342
+// expect-line: braces: { and } and {sum}
+// expect-line: p = (7, p)
+// expect-line: a42bctruedazoLazoL
+// expect-line: 0:10 1:20 2:30 |15
+// expect-line: 4 6 42
+// expect-line: true
+// expect-line: azoL!
+// expect-line: once once 3
+// Text with values: `{value}` in a text puts the text of the value
+// there, an `i64`, a `bool` or a `str`. `\{` is a brace. A text that is
+// added to another is appended piece by piece, and every value is worked
+// out once, left to right.
+struct P { x: i64, name: str }
+
+fn twice(n: i64) -> i64 {
+    return n * 2
+}
+
+fn noted(log: mut List[str], n: i64) -> i64 {
+    log.push("once")
+    return n
+}
+
+fn main() {
+    let sum = 41 + 1
+    let ok = sum > 40
+    let name = "azoL"
+    print("total: {sum}")
+    print("{sum}")
+    print("{name} is {ok}, twice {twice(sum)} and {sum + 1}{sum}")
+    print("braces: \{ and } and \{sum}")
+    let p = P { x: 7, name: "p" }
+    print("p = ({p.x}, {p.name})")
+    var out = ""
+    out += "a{sum}b"
+    out = out + "c{ok}" + "d{name}"
+    out += name
+    print(out)
+    let xs = [10, 20, 30]
+    var line = ""
+    for i in 0..xs.len() {
+        line += "{i}:{xs[i]} "
+    }
+    print("{line}|{line.len()}")
+    print("{name.len()} {xs.len() * 2} { sum }")
+    print("x" + "{sum}" == "x42")
+    var copy = "{name}"
+    copy += "!"
+    print(copy)
+    var log: List[str] = []
+    let shown = "{noted(mut log, 1)} {noted(mut log, 2)}"
+    print("{log[0]} {log[1]} {shown.len()}")
+}

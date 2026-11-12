@@ -1,0 +1,8 @@
+; b & false is false and b | true is true.
+fn main(p0: i64) -> bool, bool {
+b0:
+    v0 = slt p0, 5
+    v1 = and v0, 0
+    v2 = or v0, 1
+    ret v1, v2
+}

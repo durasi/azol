@@ -30,9 +30,7 @@ fn is_hex_digit(b: i64) -> bool {
 fn word_at(src: str, start: i64, word: str) -> bool {
     var i = 0
     while i < word.len() {
-        if src[start + i] != word[i] {
-            return false
-        }
+        if src[start + i] != word[i] { return false }
         i = i + 1
     }
     return true
@@ -40,77 +38,39 @@ fn word_at(src: str, start: i64, word: str) -> bool {
 
 // The kind of the name at `start`: a keyword, or `TOK_IDENT`.
 fn keyword_kind(src: str, start: i64, len: i64) -> i64 {
-    if len < 2 || len > 8 {
-        return TOK_IDENT
-    }
+    if len < 2 || len > 8 { return TOK_IDENT }
     let first = src[start]
     match len {
         2 => {
             let second = src[start + 1]
-            if first == 'f' && second == 'n' {
-                return TOK_FN
-            }
-            if first == 'i' && second == 'f' {
-                return TOK_IF
-            }
-            if first == 'i' && second == 'n' {
-                return TOK_IN
-            }
+            if first == 'f' && second == 'n' { return TOK_FN }
+            if first == 'i' && second == 'f' { return TOK_IF }
+            if first == 'i' && second == 'n' { return TOK_IN }
         }
         3 => {
-            if first == 'l' && word_at(src, start, "let") {
-                return TOK_LET
-            }
-            if first == 'v' && word_at(src, start, "var") {
-                return TOK_VAR
-            }
-            if first == 'm' && word_at(src, start, "mut") {
-                return TOK_MUT
-            }
-            if first == 'f' && word_at(src, start, "for") {
-                return TOK_FOR
-            }
+            if first == 'l' && word_at(src, start, "let") { return TOK_LET }
+            if first == 'v' && word_at(src, start, "var") { return TOK_VAR }
+            if first == 'm' && word_at(src, start, "mut") { return TOK_MUT }
+            if first == 'f' && word_at(src, start, "for") { return TOK_FOR }
         }
         4 => {
-            if first == 'e' && word_at(src, start, "else") {
-                return TOK_ELSE
-            }
-            if first == 'e' && word_at(src, start, "enum") {
-                return TOK_ENUM
-            }
-            if first == 't' && word_at(src, start, "true") {
-                return TOK_TRUE
-            }
+            if first == 'e' && word_at(src, start, "else") { return TOK_ELSE }
+            if first == 'e' && word_at(src, start, "enum") { return TOK_ENUM }
+            if first == 't' && word_at(src, start, "true") { return TOK_TRUE }
         }
         5 => {
-            if first == 'c' && word_at(src, start, "const") {
-                return TOK_CONST
-            }
-            if first == 'm' && word_at(src, start, "match") {
-                return TOK_MATCH
-            }
-            if first == 'w' && word_at(src, start, "while") {
-                return TOK_WHILE
-            }
-            if first == 'b' && word_at(src, start, "break") {
-                return TOK_BREAK
-            }
-            if first == 'f' && word_at(src, start, "false") {
-                return TOK_FALSE
-            }
+            if first == 'c' && word_at(src, start, "const") { return TOK_CONST }
+            if first == 'm' && word_at(src, start, "match") { return TOK_MATCH }
+            if first == 'w' && word_at(src, start, "while") { return TOK_WHILE }
+            if first == 'b' && word_at(src, start, "break") { return TOK_BREAK }
+            if first == 'f' && word_at(src, start, "false") { return TOK_FALSE }
         }
         6 => {
-            if first == 's' && word_at(src, start, "struct") {
-                return TOK_STRUCT
-            }
-            if first == 'r' && word_at(src, start, "return") {
-                return TOK_RETURN
-            }
+            if first == 's' && word_at(src, start, "struct") { return TOK_STRUCT }
+            if first == 'r' && word_at(src, start, "return") { return TOK_RETURN }
         }
         8 => {
-            if first == 'c' && word_at(src, start, "continue") {
-                return TOK_CONTINUE
-            }
+            if first == 'c' && word_at(src, start, "continue") { return TOK_CONTINUE }
         }
         _ => {}
     }
@@ -127,9 +87,7 @@ fn lex(src: str, tokens: mut Tokens) -> Option[LexError] {
 // were a text of their own. Positions, also the one of a mistake, are
 // those in `src`.
 fn lex_part(src: str, from: i64, n: i64, tokens: mut Tokens) -> Option[LexError] {
-    if n - from > MAX_SOURCE_BYTES {
-        return lex_failure("source file is larger than 4 GiB", from)
-    }
+    if n - from > MAX_SOURCE_BYTES { return lex_failure("source file is larger than 4 GiB", from) }
     var i = from
     while i < n {
         let start = i
@@ -201,11 +159,9 @@ fn lex_part(src: str, from: i64, n: i64, tokens: mut Tokens) -> Option[LexError]
                     break
                 }
                 if c == '\\' {
-                    if i + 1 >= n {
-                        return lex_failure("unterminated string literal", start)
-                    }
+                    if i + 1 >= n { return lex_failure("unterminated string literal", start) }
                     let e = src[i + 1]
-                    if e == 'n' || e == 't' || e == 'r' || e == '0' || e == '\\' || e == '"' {
+                    if e == 'n' || e == 't' || e == 'r' || e == '0' || e == '\\' || e == '"' || e == '{' {
                         i = i + 2
                     } else {
                         return lex_failure("unknown escape sequence in string literal", i)
@@ -248,12 +204,14 @@ fn lex_part(src: str, from: i64, n: i64, tokens: mut Tokens) -> Option[LexError]
             }
             i = i + 1
             kind = TOK_SLASH
+            if i < n && src[i] == '=' {
+                i = i + 1
+                kind = TOK_SLASH_ASSIGN
+            }
         } else {
             // Signs. `second` is the byte after this one, or 0 at the end.
             var second = 0
-            if i + 1 < n {
-                second = src[i + 1]
-            }
+            if i + 1 < n { second = src[i + 1] }
             i = i + 1
             match b {
                 '(' => kind = TOK_LPAREN
@@ -264,17 +222,54 @@ fn lex_part(src: str, from: i64, n: i64, tokens: mut Tokens) -> Option[LexError]
                 ']' => kind = TOK_RBRACKET
                 ',' => kind = TOK_COMMA
                 ':' => kind = TOK_COLON
-                '.' => kind = TOK_DOT
-                '+' => kind = TOK_PLUS
-                '*' => kind = TOK_STAR
-                '%' => kind = TOK_PERCENT
-                '^' => kind = TOK_CARET
+                '.' => {
+                    kind = TOK_DOT
+                    if second == '.' {
+                        i = i + 1
+                        kind = TOK_DOT_DOT
+                        if i < n && src[i] == '=' {
+                            i = i + 1
+                            kind = TOK_DOT_DOT_EQ
+                        }
+                    }
+                }
+                '+' => {
+                    kind = TOK_PLUS
+                    if second == '=' {
+                        i = i + 1
+                        kind = TOK_PLUS_ASSIGN
+                    }
+                }
+                '*' => {
+                    kind = TOK_STAR
+                    if second == '=' {
+                        i = i + 1
+                        kind = TOK_STAR_ASSIGN
+                    }
+                }
+                '%' => {
+                    kind = TOK_PERCENT
+                    if second == '=' {
+                        i = i + 1
+                        kind = TOK_PERCENT_ASSIGN
+                    }
+                }
+                '^' => {
+                    kind = TOK_CARET
+                    if second == '=' {
+                        i = i + 1
+                        kind = TOK_CARET_ASSIGN
+                    }
+                }
                 '?' => kind = TOK_QUESTION
                 '-' => {
                     kind = TOK_MINUS
                     if second == '>' {
                         i = i + 1
                         kind = TOK_ARROW
+                    } else if second == '=' {
+                        i = i + 1
+                        kind = TOK_MINUS_ASSIGN
                     }
                 }
                 '!' => {
@@ -289,6 +284,10 @@ fn lex_part(src: str, from: i64, n: i64, tokens: mut Tokens) -> Option[LexError]
                     if second == '<' {
                         i = i + 1
                         kind = TOK_SHL
+                        if i < n && src[i] == '=' {
+                            i = i + 1
+                            kind = TOK_SHL_ASSIGN
+                        }
                     } else if second == '=' {
                         i = i + 1
                         kind = TOK_LT_EQ
@@ -299,6 +298,10 @@ fn lex_part(src: str, from: i64, n: i64, tokens: mut Tokens) -> Option[LexError]
                     if second == '>' {
                         i = i + 1
                         kind = TOK_SHR
+                        if i < n && src[i] == '=' {
+                            i = i + 1
+                            kind = TOK_SHR_ASSIGN
+                        }
                     } else if second == '=' {
                         i = i + 1
                         kind = TOK_GT_EQ
@@ -319,6 +322,9 @@ fn lex_part(src: str, from: i64, n: i64, tokens: mut Tokens) -> Option[LexError]
                     if second == '&' {
                         i = i + 1
                         kind = TOK_AND_AND
+                    } else if second == '=' {
+                        i = i + 1
+                        kind = TOK_AMP_ASSIGN
                     }
                 }
                 '|' => {
@@ -326,6 +332,9 @@ fn lex_part(src: str, from: i64, n: i64, tokens: mut Tokens) -> Option[LexError]
                     if second == '|' {
                         i = i + 1
                         kind = TOK_OR_OR
+                    } else if second == '=' {
+                        i = i + 1
+                        kind = TOK_PIPE_ASSIGN
                     }
                 }
                 _ => return lex_failure("unexpected character", start)
@@ -360,9 +369,7 @@ fn count_characters(src: str, from: i64, to: i64) -> i64 {
     var count = 0
     var i = from
     while i < to {
-        if (src[i] & 0xC0) != 0x80 {
-            count = count + 1
-        }
+        if (src[i] & 0xC0) != 0x80 { count = count + 1 }
         i = i + 1
     }
     return count
@@ -370,9 +377,7 @@ fn count_characters(src: str, from: i64, to: i64) -> i64 {
 
 fn line_column(src: str, offset: i64) -> LineColumn {
     var end = offset
-    if end > src.len() {
-        end = src.len()
-    }
+    if end > src.len() { end = src.len() }
     var line = 1
     var line_start = 0
     var i = 0

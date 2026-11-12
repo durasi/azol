@@ -1,0 +1,23 @@
+fn peek(p0: ptr [param 0 read]) -> i64 {
+b0:
+    v0 = load i64, p0, 0  [param 0]
+    ret v0
+}
+
+fn f(p0: i64) -> i64 {
+    frames 16
+b0:
+    v0 = frame 0
+    v1 = gep v0, 0, 1, 8
+    jump b1
+b1:
+    store i64, v0, 0, 258  [frame 0]
+    store i64, v0, 8, p0  [frame 0]
+    v2 = load u8, v0, 1  [frame 0]
+    callrt print_i64(v2)
+    v5 = call peek(v1) -> i64
+    v7 = add p0, 2
+    v8 = add v7, v5
+    v9 = add v8, p0
+    ret v9
+}

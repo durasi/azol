@@ -58,9 +58,7 @@ fn sum(t: Tree) -> i64 {
 }
 
 fn make(depth: i64) -> Tree {
-    if depth == 0 {
-        return Leaf(1)
-    }
+    if depth == 0 { return Leaf(1) }
     var children: List[Tree] = []
     children.push(make(depth - 1))
     children.push(Leaf(depth))
@@ -76,9 +74,7 @@ fn nick_or(p: Player, fallback: str) -> str {
 }
 
 fn parse(text: str) -> Result[i64, str] {
-    if text == "six" {
-        return Ok(6)
-    }
+    if text == "six" { return Ok(6) }
     return Err("bad: " + text)
 }
 
@@ -93,12 +89,8 @@ fn first_word(tokens: List[Token]) -> Option[str] {
 }
 
 fn wrap(s: str) -> Option[Option[str]] {
-    if s.len() == 0 {
-        return None
-    }
-    if s == "-" {
-        return Some(None)
-    }
+    if s.len() == 0 { return None }
+    if s == "-" { return Some(None) }
     return Some(Some(s))
 }
 

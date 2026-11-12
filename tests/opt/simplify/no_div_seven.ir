@@ -1,0 +1,6 @@
+; Kept: division by a constant that is not a power of two (it would need a multiplication by a magic number, which this pass does not do).
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = sdiv p0, 7
+    ret v0
+}

@@ -1,0 +1,6 @@
+; Kept: 3 is not a power of two, and a multiplication is cheaper than a shift and an addition here.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = mul p0, 3
+    ret v0
+}

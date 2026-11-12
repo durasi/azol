@@ -1,0 +1,28 @@
+// expect-exit: 0
+// expect-line: k7other7k74m3
+// Field shorthand: a field written by its name alone takes the variable
+// of that name, also next to fields written in full and in a generic
+// struct.
+struct Pair { key: str, value: i64 }
+
+struct Box[T] { item: T, count: i64 }
+
+fn make(key: str, value: i64) -> Pair {
+    return Pair { key, value }
+}
+
+fn main() {
+    let key = "k"
+    let value = 7
+    let a = Pair { key, value }
+    let b = Pair { key: "other", value }
+    let c = Pair {
+        value,
+        key,
+    }
+    let item = [1, 2]
+    let count = 2
+    let box = Box { item, count }
+    let made = make("m", 3)
+    print(a.key + str(a.value) + b.key + str(b.value) + c.key + str(c.value) + str(box.item.len() + box.count) + made.key + str(made.value))
+}

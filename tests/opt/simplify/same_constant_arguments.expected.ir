@@ -1,0 +1,14 @@
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = slt p0, 0
+    br v0, b1, b2
+b1:
+    callrt print_i64(1)
+    jump b3
+b2:
+    callrt print_i64(2)
+    jump b3
+b3:
+    v2 = add p0, 7
+    ret v2
+}

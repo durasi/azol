@@ -72,20 +72,14 @@ fn ir_type_name(ty: i64) -> str {
 
 // How many bytes a `load` or `store` of this width touches.
 fn ir_type_bytes(ty: i64) -> i64 {
-    if ty == IR_I8 || ty == IR_U8 {
-        return 1
-    }
-    if ty == IR_I32 || ty == IR_U32 {
-        return 4
-    }
+    if ty == IR_I8 || ty == IR_U8 { return 1 }
+    if ty == IR_I32 || ty == IR_U32 { return 4 }
     return 8
 }
 
 // The type of the value a `load` of this width gives.
 fn ir_loaded_type(ty: i64) -> i64 {
-    if ty == IR_BOOL || ty == IR_PTR {
-        return ty
-    }
+    if ty == IR_BOOL || ty == IR_PTR { return ty }
     return IR_I64
 }
 
@@ -210,15 +204,16 @@ fn ir_is_terminator(op: i64) -> bool {
 
 // How many of `ins_a`, `ins_b`, `ins_c` the operation uses.
 fn ir_fixed_operands(op: i64) -> i64 {
-    if ir_is_binary(op) || op == IR_STORE || op == IR_GEP {
+    // Asked for every operand of every instruction by every pass: the
+    // ranges are tested here, in the order of how common they are,
+    // not through `ir_is_binary` and `ir_is_unary`.
+    if op >= IR_ADD && op <= IR_SMULH || op >= IR_EQ && op <= IR_UGE || op == IR_STORE || op == IR_GEP {
         return 2
     }
-    if ir_is_unary(op) || op == IR_LOAD || op == IR_BR || op == IR_SWITCH {
+    if op == IR_NEG || op >= IR_EXT8U && op <= IR_TRUNC32 || op == IR_LOAD || op == IR_BR || op == IR_SWITCH {
         return 1
     }
-    if op == IR_SELECT {
-        return 3
-    }
+    if op == IR_SELECT { return 3 }
     return 0
 }
 
@@ -493,36 +488,22 @@ fn ir_trap_real(kind: i64) -> i64 {
 // are written; a list or string that grows is resized.
 fn ir_rt_arg_fx(id: i64, k: i64) -> i64 {
     if id == IR_RT_LIST_PUSH {
-        if k == 0 {
-            return IR_FX_READ | IR_FX_WRITE | IR_FX_WRITEBUF | IR_FX_RESIZE
-        }
+        if k == 0 { return IR_FX_READ | IR_FX_WRITE | IR_FX_WRITEBUF | IR_FX_RESIZE }
         return IR_FX_READ
     }
-    if id == IR_RT_LIST_CLONE {
-        return IR_FX_READ | IR_FX_WRITE
-    }
-    if id == IR_RT_DROP {
-        return IR_FX_READ | IR_FX_FREE
-    }
+    if id == IR_RT_LIST_CLONE { return IR_FX_READ | IR_FX_WRITE }
+    if id == IR_RT_DROP { return IR_FX_READ | IR_FX_FREE }
     if id == IR_RT_STR_APPEND_BUF {
-        if k == 0 {
-            return IR_FX_READ | IR_FX_WRITE | IR_FX_WRITEBUF | IR_FX_RESIZE
-        }
+        if k == 0 { return IR_FX_READ | IR_FX_WRITE | IR_FX_WRITEBUF | IR_FX_RESIZE }
         return IR_FX_READ
     }
-    if id == IR_RT_ARGS {
-        return IR_FX_WRITE
-    }
+    if id == IR_RT_ARGS { return IR_FX_WRITE }
     if id >= IR_RT_STR_CONCAT && id <= IR_RT_RENAME_FILE {
         // The last argument is `out`, except for `str_eq_buf`.
-        if id != IR_RT_STR_EQ_BUF && k == ir_rt_args(id).len() - 1 {
-            return IR_FX_WRITE
-        }
+        if id != IR_RT_STR_EQ_BUF && k == ir_rt_args(id).len() - 1 { return IR_FX_WRITE }
         return IR_FX_READ
     }
-    if id >= IR_RT_STR_IS_UTF8 {
-        return IR_FX_READ
-    }
+    if id >= IR_RT_STR_IS_UTF8 { return IR_FX_READ }
     // The first eleven take buffers, not values with headers.
     return IR_FX_READ | IR_FX_WRITE
 }
@@ -530,9 +511,7 @@ fn ir_rt_arg_fx(id: i64, k: i64) -> i64 {
 // Whether a call of the routine can be seen from outside the program:
 // it prints, or ends the program. A check may not move across one.
 fn ir_rt_has_output(id: i64) -> bool {
-    if id >= IR_RT_WRITE_FILE && id <= IR_RT_RENAME_FILE || id >= IR_RT_PRINT_BUF {
-        return true
-    }
+    if id >= IR_RT_WRITE_FILE && id <= IR_RT_RENAME_FILE || id >= IR_RT_PRINT_BUF { return true }
     return id >= IR_RT_PRINT_I64 && id <= IR_RT_EPRINT_STR || id == IR_RT_EXIT
 }
 
@@ -554,12 +533,8 @@ fn ir_rt_touches_rt(id: i64) -> bool {
 }
 
 fn ir_letter_type(letter: i64) -> i64 {
-    if letter == 'b' {
-        return IR_BOOL
-    }
-    if letter == 'p' {
-        return IR_PTR
-    }
+    if letter == 'b' { return IR_BOOL }
+    if letter == 'p' { return IR_PTR }
     return IR_I64
 }
 
@@ -730,9 +705,7 @@ fn ir_const_value(f: IrFunc, x: i64) -> i64 {
 // The type of an operand; -1 for a constant, which fits `i64`, `bool`
 // (0 or 1) and, when it is 0, `ptr`.
 fn ir_operand_type(f: IrFunc, x: i64) -> i64 {
-    if x < 0 {
-        return -1
-    }
+    if x < 0 { return -1 }
     return f.val_ty[x]
 }
 
@@ -765,9 +738,7 @@ fn ir_add_frame(f: mut IrFunc, bytes: i64) -> i64 {
 fn ir_region(f: mut IrFunc, kind: i64, n: i64) -> i64 {
     var i = 0
     while i < f.reg_kind.len() {
-        if f.reg_kind[i] == kind && f.reg_n[i] == n {
-            return i
-        }
+        if f.reg_kind[i] == kind && f.reg_n[i] == n { return i }
         i = i + 1
     }
     f.reg_kind.push(kind)
@@ -785,9 +756,7 @@ fn ir_regions_overlap(f: IrFunc, a: i64, b: i64) -> bool {
 fn ir_callee(f: mut IrFunc, name: str) -> i64 {
     var i = 0
     while i < f.callees.len() {
-        if f.callees[i] == name {
-            return i
-        }
+        if f.callees[i] == name { return i }
         i = i + 1
     }
     f.callees.push(name)
@@ -872,9 +841,7 @@ fn ir_make(f: mut IrFunc, op: i64, ty: i64, a: i64, b: i64, c: i64, imm: i64) ->
 fn ir_add_result_value(f: mut IrFunc, ins: i64, v: i64) {
     f.val_ins[v] = ins
     f.results.push(v)
-    if f.ins_rn[ins] == 0 {
-        f.ins_res[ins] = v
-    }
+    if f.ins_rn[ins] == 0 { f.ins_res[ins] = v }
     f.ins_rn[ins] = f.ins_rn[ins] + 1
 }
 
@@ -955,9 +922,7 @@ fn ir_link_before(f: mut IrFunc, at: i64, ins: i64) {
 // linked again elsewhere.
 fn ir_unlink(f: mut IrFunc, ins: i64) {
     let b = f.ins_blk[ins]
-    if b < 0 {
-        return
-    }
+    if b < 0 { return }
     let before = f.ins_prev[ins]
     let after = f.ins_next[ins]
     if before < 0 {
@@ -995,30 +960,18 @@ fn ir_remove(f: mut IrFunc, ins: i64) {
 
 // The type of the result of an instruction with one result.
 fn ir_result_type(f: IrFunc, op: i64, ty: i64, a: i64, b: i64) -> i64 {
-    if ir_is_compare(op) || op == IR_BCONST {
-        return IR_BOOL
-    }
-    if op == IR_ADDR || op == IR_FRAME || op == IR_GEP {
-        return IR_PTR
-    }
-    if op == IR_LOAD {
-        return ir_loaded_type(ty)
-    }
+    if ir_is_compare(op) || op == IR_BCONST { return IR_BOOL }
+    if op == IR_ADDR || op == IR_FRAME || op == IR_GEP { return IR_PTR }
+    if op == IR_LOAD { return ir_loaded_type(ty) }
     if op == IR_AND || op == IR_OR || op == IR_XOR {
         // On two `bool` values these are the logical operations.
-        if ir_operand_type(f, a) == IR_BOOL || ir_operand_type(f, b) == IR_BOOL {
-            return IR_BOOL
-        }
+        if ir_operand_type(f, a) == IR_BOOL || ir_operand_type(f, b) == IR_BOOL { return IR_BOOL }
         return IR_I64
     }
     if op == IR_SELECT {
         // `a` and `b` are the two choices here.
-        if a >= 0 {
-            return f.val_ty[a]
-        }
-        if b >= 0 {
-            return f.val_ty[b]
-        }
+        if a >= 0 { return f.val_ty[a] }
+        if b >= 0 { return f.val_ty[b] }
         return IR_I64
     }
     return IR_I64
@@ -1032,13 +985,9 @@ fn ir_result_type(f: IrFunc, op: i64, ty: i64, a: i64, b: i64) -> i64 {
 fn ir_emit(f: mut IrFunc, b: i64, op: i64, ty: i64, x: i64, y: i64, z: i64, imm: i64) -> i64 {
     let ins = ir_make(mut f, op, ty, x, y, z, imm)
     var result_ty = ir_result_type(f, op, ty, x, y)
-    if op == IR_SELECT {
-        result_ty = ir_result_type(f, op, ty, y, z)
-    }
+    if op == IR_SELECT { result_ty = ir_result_type(f, op, ty, y, z) }
     f.ins_ty[ins] = ty
-    if op != IR_LOAD {
-        f.ins_ty[ins] = result_ty
-    }
+    if op != IR_LOAD { f.ins_ty[ins] = result_ty }
     ir_link_end(mut f, b, ins)
     return ir_add_result(mut f, ins, result_ty)
 }
@@ -1049,9 +998,7 @@ fn ir_iconst(f: mut IrFunc, b: i64, n: i64) -> i64 {
 
 fn ir_bconst(f: mut IrFunc, b: i64, value: bool) -> i64 {
     var n = 0
-    if value {
-        n = 1
-    }
+    if value { n = 1 }
     return ir_emit(mut f, b, IR_BCONST, IR_BOOL, -1, -1, -1, n)
 }
 
@@ -1202,13 +1149,9 @@ fn ir_operand_count(f: IrFunc, ins: i64) -> i64 {
 // otherwise 3 + its place in `args`.
 fn ir_operand_place(f: IrFunc, ins: i64, k: i64) -> i64 {
     let fixed = ir_fixed_operands(f.ins_op[ins])
-    if k < fixed {
-        return k
-    }
+    if k < fixed { return k }
     var rest = k - fixed
-    if rest < f.ins_an[ins] {
-        return 3 + f.ins_as[ins] + rest
-    }
+    if rest < f.ins_an[ins] { return 3 + f.ins_as[ins] + rest }
     rest = rest - f.ins_an[ins]
     var e = f.ins_es[ins]
     while rest >= f.edge_an[e] {
@@ -1220,15 +1163,9 @@ fn ir_operand_place(f: IrFunc, ins: i64, k: i64) -> i64 {
 
 fn ir_operand(f: IrFunc, ins: i64, k: i64) -> i64 {
     let place = ir_operand_place(f, ins, k)
-    if place == 0 {
-        return f.ins_a[ins]
-    }
-    if place == 1 {
-        return f.ins_b[ins]
-    }
-    if place == 2 {
-        return f.ins_c[ins]
-    }
+    if place == 0 { return f.ins_a[ins] }
+    if place == 1 { return f.ins_b[ins] }
+    if place == 2 { return f.ins_c[ins] }
     return f.args[place - 3]
 }
 
@@ -1266,9 +1203,7 @@ fn ir_uses(f: IrFunc) -> IrUses {
             var k = 0
             while k < n {
                 let x = ir_operand(f, ins, k)
-                if x >= 0 {
-                    count[x] = count[x] + 1
-                }
+                if x >= 0 { count[x] = count[x] + 1 }
                 k = k + 1
             }
             ins = f.ins_next[ins]
@@ -1349,9 +1284,7 @@ fn ir_remove_block(f: mut IrFunc, b: i64) {
     f.blk_live[b] = false
     var kept: List[i64] = []
     for other in f.order {
-        if other != b {
-            kept.push(other)
-        }
+        if other != b { kept.push(other) }
     }
     f.order = kept
 }

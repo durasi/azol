@@ -1,0 +1,520 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// x86-64 instruction encoding for the optimising back end: bytes into a
+// `str`, any register in any position, any memory operand.
+//
+// The encoders of `compiler/x64.azl` are not used here, although
+// docs/design/optimizer.md section 6.4 planned to: every one of them
+// takes the tree-walking generator's whole state (`Gen`) and records
+// what that generator knows about registers, so they cannot be called
+// from a selector that has no such state. These are plain functions of
+// a buffer and their operands.
+//
+// A memory operand is `[base + index * scale + disp]`; `index` is -1
+// when there is none and `scale` is 1, 2, 4 or 8. A register is its
+// number, 0 to 15.
+
+const EX_RAX = 0
+const EX_RCX = 1
+const EX_RDX = 2
+const EX_RBX = 3
+const EX_RSP = 4
+const EX_RBP = 5
+const EX_RSI = 6
+const EX_RDI = 7
+const EX_R8 = 8
+const EX_R9 = 9
+const EX_R10 = 10
+const EX_R11 = 11
+const EX_R12 = 12
+const EX_R13 = 13
+const EX_R14 = 14
+const EX_R15 = 15
+
+// Conditions, as in `jcc`, `setcc` and `cmovcc`. The opposite of a
+// condition is the condition with its lowest bit changed.
+const EX_CC_B = 2
+const EX_CC_AE = 3
+const EX_CC_E = 4
+const EX_CC_NE = 5
+const EX_CC_BE = 6
+const EX_CC_A = 7
+const EX_CC_L = 12
+const EX_CC_GE = 13
+const EX_CC_LE = 14
+const EX_CC_G = 15
+
+// The `/n` of the group `81 /n` and the two-register opcodes it goes
+// with: ADD 0, OR 1, AND 4, SUB 5, XOR 6, CMP 7.
+const EX_ADD = 0
+const EX_OR = 1
+const EX_AND = 4
+const EX_SUB = 5
+const EX_XOR = 6
+const EX_CMP = 7
+
+// Shifts: the `/n` of `C1 /n`.
+const EX_SHL = 4
+const EX_SHR = 5
+const EX_SAR = 7
+
+fn ex_fits8(n: i64) -> bool {
+    return n >= -128 && n <= 127
+}
+
+fn ex_fits32(n: i64) -> bool {
+    return n >= -2147483648 && n <= 2147483647
+}
+
+fn ex_imm32(c: mut str, value: i64) {
+    c.push(value)
+    c.push(value >> 8)
+    c.push(value >> 16)
+    c.push(value >> 24)
+}
+
+// The prefix for 64-bit operands (`wide` 1) with register field `reg`,
+// index register `index` (-1 for none) and base or r/m register `rm`.
+// With `wide` 0 it is written only when a register needs it or `force`
+// is true (a byte register that would otherwise mean ah, ch, dh or bh).
+fn ex_rex(c: mut str, wide: i64, reg: i64, index: i64, rm: i64, force: bool) {
+    var byte = 0x40 | (wide << 3) | ((reg >> 3) << 2) | (rm >> 3)
+    if index >= 0 { byte = byte | ((index >> 3) << 1) }
+    if byte != 0x40 || force { c.push(byte) }
+}
+
+// The operand bytes for register field `reg` and register `rm`.
+fn ex_rr(c: mut str, reg: i64, rm: i64) {
+    c.push(0xC0 | ((reg & 7) << 3) | (rm & 7))
+}
+
+fn ex_scale_bits(scale: i64) -> i64 {
+    if scale == 2 { return 1 }
+    if scale == 4 { return 2 }
+    if scale == 8 { return 3 }
+    return 0
+}
+
+// The operand bytes for register field `reg` and a memory operand.
+fn ex_mem(c: mut str, reg: i64, base: i64, index: i64, scale: i64, disp: i64) {
+    var mode = 2
+    if disp == 0 && (base & 7) != 5 {
+        mode = 0
+    } else if ex_fits8(disp) {
+        mode = 1
+    }
+    if index >= 0 {
+        c.push((mode << 6) | ((reg & 7) << 3) | 4)
+        c.push((ex_scale_bits(scale) << 6) | ((index & 7) << 3) | (base & 7))
+    } else if (base & 7) == 4 {
+        // rsp and r12 as a base need the longer form.
+        c.push((mode << 6) | ((reg & 7) << 3) | 4)
+        c.push(0x24)
+    } else {
+        c.push((mode << 6) | ((reg & 7) << 3) | (base & 7))
+    }
+    if mode == 1 {
+        c.push(disp)
+    } else if mode == 2 {
+        ex_imm32(mut c, disp)
+    }
+}
+
+// The operand bytes for register field `reg` and memory at a distance
+// from the next instruction; gives where the 4-byte distance is, for
+// the linker to fill in. Nothing may follow it in the instruction.
+fn ex_rip(c: mut str, reg: i64) -> i64 {
+    c.push(((reg & 7) << 3) | 5)
+    ex_imm32(mut c, 0)
+    return c.len() - 4
+}
+
+// ---- moves ------------------------------------------------------------------------
+
+fn ex_mov_rr(c: mut str, dst: i64, src: i64) {
+    ex_rex(mut c, 1, src, -1, dst, false)
+    c.push(0x89)
+    ex_rr(mut c, src, dst)
+}
+
+// `mov dst, value`, in the shortest form. It leaves the flags alone.
+fn ex_mov_imm(c: mut str, dst: i64, value: i64) {
+    if value >= 0 && value <= 4294967295 {
+        ex_rex(mut c, 0, 0, -1, dst, false)
+        c.push(0xB8 | (dst & 7))
+        ex_imm32(mut c, value)
+    } else if ex_fits32(value) {
+        ex_rex(mut c, 1, 0, -1, dst, false)
+        c.push(0xC7)
+        ex_rr(mut c, 0, dst)
+        ex_imm32(mut c, value)
+    } else {
+        ex_rex(mut c, 1, 0, -1, dst, false)
+        c.push(0xB8 | (dst & 7))
+        ex_imm32(mut c, value)
+        ex_imm32(mut c, value >> 32)
+    }
+}
+
+// `mov dst, [mem]`, 64 bits.
+fn ex_load(c: mut str, dst: i64, base: i64, index: i64, scale: i64, disp: i64) {
+    ex_rex(mut c, 1, dst, index, base, false)
+    c.push(0x8B)
+    ex_mem(mut c, dst, base, index, scale, disp)
+}
+
+// `mov [mem], src`, 64 bits.
+fn ex_store(c: mut str, base: i64, index: i64, scale: i64, disp: i64, src: i64) {
+    ex_rex(mut c, 1, src, index, base, false)
+    c.push(0x89)
+    ex_mem(mut c, src, base, index, scale, disp)
+}
+
+// A load of `bytes` bytes (1, 4 or 8), extended to 64 bits with its
+// sign (`signed`) or with zeros.
+fn ex_load_width(c: mut str, dst: i64, bytes: i64, signed: bool, base: i64, index: i64, scale: i64, disp: i64) {
+    if bytes == 8 {
+        ex_load(mut c, dst, base, index, scale, disp)
+    } else if bytes == 4 && signed {
+        ex_rex(mut c, 1, dst, index, base, false)
+        c.push(0x63)
+        ex_mem(mut c, dst, base, index, scale, disp)
+    } else if bytes == 4 {
+        ex_rex(mut c, 0, dst, index, base, false)
+        c.push(0x8B)
+        ex_mem(mut c, dst, base, index, scale, disp)
+    } else if signed {
+        ex_rex(mut c, 1, dst, index, base, false)
+        c.push(0x0F)
+        c.push(0xBE)
+        ex_mem(mut c, dst, base, index, scale, disp)
+    } else {
+        ex_rex(mut c, 0, dst, index, base, false)
+        c.push(0x0F)
+        c.push(0xB6)
+        ex_mem(mut c, dst, base, index, scale, disp)
+    }
+}
+
+// A store of the low `bytes` bytes (1, 4 or 8) of `src`.
+fn ex_store_width(c: mut str, bytes: i64, base: i64, index: i64, scale: i64, disp: i64, src: i64) {
+    if bytes == 8 {
+        ex_store(mut c, base, index, scale, disp, src)
+    } else if bytes == 4 {
+        ex_rex(mut c, 0, src, index, base, false)
+        c.push(0x89)
+        ex_mem(mut c, src, base, index, scale, disp)
+    } else {
+        ex_rex(mut c, 0, src, index, base, true)
+        c.push(0x88)
+        ex_mem(mut c, src, base, index, scale, disp)
+    }
+}
+
+// A store of a constant that fits 32 bits with its sign.
+fn ex_store_imm(c: mut str, bytes: i64, base: i64, index: i64, scale: i64, disp: i64, value: i64) {
+    if bytes == 8 {
+        ex_rex(mut c, 1, 0, index, base, false)
+        c.push(0xC7)
+        ex_mem(mut c, 0, base, index, scale, disp)
+        ex_imm32(mut c, value)
+    } else if bytes == 4 {
+        ex_rex(mut c, 0, 0, index, base, false)
+        c.push(0xC7)
+        ex_mem(mut c, 0, base, index, scale, disp)
+        ex_imm32(mut c, value)
+    } else {
+        ex_rex(mut c, 0, 0, index, base, false)
+        c.push(0xC6)
+        ex_mem(mut c, 0, base, index, scale, disp)
+        c.push(value)
+    }
+}
+
+fn ex_lea(c: mut str, dst: i64, base: i64, index: i64, scale: i64, disp: i64) {
+    ex_rex(mut c, 1, dst, index, base, false)
+    c.push(0x8D)
+    ex_mem(mut c, dst, base, index, scale, disp)
+}
+
+// `lea dst, [rip + distance]`; gives where the distance is.
+fn ex_lea_rip(c: mut str, dst: i64) -> i64 {
+    ex_rex(mut c, 1, dst, -1, 0, false)
+    c.push(0x8D)
+    return ex_rip(mut c, dst)
+}
+
+// Extensions between registers: `kind` 0 the low byte with zeros, 1 the
+// low byte with its sign, 2 the low 32 bits with zeros, 3 with sign.
+fn ex_extend(c: mut str, kind: i64, dst: i64, src: i64) {
+    if kind == 0 {
+        ex_rex(mut c, 1, dst, -1, src, false)
+        c.push(0x0F)
+        c.push(0xB6)
+    } else if kind == 1 {
+        ex_rex(mut c, 1, dst, -1, src, false)
+        c.push(0x0F)
+        c.push(0xBE)
+    } else if kind == 2 {
+        ex_rex(mut c, 0, dst, -1, src, false)
+        c.push(0x8B)
+    } else {
+        ex_rex(mut c, 1, dst, -1, src, false)
+        c.push(0x63)
+    }
+    ex_rr(mut c, dst, src)
+}
+
+// ---- arithmetic -----------------------------------------------------------------------
+
+// `op dst, src` for ADD, OR, AND, SUB, XOR and CMP.
+fn ex_alu_rr(c: mut str, op: i64, dst: i64, src: i64) {
+    ex_rex(mut c, 1, src, -1, dst, false)
+    c.push((op << 3) | 1)
+    ex_rr(mut c, src, dst)
+}
+
+// `op dst, [mem]`.
+fn ex_alu_rm(c: mut str, op: i64, dst: i64, base: i64, disp: i64) {
+    ex_rex(mut c, 1, dst, -1, base, false)
+    c.push((op << 3) | 3)
+    ex_mem(mut c, dst, base, -1, 1, disp)
+}
+
+// `op dst, value` for a constant that fits 32 bits with its sign.
+fn ex_alu_ri(c: mut str, op: i64, dst: i64, value: i64) {
+    ex_rex(mut c, 1, 0, -1, dst, false)
+    if ex_fits8(value) {
+        c.push(0x83)
+        ex_rr(mut c, op, dst)
+        c.push(value)
+    } else {
+        c.push(0x81)
+        ex_rr(mut c, op, dst)
+        ex_imm32(mut c, value)
+    }
+}
+
+// `op qword [base + disp], value`.
+fn ex_alu_mi(c: mut str, op: i64, base: i64, disp: i64, value: i64) {
+    ex_rex(mut c, 1, 0, -1, base, false)
+    if ex_fits8(value) {
+        c.push(0x83)
+        ex_mem(mut c, op, base, -1, 1, disp)
+        c.push(value)
+    } else {
+        c.push(0x81)
+        ex_mem(mut c, op, base, -1, 1, disp)
+        ex_imm32(mut c, value)
+    }
+}
+
+// `cmp reg, qword [base + index * scale + disp]`.
+fn ex_cmp_rm(c: mut str, reg: i64, base: i64, index: i64, scale: i64, disp: i64) {
+    ex_rex(mut c, 1, reg, index, base, false)
+    c.push(0x3B)
+    ex_mem(mut c, reg, base, index, scale, disp)
+}
+
+// `cmp qword [base + index * scale + disp], value`.
+fn ex_cmp_mi(c: mut str, base: i64, index: i64, scale: i64, disp: i64, value: i64) {
+    ex_rex(mut c, 1, 0, index, base, false)
+    if ex_fits8(value) {
+        c.push(0x83)
+        ex_mem(mut c, 7, base, index, scale, disp)
+        c.push(value)
+    } else {
+        c.push(0x81)
+        ex_mem(mut c, 7, base, index, scale, disp)
+        ex_imm32(mut c, value)
+    }
+}
+
+fn ex_test_rr(c: mut str, a: i64, b: i64) {
+    ex_rex(mut c, 1, b, -1, a, false)
+    c.push(0x85)
+    ex_rr(mut c, b, a)
+}
+
+fn ex_imul_rr(c: mut str, dst: i64, src: i64) {
+    ex_rex(mut c, 1, dst, -1, src, false)
+    c.push(0x0F)
+    c.push(0xAF)
+    ex_rr(mut c, dst, src)
+}
+
+fn ex_imul_rm(c: mut str, dst: i64, base: i64, disp: i64) {
+    ex_rex(mut c, 1, dst, -1, base, false)
+    c.push(0x0F)
+    c.push(0xAF)
+    ex_mem(mut c, dst, base, -1, 1, disp)
+}
+
+// `imul dst, src, value`.
+fn ex_imul_rri(c: mut str, dst: i64, src: i64, value: i64) {
+    ex_rex(mut c, 1, dst, -1, src, false)
+    if ex_fits8(value) {
+        c.push(0x6B)
+        ex_rr(mut c, dst, src)
+        c.push(value)
+    } else {
+        c.push(0x69)
+        ex_rr(mut c, dst, src)
+        ex_imm32(mut c, value)
+    }
+}
+
+// The group `F7 /n` on a register: 2 NOT, 3 NEG, 4 MUL, 5 IMUL (both
+// rdx:rax = rax * reg), 7 IDIV.
+fn ex_group_r(c: mut str, n: i64, reg: i64) {
+    ex_rex(mut c, 1, 0, -1, reg, false)
+    c.push(0xF7)
+    ex_rr(mut c, n, reg)
+}
+
+// The same on memory.
+fn ex_group_m(c: mut str, n: i64, base: i64, disp: i64) {
+    ex_rex(mut c, 1, 0, -1, base, false)
+    c.push(0xF7)
+    ex_mem(mut c, n, base, -1, 1, disp)
+}
+
+// Sign of rax into rdx.
+fn ex_cqo(c: mut str) {
+    c.push(0x48)
+    c.push(0x99)
+}
+
+fn ex_shift_imm(c: mut str, kind: i64, reg: i64, count: i64) {
+    ex_rex(mut c, 1, 0, -1, reg, false)
+    if count == 1 {
+        c.push(0xD1)
+        ex_rr(mut c, kind, reg)
+    } else {
+        c.push(0xC1)
+        ex_rr(mut c, kind, reg)
+        c.push(count)
+    }
+}
+
+// A shift by the count in cl.
+fn ex_shift_cl(c: mut str, kind: i64, reg: i64) {
+    ex_rex(mut c, 1, 0, -1, reg, false)
+    c.push(0xD3)
+    ex_rr(mut c, kind, reg)
+}
+
+// `setcc` on the low byte of `reg`. The rest of the register is not
+// changed.
+fn ex_setcc(c: mut str, cc: i64, reg: i64) {
+    ex_rex(mut c, 0, 0, -1, reg, true)
+    c.push(0x0F)
+    c.push(0x90 | cc)
+    ex_rr(mut c, 0, reg)
+}
+
+fn ex_cmov_rr(c: mut str, cc: i64, dst: i64, src: i64) {
+    ex_rex(mut c, 1, dst, -1, src, false)
+    c.push(0x0F)
+    c.push(0x40 | cc)
+    ex_rr(mut c, dst, src)
+}
+
+fn ex_cmov_rm(c: mut str, cc: i64, dst: i64, base: i64, disp: i64) {
+    ex_rex(mut c, 1, dst, -1, base, false)
+    c.push(0x0F)
+    c.push(0x40 | cc)
+    ex_mem(mut c, dst, base, -1, 1, disp)
+}
+
+// ---- the stack, jumps and calls ----------------------------------------------------------
+
+fn ex_push(c: mut str, reg: i64) {
+    ex_rex(mut c, 0, 0, -1, reg, false)
+    c.push(0x50 | (reg & 7))
+}
+
+fn ex_pop(c: mut str, reg: i64) {
+    ex_rex(mut c, 0, 0, -1, reg, false)
+    c.push(0x58 | (reg & 7))
+}
+
+// `push qword [base + disp]`. With rsp as the base the address is
+// worked out before rsp moves.
+fn ex_push_mem(c: mut str, base: i64, disp: i64) {
+    ex_rex(mut c, 0, 0, -1, base, false)
+    c.push(0xFF)
+    ex_mem(mut c, 6, base, -1, 1, disp)
+}
+
+// `pop qword [base + disp]`. With rsp as the base the address is worked
+// out after rsp has moved back.
+fn ex_pop_mem(c: mut str, base: i64, disp: i64) {
+    ex_rex(mut c, 0, 0, -1, base, false)
+    c.push(0x8F)
+    ex_mem(mut c, 0, base, -1, 1, disp)
+}
+
+// `push value`, a constant that fits 32 bits with its sign.
+fn ex_push_imm(c: mut str, value: i64) {
+    if ex_fits8(value) {
+        c.push(0x6A)
+        c.push(value)
+    } else {
+        c.push(0x68)
+        ex_imm32(mut c, value)
+    }
+}
+
+fn ex_ret(c: mut str) {
+    c.push(0xC3)
+}
+
+// A call with a 4-byte distance; gives where the distance is.
+fn ex_call(c: mut str) -> i64 {
+    c.push(0xE8)
+    ex_imm32(mut c, 0)
+    return c.len() - 4
+}
+
+// Jumps with a 4-byte distance; each gives where the distance is.
+fn ex_jmp(c: mut str) -> i64 {
+    c.push(0xE9)
+    ex_imm32(mut c, 0)
+    return c.len() - 4
+}
+
+fn ex_jcc(c: mut str, cc: i64) -> i64 {
+    c.push(0x0F)
+    c.push(0x80 | cc)
+    ex_imm32(mut c, 0)
+    return c.len() - 4
+}
+
+// Jumps with a 1-byte distance, for the few places where the selector
+// knows the target is near; each gives where the distance is.
+fn ex_jmp_short(c: mut str) -> i64 {
+    c.push(0xEB)
+    c.push(0)
+    return c.len() - 1
+}
+
+fn ex_jcc_short(c: mut str, cc: i64) -> i64 {
+    c.push(0x70 | cc)
+    c.push(0)
+    return c.len() - 1
+}
+
+// Makes the short jump whose distance is at `at` come here.
+fn ex_patch_short(c: mut str, at: i64) {
+    c.set(at, c.len() - (at + 1))
+}
+
+// Fills in a 4-byte distance at `at` so that it reaches `target`.
+fn ex_patch(c: mut str, at: i64, target: i64) {
+    let delta = target - (at + 4)
+    c.set(at, delta)
+    c.set(at + 1, delta >> 8)
+    c.set(at + 2, delta >> 16)
+    c.set(at + 3, delta >> 24)
+}

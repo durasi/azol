@@ -6,9 +6,7 @@ fn f() { if a == b { g() } }
 ---- exit 0
 ---- stdout
 fn f() {
-    if a == b {
-        g()
-    }
+    if a == b { g() }
 }
 ---- stderr (empty)
 ==== 2
@@ -22,9 +20,7 @@ fn f() {
 ---- exit 0
 ---- stdout
 fn f() {
-    if a == b {
-        g()
-    }
+    if a == b { g() }
 }
 ---- stderr (empty)
 ==== 3
@@ -34,9 +30,7 @@ fn f() { if a == (P { x: 1 }) { g(P { x: 2 }) } }
 ---- exit 0
 ---- stdout
 fn f() {
-    if a == (P { x: 1 }) {
-        g(P { x: 2 })
-    }
+    if a == (P { x: 1 }) { g(P { x: 2 }) }
 }
 ---- stderr (empty)
 ==== 4
@@ -50,9 +44,7 @@ fn f() {
 ---- exit 0
 ---- stdout
 fn f() {
-    if a == (P { x: 1 }) {
-        g(P { x: 2 })
-    }
+    if a == (P { x: 1 }) { g(P { x: 2 }) }
 }
 ---- stderr (empty)
 ==== 5

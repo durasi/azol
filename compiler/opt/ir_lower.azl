@@ -183,17 +183,13 @@ fn lw_read_tree(lw: mut Lower, p: Parser) {
             ExprStr(_) => kind = LW_STR
             ExprBool(value) => {
                 kind = LW_BOOL
-                if value {
-                    a = 1
-                }
+                if value { a = 1 }
             }
             ExprIdent(_) => kind = LW_IDENT
             ExprUnary(op, operand) => {
                 kind = LW_UNARY
                 a = operand
-                if op == OpNot {
-                    c = 1
-                }
+                if op == OpNot { c = 1 }
             }
             ExprBinary(op, lhs, rhs) => {
                 kind = LW_BINARY
@@ -288,9 +284,7 @@ fn lw_new() -> Lower {
 
 // The type a number or `bool` of the language has as a value.
 fn lw_scalar_ty(ty: i64) -> i64 {
-    if ty == TY_BOOL {
-        return IR_BOOL
-    }
+    if ty == TY_BOOL { return IR_BOOL }
     return IR_I64
 }
 
@@ -321,18 +315,10 @@ fn lw_br(lw: mut Lower, cond: i64, taken: i64, other: i64) {
 // Gives the instruction.
 fn lw_rt(lw: mut Lower, routine: i64, a: i64, b: i64, c: i64, d: i64) -> i64 {
     var arguments: List[i64] = []
-    if a != -1 {
-        arguments.push(a)
-    }
-    if b != -1 {
-        arguments.push(b)
-    }
-    if c != -1 {
-        arguments.push(c)
-    }
-    if d != -1 {
-        arguments.push(d)
-    }
+    if a != -1 { arguments.push(a) }
+    if b != -1 { arguments.push(b) }
+    if c != -1 { arguments.push(c) }
+    if d != -1 { arguments.push(d) }
     return ir_callrt(mut lw.f, lw.b, routine, arguments)
 }
 
@@ -346,9 +332,7 @@ fn lw_store(lw: mut Lower, ty: i64, at: LwAddr, more: i64, value: i64) {
 
 // The address as one value.
 fn lw_ptr(lw: mut Lower, at: LwAddr) -> i64 {
-    if at.off == 0 {
-        return at.p
-    }
+    if at.off == 0 { return at.p }
     let zero = lw_const(mut lw, 0)
     return ir_gep(mut lw.f, lw.b, at.p, zero, 1, at.off)
 }
@@ -396,9 +380,7 @@ fn lw_slot(lw: mut Lower, slot: i64, len: i64) -> LwAddr {
         lw.slot_val[slot] = ir_frame(mut lw.f, lw.entry, slot)
         lw.slots_used.push(slot)
     }
-    if len > lw.slot_len[slot] {
-        lw.slot_len[slot] = len
-    }
+    if len > lw.slot_len[slot] { lw.slot_len[slot] = len }
     let reg = ir_region(mut lw.f, IR_REGION_FRAME, slot)
     return LwAddr { p: lw.slot_val[slot], off: 0, reg: reg }
 }
@@ -431,23 +413,17 @@ fn lw_finish_frame(lw: mut Lower) {
     while i < order.len() {
         let slot = order[i]
         if current < 0 || slot >= end {
-            if current >= 0 {
-                lw.f.frames[current] = 8 * (end - start)
-            }
+            if current >= 0 { lw.f.frames[current] = 8 * (end - start) }
             current = ir_add_frame(mut lw.f, 0)
             start = slot
             end = slot
         }
-        if slot + lw.slot_len[slot] > end {
-            end = slot + lw.slot_len[slot]
-        }
+        if slot + lw.slot_len[slot] > end { end = slot + lw.slot_len[slot] }
         object[slot] = current
         base[slot] = start
         i = i + 1
     }
-    if current >= 0 {
-        lw.f.frames[current] = 8 * (end - start)
-    }
+    if current >= 0 { lw.f.frames[current] = 8 * (end - start) }
     // The entry block again, objects first: every other slot of an
     // object is an address inside it.
     i = 0
@@ -489,9 +465,7 @@ fn lw_finish_frame(lw: mut Lower) {
         var found = -1
         var k = 0
         while k < kinds.len() {
-            if kinds[k] == kind && ns[k] == n {
-                found = k
-            }
+            if kinds[k] == kind && ns[k] == n { found = k }
             k = k + 1
         }
         if found < 0 {
@@ -506,9 +480,7 @@ fn lw_finish_frame(lw: mut Lower) {
     lw.f.reg_n = ns
     var ins = 0
     while ins < lw.f.ins_reg.len() {
-        if lw.f.ins_reg[ins] >= 0 {
-            lw.f.ins_reg[ins] = renamed[lw.f.ins_reg[ins]]
-        }
+        if lw.f.ins_reg[ins] >= 0 { lw.f.ins_reg[ins] = renamed[lw.f.ins_reg[ins]] }
         ins = ins + 1
     }
 }
@@ -571,9 +543,7 @@ fn lw_remove_dead_blocks(lw: mut Lower) {
 // different variants and are plain `i64`.
 fn lw_slot_types(lw: mut Lower, c: Checker, ty: i64) -> i64 {
     let known = int_map_get(lw.st_ids, ty)
-    if known >= 0 {
-        return known
-    }
+    if known >= 0 { return known }
     var tys: List[i64] = []
     if ty == TY_BOOL {
         tys.push(IR_BOOL)
@@ -707,9 +677,7 @@ fn lw_zero_slot(lw: mut Lower, slot: i64) {
 // value of type `ty` at `slot`, the slot that says "this owns nothing".
 fn lw_zero_idle(lw: mut Lower, c: Checker, slot: i64, ty: i64) {
     let owned = ck_owned_count(c, ty)
-    if owned == 0 {
-        return
-    }
+    if owned == 0 { return }
     let at = lw_slot(mut lw, slot, ck_size_of(c, ty))
     var k = 0
     while k < owned {
@@ -792,9 +760,7 @@ fn lw_function_name(c: Checker, p: Parser, index: i64) -> str {
         ItemFn(span, _, _, _, _, _) => name = p.src.slice(span.start, span.start + span.len)
         _ => {}
     }
-    if index == c.main {
-        return name
-    }
+    if index == c.main { return name }
     return name + "." + str(index)
 }
 
@@ -819,9 +785,7 @@ fn lw_function_body(lw: mut Lower, c: Checker, p: Parser, index: i64, body: IdRa
     while i < params {
         if c.fns[index].param_by_ref[i] {
             var fx = IR_FX_READ
-            if c.fns[index].param_mutable[i] {
-                fx = IR_FX_ALL
-            }
+            if c.fns[index].param_mutable[i] { fx = IR_FX_ALL }
             ir_add_param(mut lw.f, IR_PTR, fx)
         } else {
             ir_add_param(mut lw.f, lw_scalar_ty(c.fns[index].param_tys[i]), 0)
@@ -865,9 +829,7 @@ fn lw_function_body(lw: mut Lower, c: Checker, p: Parser, index: i64, body: IdRa
 // value's address.
 fn lw_glue_function(lw: mut Lower, c: Checker, ty: i64, copy: bool) {
     var name = "drop."
-    if copy {
-        name = "clone."
-    }
+    if copy { name = "clone." }
     lw_begin(mut lw, name + str(ty))
     let p = ir_add_param(mut lw.f, IR_PTR, IR_FX_ALL)
     let reg = ir_region(mut lw.f, IR_REGION_PARAM, 0)
@@ -917,9 +879,7 @@ fn lw_glue_function(lw: mut Lower, c: Checker, ty: i64, copy: bool) {
         let next = lw_bin(mut lw, IR_ADD, at, one)
         ir_jump(mut lw.f, lw.b, top, [next])
         lw.b = finished
-        if !copy {
-            lw_rt(mut lw, IR_RT_FREE, buffer, -1, -1, -1)
-        }
+        if !copy { lw_rt(mut lw, IR_RT_FREE, buffer, -1, -1, -1) }
         lw_jump(mut lw, done)
         lw.b = done
     } else {
@@ -1049,7 +1009,5 @@ fn lw_program(lw: mut Lower, c: Checker, p: Parser) {
         lw_glue_function(mut lw, c, ty, copy)
         next = next + 1
     }
-    if lw.need_str_cmp {
-        lw_str_cmp_function(mut lw)
-    }
+    if lw.need_str_cmp { lw_str_cmp_function(mut lw) }
 }

@@ -1,0 +1,7 @@
+; (x >> 60) & 15 keeps only bits the logical shift gives too.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = sar p0, 60
+    v1 = and v0, 15
+    ret v1
+}

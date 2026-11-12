@@ -1,0 +1,9 @@
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = ult p0, 3
+    br v0, b1, b2
+b1:
+    ret 0
+b2:
+    trap index
+}

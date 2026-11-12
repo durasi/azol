@@ -9,21 +9,15 @@ fn main() {
     var total = 0
     var skip = false
     while i < 2 {
-        if !skip {
-            total = total + xs[i * 5]
-        }
+        if !skip { total = total + xs[i * 5] }
         print(i + 1)
         skip = true
         i = i + 1
     }
     print(total)
     var j = 7
-    if skip || xs[j] > 0 {
-        total = total + 1
-    }
-    if total > 100 && xs[j] > 0 {
-        total = total + 1
-    }
+    if skip || xs[j] > 0 { total = total + 1 }
+    if total > 100 && xs[j] > 0 { total = total + 1 }
     total = total + xs[j]
     print(total)
 }

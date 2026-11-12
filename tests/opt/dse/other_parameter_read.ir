@@ -1,0 +1,20 @@
+; A load through another parameter does not read the store: two parameters never reach the same memory (the language's rule for `mut`, which the strict interpreter checks).
+fn work(p0: ptr [param 0 read write], p1: ptr [param 1 read write], p2: i64) -> i64 {
+b0:
+    store i64, p0, 0, 1  [param 0]
+    v0 = load i64, p1, 0  [param 1]
+    store i64, p0, 0, p2  [param 0]
+    ret v0
+}
+
+fn main(p0: i64) -> i64, i64 {
+    frames 8, 8
+b0:
+    v0 = frame 0
+    v1 = frame 1
+    store i64, v0, 0, 0  [frame 0]
+    store i64, v1, 0, 4  [frame 1]
+    v2 = call work(v0, v1, p0) -> i64
+    v3 = load i64, v0, 0  [frame 0]
+    ret v2, v3
+}

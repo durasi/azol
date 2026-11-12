@@ -6,9 +6,7 @@ enum Tree {
 }
 
 fn build(depth: i64, seed: i64) -> Tree {
-    if depth == 0 {
-        return Leaf(seed)
-    }
+    if depth == 0 { return Leaf(seed) }
     var children: List[Tree] = []
     children.push(build(depth - 1, seed * 2))
     children.push(build(depth - 1, seed * 2 + 1))

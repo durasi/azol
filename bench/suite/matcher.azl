@@ -8,9 +8,7 @@
 const SMALL = false
 
 fn size(full: i64, small: i64) -> i64 {
-    if SMALL {
-        return small
-    }
+    if SMALL { return small }
     return full
 }
 
@@ -22,19 +20,13 @@ fn matches(pattern: str, from_pattern: i64, text: str, from_text: i64) -> bool {
         if c == 42 {
             var k = t
             while k <= text.len() {
-                if matches(pattern, p + 1, text, k) {
-                    return true
-                }
+                if matches(pattern, p + 1, text, k) { return true }
                 k = k + 1
             }
             return false
         }
-        if t >= text.len() {
-            return false
-        }
-        if c != 63 && c != text[t] {
-            return false
-        }
+        if t >= text.len() { return false }
+        if c != 63 && c != text[t] { return false }
         p = p + 1
         t = t + 1
     }
@@ -63,9 +55,7 @@ fn main() {
     var found = 0
     for pattern in patterns {
         for text in texts {
-            if matches(pattern, 0, text, 0) {
-                found = found + 1
-            }
+            if matches(pattern, 0, text, 0) { found = found + 1 }
         }
     }
     print(found)

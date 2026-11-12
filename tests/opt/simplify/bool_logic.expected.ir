@@ -1,0 +1,5 @@
+fn main(p0: i64) -> bool, bool, bool {
+b0:
+    v0 = slt p0, 5
+    ret v0, v0, v0
+}

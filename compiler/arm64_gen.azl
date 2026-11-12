@@ -7,9 +7,7 @@
 
 // `cbz reg` (or `cbnz reg`) at `at`, as one number.
 fn a_jump_zero(at: i64, reg: i64, nonzero: bool) -> i64 {
-    if nonzero {
-        return at * 256 + 160 + reg
-    }
+    if nonzero { return at * 256 + 160 + reg }
     return at * 256 + 128 + reg
 }
 
@@ -30,9 +28,7 @@ fn a_patch_one(g: mut AGen, jump: i64, target: i64) {
     let delta = target - at
     if (jump & 128) != 0 {
         var op = 0xB4000000
-        if (jump & 32) != 0 {
-            op = 0xB5000000
-        }
+        if (jump & 32) != 0 { op = 0xB5000000 }
         g.words[at] = op | (delta & 0x7FFFF) << 5 | (jump & 31)
     } else if (jump & 64) != 0 {
         g.words[at] = 0x54000000 | (delta & 0x7FFFF) << 5 | (jump & 15)
@@ -68,13 +64,9 @@ fn a_stmt(g: mut AGen, c: Checker, p: Parser, id: i64) {
         StmtIf(_, _, _) => keeps = true
         _ => {}
     }
-    if !keeps {
-        a_forget(mut g)
-    }
+    if !keeps { a_forget(mut g) }
     a_stmt_inner(mut g, c, p, id)
-    if !keeps {
-        a_forget(mut g)
-    }
+    if !keeps { a_forget(mut g) }
 }
 
 fn a_enter_loop(g: mut AGen, start: i64, forward: i64) {
@@ -154,25 +146,17 @@ fn a_stmt_inner(g: mut AGen, c: Checker, p: Parser, id: i64) {
                 ElseNone => a_patch_here(mut g, skip_then)
                 ElseBlock(body) => {
                     var skip_else = -1
-                    if !a_leaves(p, then_block) {
-                        skip_else = a_placeholder(mut g)
-                    }
+                    if !a_leaves(p, then_block) { skip_else = a_placeholder(mut g) }
                     a_patch_here(mut g, skip_then)
                     a_block(mut g, c, p, body)
-                    if skip_else >= 0 {
-                        a_patch_jump(mut g, skip_else)
-                    }
+                    if skip_else >= 0 { a_patch_jump(mut g, skip_else) }
                 }
                 ElseIf(next) => {
                     var skip_else = -1
-                    if !a_leaves(p, then_block) {
-                        skip_else = a_placeholder(mut g)
-                    }
+                    if !a_leaves(p, then_block) { skip_else = a_placeholder(mut g) }
                     a_patch_here(mut g, skip_then)
                     a_stmt(mut g, c, p, next)
-                    if skip_else >= 0 {
-                        a_patch_jump(mut g, skip_else)
-                    }
+                    if skip_else >= 0 { a_patch_jump(mut g, skip_else) }
                 }
             }
         }
@@ -320,24 +304,18 @@ fn a_assign(g: mut AGen, c: Checker, p: Parser, id: i64, target: i64, value: i64
         // A variable that is not used again: its value moves straight
         // out of its own slots.
         source = a_variable_slot(g, c, value)
-        if source < 0 {
-            source = c.expr_tmp[g.sh_e + value]
-        }
+        if source < 0 { source = c.expr_tmp[g.sh_e + value] }
     } else {
         let scratch = c.stmt_slot[g.sh_s + id]
         a_copy_to_frame(mut g, scratch, size)
-        if owning {
-            a_clone_frame(mut g, c, scratch, ty)
-        }
+        if owning { a_clone_frame(mut g, c, scratch, ty) }
         source = scratch
     }
     // Then find the target, free what it holds and move the value in.
     a_address(mut g, c, p, target)
     let scratch_slot = g.scratch_slot
     a_store_slot(mut g, scratch_slot, X0)
-    if owning {
-        a_drop_pointer(mut g, c, scratch_slot, ty)
-    }
+    if owning { a_drop_pointer(mut g, c, scratch_slot, ty) }
     a_frame_address(mut g, X0, source)
     a_load(mut g, X9, scratch_slot)
     a_copy(mut g, X9, 0, size)
@@ -361,9 +339,7 @@ fn a_return_stmt(g: mut AGen, c: Checker, p: Parser, id: i64, value: i64) {
                     a_clone_pointer(mut g, c, slot, ty)
                 } else if a_kind(g, c, value) == K_IDENT {
                     let place = a_place(g, c, value)
-                    if place >= 0 {
-                        moved_local = place & 4095
-                    }
+                    if place >= 0 { moved_local = place & 4095 }
                 }
             }
         } else {
@@ -374,22 +350,16 @@ fn a_return_stmt(g: mut AGen, c: Checker, p: Parser, id: i64, value: i64) {
         a_mov_imm(mut g, X0, 0)
     }
     let frees_something = c.stmt_drops_len[g.sh_s + id] > 0 || g.live_slots.len() > 0
-    if scalar && frees_something {
-        g.words.push(A_PUSH_X0)
-    }
+    if scalar && frees_something { g.words.push(A_PUSH_X0) }
     a_drop_temps(mut g, c, id, false)
     var i = g.live_slots.len() - 1
     while i >= 0 {
         let slot = g.live_slots[i]
         let ty = g.live_tys[i]
-        if slot != moved_local {
-            a_drop_frame(mut g, c, slot, ty)
-        }
+        if slot != moved_local { a_drop_frame(mut g, c, slot, ty) }
         i = i - 1
     }
-    if scalar && frees_something {
-        g.words.push(a_pop(X0))
-    }
+    if scalar && frees_something { g.words.push(a_pop(X0)) }
     a_epilogue(mut g)
 }
 
@@ -409,9 +379,7 @@ fn a_for_stmt(g: mut AGen, c: Checker, p: Parser, id: i64, has_index: bool, iter
         // copy of a list that is part of a temporary.
         a_address(mut g, c, p, iter)
         a_copy_to_frame(mut g, own_list, 3)
-        if flag == COPIED {
-            a_clone_frame(mut g, c, own_list, list_ty)
-        }
+        if flag == COPIED { a_clone_frame(mut g, c, own_list, list_ty) }
     }
     a_drop_temps(mut g, c, id, false)
     if !in_place {
@@ -429,9 +397,7 @@ fn a_for_stmt(g: mut AGen, c: Checker, p: Parser, id: i64, has_index: bool, iter
     // The test sits below the body: one branch per round. It leaves the
     // list's address in x0 and the position in `at` for the top.
     var at = X1
-    if position_reg >= 0 {
-        at = position_reg
-    }
+    if position_reg >= 0 { at = position_reg }
     let enter = a_placeholder(mut g)
     a_forget(mut g)
     let top = g.words.len()
@@ -478,9 +444,7 @@ fn a_for_stmt(g: mut AGen, c: Checker, p: Parser, id: i64, has_index: bool, iter
     }
     // length
     g.words.push(a_ldr(X9, X0, 1))
-    if position_reg < 0 {
-        a_load(mut g, X1, position)
-    }
+    if position_reg < 0 { a_load(mut g, X1, position) }
     g.words.push(a_cmp(at, X9))
     let again = a_placeholder(mut g)
     a_patch_one(mut g, a_jump_flags(again, A_LO), top)
@@ -511,9 +475,7 @@ fn a_match_stmt(g: mut AGen, c: Checker, p: Parser, id: i64, scrutinee: i64, arm
             let own = base + 1
             a_copy_to_frame(mut g, own, ck_size_of(c, ty))
             if ck_needs_drop(c, ty) {
-                if flag == COPIED {
-                    a_clone_frame(mut g, c, own, ty)
-                }
+                if flag == COPIED { a_clone_frame(mut g, c, own, ty) }
                 owned = true
             }
             a_frame_address(mut g, X0, own)
@@ -586,9 +548,7 @@ fn a_match_stmt(g: mut AGen, c: Checker, p: Parser, id: i64, scrutinee: i64, arm
                     // when it is not.
                     next = a_placeholder(mut g)
                     next_kind = 1
-                    if res == 0 {
-                        next_kind = 2
-                    }
+                    if res == 0 { next_kind = 2 }
                 } else {
                     let slot = c.pat_slot[pat]
                     a_string_value(mut g, c, res, slot)
@@ -606,9 +566,7 @@ fn a_match_stmt(g: mut AGen, c: Checker, p: Parser, id: i64, scrutinee: i64, arm
             a_store_slot(mut g, c.pat_slot[pat], X9)
         }
         a_block(mut g, c, p, p.ast.arms[arm_id].body)
-        if test && !a_leaves(p, p.ast.arms[arm_id].body) {
-            ends.push(a_placeholder(mut g))
-        }
+        if test && !a_leaves(p, p.ast.arms[arm_id].body) { ends.push(a_placeholder(mut g)) }
         if next >= 0 {
             if next_kind == 0 {
                 a_patch_branch_if(mut g, next, A_NE)
@@ -657,13 +615,9 @@ fn a_store(g: mut AGen, c: Checker, p: Parser, value: i64, slot: i64) {
 
 // The frame slot of `id` when it is a whole local variable, or -1.
 fn a_variable_slot(g: AGen, c: Checker, id: i64) -> i64 {
-    if g.kinds[id] != K_IDENT {
-        return -1
-    }
+    if g.kinds[id] != K_IDENT { return -1 }
     let place = a_place(g, c, id)
-    if place < 0 || (place & 4096) != 0 {
-        return -1
-    }
+    if place < 0 || (place & 4096) != 0 { return -1 }
     return place & 4095
 }
 
@@ -671,13 +625,9 @@ fn a_variable_slot(g: AGen, c: Checker, id: i64) -> i64 {
 // a variable whose buffers the store took over, the variable is left
 // owning nothing, so that the end of its scope frees nothing.
 fn a_moved_out(g: mut AGen, c: Checker, id: i64) {
-    if c.expr_moved[g.sh_e + id] != 1 {
-        return
-    }
+    if c.expr_moved[g.sh_e + id] != 1 { return }
     let slot = a_variable_slot(g, c, id)
-    if slot >= 0 {
-        a_zero_idle(mut g, c, slot, c.expr_ty[g.sh_e + id])
-    }
+    if slot >= 0 { a_zero_idle(mut g, c, slot, c.expr_ty[g.sh_e + id]) }
 }
 
 // Writes string literal number `index` into three frame slots.
@@ -759,24 +709,18 @@ fn a_place(g: AGen, c: Checker, id: i64) -> i64 {
     let kind = g.kinds[id]
     if kind == K_IDENT {
         let at = g.sh_e + id
-        if c.expr_aux[at] >= CONST_STR {
-            return -1
-        }
+        if c.expr_aux[at] >= CONST_STR { return -1 }
         let res = c.expr_res[at]
         if res == VARIANT {
             // `None` and the like are values, not variables.
             return -1
         }
-        if res >= BY_REF {
-            return res - BY_REF + 4096
-        }
+        if res >= BY_REF { return res - BY_REF + 4096 }
         return res
     }
     if kind == K_FIELD {
         let place = a_place(g, c, g.ea[id])
-        if place < 0 {
-            return -1
-        }
+        if place < 0 { return -1 }
         return place + c.expr_res[g.sh_e + id] * 8192
     }
     return -1
@@ -800,9 +744,7 @@ fn a_tracked(g: AGen, c: Checker, id: i64) -> ATracked {
         at = g.ea[at]
         kind = g.kinds[at]
     }
-    if kind != K_INDEX {
-        return a_not_tracked()
-    }
+    if kind != K_INDEX { return a_not_tracked() }
     let base = g.ea[at]
     let index = g.eb[at]
     let base_ty = c.expr_ty[g.sh_e + base]
@@ -815,14 +757,10 @@ fn a_tracked(g: AGen, c: Checker, id: i64) -> ATracked {
         return a_not_tracked()
     }
     let place = a_place(g, c, base)
-    if place < 0 {
-        return a_not_tracked()
-    }
+    if place < 0 { return a_not_tracked() }
     var key = a_in_register(g, c, index)
     if key < 0 {
-        if a_kind(g, c, index) != K_INT {
-            return a_not_tracked()
-        }
+        if a_kind(g, c, index) != K_INT { return a_not_tracked() }
         // Small enough for any offset made from it to fit in an
         // instruction; a negative one is left to fail its check the long
         // way.
@@ -848,15 +786,11 @@ fn a_element(g: mut AGen, element: ATracked) {
     // other only the buffer is kept, which serves every index.
     let whole = size != 1 && at < 32
     var wanted = -1
-    if whole {
-        wanted = at
-    }
+    if whole { wanted = at }
     var known = false
     var i = 0
     while i < g.known_len {
-        if g.known_places[i] == place && g.known_ats[i] == at {
-            known = true
-        }
+        if g.known_places[i] == place && g.known_ats[i] == at { known = true }
         i = i + 1
     }
     let held = g.held_ok && g.held_place == place && g.held_at == wanted
@@ -987,9 +921,7 @@ fn a_element_address_tracked(g: mut AGen, element: ATracked) {
 // `scratch` once the address has been loaded from the frame.
 fn a_pointer(g: mut AGen, slot: i64, scratch: i64) -> i64 {
     let reg = a_param_register(g, slot)
-    if reg >= 0 {
-        return reg
-    }
+    if reg >= 0 { return reg }
     a_load(mut g, scratch, slot)
     return scratch
 }
@@ -1002,35 +934,25 @@ fn a_is_zero(g: AGen, c: Checker, id: i64) -> bool {
 // Whether the expression is the constant 0 or `false`.
 fn a_is_nothing(g: AGen, c: Checker, id: i64) -> bool {
     let kind = a_kind(g, c, id)
-    if kind == K_BOOL {
-        return a_bool_value(g, c, id) == 0
-    }
+    if kind == K_BOOL { return a_bool_value(g, c, id) == 0 }
     return kind == K_INT && a_int_value(g, c, id) == 0
 }
 
 // For a constant that is a power of two from 2 up: which power. -1
 // otherwise.
 fn a_power_of_two(g: AGen, c: Checker, id: i64) -> i64 {
-    if a_kind(g, c, id) != K_INT {
-        return -1
-    }
+    if a_kind(g, c, id) != K_INT { return -1 }
     let value = a_int_value(g, c, id)
-    if value < 2 {
-        return -1
-    }
+    if value < 2 { return -1 }
     return a_log2(value)
 }
 
 // Works out the number or `bool` `id` and says which register it is in:
 // the zero register, the one the variable lives in, or x0.
 fn a_source(g: mut AGen, c: Checker, p: Parser, id: i64) -> i64 {
-    if a_is_nothing(g, c, id) {
-        return XZR
-    }
+    if a_is_nothing(g, c, id) { return XZR }
     let reg = a_in_register(g, c, id)
-    if reg >= 0 {
-        return reg
-    }
+    if reg >= 0 { return reg }
     a_value(mut g, c, p, id)
     return X0
 }
@@ -1062,25 +984,15 @@ fn a_place_address_in(g: mut AGen, place: i64, reg: i64) {
 // field of a variable.
 fn a_is_simple(g: AGen, c: Checker, id: i64) -> bool {
     let kind = a_kind(g, c, id)
-    if kind == K_INT || kind == K_BOOL {
-        return true
-    }
-    if kind == K_IDENT {
-        return c.expr_ty[g.sh_e + id] < 3 && a_place(g, c, id) >= 0
-    }
+    if kind == K_INT || kind == K_BOOL { return true }
+    if kind == K_IDENT { return c.expr_ty[g.sh_e + id] < 3 && a_place(g, c, id) >= 0 }
     if kind == K_FIELD || kind == K_INDEX {
-        if c.expr_ty[g.sh_e + id] >= 3 {
-            return false
-        }
-        if a_place(g, c, id) >= 0 {
-            return true
-        }
+        if c.expr_ty[g.sh_e + id] >= 3 { return false }
+        if a_place(g, c, id) >= 0 { return true }
         let element = a_tracked(g, c, id)
         return element.ok
     }
-    if kind == K_CALL {
-        return a_len_of_place(g, c, id) >= 0
-    }
+    if kind == K_CALL { return a_len_of_place(g, c, id) >= 0 }
     return false
 }
 
@@ -1121,16 +1033,10 @@ fn a_load_simple(g: mut AGen, c: Checker, id: i64, reg: i64) {
 // The variable or part of one whose length `id` asks for, when `id` is
 // such a `len()`: one or two loads give it. -1 otherwise.
 fn a_len_of_place(g: AGen, c: Checker, id: i64) -> i64 {
-    if g.kinds[id] != K_CALL {
-        return -1
-    }
-    if c.expr_res[g.sh_e + id] != BUILTIN_LEN {
-        return -1
-    }
+    if g.kinds[id] != K_CALL { return -1 }
+    if c.expr_res[g.sh_e + id] != BUILTIN_LEN { return -1 }
     let callee = g.ea[id]
-    if g.kinds[callee] != K_FIELD {
-        return -1
-    }
+    if g.kinds[callee] != K_FIELD { return -1 }
     return a_place(g, c, g.ea[callee])
 }
 
@@ -1150,25 +1056,15 @@ fn a_load_len(g: mut AGen, place: i64, reg: i64) {
 // across it. (A failed check does not come back.)
 fn a_calls_nothing(g: AGen, c: Checker, id: i64) -> bool {
     let kind = a_kind(g, c, id)
-    if kind == K_INT || kind == K_BOOL || kind == K_IDENT {
-        return true
-    }
-    if kind == K_FIELD {
-        return a_calls_nothing(g, c, g.ea[id])
-    }
-    if kind == K_INDEX {
-        return a_calls_nothing(g, c, g.ea[id]) && a_calls_nothing(g, c, g.eb[id])
-    }
-    if kind == K_UNARY {
-        return a_calls_nothing(g, c, g.ea[id])
-    }
+    if kind == K_INT || kind == K_BOOL || kind == K_IDENT { return true }
+    if kind == K_FIELD { return a_calls_nothing(g, c, g.ea[id]) }
+    if kind == K_INDEX { return a_calls_nothing(g, c, g.ea[id]) && a_calls_nothing(g, c, g.eb[id]) }
+    if kind == K_UNARY { return a_calls_nothing(g, c, g.ea[id]) }
     if kind == K_BINARY {
         // Comparing strings is the runtime's work.
         return c.expr_ty[g.sh_e + g.ea[id]] != TY_STR && a_calls_nothing(g, c, g.ea[id]) && a_calls_nothing(g, c, g.eb[id])
     }
-    if kind == K_CALL {
-        return a_len_of_place(g, c, id) >= 0
-    }
+    if kind == K_CALL { return a_len_of_place(g, c, id) >= 0 }
     return false
 }
 
@@ -1199,9 +1095,7 @@ fn a_two_addresses(g: mut AGen, c: Checker, p: Parser, lhs: i64, rhs: i64) {
 // The register `id` lives in, or x0 after working its value out there.
 fn a_in_register_or_x0(g: mut AGen, c: Checker, p: Parser, id: i64) -> i64 {
     let reg = a_in_register(g, c, id)
-    if reg >= 0 {
-        return reg
-    }
+    if reg >= 0 { return reg }
     a_value(mut g, c, p, id)
     return X0
 }
@@ -1417,12 +1311,8 @@ fn a_arg_by_ref(c: Checker, target: i64, i: i64) -> bool {
 // True when an argument can be put in its register directly: a simple
 // value, or the address of a variable or a part of one.
 fn a_is_simple_arg(g: AGen, c: Checker, arg: i64, by_ref: bool) -> bool {
-    if g.kinds[arg] == K_MUTARG {
-        return a_place(g, c, g.ea[arg]) >= 0
-    }
-    if by_ref {
-        return a_place(g, c, arg) >= 0
-    }
+    if g.kinds[arg] == K_MUTARG { return a_place(g, c, g.ea[arg]) >= 0 }
+    if by_ref { return a_place(g, c, arg) >= 0 }
     return a_is_simple(g, c, arg)
 }
 
@@ -1502,9 +1392,7 @@ fn a_address(g: mut AGen, c: Checker, p: Parser, id: i64) {
     } else if kind == K_FIELD {
         a_address(mut g, c, p, g.ea[id])
         let offset = c.expr_res[g.sh_e + id]
-        if offset > 0 {
-            g.words.push(a_add_slots(X0, X0, offset))
-        }
+        if offset > 0 { g.words.push(a_add_slots(X0, X0, offset)) }
     } else {
         // An element of a list. The index is evaluated first, so that
         // nothing runs between reading the buffer pointer and using it.
@@ -1908,9 +1796,7 @@ fn a_binary(g: mut AGen, c: Checker, p: Parser, op: i64, lhs_in: i64, rhs_in: i6
     } else {
         // Dividing by a constant other than zero needs no check.
         let safe = a_kind(g, c, rhs) == K_INT && a_int_value(g, c, rhs) != 0
-        if !safe {
-            a_trap_if_zero(mut g, right)
-        }
+        if !safe { a_trap_if_zero(mut g, right) }
         if op == OP_DIV {
             // sdiv dest, left, right
             g.words.push(0x9AC00C00 | both | dest)
@@ -1957,9 +1843,7 @@ fn a_call(g: mut AGen, c: Checker, p: Parser, id: i64) {
     let args_len = g.ec[id]
     // In `value.method(...)` the value is the receiver.
     var receiver = -1
-    if a_kind(g, c, callee) == K_FIELD {
-        receiver = g.ea[callee]
-    }
+    if a_kind(g, c, callee) == K_FIELD { receiver = g.ea[callee] }
     if target == BUILTIN_STR_PUSH || target == BUILTIN_STR_SET {
         a_byte_method(mut g, c, p, id, target, receiver)
         return
@@ -1974,20 +1858,14 @@ fn a_call(g: mut AGen, c: Checker, p: Parser, id: i64) {
     // on the stack; the simple ones after it go straight into their
     // registers.
     var first = 0
-    if receiver >= 0 {
-        first = 1
-    }
+    if receiver >= 0 { first = 1 }
     let count = first + args_len
     var worked = 0
     var i = 0
     while i < count {
         var arg = receiver
-        if i >= first {
-            arg = p.ast.lists[args_start + i - first]
-        }
-        if !a_is_simple_arg(g, c, arg, a_arg_by_ref(c, target, i)) {
-            worked = i + 1
-        }
+        if i >= first { arg = p.ast.lists[args_start + i - first] }
+        if !a_is_simple_arg(g, c, arg, a_arg_by_ref(c, target, i)) { worked = i + 1 }
         i = i + 1
     }
     // From which argument on the rest call nothing that comes back: a
@@ -1996,15 +1874,11 @@ fn a_call(g: mut AGen, c: Checker, p: Parser, id: i64) {
     var quiet = worked
     if worked >= 2 {
         i = worked - 1
-        if i > 7 {
-            i = 7
-        }
+        if i > 7 { i = 7 }
         var calm = true
         while i >= 0 && calm {
             var arg = receiver
-            if i >= first {
-                arg = p.ast.lists[args_start + i - first]
-            }
+            if i >= first { arg = p.ast.lists[args_start + i - first] }
             if g.kinds[arg] == K_MUTARG {
                 calm = a_place(g, c, g.ea[arg]) >= 0
             } else if a_arg_by_ref(c, target, i) {
@@ -2012,9 +1886,7 @@ fn a_call(g: mut AGen, c: Checker, p: Parser, id: i64) {
             } else {
                 calm = a_calls_nothing(g, c, arg)
             }
-            if calm {
-                quiet = i
-            }
+            if calm { quiet = i }
             i = i - 1
         }
     }
@@ -2025,9 +1897,7 @@ fn a_call(g: mut AGen, c: Checker, p: Parser, id: i64) {
     i = 0
     while i < count {
         var arg = receiver
-        if i >= first {
-            arg = p.ast.lists[args_start + i - first]
-        }
+        if i >= first { arg = p.ast.lists[args_start + i - first] }
         let by_ref = a_arg_by_ref(c, target, i)
         if i >= worked {
             a_load_simple_arg(mut g, c, arg, by_ref, i)
@@ -2063,9 +1933,7 @@ fn a_call(g: mut AGen, c: Checker, p: Parser, id: i64) {
                 } else {
                     a_value(mut g, c, p, arg)
                 }
-                if i > 0 && !number {
-                    g.words.push(a_mov(i, X0))
-                }
+                if i > 0 && !number { g.words.push(a_mov(i, X0)) }
                 var reg = i - 1
                 while reg >= 0 {
                     let park = (waits >> (4 * reg)) & 15
@@ -2415,9 +2283,7 @@ fn a_list_method(g: mut AGen, c: Checker, p: Parser, id: i64, method: i64, base:
         a_frame_address(mut g, X1, tmp)
         a_mov_imm(mut g, X2, elem_size * 8)
         a_runtime(mut g, ART_LIST_PUSH)
-        if done >= 0 {
-            a_patch_jump(mut g, done)
-        }
+        if done >= 0 { a_patch_jump(mut g, done) }
         // The list is longer now and may have moved.
         a_forget(mut g)
         return

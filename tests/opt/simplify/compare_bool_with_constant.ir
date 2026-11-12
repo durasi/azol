@@ -1,0 +1,8 @@
+; b == true is b; b != false is b.
+fn main(p0: i64) -> bool, bool {
+b0:
+    v0 = slt p0, 5
+    v1 = eq v0, 1
+    v2 = ne v0, 0
+    ret v1, v2
+}

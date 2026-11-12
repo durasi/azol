@@ -20,9 +20,7 @@ fn main() {
     for i, item in xs {
         print(i, item)
     }
-    if (first > 0) {
-        print("a,b:c", 'x', ' ')
-    }
+    if (first > 0) { print("a,b:c", 'x', ' ') }
     let wide = (1 + 2) * (3 - 4)
     return
 }

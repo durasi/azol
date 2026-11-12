@@ -33,16 +33,12 @@ fn fail(code: i64) -> Fail {
 }
 
 fn point(n: i64) -> Result[Point, Fail] {
-    if n < 0 {
-        return Err(fail(n))
-    }
+    if n < 0 { return Err(fail(n)) }
     return Ok(Point { x: n, y: n * 2 })
 }
 
 fn names(n: i64) -> Result[List[str], Fail] {
-    if n < 0 {
-        return Err(fail(n))
-    }
+    if n < 0 { return Err(fail(n)) }
     var out: List[str] = []
     var i = 0
     while i < n {

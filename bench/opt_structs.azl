@@ -10,12 +10,8 @@ struct Body {
 fn step(body: mut Body) {
     body.x = body.x + body.vx
     body.y = body.y + body.vy
-    if body.x < 0 || body.x > 1000 {
-        body.vx = 0 - body.vx
-    }
-    if body.y < 0 || body.y > 1000 {
-        body.vy = 0 - body.vy
-    }
+    if body.x < 0 || body.x > 1000 { body.vx = 0 - body.vx }
+    if body.y < 0 || body.y > 1000 { body.vy = 0 - body.vy }
 }
 
 fn energy(body: Body) -> i64 {

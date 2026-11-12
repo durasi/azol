@@ -1,0 +1,10 @@
+; A block nothing jumps to is gone.
+fn main(p0: i64) -> i64 {
+b0:
+    ret p0
+b1:
+    callrt print_i64(p0)
+    jump b2
+b2:
+    ret 0
+}

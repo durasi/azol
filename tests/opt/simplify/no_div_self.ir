@@ -1,0 +1,6 @@
+; Kept: x / x is 1 only when x is not 0, and the pass does not use the check that guards the division.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = sdiv p0, p0
+    ret v0
+}

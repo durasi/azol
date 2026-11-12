@@ -1,6 +1,6 @@
 {
   "date": "2026-11-12",
-  "runs": 3,
+  "runs": 10,
   "mode": "default build (this compiler has no `-O` yet)",
   "machine": {
     "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
@@ -14,393 +14,393 @@
     {
       "name": "append",
       "same_output": true,
-      "azol": 0.18992852799965476,
-      "rust": 0.16963599799964868,
-      "native": 0.1836266340014845,
-      "ratio": 1.119623960947535,
-      "native_ratio": 1.034319062876899,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 46499388,
-        "rust": 28876741
+        "rust": 28876691,
+        "opt": 45509389
       }
     },
     {
       "name": "bfs",
       "same_output": true,
-      "azol": 0.7167000429999462,
-      "rust": 0.5152390210005251,
-      "native": 0.4830092390002392,
-      "ratio": 1.3910049778609757,
-      "native_ratio": 1.4838226376029864,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 27824558,
-        "rust": 19536743
+        "rust": 19536727,
+        "opt": 21150997
       }
     },
     {
       "name": "bignum",
       "same_output": true,
-      "azol": 0.28488747300070827,
-      "rust": 0.21967864599901077,
-      "native": 0.22172471200065047,
-      "ratio": 1.296837349416252,
-      "native_ratio": 1.284870190742981,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 16720320,
-        "rust": 9138128
+        "rust": 9138131,
+        "opt": 12544672
       }
     },
     {
       "name": "binary_trees",
       "same_output": true,
-      "azol": 0.4686214049997943,
-      "rust": 0.5329162050002196,
-      "native": 0.4695515300008992,
-      "ratio": 0.8793528900094175,
-      "native_ratio": 0.9980191204975881,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 98131889,
-        "rust": 171954401
+        "rust": 171954430,
+        "opt": 81318924
       }
     },
     {
       "name": "bits",
       "same_output": true,
-      "azol": 0.8343949980007892,
-      "rust": 0.2634199090007314,
-      "native": 0.17903730999933032,
-      "ratio": 3.167547210710153,
-      "native_ratio": 4.660453164783978,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 223001019,
-        "rust": 47442082
+        "rust": 47442096,
+        "opt": 139001003
       }
     },
     {
       "name": "crc32",
       "same_output": true,
-      "azol": 0.4162872659999266,
-      "rust": 0.40754397499949846,
-      "native": 0.4623234560003766,
-      "ratio": 1.0214536136877963,
-      "native_ratio": 0.9004242821709385,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 103161283,
-        "rust": 60740959
+        "rust": 60740945,
+        "opt": 75897779
       }
     },
     {
       "name": "dijkstra",
       "same_output": true,
-      "azol": 0.42470128899913107,
-      "rust": 0.2989951210001891,
-      "native": 0.2890533059999143,
-      "ratio": 1.420428826993677,
-      "native_ratio": 1.4692836241051572,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 133587177,
-        "rust": 31869035
+        "rust": 31869056,
+        "opt": 98839075
       }
     },
     {
       "name": "dp_lcs",
       "same_output": true,
-      "azol": 0.9273400689999107,
-      "rust": 0.42029149799964216,
-      "native": 0.3540509730009944,
-      "ratio": 2.2064211943699616,
-      "native_ratio": 2.619227568108692,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 107259354,
-        "rust": 28651353
+        "rust": 28651356,
+        "opt": 70057524
       }
     },
     {
       "name": "fannkuch",
       "same_output": true,
-      "azol": 0.26980409899988445,
-      "rust": 0.1960485810013779,
-      "native": 0.1767256549992453,
-      "ratio": 1.3762104148970513,
-      "native_ratio": 1.5266832594341586,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 164840557,
-        "rust": 106700701
+        "rust": 106700719,
+        "opt": 167334500
       }
     },
     {
       "name": "fib40",
       "same_output": true,
-      "azol": 0.40218129799905,
-      "rust": 0.30476831499981927,
-      "native": 0.281958648998625,
-      "ratio": 1.31962962750668,
-      "native_ratio": 1.4263839730662466,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 36349435,
-        "rust": 26854955
+        "rust": 26854940,
+        "opt": 33656893
       }
     },
     {
       "name": "json",
       "same_output": true,
-      "azol": 0.21648260100118932,
-      "rust": 0.18404051200013782,
-      "native": 0.22505899899988435,
-      "ratio": 1.1762768895199944,
-      "native_ratio": 0.9618926679812548,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 76057789,
-        "rust": 67909100
+        "rust": 67909121,
+        "opt": 67463748
       }
     },
     {
       "name": "knapsack",
       "same_output": true,
-      "azol": 0.23871801600034814,
-      "rust": 0.33320239199929347,
-      "native": 0.4157896119995712,
-      "ratio": 0.7164354810539725,
-      "native_ratio": 0.57413174622697,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 70810081,
-        "rust": 76174823
+        "rust": 76174841,
+        "opt": 64133921
       }
     },
     {
       "name": "loops",
       "same_output": true,
-      "azol": 0.3824353800009703,
-      "rust": 0.31902543300020625,
-      "native": 0.3304140969994478,
-      "ratio": 1.1987614166194802,
-      "native_ratio": 1.1574426862350533,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 43536458,
-        "rust": 38222809
+        "rust": 38222795,
+        "opt": 30363016
       }
     },
     {
       "name": "lru",
       "same_output": true,
-      "azol": 0.20197634099895367,
-      "rust": 0.19979384999896865,
-      "native": 0.22879413299961016,
-      "ratio": 1.0109237146188248,
-      "native_ratio": 0.8827863649777148,
-      "rust_variant": "fx.rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 77599843,
-        "rust": 100614820
+        "rust": 100614824,
+        "opt": 64631742
       }
     },
     {
       "name": "map_int",
       "same_output": true,
-      "azol": 0.244086819999211,
-      "rust": 0.14473445199837442,
-      "native": 0.12081333199967048,
-      "ratio": 1.6864458781517508,
-      "native_ratio": 2.020363282422148,
-      "rust_variant": "fx.rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 86809454,
-        "rust": 34312228
+        "rust": 34312289,
+        "opt": 74120785
       }
     },
     {
       "name": "matcher",
       "same_output": true,
-      "azol": 0.2950594939993607,
-      "rust": 0.23428013199918496,
-      "native": 0.27779397499944025,
-      "ratio": 1.2594302875003809,
-      "native_ratio": 1.0621522443024736,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 99557762,
-        "rust": 80962380
+        "rust": 80962405,
+        "opt": 79664938
       }
     },
     {
       "name": "matmul",
       "same_output": true,
-      "azol": 0.3680790650014387,
-      "rust": 0.33741235100023914,
-      "native": 0.2808251909991668,
-      "ratio": 1.0908879414469859,
-      "native_ratio": 1.3107052956745993,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 72039898,
-        "rust": 37856920
+        "rust": 37856923,
+        "opt": 59599824
       }
     },
     {
       "name": "particles",
       "same_output": true,
-      "azol": 0.49667759600015415,
-      "rust": 0.35559792399908474,
-      "native": 0.7620157830006065,
-      "ratio": 1.396739301552932,
-      "native_ratio": 0.6517943684110791,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 89014861,
-        "rust": 60815246
+        "rust": 60815251,
+        "opt": 168651963
       }
     },
     {
       "name": "prefix",
       "same_output": true,
-      "azol": 0.33129746899976453,
-      "rust": 0.24952968300021894,
-      "native": 0.17636751099962567,
-      "ratio": 1.3276876122167551,
-      "native_ratio": 1.8784495348492372,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 48525007,
-        "rust": 21530590
+        "rust": 21530593,
+        "opt": 43723094
       }
     },
     {
       "name": "sha256",
       "same_output": true,
-      "azol": 0.9386175910003658,
-      "rust": 0.2501582889999554,
-      "native": 0.3198848669999279,
-      "ratio": 3.752094702728532,
-      "native_ratio": 2.93423568236686,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 416214736,
-        "rust": 95152733
+        "rust": 95152736,
+        "opt": 248540656
       }
     },
     {
       "name": "sieve",
       "same_output": true,
-      "azol": 0.8708259600007295,
-      "rust": 0.16236217700134148,
-      "native": 0.19702402599978086,
-      "ratio": 5.363477973035152,
-      "native_ratio": 4.419897297204241,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 69691579,
-        "rust": 49554522
+        "rust": 49554508,
+        "opt": 63790802
       }
     },
     {
       "name": "soa",
       "same_output": true,
-      "azol": 0.8284051219998219,
-      "rust": 0.44466560000000754,
-      "native": 0.4408061819995055,
-      "ratio": 1.8629845034106705,
-      "native_ratio": 1.8792956084285388,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 93341623,
-        "rust": 23085058
+        "rust": 23085041,
+        "opt": 123294537
       }
     },
     {
       "name": "sort",
       "same_output": true,
-      "azol": 0.4227060299999721,
-      "rust": 0.3432709179996891,
-      "native": 0.30333965299905685,
-      "ratio": 1.2314064717837674,
-      "native_ratio": 1.393507330218006,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 64098134,
-        "rust": 50939088
+        "rust": 50939105,
+        "opt": 55347623
       }
     },
     {
       "name": "sort_lib",
       "same_output": true,
-      "azol": 1.7969797319983627,
-      "rust": 0.218615031999434,
-      "native": 0.17241890399964177,
-      "ratio": 8.219836099847951,
-      "native_ratio": 10.422173499038692,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 171701091,
-        "rust": 40767377
+        "rust": 40767398,
+        "opt": 134621991
       }
     },
     {
       "name": "tokenizer",
       "same_output": true,
-      "azol": 0.7966686760009907,
-      "rust": 0.26003143200068735,
-      "native": 0.19954293699993286,
-      "ratio": 3.0637399097155487,
-      "native_ratio": 3.99246742570126,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 41699672,
-        "rust": 10023233
+        "rust": 10023231,
+        "opt": 36255223
       }
     },
     {
       "name": "tree",
       "same_output": true,
-      "azol": 0.36663405999934184,
-      "rust": 0.37636998100060737,
-      "native": 0.3650867760006804,
-      "ratio": 0.974132046941199,
-      "native_ratio": 1.0042381266602178,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 21364019,
-        "rust": 26699715
+        "rust": 26699732,
+        "opt": 16973257
       }
     },
     {
       "name": "wordfreq",
       "same_output": true,
-      "azol": 0.47632127799988666,
-      "rust": 0.24685145699913846,
-      "native": 0.1584959890005848,
-      "ratio": 1.9295866582693457,
-      "native_ratio": 3.005257615687228,
-      "rust_variant": "fx.rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 126818951,
-        "rust": 58934583
+        "rust": 58934579,
+        "opt": 112108898
       }
     },
     {
       "name": "words",
       "same_output": true,
-      "azol": 0.8132118020002963,
-      "rust": 0.39356381700054044,
-      "native": 0.3698266049996164,
-      "ratio": 2.0662768447516595,
-      "native_ratio": 2.198900217038576,
-      "rust_variant": "rs",
+      "azol": null,
+      "rust": null,
+      "native": null,
+      "ratio": null,
+      "native_ratio": null,
       "instructions": {
         "azol": 49096060,
-        "rust": 18479005
+        "rust": 18478986,
+        "opt": 43890710
       }
     }
   ],
@@ -409,10 +409,10 @@
     "nbody",
     "spectral"
   ],
-  "mean": 1.6127169868415852,
-  "native_mean": 1.651531769594173,
-  "instruction_mean": 1.8451512158539598,
+  "mean": null,
+  "native_mean": null,
+  "instruction_mean": 1.845151203080809,
   "bound": 1.1,
-  "verdict": "GATE: FAIL (22 programs above 1.10, geometric mean 1.61) [measured on a busy machine: the same loop took between 69 and 103 ms]",
+  "verdict": "GATE: NO VERDICT (no timing was asked for)",
   "failures": []
 }

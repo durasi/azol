@@ -244,42 +244,26 @@ fn x_no_mem() -> XMem {
 
 // The register variable number `i` lives in.
 fn x_variable_register(i: i64) -> i64 {
-    if i == 0 {
-        return RBX
-    }
+    if i == 0 { return RBX }
     return 11 + i
 }
 
 // The registers arguments travel in, first to last: rdi, rsi, rdx, rcx,
 // r8, r9, r10 and r11.
 fn x_arg(i: i64) -> i64 {
-    if i >= 4 {
-        return i + 4
-    }
-    if i == 0 {
-        return RDI
-    }
-    if i == 1 {
-        return RSI
-    }
-    if i == 2 {
-        return RDX
-    }
+    if i >= 4 { return i + 4 }
+    if i == 0 { return RDI }
+    if i == 1 { return RSI }
+    if i == 2 { return RDX }
     return RCX
 }
 
 // Where the left operand of an operation waits while the right one is
 // computed, when that takes no call: r9, r11, rsi, rdi.
 fn x_park(i: i64) -> i64 {
-    if i == 0 {
-        return R9
-    }
-    if i == 1 {
-        return R11
-    }
-    if i == 2 {
-        return RSI
-    }
+    if i == 0 { return R9 }
+    if i == 1 { return R11 }
+    if i == 2 { return RSI }
     return RDI
 }
 
@@ -293,16 +277,12 @@ fn x_below(a: i64, b: i64) -> bool {
 fn x_two63_div(by: i64) -> i64 {
     if by < 0 {
         // Only 2^63 itself is that large.
-        if by == 1 << 63 {
-            return 1
-        }
+        if by == 1 << 63 { return 1 }
         return 0
     }
     let most = 9223372036854775807
     var q = most / by
-    if most % by + 1 == by {
-        q = q + 1
-    }
+    if most % by + 1 == by { q = q + 1 }
     return q
 }
 
@@ -317,21 +297,15 @@ fn x_two63_div(by: i64) -> i64 {
 fn x_magic(g: mut Gen, by: i64) -> i64 {
     let two63 = 1 << 63
     var ad = by
-    if by < 0 {
-        ad = 0 - by
-    }
+    if by < 0 { ad = 0 - by }
     var t = two63
-    if by < 0 {
-        t = two63 + 1
-    }
+    if by < 0 { t = two63 + 1 }
     let q2_start = x_two63_div(ad)
     // t % ad, with t = 2^63 or 2^63 + 1.
     var rem = two63 - q2_start * ad
     if by < 0 {
         rem = rem + 1
-        if rem == ad {
-            rem = 0
-        }
+        if rem == ad { rem = 0 }
     }
     let anc = t - 1 - rem
     var shift = 63
@@ -359,32 +333,18 @@ fn x_magic(g: mut Gen, by: i64) -> i64 {
     }
     g.magic_shift = shift - 64
     var magic = q2 + 1
-    if by < 0 {
-        magic = 0 - magic
-    }
+    if by < 0 { magic = 0 - magic }
     return magic
 }
 
 // The condition code of a comparison operator, or -1.
 fn x_comparison(op: i64) -> i64 {
-    if op == OP_EQ {
-        return CC_E
-    }
-    if op == OP_NE {
-        return CC_NE
-    }
-    if op == OP_LT {
-        return CC_L
-    }
-    if op == OP_LE {
-        return CC_LE
-    }
-    if op == OP_GT {
-        return CC_G
-    }
-    if op == OP_GE {
-        return CC_GE
-    }
+    if op == OP_EQ { return CC_E }
+    if op == OP_NE { return CC_NE }
+    if op == OP_LT { return CC_L }
+    if op == OP_LE { return CC_LE }
+    if op == OP_GT { return CC_G }
+    if op == OP_GE { return CC_GE }
     return -1
 }
 
@@ -424,17 +384,13 @@ fn x_read_tree(g: mut Gen, p: Parser) {
             ExprStr(_) => kind = K_STR
             ExprBool(value) => {
                 kind = K_BOOL
-                if value {
-                    a = 1
-                }
+                if value { a = 1 }
             }
             ExprIdent(_) => kind = K_IDENT
             ExprUnary(op, operand) => {
                 kind = K_UNARY
                 a = operand
-                if op == OpNot {
-                    c = 1
-                }
+                if op == OpNot { c = 1 }
             }
             ExprBinary(op, lhs, rhs) => {
                 kind = K_BINARY
@@ -676,12 +632,8 @@ fn x_lea_scaled(g: mut Gen, dst: i64, index: i64, scale: i64) {
 // `movzx eax, byte [at]`, which clears the rest of rax.
 fn x_load_byte(g: mut Gen, at: XMem) {
     var index = 0
-    if at.index >= 0 {
-        index = at.index
-    }
-    if at.base >= 8 || index >= 8 {
-        g.code.push(0x40 | ((index >> 3) << 1) | (at.base >> 3))
-    }
+    if at.index >= 0 { index = at.index }
+    if at.base >= 8 || index >= 8 { g.code.push(0x40 | ((index >> 3) << 1) | (at.base >> 3)) }
     g.code.push(0x0F)
     g.code.push(0xB6)
     if at.index >= 0 {
@@ -720,9 +672,7 @@ fn x_store_imm_at(g: mut Gen, at: XMem, extra: i64, value: i64) {
 
 // `op reg, [at]` for `X_ADD`, `X_SUB`, `X_CMP`, `X_AND`, `X_OR` and `X_XOR`.
 fn x_op_at(g: mut Gen, op: i64, reg: i64, at: XMem) {
-    if op != X_CMP {
-        x_writes(mut g, reg)
-    }
+    if op != X_CMP { x_writes(mut g, reg) }
     // The form that reads its second operand from memory is two up.
     if at.index >= 0 {
         x_rex_index(mut g, reg, at.index, at.base)
@@ -752,9 +702,7 @@ fn x_cmp_at_reg(g: mut Gen, at: XMem, reg: i64) {
 fn x_cmp_at_imm(g: mut Gen, at: XMem, value: i64) {
     let small = value >= -128 && value <= 127
     var opcode = 0x81
-    if small {
-        opcode = 0x83
-    }
+    if small { opcode = 0x83 }
     if at.index >= 0 {
         x_rex_index(mut g, 0, at.index, at.base)
         g.code.push(opcode)
@@ -825,9 +773,7 @@ fn x_forget_since(g: mut Gen, from: i64) {
         }
         g.known_len = kept
     }
-    if g.held_ok && g.held_since > from {
-        g.held_ok = false
-    }
+    if g.held_ok && g.held_since > from { g.held_ok = false }
 }
 
 // Register `reg` is about to change: forgets what depended on it. Every
@@ -852,9 +798,7 @@ fn x_writes(g: mut Gen, reg: i64) {
             }
             g.known_len = kept
         }
-        if g.held_ok && g.held_at == reg {
-            g.held_ok = false
-        }
+        if g.held_ok && g.held_at == reg { g.held_ok = false }
     }
 }
 
@@ -907,9 +851,7 @@ fn x_mov(g: mut Gen, dst: i64, src: i64) {
 // `op dst, src` for `X_ADD`, `X_SUB`, `X_CMP`, `X_TEST`, `X_AND`, `X_OR`
 // and `X_XOR`.
 fn x_op(g: mut Gen, op: i64, dst: i64, src: i64) {
-    if op != X_CMP && op != X_TEST {
-        x_writes(mut g, dst)
-    }
+    if op != X_CMP && op != X_TEST { x_writes(mut g, dst) }
     x_rex(mut g, src, dst)
     g.code.push(op)
     g.code.push(0xC0 | ((src & 7) << 3) | (dst & 7))
@@ -951,9 +893,7 @@ fn x_shift_imm(g: mut Gen, reg: i64, right: bool, count: i64) {
 // `op reg, value` for `ADD_I`, `OR_I`, `AND_I`, `SUB_I`, `XOR_I` and
 // `CMP_I`. A constant that fits in a byte takes the short form.
 fn x_op_imm(g: mut Gen, op: i64, reg: i64, value: i64) {
-    if op != CMP_I {
-        x_writes(mut g, reg)
-    }
+    if op != CMP_I { x_writes(mut g, reg) }
     x_rex(mut g, 0, reg)
     if value >= -128 && value <= 127 {
         g.code.push(0x83)
@@ -999,17 +939,13 @@ fn x_imul_imm(g: mut Gen, dst: i64, src: i64, value: i64) {
 }
 
 fn x_push_reg(g: mut Gen, reg: i64) {
-    if reg >= 8 {
-        g.code.push(0x41)
-    }
+    if reg >= 8 { g.code.push(0x41) }
     g.code.push(0x50 | (reg & 7))
 }
 
 fn x_pop_reg(g: mut Gen, reg: i64) {
     x_writes(mut g, reg)
-    if reg >= 8 {
-        g.code.push(0x41)
-    }
+    if reg >= 8 { g.code.push(0x41) }
     g.code.push(0x58 | (reg & 7))
 }
 
@@ -1032,16 +968,12 @@ fn x_mov_imm(g: mut Gen, reg: i64, value: i64) {
     x_writes(mut g, reg)
     if value == 0 {
         // xor r32, r32 clears the upper half too.
-        if reg >= 8 {
-            g.code.push(0x45)
-        }
+        if reg >= 8 { g.code.push(0x45) }
         g.code.push(0x31)
         g.code.push(0xC0 | ((reg & 7) << 3) | (reg & 7))
     } else if value > 0 && value <= 4294967295 {
         // A 32-bit move clears the upper half.
-        if reg >= 8 {
-            g.code.push(0x41)
-        }
+        if reg >= 8 { g.code.push(0x41) }
         g.code.push(0xB8 | (reg & 7))
         x_imm32(mut g, value)
     } else if value >= -2147483648 && value <= 2147483647 {
@@ -1160,12 +1092,8 @@ fn x_kind(g: Gen, c: Checker, id: i64) -> i64 {
     if kind == K_IDENT {
         let aux = c.expr_aux[g.sh_e + id]
         if aux >= CONST_STR {
-            if aux == CONST_INT {
-                return K_INT
-            }
-            if aux == CONST_STR {
-                return K_STR
-            }
+            if aux == CONST_INT { return K_INT }
+            if aux == CONST_STR { return K_STR }
             return K_BOOL
         }
     }
@@ -1174,12 +1102,8 @@ fn x_kind(g: Gen, c: Checker, id: i64) -> i64 {
 
 // The value of a `bool` written in the program or named by a constant.
 fn x_bool_value(g: Gen, c: Checker, id: i64) -> i64 {
-    if g.kinds[id] == K_BOOL {
-        return g.ea[id]
-    }
-    if c.expr_aux[g.sh_e + id] == CONST_TRUE {
-        return 1
-    }
+    if g.kinds[id] == K_BOOL { return g.ea[id] }
+    if c.expr_aux[g.sh_e + id] == CONST_TRUE { return 1 }
     return 0
 }
 
@@ -1204,9 +1128,7 @@ fn x_function_body(g: mut Gen, c: Checker, p: Parser, index: i64, body: IdRange)
     // The most used variables live in registers. Above the slots is
     // room for the caller's values of those registers.
     var count = c.fns[index].reg_slots.len()
-    if count > VARIABLE_REGISTERS {
-        count = VARIABLE_REGISTERS
-    }
+    if count > VARIABLE_REGISTERS { count = VARIABLE_REGISTERS }
     var i = 0
     while i < count {
         g.reg_slots[i] = c.fns[index].reg_slots[i]
@@ -1222,9 +1144,7 @@ fn x_function_body(g: mut Gen, c: Checker, p: Parser, index: i64, body: IdRange)
     var any_by_ref = false
     i = 0
     while i < params {
-        if c.fns[index].param_by_ref[i] {
-            any_by_ref = true
-        }
+        if c.fns[index].param_by_ref[i] { any_by_ref = true }
         i = i + 1
     }
     if any_by_ref && x_has_loop(p, body) {
@@ -1325,9 +1245,7 @@ fn x_function_body(g: mut Gen, c: Checker, p: Parser, index: i64, body: IdRange)
 // whoever took it.
 fn x_wait_slot(g: mut Gen) -> XMem {
     g.waiting = g.waiting + 1
-    if g.waiting > g.waiting_most {
-        g.waiting_most = g.waiting
-    }
+    if g.waiting > g.waiting_most { g.waiting_most = g.waiting }
     return XMem { base: RBP, index: -1, scale: 0, disp: 0 - g.frame_bytes - 8 * g.waiting }
 }
 
@@ -1355,9 +1273,7 @@ fn x_function_epilogue(g: mut Gen) {
 fn x_has_loop(p: Parser, body: IdRange) -> bool {
     var i = 0
     while i < body.len {
-        if x_stmt_has_loop(p, p.ast.lists[body.start + i]) {
-            return true
-        }
+        if x_stmt_has_loop(p, p.ast.lists[body.start + i]) { return true }
         i = i + 1
     }
     return false
@@ -1368,9 +1284,7 @@ fn x_stmt_has_loop(p: Parser, id: i64) -> bool {
         StmtWhile(_, _) => return true
         StmtFor(_, _, _, _) => return true
         StmtIf(_, then_block, else_branch) => {
-            if x_has_loop(p, then_block) {
-                return true
-            }
+            if x_has_loop(p, then_block) { return true }
             match else_branch {
                 ElseNone => return false
                 ElseBlock(body) => return x_has_loop(p, body)
@@ -1380,9 +1294,7 @@ fn x_stmt_has_loop(p: Parser, id: i64) -> bool {
         StmtMatch(_, arms) => {
             var i = 0
             while i < arms.len {
-                if x_has_loop(p, p.ast.arms[p.ast.lists[arms.start + i]].body) {
-                    return true
-                }
+                if x_has_loop(p, p.ast.arms[p.ast.lists[arms.start + i]].body) { return true }
                 i = i + 1
             }
             return false
@@ -1396,9 +1308,7 @@ fn x_stmt_has_loop(p: Parser, id: i64) -> bool {
 fn x_pointer(g: mut Gen, place: i64, scratch: i64) -> i64 {
     let slot = place & 4095
     let reg = x_slot_register(g, slot)
-    if reg >= 0 {
-        return reg
-    }
+    if reg >= 0 { return reg }
     x_load(mut g, scratch, slot)
     return scratch
 }
@@ -1418,9 +1328,7 @@ fn x_header(g: mut Gen, place: i64, scratch: i64) -> i64 {
 fn x_slot_register(g: Gen, slot: i64) -> i64 {
     var i = 0
     while i < g.register_count {
-        if g.reg_slots[i] == slot {
-            return g.reg_regs[i]
-        }
+        if g.reg_slots[i] == slot { return g.reg_regs[i] }
         i = i + 1
     }
     return -1
@@ -1428,9 +1336,7 @@ fn x_slot_register(g: Gen, slot: i64) -> i64 {
 
 // The register a place lives in, or -1: only whole variables have one.
 fn x_register(g: Gen, place: i64) -> i64 {
-    if place >= 4096 || g.register_count == 0 {
-        return -1
-    }
+    if place >= 4096 || g.register_count == 0 { return -1 }
     return x_slot_register(g, place)
 }
 
@@ -1438,13 +1344,9 @@ fn x_register(g: Gen, place: i64) -> i64 {
 // -1. Such a variable cannot change while an expression is evaluated:
 // only a statement can assign to it, and nothing has its address.
 fn x_in_register(g: Gen, c: Checker, id: i64) -> i64 {
-    if g.register_count == 0 || g.kinds[id] != K_IDENT {
-        return -1
-    }
+    if g.register_count == 0 || g.kinds[id] != K_IDENT { return -1 }
     let place = x_place(g, c, id)
-    if place < 0 || place >= 4096 {
-        return -1
-    }
+    if place < 0 || place >= 4096 { return -1 }
     return x_slot_register(g, place)
 }
 
@@ -1499,9 +1401,7 @@ fn x_clone_value(g: mut Gen, c: Checker, ty: i64) {
 // written if this is its first use.
 fn x_glue_call(g: mut Gen, ty: i64, copy: bool) {
     var key = ty * 2
-    if copy {
-        key = key + 1
-    }
+    if copy { key = key + 1 }
     var id = int_map_get(g.glue_ids, key)
     if id < 0 {
         id = g.glue_tys.len()
@@ -1653,12 +1553,8 @@ fn x_drop_temps(g: mut Gen, c: Checker, id: i64, keep_rax: bool) {
 
 // Frees the temporaries listed in `drops[start .. start + len]`.
 fn x_drop_range(g: mut Gen, c: Checker, start: i64, len: i64, keep_rax: bool) {
-    if len == 0 {
-        return
-    }
-    if keep_rax {
-        x_push(mut g)
-    }
+    if len == 0 { return }
+    if keep_rax { x_push(mut g) }
     var i = start
     while i < start + len {
         let slot = c.drop_slots[i]
@@ -1669,9 +1565,7 @@ fn x_drop_range(g: mut Gen, c: Checker, start: i64, len: i64, keep_rax: bool) {
         x_zero_idle(mut g, c, slot, ty)
         i = i + 1
     }
-    if keep_rax {
-        x_pop(mut g, RAX)
-    }
+    if keep_rax { x_pop(mut g, RAX) }
 }
 
 // The value in frame slot `slot` was copied bit by bit from another

@@ -1,0 +1,43 @@
+// A `?` in the index of an assignment's target leaves the function while
+// the statement holds the new value: the intermediate form must free it
+// there (the interpreter counts blocks that are never freed).
+// expect-exit: 0
+// expect-line: no1
+// expect-line: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa123
+// expect-line: no2
+// expect-line: left
+fn fail(n: i64) -> Result[i64, str] {
+    if n > 0 { return Err("no" + str(n)) }
+    return Ok(0)
+}
+
+fn put(xs: mut List[str], n: i64) -> Result[i64, str] {
+    xs[fail(n)?] = "123".pad_left(40, "a")
+    return Ok(1)
+}
+
+fn put_copy(xs: mut List[str], n: i64, text: str) -> Result[i64, str] {
+    xs[fail(n)?] = text
+    return Ok(1)
+}
+
+fn main() {
+    var xs = ["x"]
+    match put(mut xs, 1) {
+        Ok(v) => print("ok")
+        Err(e) => print(e)
+    }
+    match put(mut xs, 0) {
+        Ok(v) => print(xs[0])
+        Err(e) => print(e)
+    }
+    let text = "left" + str(xs.len() - 1).slice(1, 1)
+    match put_copy(mut xs, 2, text) {
+        Ok(v) => print("ok")
+        Err(e) => print(e)
+    }
+    match put_copy(mut xs, 0, text) {
+        Ok(v) => print(xs[0])
+        Err(e) => print(e)
+    }
+}

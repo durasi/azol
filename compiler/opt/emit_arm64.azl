@@ -1,0 +1,1049 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// From the allocated machine-level view of a function to ARM64
+// instructions: the frame, the moves the allocator asked for, every
+// instruction of `sel_arm64.azl`, and the jumps. docs/design/optimizer.md
+// sections 6.2 to 6.5.
+//
+// The frame, from the stack pointer up. There is no frame pointer:
+// everything is reached from sp, which does not move between the
+// prologue and the epilogue and is always a multiple of 16.
+//
+//   [sp + 0]           arguments beyond the eighth, and results beyond
+//                      the fourth, of the calls this function makes
+//   scratch            48 bytes for the string headers a runtime call
+//                      needs, when the function has such a call
+//   spill slots        8 bytes each
+//   frame objects      the function's `frames`, each a multiple of 8
+//   (padding)
+//   saved registers    in pairs: those of x19 to x28 the function uses,
+//                      x30 when it calls anything, and x29 to make the
+//                      number even
+//   [caller's sp]      this function's own stack arguments and results
+//
+// A small frame with no outgoing stack arguments has the saved
+// registers at the bottom instead, so that one `stp` with writeback
+// makes the frame and one `ldp` removes it.
+//
+// A function that begins with a test of its arguments, one way out of
+// which only returns (an argument, a constant or nothing), does that
+// test before it makes its frame: the early way out then costs no
+// saving and restoring of registers (`ea_find_early`).
+//
+// A frame larger than a page is made one page at a time and every page
+// is touched, so that running out of stack is always noticed close to
+// the stack pointer, which is how the runtime tells it from any other
+// fault.
+//
+// x16 and x17 are free inside an instruction; between instructions x16
+// may hold a value the allocator is moving, so the moves use x17 only.
+
+const EA_T0 = 17
+const EA_T1 = 16
+
+// Kinds of jump to a block: how far the instruction reaches.
+const EA_J_FAR = 0
+const EA_J_MID = 1
+const EA_J_NEAR = 2
+
+struct Ea {
+    w: List[i64]
+    // 0: every jump in its short form; 1: no `tbz`/`tbnz` to another
+    // block; 2: no conditional jump to another block at all.
+    mode: i64
+    saves: List[i64]
+    compact: bool
+    scratch_at: i64
+    slots_at: i64
+    obj_at: List[i64]
+    total: i64
+    // The jumps between blocks: where, which kind, and the block.
+    j_at: List[i64]
+    j_kind: List[i64]
+    j_blk: List[i64]
+    blk_at: List[i64]
+    // Calls of functions of the module: where, and the function.
+    call_at: List[i64]
+    call_fn: List[i64]
+    // Calls into the runtime: where, and where the routine starts.
+    rt: List[Fixup]
+    relocs: List[Reloc]
+    // Where in the data the message of each kind of trap is.
+    trap_at: List[i64]
+    // The memory operand that was prepared last: `[m_base, #m_disp]`,
+    // or `[m_base, m_index]` with the index scaled when `m_scaled` is 1.
+    m_base: i64
+    m_index: i64
+    m_scaled: i64
+    m_disp: i64
+    // For every block: where a jump to it really goes (through blocks
+    // that are nothing but a jump), and the block that is emitted after
+    // it. A block that only jumps on is not emitted at all.
+    thru: List[i64]
+    nxt: List[i64]
+    // The test before the frame: the block that ends in it (-1 for
+    // none), the block that only returns, and the block the test leads
+    // to otherwise.
+    early_from: i64
+    early_to: i64
+    early_other: i64
+    // That returning block when nothing else leads to it: it is not
+    // emitted a second time. Else -1.
+    early_dead: i64
+    error: str
+}
+
+// The instructions of one function and what the linker must fill in.
+// Every place is an instruction's number in `words`.
+struct EaFunc {
+    words: List[i64]
+    call_at: List[i64]
+    call_fn: List[i64]
+    rt: List[Fixup]
+    relocs: List[Reloc]
+    ok: bool
+    error: str
+}
+
+fn ea_slot(e: Ea, place: i64) -> i64 {
+    return e.slots_at + (place - MF_SLOT0) * 8
+}
+
+// ---- the frame -------------------------------------------------------------------------
+
+fn ea_layout(e: mut Ea, frames: List[i64], sa: SaFunc, result: RaResult) {
+    var reg = 19
+    while reg <= 28 {
+        if (result.used >> reg) & 1 != 0 { e.saves.push(reg) }
+        reg = reg + 1
+    }
+    if sa.calls { e.saves.push(AX_LR) }
+    if e.saves.len() % 2 == 1 { e.saves.push(AX_FP) }
+    let saved = e.saves.len() * 8
+    var body = sa.out_bytes
+    if sa.scratch { body = body + SA_SCRATCH_BYTES }
+    body = body + result.slots * 8
+    for bytes in frames {
+        body = body + align_up(bytes, 8)
+    }
+    e.total = align_up(body + saved, 16)
+    e.compact = saved > 0 && sa.out_bytes == 0 && e.total <= 504
+    var at = sa.out_bytes
+    if e.compact { at = saved }
+    e.scratch_at = at
+    if sa.scratch { at = at + SA_SCRATCH_BYTES }
+    e.slots_at = at
+    at = at + result.slots * 8
+    if at > 32760 { e.error = "the function needs more spill slots than can be reached" }
+    for bytes in frames {
+        e.obj_at.push(at)
+        at = at + align_up(bytes, 8)
+    }
+}
+
+// Moves sp down by `bytes`, touching every page on the way.
+fn ea_grow_stack(e: mut Ea, bytes: i64) {
+    let pages = bytes / 4096
+    if pages > 4 {
+        ax_mov_imm(mut e.w, EA_T0, pages)
+        e.w.push(ax_addsub_imm(1, 0, AX_SP, AX_SP, 1, 1))
+        e.w.push(ax_mem(AX_M_64, 0, AX_ZR, AX_SP, 0))
+        e.w.push(ax_addsub_imm(1, 1, EA_T0, EA_T0, 1, 0))
+        e.w.push(ax_bcond(AX_NE, -3))
+    } else {
+        var k = 0
+        while k < pages {
+            e.w.push(ax_addsub_imm(1, 0, AX_SP, AX_SP, 1, 1))
+            e.w.push(ax_mem(AX_M_64, 0, AX_ZR, AX_SP, 0))
+            k = k + 1
+        }
+    }
+    let left = bytes - pages * 4096
+    if left > 0 { e.w.push(ax_addsub_imm(1, 0, AX_SP, AX_SP, left, 0)) }
+}
+
+fn ea_prologue(e: mut Ea) {
+    let n = e.saves.len()
+    var first = e.total
+    if !e.compact { first = n * 8 }
+    if n > 0 {
+        e.w.push(ax_stp_pre(e.saves[0], e.saves[1], AX_SP, 0 - first))
+        var k = 2
+        while k < n {
+            e.w.push(ax_stp(e.saves[k], e.saves[k + 1], AX_SP, k * 8))
+            k = k + 2
+        }
+    }
+    if !e.compact { ea_grow_stack(mut e, e.total - n * 8) }
+}
+
+fn ea_epilogue(e: mut Ea) {
+    let n = e.saves.len()
+    var first = e.total
+    if !e.compact {
+        first = n * 8
+        ax_add_imm(mut e.w, AX_SP, AX_SP, e.total - n * 8, EA_T0)
+    }
+    if n > 0 {
+        var k = n - 2
+        while k >= 2 {
+            e.w.push(ax_ldp(e.saves[k], e.saves[k + 1], AX_SP, k * 8))
+            k = k - 2
+        }
+        e.w.push(ax_ldp_post(e.saves[0], e.saves[1], AX_SP, first))
+    }
+    e.w.push(AX_RET)
+}
+
+// ---- moves -----------------------------------------------------------------------------
+
+fn ea_mov(e: mut Ea, dst: i64, src: i64) {
+    if dst != src { e.w.push(ax_mov(dst, src)) }
+}
+
+fn ea_move(e: mut Ea, m: MFunc, kind: i64, a: i64, b: i64) {
+    if kind == RA_MV_RR {
+        e.w.push(ax_mov(b, a))
+    } else if kind == RA_MV_LOAD {
+        e.w.push(ax_mem(AX_M_64, 1, b, AX_SP, e.slots_at + a * 8))
+    } else if kind == RA_MV_STORE {
+        e.w.push(ax_mem(AX_M_64, 0, a, AX_SP, e.slots_at + b * 8))
+    } else if kind == RA_MV_SLOTS {
+        e.w.push(ax_mem(AX_M_64, 1, EA_T0, AX_SP, e.slots_at + a * 8))
+        e.w.push(ax_mem(AX_M_64, 0, EA_T0, AX_SP, e.slots_at + b * 8))
+    } else if kind == RA_MV_CONST_R {
+        ax_mov_imm(mut e.w, b, m.consts[a])
+    } else if m.consts[a] == 0 {
+        e.w.push(ax_mem(AX_M_64, 0, AX_ZR, AX_SP, e.slots_at + b * 8))
+    } else {
+        ax_mov_imm(mut e.w, EA_T0, m.consts[a])
+        e.w.push(ax_mem(AX_M_64, 0, EA_T0, AX_SP, e.slots_at + b * 8))
+    }
+}
+
+// ---- operands --------------------------------------------------------------------------
+
+// Two instructions that put the address of the data at `offset` in
+// `reg`; the linker writes them.
+fn ea_data_address(e: mut Ea, reg: i64, offset: i64) {
+    e.relocs.push(Data(e.w.len(), ART_DATA_SIZE + offset, reg))
+    e.w.push(AX_NOP)
+    e.w.push(AX_NOP)
+}
+
+// How far from sp the area of a memory operand of kind `kind` starts.
+fn ea_area(e: Ea, y: i64) -> i64 {
+    let kind = sa_y_kind(y)
+    if kind == SA_M_FRAME { return e.obj_at[sa_y_object(y)] }
+    if kind == SA_M_SCRATCH { return e.scratch_at }
+    if kind == SA_M_ARGIN { return e.total }
+    return 0
+}
+
+// The access kind for a value of IR type `ty`.
+fn ea_access_kind(ty: i64) -> i64 {
+    if ty == IR_I8 { return AX_M_S8 }
+    if ty == IR_U8 { return AX_M_U8 }
+    if ty == IR_I32 { return AX_M_S32 }
+    if ty == IR_U32 { return AX_M_U32 }
+    return AX_M_64
+}
+
+// Prepares the memory operand of instruction `i`, whose registers start
+// at operand `k`, for an access of kind `kind`. What does not fit in
+// the instruction is worked out in x17 and x16 first.
+fn ea_mem(e: mut Ea, m: MFunc, i: i64, k: i64, kind: i64) {
+    let y = m.y[i]
+    let where = sa_y_kind(y)
+    var next = k
+    var base = AX_SP
+    var disp = m.z[i]
+    if where == SA_M_REG {
+        base = mf_reg(m, i, next)
+        next = next + 1
+    } else if where == SA_M_DATA {
+        ea_data_address(mut e, EA_T0, disp)
+        base = EA_T0
+        disp = 0
+    } else {
+        disp = disp + ea_area(e, y)
+    }
+    e.m_index = -1
+    e.m_scaled = 0
+    if sa_y_has_index(y) {
+        let index = mf_reg(m, i, next)
+        let shift = sa_y_shift(y)
+        var width = 0
+        if kind >= AX_M_64 {
+            width = 3
+        } else if kind >= AX_M_U32 {
+            width = 2
+        }
+        let fits = shift == 0 || shift == width
+        if base == AX_SP && (disp != 0 || !fits) {
+            ax_add_imm(mut e.w, EA_T0, AX_SP, disp, EA_T1)
+            base = EA_T0
+            disp = 0
+        }
+        if disp == 0 && fits {
+            e.m_base = base
+            e.m_index = index
+            if shift != 0 { e.m_scaled = 1 }
+            return
+        }
+        e.w.push(ax_addsub(0, 0, EA_T0, base, index, shift))
+        base = EA_T0
+    }
+    e.m_base = base
+    e.m_disp = disp
+    if !ax_mem_fits(kind, disp) {
+        ax_mov_imm(mut e.w, EA_T1, disp)
+        e.m_index = EA_T1
+    }
+}
+
+// The load (`load` 1) or store of register `rt` at the prepared memory
+// operand.
+fn ea_access(e: mut Ea, kind: i64, load: i64, rt: i64) {
+    if e.m_index >= 0 {
+        e.w.push(ax_mem_index(kind, load, rt, e.m_base, e.m_index, e.m_scaled))
+    } else {
+        e.w.push(ax_mem(kind, load, rt, e.m_base, e.m_disp))
+    }
+}
+
+// Prepares the memory operand of instruction `i` for a pair of words:
+// a base and an offset `ldp` and `stp` take.
+fn ea_mem_pair(e: mut Ea, m: MFunc, i: i64, k: i64) {
+    ea_mem(mut e, m, i, k, AX_M_64)
+    if e.m_index >= 0 {
+        var shift = 0
+        if e.m_scaled == 1 { shift = 3 }
+        if e.m_base == AX_SP {
+            ax_add_imm(mut e.w, EA_T0, AX_SP, 0, EA_T0)
+            e.m_base = EA_T0
+        }
+        e.w.push(ax_addsub(0, 0, EA_T0, e.m_base, e.m_index, shift))
+        e.m_base = EA_T0
+        e.m_disp = 0
+        e.m_index = -1
+    } else if !ax_pair_fits(e.m_disp) {
+        ax_add_imm(mut e.w, EA_T0, e.m_base, e.m_disp, EA_T1)
+        e.m_base = EA_T0
+        e.m_disp = 0
+    }
+}
+
+// `d` = the address the memory operand of instruction `i` stands for.
+fn ea_lea(e: mut Ea, m: MFunc, i: i64) {
+    let d = mf_reg(m, i, 0)
+    let y = m.y[i]
+    let where = sa_y_kind(y)
+    let shift = sa_y_shift(y)
+    var disp = m.z[i]
+    if where == SA_M_REG {
+        let base = mf_reg(m, i, 1)
+        if sa_y_has_index(y) {
+            e.w.push(ax_addsub(0, 0, d, base, mf_reg(m, i, 2), shift))
+            ax_add_imm(mut e.w, d, d, disp, EA_T1)
+        } else if disp == 0 {
+            ea_mov(mut e, d, base)
+        } else {
+            ax_add_imm(mut e.w, d, base, disp, EA_T1)
+        }
+        return
+    }
+    var index = -1
+    // What is made first must not destroy the index.
+    var t = d
+    if sa_y_has_index(y) {
+        index = mf_reg(m, i, 1)
+        if index == d { t = EA_T0 }
+    }
+    if where == SA_M_DATA {
+        ea_data_address(mut e, t, disp)
+    } else {
+        let offset = disp + ea_area(e, y)
+        ax_add_imm(mut e.w, t, AX_SP, offset, EA_T1)
+    }
+    if index >= 0 { e.w.push(ax_addsub(0, 0, d, t, index, shift)) }
+}
+
+// `cmp a, b`, where b is a register or `imm`.
+fn ea_cmp(e: mut Ea, a: i64, b: i64, is_imm: bool, imm: i64) {
+    if !is_imm {
+        e.w.push(ax_addsub(1, 1, AX_ZR, a, b, 0))
+    } else if imm >= 0 {
+        e.w.push(ax_addsub_imm(1, 1, AX_ZR, a, imm, 0))
+    } else {
+        e.w.push(ax_addsub_imm(0, 1, AX_ZR, a, 0 - imm, 0))
+    }
+}
+
+// `tst a, b`.
+fn ea_tst(e: mut Ea, a: i64, b: i64, is_imm: bool, imm: i64) {
+    if is_imm {
+        e.w.push(ax_logic_imm(AX_ANDS, AX_ZR, a, ax_logical_imm(imm)))
+    } else {
+        e.w.push(ax_logic(AX_ANDS, AX_ZR, a, b, 0))
+    }
+}
+
+// The same conditional jump for the opposite case.
+fn ea_inverted(word: i64, kind: i64) -> i64 {
+    if word & 0xFF000000 == 0x54000000 { return word ^ 1 }
+    return word ^ 0x01000000
+}
+
+// A jump to block `block`: `word` is the instruction with a distance of
+// zero, `kind` how far it reaches.
+fn ea_jump(e: mut Ea, word: i64, kind: i64, block: i64) {
+    if kind != EA_J_FAR && (e.mode >= 2 || e.mode == 1 && kind == EA_J_NEAR) {
+        // Too far for it: the opposite jump over a plain one.
+        e.w.push(ea_inverted(word, kind) | (2 << 5))
+        ea_jump(mut e, ax_b(0), EA_J_FAR, block)
+        return
+    }
+    e.j_at.push(e.w.len())
+    e.j_kind.push(kind)
+    e.j_blk.push(block)
+    e.w.push(word)
+}
+
+// Operand `k` of instruction `i` in a register: its own, or `temp`
+// when it is in a slot.
+fn ea_fetched(e: mut Ea, m: MFunc, i: i64, k: i64, temp: i64) -> i64 {
+    let reg = mf_reg(m, i, k)
+    if reg < MF_SLOT0 { return reg }
+    e.w.push(ax_mem(AX_M_64, 1, temp, AX_SP, ea_slot(e, reg)))
+    return temp
+}
+
+// ---- instructions ----------------------------------------------------------------------
+
+fn ea_alu(e: mut Ea, m: MFunc, i: i64) {
+    let d = mf_reg(m, i, 0)
+    let a = mf_reg(m, i, 1)
+    let b = mf_reg(m, i, 2)
+    let kind = m.x[i]
+    let shift = m.y[i]
+    let flags = m.z[i]
+    if kind == SA_K_ADD || kind == SA_K_SUB {
+        e.w.push(ax_addsub(kind, flags, d, a, b, shift))
+    } else if kind == SA_K_AND {
+        e.w.push(ax_logic(AX_AND + flags * 3, d, a, b, shift))
+    } else if kind == SA_K_OR {
+        e.w.push(ax_logic(AX_ORR, d, a, b, shift))
+    } else if kind == SA_K_XOR {
+        e.w.push(ax_logic(AX_EOR, d, a, b, shift))
+    } else if kind == SA_K_MUL {
+        e.w.push(ax_madd(d, a, b, AX_ZR))
+    } else if kind == SA_K_SDIV {
+        e.w.push(ax_sdiv(d, a, b))
+    } else if kind == SA_K_UMULH {
+        e.w.push(ax_umulh(d, a, b))
+    } else if kind == SA_K_SMULH {
+        e.w.push(ax_smulh(d, a, b))
+    } else {
+        e.w.push(ax_shiftv(kind - SA_K_LSL, d, a, b))
+    }
+}
+
+fn ea_alui(e: mut Ea, m: MFunc, i: i64) {
+    let d = mf_reg(m, i, 0)
+    let a = mf_reg(m, i, 1)
+    var kind = m.x[i]
+    var value = m.imm[i]
+    let flags = m.z[i]
+    if kind == SA_K_ADD || kind == SA_K_SUB {
+        if value < 0 {
+            kind = 1 - kind
+            value = 0 - value
+        }
+        if value == 0 && flags == 0 {
+            ea_mov(mut e, d, a)
+        } else if value < 4096 {
+            e.w.push(ax_addsub_imm(kind, flags, d, a, value, 0))
+        } else {
+            e.w.push(ax_addsub_imm(kind, flags, d, a, value >> 12, 1))
+        }
+        return
+    }
+    let bits = ax_logical_imm(value)
+    if kind == SA_K_AND {
+        e.w.push(ax_logic_imm(AX_AND + flags * 3, d, a, bits))
+    } else if kind == SA_K_OR {
+        e.w.push(ax_logic_imm(AX_ORR, d, a, bits))
+    } else {
+        e.w.push(ax_logic_imm(AX_EOR, d, a, bits))
+    }
+}
+
+fn ea_ext(e: mut Ea, m: MFunc, i: i64) {
+    let d = mf_reg(m, i, 0)
+    let a = mf_reg(m, i, 1)
+    let op = m.x[i]
+    if op == IR_EXT8U || op == IR_TRUNC8 {
+        e.w.push(ax_uxtb(d, a))
+    } else if op == IR_EXT8S {
+        e.w.push(ax_sxtb(d, a))
+    } else if op == IR_EXT32U || op == IR_TRUNC32 {
+        e.w.push(ax_uxtw(d, a))
+    } else {
+        e.w.push(ax_sxtw(d, a))
+    }
+}
+
+fn ea_load_pair(e: mut Ea, m: MFunc, i: i64) {
+    let d = mf_reg(m, i, 0)
+    let second = mf_reg(m, i, 1)
+    ea_mem_pair(mut e, m, i, 2)
+    if d == second {
+        e.w.push(ax_mem(AX_M_64, 1, d, e.m_base, e.m_disp + 8))
+    } else {
+        e.w.push(ax_ldp(d, second, e.m_base, e.m_disp))
+    }
+}
+
+fn ea_store(e: mut Ea, m: MFunc, i: i64) {
+    let kind = ea_access_kind(m.x[i])
+    if m.y[i] & SA_Y_ZERO != 0 {
+        ea_mem(mut e, m, i, 0, kind)
+        ea_access(mut e, kind, 0, AX_ZR)
+        return
+    }
+    ea_mem(mut e, m, i, 1, kind)
+    ea_access(mut e, kind, 0, mf_reg(m, i, 0))
+}
+
+fn ea_store_pair(e: mut Ea, m: MFunc, i: i64) {
+    var k = 0
+    var first = AX_ZR
+    var second = AX_ZR
+    if m.x[i] & 1 == 0 {
+        first = mf_reg(m, i, k)
+        k = k + 1
+    }
+    if m.x[i] & 2 == 0 {
+        second = mf_reg(m, i, k)
+        k = k + 1
+    }
+    ea_mem_pair(mut e, m, i, k)
+    e.w.push(ax_stp(first, second, e.m_base, e.m_disp))
+}
+
+// The comparison of an SA_CMPSET, SA_SELECT, SA_CMPBR or SA_TSTBR whose
+// operands start at operand `k`; `test` says it is `a & b` against
+// zero. Gives the number of the operand after them.
+fn ea_compare(e: mut Ea, m: MFunc, i: i64, k: i64, test: bool) -> i64 {
+    let a = mf_reg(m, i, k)
+    let is_imm = m.y[i] & 1 != 0
+    var b = -1
+    var next = k + 1
+    if !is_imm {
+        b = mf_reg(m, i, next)
+        next = next + 1
+    }
+    if test {
+        ea_tst(mut e, a, b, is_imm, m.imm[i])
+    } else {
+        ea_cmp(mut e, a, b, is_imm, m.imm[i])
+    }
+    return next
+}
+
+fn ea_select(e: mut Ea, m: MFunc, i: i64) {
+    let d = mf_reg(m, i, 0)
+    let flags = m.y[i]
+    var k = ea_compare(mut e, m, i, 1, flags & 2 != 0)
+    var p = AX_ZR
+    var q = AX_ZR
+    if flags & 4 == 0 {
+        p = ea_fetched(mut e, m, i, k, EA_T0)
+        k = k + 1
+    }
+    if flags & 8 == 0 { q = ea_fetched(mut e, m, i, k, EA_T1) }
+    e.w.push(ax_csel(d, p, q, m.x[i]))
+}
+
+fn ea_call_runtime(e: mut Ea, routine: i64) {
+    e.rt.push(Fixup { field: e.w.len(), value: routine })
+    e.w.push(ax_bl(0))
+}
+
+fn ea_trap(e: mut Ea, kind: i64) {
+    if kind == 0 {
+        ea_call_runtime(mut e, ART_INDEX_FAIL)
+        return
+    }
+    if kind == 1 {
+        ea_call_runtime(mut e, ART_DIV_ZERO)
+        return
+    }
+    if kind == 2 {
+        ea_call_runtime(mut e, ART_POP_EMPTY)
+        return
+    }
+    // The message as a string header on the stack, for the routine
+    // that prints to standard error.
+    e.w.push(ax_addsub_imm(1, 0, AX_SP, AX_SP, 32, 0))
+    ea_data_address(mut e, 0, e.trap_at[kind])
+    ax_mov_imm(mut e.w, 1, ir_trap_message(kind).len())
+    e.w.push(ax_stp(0, 1, AX_SP, 0))
+    e.w.push(ax_mem(AX_M_64, 0, AX_ZR, AX_SP, 16))
+    e.w.push(ax_addsub_imm(0, 0, 0, AX_SP, 0, 0))
+    ea_call_runtime(mut e, ART_EPRINT_STR)
+    ax_mov_imm(mut e.w, 0, 1)
+    ea_call_runtime(mut e, ART_EXIT)
+}
+
+// Jumps for a test: `word` is the conditional jump of kind `kind` for
+// the case that leads to `yes`; the other case leads to `no`. Block
+// `next` follows.
+fn ea_branch(e: mut Ea, word: i64, kind: i64, yes: i64, no: i64, next: i64) {
+    if no == next {
+        ea_jump(mut e, word, kind, yes)
+    } else if yes == next {
+        ea_jump(mut e, ea_inverted(word, kind), kind, no)
+    } else {
+        ea_jump(mut e, word, kind, yes)
+        ea_jump(mut e, ax_b(0), EA_J_FAR, no)
+    }
+}
+
+// Whether a jump back to block `to` is better replaced by a copy of the
+// block: a short block that ends in a test, the test of a loop. The
+// loop then has one jump a round instead of two.
+fn ea_copies(m: MFunc, from: i64, to: i64) -> bool {
+    if to > from || m.b_last[to] - m.b_first[to] > 2 { return false }
+    let op = m.op[m.b_last[to]]
+    return op == SA_CMPBR || op == SA_TSTBR || op == SA_BCC
+}
+
+// The power of two `value` is, when it has one bit only; else -1.
+fn ea_one_bit(value: i64) -> i64 {
+    if value == 0 || value & (value - 1) != 0 { return -1 }
+    var n = 0
+    while (value >> n) & 1 == 0 {
+        n = n + 1
+    }
+    return n
+}
+
+// Terminator `i`, which ends block `of`, at a place after which block
+// `next` follows.
+fn ea_terminator(e: mut Ea, m: MFunc, result: RaResult, of: i64, next: i64, i: i64) {
+    let op = m.op[i]
+    let ways = m.b_ss[of]
+    if op == SA_JMP {
+        let to = e.thru[m.s_blk[ways]]
+        if to == next { return }
+        if ea_copies(m, of, to) {
+            var k = m.b_first[to]
+            while k <= m.b_last[to] {
+                ea_moves(mut e, m, result, k)
+                if k == m.b_last[to] {
+                    ea_terminator(mut e, m, result, to, next, k)
+                } else {
+                    ea_instruction(mut e, m, result, to, k)
+                }
+                k = k + 1
+            }
+            return
+        }
+        ea_jump(mut e, ax_b(0), EA_J_FAR, to)
+        return
+    }
+    if op == SA_RET {
+        ea_epilogue(mut e)
+        return
+    }
+    if op == SA_TRAP {
+        ea_trap(mut e, m.imm[i])
+        return
+    }
+    if op == SA_SWITCH {
+        let v = mf_reg(m, i, 0)
+        var k = 0
+        while k < m.x[i] {
+            let key = m.consts[m.imm[i] + k]
+            if sa_cmp_fits(key) {
+                ea_cmp(mut e, v, -1, true, key)
+            } else {
+                ax_mov_imm(mut e.w, EA_T0, key)
+                ea_cmp(mut e, v, EA_T0, false, 0)
+            }
+            ea_jump(mut e, ax_bcond(AX_EQ, 0), EA_J_MID, e.thru[m.s_blk[ways + k]])
+            k = k + 1
+        }
+        if e.thru[m.s_blk[ways + k]] != next {
+            ea_jump(mut e, ax_b(0), EA_J_FAR, e.thru[m.s_blk[ways + k]])
+        }
+        return
+    }
+    if of == e.early_from {
+        // The test was made before the frame: here it leads one way.
+        if e.early_other != next { ea_jump(mut e, ax_b(0), EA_J_FAR, e.early_other) }
+        return
+    }
+    let yes = e.thru[m.s_blk[ways]]
+    let no = e.thru[m.s_blk[ways + 1]]
+    let cc = m.x[i]
+    if op == SA_BCC {
+        ea_branch(mut e, ax_bcond(cc, 0), EA_J_MID, yes, no, next)
+        return
+    }
+    let a = mf_reg(m, i, 0)
+    let is_imm = m.y[i] & 1 != 0
+    if op == SA_TSTBR {
+        if is_imm && ea_one_bit(m.imm[i]) >= 0 {
+            // `tbz` when the bit must be clear, `tbnz` when set.
+            ea_branch(mut e, ax_tbz(cc, a, ea_one_bit(m.imm[i]), 0), EA_J_NEAR, yes, no, next)
+            return
+        }
+        ea_compare(mut e, m, i, 0, true)
+        ea_branch(mut e, ax_bcond(cc, 0), EA_J_MID, yes, no, next)
+        return
+    }
+    if is_imm && m.imm[i] == 0 && (cc == AX_EQ || cc == AX_NE) {
+        ea_branch(mut e, ax_cbz(cc, a, 0), EA_J_MID, yes, no, next)
+        return
+    }
+    if is_imm && m.imm[i] == 0 && (cc == AX_LT || cc == AX_GE) {
+        // The sign bit: set for less than zero.
+        ea_branch(mut e, ax_tbz(cc - AX_GE, a, 63, 0), EA_J_NEAR, yes, no, next)
+        return
+    }
+    ea_compare(mut e, m, i, 0, false)
+    ea_branch(mut e, ax_bcond(cc, 0), EA_J_MID, yes, no, next)
+}
+
+// The moves the allocator wants before instruction `i`.
+fn ea_moves(e: mut Ea, m: MFunc, result: RaResult, i: i64) {
+    var k = result.mv_start[i]
+    while k < result.mv_start[i + 1] {
+        ea_move(mut e, m, result.mv_kind[k], result.mv_a[k], result.mv_b[k])
+        k = k + 1
+    }
+}
+
+fn ea_instruction(e: mut Ea, m: MFunc, result: RaResult, b: i64, i: i64) {
+    let op = m.op[i]
+    if op == SA_ENTRY || op == SA_NOP { return }
+    if op == SA_MOVI {
+        ax_mov_imm(mut e.w, mf_reg(m, i, 0), m.imm[i])
+    } else if op == SA_LEA {
+        ea_lea(mut e, m, i)
+    } else if op == SA_COPY {
+        let d = mf_reg(m, i, 0)
+        let s = mf_reg(m, i, 1)
+        if s >= MF_SLOT0 {
+            e.w.push(ax_mem(AX_M_64, 1, d, AX_SP, ea_slot(e, s)))
+        } else {
+            ea_mov(mut e, d, s)
+        }
+    } else if op == SA_ALU {
+        ea_alu(mut e, m, i)
+    } else if op == SA_ALUI {
+        ea_alui(mut e, m, i)
+    } else if op == SA_MADD {
+        let c = ea_fetched(mut e, m, i, 3, EA_T0)
+        if m.x[i] == 1 {
+            e.w.push(ax_msub(mf_reg(m, i, 0), mf_reg(m, i, 1), mf_reg(m, i, 2), c))
+        } else {
+            e.w.push(ax_madd(mf_reg(m, i, 0), mf_reg(m, i, 1), mf_reg(m, i, 2), c))
+        }
+    } else if op == SA_REM {
+        let a = mf_reg(m, i, 1)
+        let by = mf_reg(m, i, 2)
+        e.w.push(ax_sdiv(EA_T0, a, by))
+        e.w.push(ax_msub(mf_reg(m, i, 0), EA_T0, by, a))
+    } else if op == SA_NEG {
+        e.w.push(ax_addsub(1, 0, mf_reg(m, i, 0), AX_ZR, mf_reg(m, i, 1), 0))
+    } else if op == SA_SHI {
+        if m.imm[i] == 0 {
+            ea_mov(mut e, mf_reg(m, i, 0), mf_reg(m, i, 1))
+        } else {
+            e.w.push(ax_shift_imm(m.x[i] - SA_K_LSL, mf_reg(m, i, 0), mf_reg(m, i, 1), m.imm[i]))
+        }
+    } else if op == SA_EXT {
+        ea_ext(mut e, m, i)
+    } else if op == SA_LOAD {
+        let kind = ea_access_kind(m.x[i])
+        ea_mem(mut e, m, i, 1, kind)
+        ea_access(mut e, kind, 1, mf_reg(m, i, 0))
+    } else if op == SA_LOADP {
+        ea_load_pair(mut e, m, i)
+    } else if op == SA_STORE {
+        ea_store(mut e, m, i)
+    } else if op == SA_STOREP {
+        ea_store_pair(mut e, m, i)
+    } else if op == SA_CMPSET {
+        ea_compare(mut e, m, i, 1, false)
+        e.w.push(ax_cset(mf_reg(m, i, 0), m.x[i]))
+    } else if op == SA_SELECT {
+        ea_select(mut e, m, i)
+    } else if op == SA_CALL {
+        e.call_at.push(e.w.len())
+        e.call_fn.push(m.imm[i])
+        e.w.push(ax_bl(0))
+    } else if op == SA_CALLRT {
+        ea_call_runtime(mut e, m.imm[i])
+    } else if op == SA_CALLIMP {
+        // Three instructions the linker writes, then: nothing came
+        // back, so there is no memory left.
+        e.relocs.push(Import(e.w.len(), m.imm[i]))
+        e.w.push(AX_NOP)
+        e.w.push(AX_NOP)
+        e.w.push(AX_NOP)
+        let over = e.w.len()
+        e.w.push(0)
+        ea_trap(mut e, 5)
+        e.w[over] = ax_cbz(1, 0, e.w.len() - over)
+    } else {
+        ea_terminator(mut e, m, result, b, e.nxt[b], i)
+    }
+}
+
+// ---- jumps -----------------------------------------------------------------------------
+
+// Whether block `b` is nothing but a jump: one instruction, and no move
+// of the allocator before it. The first block is never one: the
+// function starts there.
+fn ea_only_jumps(m: MFunc, result: RaResult, b: i64) -> bool {
+    let i = m.b_first[b]
+    return b != 0 && i == m.b_last[b] && m.op[i] == SA_JMP && result.mv_start[i] == result.mv_start[i + 1]
+}
+
+// Fills `thru` and `nxt`. A chain of jumps that never reaches a real
+// block (an empty endless loop) is left as it is.
+fn ea_thread(e: mut Ea, m: MFunc, result: RaResult) {
+    let n = m.b_first.len()
+    var b = 0
+    while b < n {
+        var to = b
+        var steps = 0
+        while steps <= n && ea_only_jumps(m, result, to) {
+            to = m.s_blk[m.b_ss[to]]
+            steps = steps + 1
+        }
+        if steps > n { to = b }
+        e.thru.push(to)
+        b = b + 1
+    }
+    ea_follow(mut e, n)
+}
+
+// Fills `nxt` for `n` blocks: the block that is emitted after each.
+fn ea_follow(e: mut Ea, n: i64) {
+    e.nxt = 0.filled(n)
+    var following = n
+    var b = n - 1
+    while b >= 0 {
+        e.nxt[b] = following
+        if e.thru[b] == b && b != e.early_dead { following = b }
+        b = b - 1
+    }
+}
+
+// Gives every jump its distance. Returns 0 when all of them reach, or
+// the mode in which the function must be emitted again.
+fn ea_link(e: mut Ea) -> i64 {
+    var again = 0
+    var j = 0
+    while j < e.j_at.len() {
+        let at = e.j_at[j]
+        let distance = e.blk_at[e.j_blk[j]] - at
+        let kind = e.j_kind[j]
+        if kind == EA_J_FAR {
+            e.w[at] = e.w[at] | (distance & 0x03FFFFFF)
+        } else if kind == EA_J_MID {
+            if distance < -262144 || distance >= 262144 { again = 2 }
+            e.w[at] = e.w[at] | (distance & 0x7FFFF) << 5
+        } else {
+            if (distance < -8192 || distance >= 8192) && again == 0 { again = 1 }
+            e.w[at] = e.w[at] | (distance & 0x3FFF) << 5
+        }
+        j = j + 1
+    }
+    return again
+}
+
+// The register argument `v` of the function arrives in, when `v` is a
+// virtual register that the entry block copies from one; else -1.
+fn ea_arrives_in(m: MFunc, result: RaResult, v: i64) -> i64 {
+    if v < MF_VREG0 { return -1 }
+    var i = m.b_first[0]
+    while i <= m.b_last[0] {
+        if m.op[i] == SA_COPY && result.orig[m.os[i]] == v && result.orig[m.os[i] + 1] < MF_VREG0 {
+            return result.orig[m.os[i] + 1]
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// Whether block `b` only returns: at most one instruction that puts an
+// argument of the function or a constant in a result register, and
+// `ret`.
+fn ea_only_returns(m: MFunc, result: RaResult, b: i64) -> bool {
+    let first = m.b_first[b]
+    let last = m.b_last[b]
+    if m.op[last] != SA_RET || last - first > 1 || m.b_pn[b] != 0 { return false }
+    if last == first { return true }
+    if m.op[first] == SA_MOVI { return result.orig[m.os[first]] < MF_VREG0 }
+    return m.op[first] == SA_COPY && result.orig[m.os[first]] < MF_VREG0 && ea_arrives_in(m, result, result.orig[m.os[first] + 1]) >= 0
+}
+
+// Looks for the test that can be done before the frame is made: the
+// first block of the function proper is nothing but a comparison of
+// arguments that arrived in registers (with each other or a constant),
+// nothing else jumps to it, and one of its two ways out only returns.
+fn ea_find_early(e: mut Ea, m: MFunc, result: RaResult) {
+    if e.total == 0 || m.b_first.len() < 2 { return }
+    let from = e.thru[1]
+    let i = m.b_last[from]
+    let op = m.op[i]
+    if m.b_first[from] != i || op != SA_CMPBR && op != SA_TSTBR { return }
+    if ea_arrives_in(m, result, result.orig[m.os[i]]) < 0 { return }
+    if m.y[i] & 1 == 0 && ea_arrives_in(m, result, result.orig[m.os[i] + 1]) < 0 { return }
+    if op == SA_TSTBR && m.y[i] & 1 != 0 && ax_logical_imm(m.imm[i]) < 0 { return }
+    let yes = e.thru[m.s_blk[m.b_ss[from]]]
+    let no = e.thru[m.s_blk[m.b_ss[from] + 1]]
+    if ea_ways_into(e, m, from) != 1 || yes == no || yes == from || no == from { return }
+    if ea_only_returns(m, result, yes) {
+        e.early_from = from
+        e.early_to = yes
+        e.early_other = no
+    } else if ea_only_returns(m, result, no) {
+        e.early_from = from
+        e.early_to = no
+        e.early_other = yes
+    } else {
+        return
+    }
+    if ea_ways_into(e, m, e.early_to) == 1 {
+        e.early_dead = e.early_to
+        ea_follow(mut e, m.b_first.len())
+    }
+}
+
+// How many ways lead to block `to` from blocks that are emitted.
+fn ea_ways_into(e: Ea, m: MFunc, to: i64) -> i64 {
+    var into = 0
+    var b = 0
+    while b < m.b_first.len() {
+        if e.thru[b] == b {
+            var k = 0
+            while k < m.b_sn[b] {
+                if e.thru[m.s_blk[m.b_ss[b] + k]] == to { into = into + 1 }
+                k = k + 1
+            }
+        }
+        b = b + 1
+    }
+    return into
+}
+
+// The test before the frame, from the registers the arguments arrive
+// in, and the return for the way out that only returns.
+fn ea_early(e: mut Ea, m: MFunc, result: RaResult) {
+    let i = m.b_last[e.early_from]
+    let a = ea_arrives_in(m, result, result.orig[m.os[i]])
+    let is_imm = m.y[i] & 1 != 0
+    var b = -1
+    if !is_imm { b = ea_arrives_in(m, result, result.orig[m.os[i] + 1]) }
+    if m.op[i] == SA_TSTBR {
+        ea_tst(mut e, a, b, is_imm, m.imm[i])
+    } else {
+        ea_cmp(mut e, a, b, is_imm, m.imm[i])
+    }
+    // Over the return when the test leads the other way.
+    var cc = m.x[i]
+    if e.thru[m.s_blk[m.b_ss[e.early_from]]] == e.early_to { cc = cc ^ 1 }
+    let over = e.w.len()
+    e.w.push(0)
+    let first = m.b_first[e.early_to]
+    if m.op[first] == SA_MOVI {
+        ax_mov_imm(mut e.w, result.orig[m.os[first]], m.imm[first])
+    } else if m.op[first] == SA_COPY {
+        ea_mov(mut e, result.orig[m.os[first]], ea_arrives_in(m, result, result.orig[m.os[first] + 1]))
+    }
+    e.w.push(AX_RET)
+    e.w[over] = ax_bcond(cc, e.w.len() - over)
+}
+
+// The instructions of one function. `frames` are the sizes of its frame
+// objects, `trap_at` where in the data the message of each kind of trap
+// is.
+fn ea_function(sa: SaFunc, result: RaResult, frames: List[i64], trap_at: List[i64]) -> EaFunc {
+    var e = Ea {
+        w: [],
+        mode: 0,
+        saves: [],
+        compact: false,
+        scratch_at: 0,
+        slots_at: 0,
+        obj_at: [],
+        total: 0,
+        j_at: [],
+        j_kind: [],
+        j_blk: [],
+        blk_at: [],
+        call_at: [],
+        call_fn: [],
+        rt: [],
+        relocs: [],
+        trap_at: trap_at,
+        m_base: 0,
+        m_index: -1,
+        m_scaled: 0,
+        m_disp: 0,
+        thru: [],
+        nxt: [],
+        early_from: -1,
+        early_to: -1,
+        early_other: -1,
+        early_dead: -1,
+        error: ""
+    }
+    ea_layout(mut e, frames, sa, result)
+    ea_thread(mut e, sa.mf, result)
+    ea_find_early(mut e, sa.mf, result)
+    while e.error.len() == 0 {
+        if e.early_from >= 0 { ea_early(mut e, sa.mf, result) }
+        ea_prologue(mut e)
+        var b = 0
+        while b < sa.mf.b_first.len() {
+            e.blk_at.push(e.w.len())
+            if e.thru[b] != b || b == e.early_dead {
+                b = b + 1
+                continue
+            }
+            var i = sa.mf.b_first[b]
+            while i <= sa.mf.b_last[b] {
+                ea_moves(mut e, sa.mf, result, i)
+                ea_instruction(mut e, sa.mf, result, b, i)
+                i = i + 1
+            }
+            b = b + 1
+        }
+        let again = ea_link(mut e)
+        if again == 0 || e.mode >= 2 {
+            if again != 0 { e.error = "the function is too large for its jumps" }
+            break
+        }
+        // Some jump does not reach: once more with longer ones.
+        e.mode = again
+        e.w.truncate(0)
+        e.j_at.truncate(0)
+        e.j_kind.truncate(0)
+        e.j_blk.truncate(0)
+        e.blk_at.truncate(0)
+        e.call_at.truncate(0)
+        e.call_fn.truncate(0)
+        e.rt.truncate(0)
+        e.relocs.truncate(0)
+    }
+    return EaFunc { words: e.w, call_at: e.call_at, call_fn: e.call_fn, rt: e.rt, relocs: e.relocs, ok: e.error.len() == 0, error: e.error }
+}

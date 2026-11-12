@@ -49,9 +49,7 @@ fn number(s: str) -> Result[i64, str] {
 }
 
 fn words(s: str) -> Result[List[str], str] {
-    if s.len() == 0 {
-        return Err("no words")
-    }
+    if s.len() == 0 { return Err("no words") }
     return Ok(s.split(" "))
 }
 
@@ -80,9 +78,7 @@ fn twice(r: Result[List[i64], str]) -> Result[i64, str] {
 
 // In a condition and in the fields of a struct.
 fn config(name: str, size: str, tags: str) -> Result[Config, str] {
-    if number(size)? < 0 {
-        return Err("negative size")
-    }
+    if number(size)? < 0 { return Err("negative size") }
     let made = Config { size: number(size)?, tags: words(tags)?, name: name }
     return Ok(made)
 }
@@ -104,9 +100,7 @@ fn check(s: str) -> Result[i64, str] {
 }
 
 fn second(xs: List[str]) -> Option[str] {
-    if xs.len() < 2 {
-        return None
-    }
+    if xs.len() < 2 { return None }
     return Some(xs[1])
 }
 
@@ -133,12 +127,8 @@ fn drain(items: List[str]) -> Result[i64, str] {
 }
 
 fn nested(flag: i64) -> Result[Result[i64, str], str] {
-    if flag == 0 {
-        return Err("outer")
-    }
-    if flag == 1 {
-        return Ok(Err("inner"))
-    }
+    if flag == 0 { return Err("outer") }
+    if flag == 1 { return Ok(Err("inner")) }
     return Ok(Ok(flag))
 }
 

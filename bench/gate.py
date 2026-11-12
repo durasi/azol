@@ -97,7 +97,7 @@ def has_optimiser(azol, work):
     return run([azol, "build", "-O", probe, "-o", os.path.join(work, "probe")]).returncode == 0
 
 
-def build_all(azol, name, work, optimised, small):
+def build_all(azol, name, work, optimised, small, azol_opt=None):
     """Builds every variant of one program. Returns {label: executable} or raises."""
     tag = "small" if small else "full"
     built = {}
@@ -112,6 +112,14 @@ def build_all(azol, name, work, optimised, small):
     if done.returncode != 0:
         raise RuntimeError("azol build fails for %s:\n%s" % (name, done.stderr.decode(errors="replace")))
     built["azol"] = exe
+    if azol_opt:
+        # A third column: the same source through the optimising path
+        # while it is still a tool of its own (`azol-opt build`).
+        exe = os.path.join(work, "%s_opt_%s" % (name, tag))
+        done = run([azol_opt, "build", path, "-o", exe])
+        if done.returncode != 0:
+            raise RuntimeError("azol-opt build fails for %s:\n%s" % (name, done.stderr.decode(errors="replace")))
+        built["opt"] = exe
     for variant in ("rs", "fx.rs"):
         file = os.path.join(SUITE, "%s.%s" % (name, variant))
         if not os.path.exists(file):
@@ -230,6 +238,24 @@ def render(results):
                 lines.append("| `%s` | %s | %s | %s |" % (row["name"], "{:,}".format(az), "{:,}".format(rs), ratio(az / rs if az and rs else None)))
         lines.append("")
         lines.append("Geometric mean of the instruction ratios: **%s**." % ratio(results.get("instruction_mean")))
+        with_opt = [row for row in results["programs"] if "instructions" in row and row["instructions"].get("opt")]
+        if with_opt:
+            lines.append("")
+            lines.append("The same through the optimising path (`azol-opt build`):")
+            lines.append("")
+            lines.append("| Program | azoL default | azol-opt | Rust `-O` | azol-opt / default | azol-opt / Rust |")
+            lines.append("|---|---|---|---|---|---|")
+            to_default, to_rust = [], []
+            for row in with_opt:
+                az, op, rs = row["instructions"]["azol"], row["instructions"]["opt"], row["instructions"]["rust"]
+                to_default.append(op / az)
+                if rs:
+                    to_rust.append(op / rs)
+                lines.append("| `%s` | %s | %s | %s | %s | %s |" % (row["name"], "{:,}".format(az), "{:,}".format(op), "{:,}".format(rs) if rs else "n/a",
+                                                                ratio(op / az), ratio(op / rs if rs else None)))
+            lines.append("")
+            lines.append("Geometric means: azol-opt against the default build **%s**, against `rustc -O` **%s**." % (
+                ratio(geometric_mean(to_default)), ratio(geometric_mean(to_rust))))
     lines.append("")
     lines.append(results["verdict"])
     lines.append("")
@@ -260,6 +286,7 @@ def main():
     parser.add_argument("--force", action="store_true", help="give a verdict even when the machine is busy")
     parser.add_argument("--readme", action="store_true", help="print only the block for the README")
     parser.add_argument("--keep", help="keep the built files in this folder")
+    parser.add_argument("--azol-opt", help="an `azol-opt` executable (compiler/opt/opt_build_main.azl): adds its builds as a third column; the verdict stays that of `azol`")
     args = parser.parse_args()
 
     names, pending = programs(args.only.split(",") if args.only else None)
@@ -290,7 +317,7 @@ def main():
         say("gate: %s ..." % name)
         row = {"name": name, "same_output": True, "azol": None, "rust": None, "native": None, "ratio": None, "native_ratio": None}
         try:
-            full = build_all(azol, name, work, optimised, False)
+            full = build_all(azol, name, work, optimised, False, args.azol_opt)
         except (RuntimeError, ValueError) as problem:
             failures.append(str(problem))
             row["same_output"] = False
@@ -304,6 +331,8 @@ def main():
         if not args.no_time:
             times = {label: best_time(exe, args.runs) for label, exe in full.items()}
             row["azol"] = times["azol"]
+            if "opt" in times:
+                row["opt"] = times["opt"]
             row["rust"] = min(value for label, value in times.items() if label.startswith("rust:"))
             row["native"] = min(value for label, value in times.items() if label.startswith("native:"))
             row["rust_variant"] = min((value, label) for label, value in times.items() if label.startswith("rust:"))[1].split(":")[1]
@@ -311,7 +340,7 @@ def main():
             row["native_ratio"] = row["azol"] / row["native"]
         if args.instructions:
             try:
-                small = build_all(azol, name, work, optimised, True)
+                small = build_all(azol, name, work, optimised, True, args.azol_opt)
                 small_outputs = {label: output_of(exe) for label, exe in small.items()}
                 if len(set(small_outputs.values())) != 1:
                     row["same_output"] = False
@@ -319,6 +348,8 @@ def main():
                 counts = {label: instructions(exe) for label, exe in small.items()}
                 rust = [value for label, value in counts.items() if label.startswith("rust:") and value]
                 row["instructions"] = {"azol": counts["azol"], "rust": min(rust) if rust else None}
+                if "opt" in counts:
+                    row["instructions"]["opt"] = counts["opt"]
             except (RuntimeError, ValueError) as problem:
                 failures.append(str(problem))
         rows.append(row)

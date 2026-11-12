@@ -1,0 +1,8 @@
+; Kept: a `trap` is alone in its block, so the block before it is not joined to it.
+fn main(p0: i64) -> i64 {
+b0:
+    callrt print_i64(p0)
+    jump b1
+b1:
+    trap internal
+}

@@ -7,9 +7,7 @@
 const SMALL = false
 
 fn size(full: i64, small: i64) -> i64 {
-    if SMALL {
-        return small
-    }
+    if SMALL { return small }
     return full
 }
 
@@ -37,9 +35,7 @@ fn main() {
         var highest = 0
         i = 0
         while i < count {
-            if sums[i] > highest {
-                highest = sums[i]
-            }
+            if sums[i] > highest { highest = sums[i] }
             i = i + 1
         }
         total = total + highest

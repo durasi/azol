@@ -1,0 +1,7 @@
+; x <= 5 unsigned is x < 6 unsigned.
+fn main(p0: i64) -> bool, bool {
+b0:
+    v0 = ule p0, 5
+    v1 = uge p0, 5
+    ret v0, v1
+}

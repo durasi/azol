@@ -80,8 +80,12 @@ def emulator_repo():
     if os.path.exists(os.path.join(ROOT, "src", "runtime_linux_arm64.rs")):
         return ROOT
     folder = tempfile.mkdtemp(prefix="azol-facts-")
+    # Under both names: an emulator reads one or the other.
+    facts = os.path.join(ROOT, "runtime", "linux_arm64", "runtime.facts")
     os.makedirs(os.path.join(folder, "src"))
-    shutil.copy(os.path.join(ROOT, "runtime", "linux_arm64", "runtime.facts"), os.path.join(folder, "src", "runtime_linux_arm64.rs"))
+    shutil.copy(facts, os.path.join(folder, "src", "runtime_linux_arm64.rs"))
+    os.makedirs(os.path.join(folder, "runtime", "linux_arm64"))
+    shutil.copy(facts, os.path.join(folder, "runtime", "linux_arm64", "runtime.facts"))
     return folder
 
 

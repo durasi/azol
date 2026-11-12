@@ -1,0 +1,7 @@
+; x <= 5 is written x < 6, x >= 5 is x > 4.
+fn main(p0: i64) -> bool, bool {
+b0:
+    v0 = sle p0, 5
+    v1 = sge p0, 5
+    ret v0, v1
+}

@@ -116,9 +116,7 @@ fn elf_headers(code: CodeFile, text_end: i64, memory_at: i64, file_size: i64) ->
 
 // The size of the runtime's memory in the file, at least one byte.
 fn elf_memory_size(code: CodeFile) -> i64 {
-    if code.memory_size < 1 {
-        return 1
-    }
+    if code.memory_size < 1 { return 1 }
     return code.memory_size
 }
 

@@ -7,9 +7,7 @@
 const SMALL = false
 
 fn size(full: i64, small: i64) -> i64 {
-    if SMALL {
-        return small
-    }
+    if SMALL { return small }
     return full
 }
 
@@ -72,9 +70,7 @@ fn main() {
     var total = 0
     while round < rounds {
         step(mut ps)
-        if round % 500 == 0 {
-            total = total + energy(ps) % 1000003
-        }
+        if round % 500 == 0 { total = total + energy(ps) % 1000003 }
         round = round + 1
     }
     print(total + energy(ps))

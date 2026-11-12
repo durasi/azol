@@ -27,9 +27,7 @@ fn add(stock: mut Stock, name: str, price: i64) {
 
 fn find(stock: Stock, name: str) -> Lookup {
     for item in stock.items {
-        if item.name == name {
-            return Found(item)
-        }
+        if item.name == name { return Found(item) }
     }
     return Missing(name)
 }
@@ -42,9 +40,7 @@ fn prices(stock: Stock) -> List[i64] {
     var out: List[i64] = []
     for item in stock.items {
         // `label` lives in main.azl: files may refer to each other freely.
-        if label(item).len() > 0 {
-            out.push(item.price)
-        }
+        if label(item).len() > 0 { out.push(item.price) }
     }
     return out
 }

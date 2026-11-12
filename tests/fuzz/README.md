@@ -78,6 +78,15 @@ Each finding gets a folder `findings/<kind>_<seed>/` with
   one-line arms and as blocks;
 - `for` over variables, fields and temporaries, with and without an
   index; `while` with `break` and `continue`;
+- `for i in a..b`, `a..=b` and `step` up and down, with ends that are
+  numbers, masked values and lengths (worked out once, while the body
+  changes what they were made from), ranges that run no times, and ranges
+  at the largest and the smallest number, where the counter must not wrap
+  around;
+- the short spellings, chosen by the printer from the seed and unseen by
+  the oracle, since they mean the same: `a op= b` for `a = a op b`,
+  `"k{i}: {name}"` for `"k" + str(i) + ": " + name`, `S { f0, f1: 2 }`
+  after a `let f0 = ...`, and `\{` for every brace in a text;
 - lists of numbers, strings, structs, enums and lists: literals, `push`,
   `pop`, indexing, element assignment, `len`, `contains`, `first`, `last`,
   `reversed`, `join`, and loops that grow a list or a string far past its

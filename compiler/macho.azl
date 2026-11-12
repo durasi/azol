@@ -170,9 +170,7 @@ fn put_code_signature(out: mut str, ident: str, text_file_size: i64) {
     var at = 0
     while at < signed {
         var end = at + page_size
-        if end > signed {
-            end = signed
-        }
+        if end > signed { end = signed }
         sha256_into(mut blob, out, at, end, k)
         at = end
     }

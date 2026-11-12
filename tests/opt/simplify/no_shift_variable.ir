@@ -1,0 +1,6 @@
+; Kept: a count that is not a constant can be 0 or 64; nothing is known.
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v0 = shl p0, p1
+    ret v0
+}

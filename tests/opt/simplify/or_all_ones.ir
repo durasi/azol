@@ -1,0 +1,6 @@
+; x | -1 is -1.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = or p0, -1
+    ret v0
+}

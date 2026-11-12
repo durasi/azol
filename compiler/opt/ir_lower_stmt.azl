@@ -207,23 +207,32 @@ fn lw_assign(lw: mut Lower, c: Checker, p: Parser, id: i64, target: i64, value: 
         // A variable that is not used again: its value moves straight
         // out of its own slots.
         source = lw_variable_slot(lw, c, value)
-        if source < 0 {
-            source = c.expr_tmp[lw.sh_e + value]
-        }
+        if source < 0 { source = c.expr_tmp[lw.sh_e + value] }
     } else {
         let scratch = c.stmt_slot[lw.sh_s + id]
         let aside = lw_slot(mut lw, scratch, size)
         lw_copy(mut lw, c, aside, from, ty)
-        if owning {
-            lw_clone_frame(mut lw, c, scratch, ty)
-        }
+        if owning { lw_clone_frame(mut lw, c, scratch, ty) }
         source = scratch
     }
     // Then find the target, free what it holds and move the value in.
-    let to = lw_address(mut lw, c, p, target)
-    if owning {
-        lw_drop_value(mut lw, c, to, ty)
+    // While the target is found the statement holds the new value in
+    // an area nothing else knows of: a `?` in the target's index that
+    // leaves the function must free it, so it counts as live until the
+    // target is known. (The first generators do not do this and lose
+    // the value there; a variable's own slots are live already.)
+    var parked = false
+    if owning && lw_variable_slot(lw, c, value) != source {
+        lw.live_slots.push(source)
+        lw.live_tys.push(ty)
+        parked = true
     }
+    let to = lw_address(mut lw, c, p, target)
+    if parked {
+        lw.live_slots.pop()
+        lw.live_tys.pop()
+    }
+    if owning { lw_drop_value(mut lw, c, to, ty) }
     let moved = lw_slot(mut lw, source, size)
     lw_copy(mut lw, c, to, moved, ty)
     lw_moved_out(mut lw, c, value)
@@ -245,9 +254,7 @@ fn lw_return(lw: mut Lower, c: Checker, p: Parser, id: i64, value: i64) {
                     lw_clone_value(mut lw, c, to, ty)
                 } else if lw_kind(lw, c, value) == LW_IDENT {
                     let place = lw_place(lw, c, value)
-                    if place >= 0 {
-                        moved_local = place & 4095
-                    }
+                    if place >= 0 { moved_local = place & 4095 }
                 }
             }
         } else {
@@ -259,9 +266,7 @@ fn lw_return(lw: mut Lower, c: Checker, p: Parser, id: i64, value: i64) {
     while i >= 0 {
         let slot = lw.live_slots[i]
         let ty = lw.live_tys[i]
-        if slot != moved_local {
-            lw_drop_frame(mut lw, c, slot, ty)
-        }
+        if slot != moved_local { lw_drop_frame(mut lw, c, slot, ty) }
         i = i - 1
     }
     if result != -1 {
@@ -297,9 +302,7 @@ fn lw_for(lw: mut Lower, c: Checker, p: Parser, id: i64, has_index: bool, iter: 
         let from = lw_address(mut lw, c, p, iter)
         let own = lw_slot(mut lw, own_list, 3)
         lw_copy(mut lw, c, own, from, list_ty)
-        if flag == COPIED {
-            lw_clone_frame(mut lw, c, own_list, list_ty)
-        }
+        if flag == COPIED { lw_clone_frame(mut lw, c, own_list, list_ty) }
     }
     lw_drop_temps(mut lw, c, id)
     if !in_place {
@@ -383,9 +386,7 @@ fn lw_match(lw: mut Lower, c: Checker, p: Parser, id: i64, scrutinee: i64, arms:
             let own = lw_slot(mut lw, base + 1, ck_size_of(c, ty))
             lw_copy(mut lw, c, own, value, ty)
             if ck_needs_drop(c, ty) {
-                if flag == COPIED {
-                    lw_clone_frame(mut lw, c, base + 1, ty)
-                }
+                if flag == COPIED { lw_clone_frame(mut lw, c, base + 1, ty) }
                 owned = true
             }
             value = own

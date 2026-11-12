@@ -1,9 +1,7 @@
 // expect-exit: 42
 // expect-output: 6765 21 2432902008176640000 12345678 61 1 2 0 5 1 2 3 1 36
 fn fib(n: i64) -> i64 {
-    if n < 2 {
-        return n
-    }
+    if n < 2 { return n }
     return fib(n - 1) + fib(n - 2)
 }
 
@@ -19,9 +17,7 @@ fn gcd(a: i64, b: i64) -> i64 {
 }
 
 fn factorial(n: i64) -> i64 {
-    if n <= 1 {
-        return 1
-    }
+    if n <= 1 { return 1 }
     return n * factorial(n - 1)
 }
 
@@ -30,12 +26,8 @@ fn digits(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64) -> i64
 }
 
 fn ackermann(m: i64, n: i64) -> i64 {
-    if m == 0 {
-        return n + 1
-    }
-    if n == 0 {
-        return ackermann(m - 1, 1)
-    }
+    if m == 0 { return n + 1 }
+    if n == 0 { return ackermann(m - 1, 1) }
     return ackermann(m - 1, ackermann(m, n - 1))
 }
 
@@ -70,18 +62,10 @@ fn main() -> i64 {
     print(ackermann(3, 3))
 
     // `&&` and `||` must not evaluate the right side when the left decides.
-    if noisy(1, false) && noisy(99, true) {
-        print(98)
-    }
-    if noisy(2, true) || noisy(99, true) {
-        print(0)
-    }
-    if is_even(fib(10)) == false {
-        print(5)
-    }
-    if noisy(1, true) && noisy(2, true) && noisy(3, false) || is_even(4) {
-        print(1)
-    }
+    if noisy(1, false) && noisy(99, true) { print(98) }
+    if noisy(2, true) || noisy(99, true) { print(0) }
+    if is_even(fib(10)) == false { print(5) }
+    if noisy(1, true) && noisy(2, true) && noisy(3, false) || is_even(4) { print(1) }
     nothing()
     print(sum_to(gcd(16, 24)))
     return fib(9) + gcd(48, 16) - sum_to(3) - 2

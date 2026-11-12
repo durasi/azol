@@ -41,23 +41,17 @@ fn identity[T](value: T) -> T {
 }
 
 fn pick[T](first: T, second: T, use_first: bool) -> T {
-    if use_first {
-        return first
-    }
+    if use_first { return first }
     return second
 }
 
 fn larger[T](a: T, b: T) -> T {
-    if a > b {
-        return a
-    }
+    if a > b { return a }
     return b
 }
 
 fn last[T](items: List[T]) -> Option[T] {
-    if items.len() == 0 {
-        return None
-    }
+    if items.len() == 0 { return None }
     return Some(items[items.len() - 1])
 }
 
@@ -79,9 +73,7 @@ fn append_twice[T](items: mut List[T], value: T) {
 fn count[T](items: List[T], wanted: T) -> i64 {
     var found = 0
     for item in items {
-        if item == wanted {
-            found = found + 1
-        }
+        if item == wanted { found = found + 1 }
     }
     return found
 }
@@ -106,9 +98,7 @@ fn nothing[T]() -> Option[T] {
 
 // Generic functions calling generic functions, and themselves.
 fn nest[T](value: T, levels: i64) -> List[T] {
-    if levels == 0 {
-        return [value]
-    }
+    if levels == 0 { return [value] }
     var out = nest(value, levels - 1)
     out.push(identity(value))
     return out

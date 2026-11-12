@@ -36,9 +36,7 @@ fn wide(n: i64) -> Wide {
 }
 
 fn first(n: i64, limit: i64) -> i64 {
-    if n == limit {
-        return 0
-    }
+    if n == limit { return 0 }
     let label = "level " + str(n)
     var numbers = [n, n + 1]
     numbers.push(label.len())
@@ -47,9 +45,7 @@ fn first(n: i64, limit: i64) -> i64 {
 }
 
 fn second(n: i64, limit: i64) -> i64 {
-    if n == limit {
-        return 0
-    }
+    if n == limit { return 0 }
     var names = ["a" + str(n), "b"]
     names.push("c")
     let w = wide(n)
@@ -57,9 +53,7 @@ fn second(n: i64, limit: i64) -> i64 {
 }
 
 fn third(n: i64, limit: i64) -> i64 {
-    if n == limit {
-        return 0
-    }
+    if n == limit { return 0 }
     let text = str(n) + "!"
     let w = wide(n)
     return first(n + 1, limit) + text.len() + w.r7.f5 - n + 1

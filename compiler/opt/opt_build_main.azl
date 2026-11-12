@@ -1,0 +1,268 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// `azol-opt`: source files to an executable through the optimising
+// back end. This is what `azol build -O` will be: lower the checked
+// program to the intermediate form, run the passes of `pipeline.azl`,
+// select instructions, allocate registers, write the file. x86-64
+// Linux only, until the second selector exists.
+//
+//     azol-opt build <file.azl>... -o <out> [options]
+//     azol-opt run <file.azl>... [options] [-- arguments]
+//         lowers the program, runs the passes and then runs the result
+//         in the interpreter instead of building it: the output, the
+//         messages and the exit code of the program, and exit code 3
+//         when the interpreter catches it doing what it must not
+//
+//     --passes a,b,c    these passes instead of the order of pipeline.azl;
+//                       `--passes ""` runs none
+//     --fixpoint        the list of passes again until it changes nothing
+//     --verify-each     the verifier after every pass
+//     --stats           what each pass did and how long every stage
+//                       took, on standard error
+//     --emit-ir <path>  also write the intermediate form after the passes
+//     --map <path>      also write where each function's code starts
+//     --check           verify every register allocation
+//     --stress          allocate with three registers only
+//
+// Exit codes: 0; 1 for a program with mistakes or a stage that failed;
+// 2 for a wrong command line; 3 when the intermediate form breaks one
+// of its rules, before or after the passes.
+//
+// Built from the front end of the compiler and this folder:
+//
+//     azol build compiler/driver.azl compiler/token.azl compiler/lexer.azl compiler/ast.azl \
+//         compiler/parser.azl compiler/sema.azl compiler/sema_fn.azl compiler/embedded.azl \
+//         compiler/bytes.azl compiler/code_file.azl compiler/elf.azl compiler/runtime_x64.azl \
+//         compiler/opt/ir.azl compiler/opt/ir_text.azl compiler/opt/ir_cfg.azl \
+//         compiler/opt/ir_verify.azl compiler/opt/ir_interp.azl compiler/opt/ir_lower.azl \
+//         compiler/opt/ir_lower_stmt.azl \
+//         compiler/opt/ir_lower_expr.azl compiler/opt/pass_simplify_util.azl \
+//         compiler/opt/pass_simplify.azl compiler/opt/pass_dce.azl compiler/opt/pass_dse.azl \
+//         compiler/opt/pipeline.azl compiler/opt/mach.azl compiler/opt/regalloc.azl \
+//         compiler/opt/enc_x64.azl compiler/opt/sel_x64.azl compiler/opt/emit_x64.azl \
+//         compiler/opt/back_x64.azl compiler/opt/opt_build_main.azl -o azol-opt
+
+const OB_RUNTIME = embed("../../runtime/linux_x64/runtime.bin")
+
+fn ob_usage() {
+    eprint("usage: azol-opt build <file.azl>... -o <out> [--passes a,b,c] [--fixpoint] [--verify-each] [--stats] [--emit-ir <path>] [--map <path>] [--check] [--stress]")
+    eprint("       azol-opt run <file.azl>... [--passes a,b,c] [--fixpoint] [--verify-each] [--argv0 NAME] [-- arguments]")
+    exit(2)
+}
+
+// Reads, parses, checks and lowers the files. Mistakes in the program
+// end the tool with exit code 1.
+fn ob_program(files: List[str]) -> Lower {
+    var src = ""
+    var starts: List[i64] = []
+    var lens: List[i64] = []
+    for path in files {
+        let text = read_or_exit(path)
+        if starts.len() > 0 { src = src + "\n" }
+        starts.push(src.len())
+        lens.push(text.len())
+        src = src + text
+    }
+    let prelude_start = src.len() + 1
+    src = src + "\n"
+    src = src + PRELUDE
+    var p = new_parser(src)
+    for k, start in starts {
+        let problem = parse_part(mut p, start, lens[k])
+        if problem.message.len() > 0 {
+            eprint("error: " + files[k] + ": offset " + str(problem.offset - start) + ": " + problem.message)
+            exit(1)
+        }
+    }
+    let problem = parse_part(mut p, prelude_start, PRELUDE.len())
+    if problem.message.len() > 0 {
+        eprint("error: the standard library does not parse: " + problem.message)
+        exit(1)
+    }
+    var c = new_checker(p, prelude_start)
+    c.file_starts = starts
+    c.file_paths = files
+    check_program(mut c, p)
+    if c.errors.len() > 0 {
+        for error in c.errors {
+            eprint("error: offset " + str(error.offset) + ": " + error.message)
+        }
+        exit(1)
+    }
+    var lw = lw_new()
+    lw_program(mut lw, c, p)
+    // The whole state and not `lw.m` alone, which would be copied.
+    return lw
+}
+
+fn ob_parse(text: str, what: str, m: mut IrModule) {
+    let problem = ir_parse_module(text, mut m)
+    if problem.message.len() > 0 {
+        eprint("error: " + what + ":" + str(problem.line) + ":" + str(problem.column) + ": " + problem.message)
+        exit(1)
+    }
+}
+
+fn ob_verify(m: IrModule, when: str) {
+    let problem = ir_verify_module(m)
+    if problem.len() > 0 {
+        eprint("ir-verify (" + when + "): " + problem)
+        exit(3)
+    }
+}
+
+fn ob_write(path: str, text: str) {
+    match write_file(path, text) {
+        Ok(_) => {}
+        Err(why) => {
+            eprint("error: cannot write '" + path + "': " + why)
+            exit(1)
+        }
+    }
+}
+
+// Runs the lowered and optimised program in the interpreter, with the
+// settings `azol-lower run` uses, and ends the tool as the program ends.
+fn ob_run(lw: Lower, at: i64, argv0: str, arguments: List[str]) {
+    var mach = irm_new(lw.m)
+    mach.step_limit = 4000000000000
+    mach.depth_limit = 1000000
+    mach.overflow_stops = true
+    // The stack Linux gives a program, less what the system puts on it.
+    mach.stack_limit = 8380000
+    mach.reuse_frames = true
+    mach.arguments = [argv0]
+    for argument in arguments {
+        mach.arguments.push(argument)
+    }
+    let none: List[i64] = []
+    let returned = irm_run(mut mach, lw.m, lw.m.funcs[at], none)
+    if mach.failed {
+        eprint(mach.message)
+        exit(3)
+    }
+    if mach.stopped {
+        if mach.stop_message.len() > 0 { eprint(mach.stop_message) }
+        exit(mach.exit_code)
+    }
+    let left = irm_live_blocks(mach)
+    if left != 0 {
+        eprint("ir-interp: " + str(left) + " blocks were never freed")
+        exit(3)
+    }
+    if returned.len() > 0 { exit(returned[0] & 255) }
+}
+
+fn main() {
+    let a = args()
+    if a.len() < 3 || a[1] != "build" && a[1] != "run" { ob_usage() }
+    let run = a[1] == "run"
+    var arguments: List[str] = []
+    var argv0 = ""
+    var files: List[str] = []
+    var out = ""
+    var emit = ""
+    var map = ""
+    var options = pl_default_options()
+    var back = BkOptions { stress: false, check: false, dump: false }
+    var show = false
+    var i = 2
+    while i < a.len() {
+        if a[i] == "--" && run {
+            i = i + 1
+            while i < a.len() {
+                arguments.push(a[i])
+                i = i + 1
+            }
+        } else if a[i] == "--argv0" && i + 1 < a.len() {
+            argv0 = a[i + 1]
+            i = i + 2
+        } else if a[i] == "-o" && i + 1 < a.len() {
+            out = a[i + 1]
+            i = i + 2
+        } else if a[i] == "--emit-ir" && i + 1 < a.len() {
+            emit = a[i + 1]
+            i = i + 2
+        } else if a[i] == "--map" && i + 1 < a.len() {
+            map = a[i + 1]
+            i = i + 2
+        } else if a[i] == "--passes" && i + 1 < a.len() {
+            options.passes = []
+            if a[i + 1].len() > 0 { options.passes = a[i + 1].split(",") }
+            i = i + 2
+        } else if a[i] == "--fixpoint" {
+            options.fixpoint = true
+            i = i + 1
+        } else if a[i] == "--verify-each" {
+            options.verify_each = true
+            i = i + 1
+        } else if a[i] == "--stats" {
+            show = true
+            i = i + 1
+        } else if a[i] == "--check" {
+            back.check = true
+            i = i + 1
+        } else if a[i] == "--stress" {
+            back.stress = true
+            i = i + 1
+        } else if a[i].starts_with("-") {
+            ob_usage()
+        } else {
+            files.push(a[i])
+            i = i + 1
+        }
+    }
+    if files.len() == 0 || out.len() == 0 && !run { ob_usage() }
+    let started = clock()
+    var lw = ob_program(files)
+    let lowered = clock()
+    if options.verify_each { ob_verify(lw.m, "after lowering") }
+    var stats = pl_new_stats()
+    let problem = pl_run(mut lw.m, options, mut stats)
+    if problem.len() > 0 {
+        eprint("error: " + problem)
+        exit(3)
+    }
+    let optimised = clock()
+    if emit.len() > 0 { ob_write(emit, ir_print_module(lw.m)) }
+    let at = ir_find_func(lw.m, "main")
+    if at < 0 {
+        eprint("error: there is no function `main`")
+        exit(1)
+    }
+    if run {
+        ob_verify(lw.m, "after the passes")
+        if argv0.len() == 0 { argv0 = files[0] }
+        ob_run(lw, at, argv0, arguments)
+        return
+    }
+    ob_parse(BK_HELPERS, "(helpers)", mut lw.m)
+    let start = bk_program_start(lw.m, at)
+    ob_parse(start, "(start)", mut lw.m)
+    if options.verify_each { ob_verify(lw.m, "after the passes") }
+    let entry = ir_find_func(lw.m, "__start")
+    let built = bk_build(mut lw.m, entry, back, OB_RUNTIME)
+    if !built.ok {
+        eprint("error: " + built.error)
+        exit(1)
+    }
+    let finished = clock()
+    if map.len() > 0 { ob_write(map, built.map) }
+    match remove_file(out) {
+        Ok(_) => {}
+        Err(_) => {}
+    }
+    ob_write(out, built.image)
+    match set_executable(out) {
+        Ok(_) => {}
+        Err(why) => {
+            eprint("error: cannot write '" + out + "': " + why)
+            exit(1)
+        }
+    }
+    if show {
+        let text = pl_stats_text(stats)
+        eprint(text.slice(0, text.len() - 1))
+        eprint("front end and lowering " + str((lowered - started + 500) / 1000) + " us, passes " + str((optimised - lowered + 500) / 1000) + " us, back end " + str((finished - optimised + 500) / 1000) + " us (select " + str((built.select_ns + 500) / 1000) + ", allocate " + str((built.allocate_ns + 500) / 1000) + ", emit " + str((built.emit_ns + 500) / 1000) + "), code " + str(built.code_bytes) + " bytes")
+    }
+}

@@ -5,16 +5,12 @@
 // expect-line: 5000050000
 
 fn count(n: i64) -> i64 {
-    if n == 0 {
-        return 0
-    }
+    if n == 0 { return 0 }
     return count(n - 1) + 1
 }
 
 fn sum(n: i64) -> i64 {
-    if n == 0 {
-        return 0
-    }
+    if n == 0 { return 0 }
     return sum(n - 1) + n
 }
 

@@ -10,9 +10,7 @@
 const SMALL = false
 
 fn size(full: i64, small: i64) -> i64 {
-    if SMALL {
-        return small
-    }
+    if SMALL { return small }
     return full
 }
 
@@ -46,9 +44,7 @@ fn main() {
                 head = head + 1
                 let d = distance[cell]
                 reached = reached + 1
-                if d > farthest {
-                    farthest = d
-                }
+                if d > farthest { farthest = d }
                 total = (total + d) % 1000000007
                 let x = cell % side
                 if x > 0 && !blocked[cell - 1] && distance[cell - 1] < 0 {

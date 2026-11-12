@@ -1,0 +1,7 @@
+; (x << 40) << 30 moves every bit out: 0, not x << 6.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = shl p0, 40
+    v1 = shl v0, 30
+    ret v1
+}

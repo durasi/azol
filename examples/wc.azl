@@ -16,9 +16,7 @@ fn count(text: str) -> Counts {
     var i = 0
     while i < text.len() {
         let c = text[i]
-        if c == 10 {
-            counts.lines = counts.lines + 1
-        }
+        if c == 10 { counts.lines = counts.lines + 1 }
         if c == 32 || c == 9 || c == 10 || c == 13 {
             in_word = false
         } else if !in_word {
@@ -38,9 +36,7 @@ fn main() -> i64 {
     }
     var failed = 0
     for i, path in arguments {
-        if i == 0 {
-            continue
-        }
+        if i == 0 { continue }
         match read_file(path) {
             Ok(text) => {
                 let c = count(text)

@@ -20,9 +20,7 @@ fn total(scores: List[i64]) -> i64 {
 fn best(scores: List[i64]) -> i64 {
     var top = scores[0]
     for score in scores {
-        if score > top {
-            top = score
-        }
+        if score > top { top = score }
     }
     return top
 }

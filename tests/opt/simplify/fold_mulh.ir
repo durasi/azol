@@ -1,0 +1,7 @@
+; The high halves of a product of constants.
+fn main() -> i64, i64 {
+b0:
+    v0 = umulh -1, -1
+    v1 = smulh -1, -1
+    ret v0, v1
+}

@@ -1,0 +1,403 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// ARM64 instructions as numbers, for the optimising back end
+// (`sel_arm64.azl`, `emit_arm64.azl`). Every function gives one
+// instruction word, except the two at the end, which add to a list.
+// Register 31 is the stack pointer or the zero register, as the
+// instruction has it.
+
+const AX_SP = 31
+const AX_ZR = 31
+const AX_LR = 30
+const AX_FP = 29
+
+// Conditions.
+const AX_EQ = 0
+const AX_NE = 1
+const AX_HS = 2
+const AX_LO = 3
+const AX_MI = 4
+const AX_PL = 5
+const AX_HI = 8
+const AX_LS = 9
+const AX_GE = 10
+const AX_LT = 11
+const AX_GT = 12
+const AX_LE = 13
+
+const AX_RET = 0xD65F03C0
+const AX_NOP = 0xD503201F
+
+// `movz rd, #imm16, lsl #(16 * chunk)`.
+fn ax_movz(rd: i64, imm16: i64, chunk: i64) -> i64 {
+    return 0xD2800000 | chunk << 21 | imm16 << 5 | rd
+}
+
+fn ax_movk(rd: i64, imm16: i64, chunk: i64) -> i64 {
+    return 0xF2800000 | chunk << 21 | imm16 << 5 | rd
+}
+
+// `movn`: rd = not (imm16 << (16 * chunk)).
+fn ax_movn(rd: i64, imm16: i64, chunk: i64) -> i64 {
+    return 0x92800000 | chunk << 21 | imm16 << 5 | rd
+}
+
+// `mov rd, rm`, neither the stack pointer.
+fn ax_mov(rd: i64, rm: i64) -> i64 {
+    return 0xAA0003E0 | rm << 16 | rd
+}
+
+// `add` (sub 0) or `sub` (sub 1) of an immediate of 12 bits, shifted
+// left by 12 when `high` is 1; with `flags` 1 the flags are set. Both
+// registers may be the stack pointer (the zero register as `rd` when
+// the flags are set: `cmp`, `cmn`).
+fn ax_addsub_imm(sub: i64, flags: i64, rd: i64, rn: i64, imm12: i64, high: i64) -> i64 {
+    return 0x91000000 | sub << 30 | flags << 29 | high << 22 | imm12 << 10 | rn << 5 | rd
+}
+
+// `add`/`sub rd, rn, rm, lsl #amount`; no stack pointer.
+fn ax_addsub(sub: i64, flags: i64, rd: i64, rn: i64, rm: i64, amount: i64) -> i64 {
+    return 0x8B000000 | sub << 30 | flags << 29 | rm << 16 | amount << 10 | rn << 5 | rd
+}
+
+// `add`/`sub rd, rn, rm` where `rd` and `rn` may be the stack pointer.
+fn ax_addsub_sp(sub: i64, rd: i64, rn: i64, rm: i64) -> i64 {
+    return 0x8B206000 | sub << 30 | rm << 16 | rn << 5 | rd
+}
+
+// Kinds of logical operation.
+const AX_AND = 0
+const AX_ORR = 1
+const AX_EOR = 2
+const AX_ANDS = 3
+
+// `and`/`orr`/`eor`/`ands rd, rn, rm, lsl #amount`.
+fn ax_logic(kind: i64, rd: i64, rn: i64, rm: i64, amount: i64) -> i64 {
+    return 0x8A000000 | kind << 29 | rm << 16 | amount << 10 | rn << 5 | rd
+}
+
+// The same with an immediate, in the 13 bits `ax_logical_imm` gives.
+fn ax_logic_imm(kind: i64, rd: i64, rn: i64, bits: i64) -> i64 {
+    return 0x92000000 | kind << 29 | bits << 10 | rn << 5 | rd
+}
+
+// `madd rd, rn, rm, ra`: rd = ra + rn * rm. With `ra` 31, `mul`.
+fn ax_madd(rd: i64, rn: i64, rm: i64, ra: i64) -> i64 {
+    return 0x9B000000 | rm << 16 | ra << 10 | rn << 5 | rd
+}
+
+// `msub rd, rn, rm, ra`: rd = ra - rn * rm.
+fn ax_msub(rd: i64, rn: i64, rm: i64, ra: i64) -> i64 {
+    return 0x9B008000 | rm << 16 | ra << 10 | rn << 5 | rd
+}
+
+fn ax_smulh(rd: i64, rn: i64, rm: i64) -> i64 {
+    return 0x9B407C00 | rm << 16 | rn << 5 | rd
+}
+
+fn ax_umulh(rd: i64, rn: i64, rm: i64) -> i64 {
+    return 0x9BC07C00 | rm << 16 | rn << 5 | rd
+}
+
+fn ax_sdiv(rd: i64, rn: i64, rm: i64) -> i64 {
+    return 0x9AC00C00 | rm << 16 | rn << 5 | rd
+}
+
+// Shifts by a register: kind 0 `lslv`, 1 `lsrv`, 2 `asrv`. The
+// processor uses the count modulo 64.
+fn ax_shiftv(kind: i64, rd: i64, rn: i64, rm: i64) -> i64 {
+    return 0x9AC02000 | kind << 10 | rm << 16 | rn << 5 | rd
+}
+
+fn ax_ubfm(rd: i64, rn: i64, immr: i64, imms: i64) -> i64 {
+    return 0xD3400000 | immr << 16 | imms << 10 | rn << 5 | rd
+}
+
+fn ax_sbfm(rd: i64, rn: i64, immr: i64, imms: i64) -> i64 {
+    return 0x93400000 | immr << 16 | imms << 10 | rn << 5 | rd
+}
+
+// Shifts by a constant from 0 to 63: kind 0 `lsl`, 1 `lsr`, 2 `asr`.
+fn ax_shift_imm(kind: i64, rd: i64, rn: i64, amount: i64) -> i64 {
+    if kind == 0 { return ax_ubfm(rd, rn, (64 - amount) & 63, 63 - amount) }
+    if kind == 1 { return ax_ubfm(rd, rn, amount, 63) }
+    return ax_sbfm(rd, rn, amount, 63)
+}
+
+// `and wd, wn, #0xFF`: the low byte, the rest zero.
+fn ax_uxtb(rd: i64, rn: i64) -> i64 {
+    return 0x12001C00 | rn << 5 | rd
+}
+
+// `mov wd, wm`: the low 32 bits, the rest zero.
+fn ax_uxtw(rd: i64, rm: i64) -> i64 {
+    return 0x2A0003E0 | rm << 16 | rd
+}
+
+fn ax_sxtb(rd: i64, rn: i64) -> i64 {
+    return ax_sbfm(rd, rn, 0, 7)
+}
+
+fn ax_sxtw(rd: i64, rn: i64) -> i64 {
+    return ax_sbfm(rd, rn, 0, 31)
+}
+
+// `csel rd, rn, rm, cond`: rn when the condition holds, else rm.
+fn ax_csel(rd: i64, rn: i64, rm: i64, cond: i64) -> i64 {
+    return 0x9A800000 | rm << 16 | cond << 12 | rn << 5 | rd
+}
+
+// `cset rd, cond`: 1 when the condition holds, else 0.
+fn ax_cset(rd: i64, cond: i64) -> i64 {
+    return 0x9A9F07E0 | (cond ^ 1) << 12 | rd
+}
+
+// Kinds of access to memory: the width, and for a load what happens to
+// the upper bits. A store ignores the sign.
+const AX_M_U8 = 0
+const AX_M_S8 = 1
+const AX_M_U32 = 2
+const AX_M_S32 = 3
+const AX_M_64 = 4
+
+fn ax_mem_bytes(kind: i64) -> i64 {
+    if kind <= AX_M_S8 { return 1 }
+    if kind <= AX_M_S32 { return 4 }
+    return 8
+}
+
+// The top bits of a load (`load` 1) or store of kind `kind`: size in
+// bits 30 and 31, the operation in bits 22 and 23.
+fn ax_mem_top(kind: i64, load: i64) -> i64 {
+    var size = 3
+    if kind <= AX_M_S8 {
+        size = 0
+    } else if kind <= AX_M_S32 {
+        size = 2
+    }
+    var opc = load
+    if load == 1 && (kind == AX_M_S8 || kind == AX_M_S32) { opc = 2 }
+    return size << 30 | opc << 22
+}
+
+// `[rn, #offset]` with `offset` a multiple of the width, from 0 to 4095
+// times it.
+fn ax_mem_scaled(kind: i64, load: i64, rt: i64, rn: i64, offset: i64) -> i64 {
+    return 0x39000000 | ax_mem_top(kind, load) | (offset / ax_mem_bytes(kind)) << 10 | rn << 5 | rt
+}
+
+// `[rn, #offset]` with `offset` from -256 to 255.
+fn ax_mem_unscaled(kind: i64, load: i64, rt: i64, rn: i64, offset: i64) -> i64 {
+    return 0x38000000 | ax_mem_top(kind, load) | (offset & 0x1FF) << 12 | rn << 5 | rt
+}
+
+// `[rn, rm]`, or `[rn, rm, lsl #log2(width)]` when `scaled` is 1.
+fn ax_mem_index(kind: i64, load: i64, rt: i64, rn: i64, rm: i64, scaled: i64) -> i64 {
+    return 0x38206800 | ax_mem_top(kind, load) | rm << 16 | scaled << 12 | rn << 5 | rt
+}
+
+// Whether `[rn, #offset]` exists in one of the two forms for this kind.
+fn ax_mem_fits(kind: i64, offset: i64) -> bool {
+    if offset >= -256 && offset <= 255 { return true }
+    let bytes = ax_mem_bytes(kind)
+    return offset > 0 && offset % bytes == 0 && offset / bytes < 4096
+}
+
+// The access at `[rn, #offset]`, which must fit.
+fn ax_mem(kind: i64, load: i64, rt: i64, rn: i64, offset: i64) -> i64 {
+    let bytes = ax_mem_bytes(kind)
+    if offset >= 0 && offset % bytes == 0 && offset / bytes < 4096 {
+        return ax_mem_scaled(kind, load, rt, rn, offset)
+    }
+    return ax_mem_unscaled(kind, load, rt, rn, offset)
+}
+
+// Pairs of 8 bytes; `offset` is a multiple of 8 from -512 to 504.
+// `stp rt, rt2, [rn, #offset]`.
+fn ax_stp(rt: i64, rt2: i64, rn: i64, offset: i64) -> i64 {
+    return 0xA9000000 | ((offset / 8) & 0x7F) << 15 | rt2 << 10 | rn << 5 | rt
+}
+
+fn ax_ldp(rt: i64, rt2: i64, rn: i64, offset: i64) -> i64 {
+    return 0xA9400000 | ((offset / 8) & 0x7F) << 15 | rt2 << 10 | rn << 5 | rt
+}
+
+// `stp rt, rt2, [rn, #offset]!`: rn moves first.
+fn ax_stp_pre(rt: i64, rt2: i64, rn: i64, offset: i64) -> i64 {
+    return 0xA9800000 | ((offset / 8) & 0x7F) << 15 | rt2 << 10 | rn << 5 | rt
+}
+
+// `ldp rt, rt2, [rn], #offset`: rn moves afterwards.
+fn ax_ldp_post(rt: i64, rt2: i64, rn: i64, offset: i64) -> i64 {
+    return 0xA8C00000 | ((offset / 8) & 0x7F) << 15 | rt2 << 10 | rn << 5 | rt
+}
+
+fn ax_pair_fits(offset: i64) -> bool {
+    return offset >= -512 && offset <= 504 && offset % 8 == 0
+}
+
+// Jumps; `distance` is in instructions.
+fn ax_b(distance: i64) -> i64 {
+    return 0x14000000 | (distance & 0x03FFFFFF)
+}
+
+fn ax_bl(distance: i64) -> i64 {
+    return 0x94000000 | (distance & 0x03FFFFFF)
+}
+
+fn ax_bcond(cond: i64, distance: i64) -> i64 {
+    return 0x54000000 | (distance & 0x7FFFF) << 5 | cond
+}
+
+// `cbz` (nonzero 0) or `cbnz` (nonzero 1).
+fn ax_cbz(nonzero: i64, rt: i64, distance: i64) -> i64 {
+    return 0xB4000000 | nonzero << 24 | (distance & 0x7FFFF) << 5 | rt
+}
+
+// `tbz` (nonzero 0) or `tbnz` (nonzero 1) on bit `bit` of rt.
+fn ax_tbz(nonzero: i64, rt: i64, bit: i64, distance: i64) -> i64 {
+    return 0x36000000 | (bit >> 5) << 31 | nonzero << 24 | (bit & 31) << 19 | (distance & 0x3FFF) << 5 | rt
+}
+
+// ---- constants -------------------------------------------------------------------------
+
+fn ax_ones(n: i64) -> i64 {
+    if n >= 64 { return -1 }
+    return (1 << n) - 1
+}
+
+// The 13 bits (N, immr, imms) that stand for `value` in `and`, `orr`,
+// `eor` and `ands` with an immediate, or -1 when it has no such form:
+// the value must be a run of ones, turned round, in a piece of 2, 4, 8,
+// 16, 32 or 64 bits that is repeated to fill the register.
+fn ax_logical_imm(value: i64) -> i64 {
+    if value == 0 || value == -1 { return -1 }
+    // The shortest piece the value repeats.
+    var size = 64
+    while size > 2 {
+        let half = size / 2
+        let mask = ax_ones(half)
+        if (value & mask) != ((value >> half) & mask) { break }
+        size = half
+    }
+    let piece = value & ax_ones(size)
+    var ones = 0
+    var k = 0
+    while k < size {
+        ones = ones + ((piece >> k) & 1)
+        k = k + 1
+    }
+    var immr = 0
+    if piece & 1 == 0 {
+        var low = 0
+        while (piece >> low) & 1 == 0 {
+            low = low + 1
+        }
+        if piece != ax_ones(ones) << low { return -1 }
+        immr = (size - low) % size
+    } else {
+        var low = 0
+        while low < size && (piece >> low) & 1 == 1 {
+            low = low + 1
+        }
+        if low != ones {
+            let high = ones - low
+            if piece != (ax_ones(low) | (ax_ones(high) << (size - high))) { return -1 }
+            immr = high
+        }
+    }
+    if size == 64 { return 1 << 12 | immr << 6 | (ones - 1) }
+    return immr << 6 | (((0 - size * 2) & 63) | (ones - 1))
+}
+
+// Whether `value` is one `add` or `sub` away: 12 bits, or 12 bits
+// shifted left by 12, with either sign.
+fn ax_addsub_fits(value: i64) -> bool {
+    var v = value
+    if v < 0 { v = 0 - v }
+    if v < 0 { return false }
+    return v < 4096 || (v & 0xFFF == 0 && v < 16777216)
+}
+
+// `rd = value`, in as few instructions as it takes.
+fn ax_mov_imm(w: mut List[i64], rd: i64, value: i64) {
+    if value == 0 || value == -1 {
+        // `movz rd, #0` or `movn rd, #0`.
+        w.push(ax_movz(rd, 0, 0) ^ (value & 0x40000000))
+        return
+    }
+    var zeros = 0
+    var ffff = 0
+    var chunk = 0
+    while chunk < 4 {
+        let part = (value >> (16 * chunk)) & 0xFFFF
+        if part == 0 {
+            zeros = zeros + 1
+        } else if part == 0xFFFF {
+            ffff = ffff + 1
+        }
+        chunk = chunk + 1
+    }
+    if zeros < 3 && ffff < 3 {
+        let bits = ax_logical_imm(value)
+        if bits >= 0 {
+            w.push(ax_logic_imm(AX_ORR, rd, AX_ZR, bits))
+            return
+        }
+    }
+    var first = true
+    chunk = 0
+    if ffff > zeros {
+        while chunk < 4 {
+            let part = (value >> (16 * chunk)) & 0xFFFF
+            if part != 0xFFFF || (first && chunk == 3) {
+                if first {
+                    w.push(ax_movn(rd, part ^ 0xFFFF, chunk))
+                } else {
+                    w.push(ax_movk(rd, part, chunk))
+                }
+                first = false
+            }
+            chunk = chunk + 1
+        }
+        return
+    }
+    while chunk < 4 {
+        let part = (value >> (16 * chunk)) & 0xFFFF
+        if part != 0 || (first && chunk == 3) {
+            if first {
+                w.push(ax_movz(rd, part, chunk))
+            } else {
+                w.push(ax_movk(rd, part, chunk))
+            }
+            first = false
+        }
+        chunk = chunk + 1
+    }
+}
+
+// `rd = rn + value` for any value; both may be the stack pointer. A
+// value that is not one or two instructions away goes through `temp`.
+fn ax_add_imm(w: mut List[i64], rd: i64, rn: i64, value: i64, temp: i64) {
+    var sub = 0
+    var v = value
+    if v < 0 {
+        sub = 1
+        v = 0 - v
+    }
+    if v < 0 || v >= 16777216 {
+        ax_mov_imm(mut w, temp, value)
+        w.push(ax_addsub_sp(0, rd, rn, temp))
+        return
+    }
+    if v == 0 {
+        if rd != rn { w.push(ax_addsub_imm(0, 0, rd, rn, 0, 0)) }
+        return
+    }
+    var from = rn
+    if v >= 4096 {
+        w.push(ax_addsub_imm(sub, 0, rd, from, v >> 12, 1))
+        from = rd
+    }
+    if v & 0xFFF != 0 { w.push(ax_addsub_imm(sub, 0, rd, from, v & 0xFFF, 0)) }
+}

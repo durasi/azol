@@ -161,9 +161,7 @@ fn joins(xs: mut List[i64], pick: bool, at: i64) -> i64 {
     }
     // Reached from both branches: one grew the list, one moved the index.
     total = total + xs[i]
-    if total > 100 {
-        return total
-    }
+    if total > 100 { return total }
     total = total + xs[i] + xs[0]
     return total
 }

@@ -1,0 +1,25 @@
+fn f(p0: i64) -> i64 {
+    frames 0
+b0:
+    jump b1
+b1:
+    v3 = sgt p0, 0
+    br v3, b2, b3
+b2:
+    jump b4(1, 2, p0, 0)
+b3:
+    jump b4(2, 1, 0, 5)
+b4(v11: i64, v12: i64, v13: i64, v14: i64):
+    v5 = eq v11, 1
+    br v5, b5, b6
+b5:
+    v7 = eq v12, 2
+    br v7, b7, b8
+b6:
+    ret v14
+b7:
+    v10 = mul v13, 10
+    ret v10
+b8:
+    ret -1
+}

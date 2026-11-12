@@ -52,9 +52,7 @@ fn lower_tool_program(files: List[str], lower: bool) -> Lower {
     var lens: List[i64] = []
     for path in files {
         let text = read_or_exit(path)
-        if starts.len() > 0 {
-            src = src + "\n"
-        }
+        if starts.len() > 0 { src = src + "\n" }
         starts.push(src.len())
         lens.push(text.len())
         src = src + text
@@ -86,9 +84,7 @@ fn lower_tool_program(files: List[str], lower: bool) -> Lower {
         exit(1)
     }
     var lw = lw_new()
-    if lower {
-        lw_program(mut lw, c, p)
-    }
+    if lower { lw_program(mut lw, c, p) }
     // The whole state and not `lw.m` alone, which would be copied.
     return lw
 }
@@ -103,9 +99,7 @@ fn lower_tool_verify(m: IrModule) {
 
 fn main() {
     let a = args()
-    if a.len() < 3 {
-        lower_tool_usage()
-    }
+    if a.len() < 3 { lower_tool_usage() }
     let command = a[1]
     var files: List[str] = []
     var arguments: List[str] = []
@@ -138,16 +132,10 @@ fn main() {
         }
         i = i + 1
     }
-    if files.len() == 0 {
-        lower_tool_usage()
-    }
-    if argv0.len() == 0 {
-        argv0 = files[0]
-    }
+    if files.len() == 0 { lower_tool_usage() }
+    if argv0.len() == 0 { argv0 = files[0] }
     let lw = lower_tool_program(files, command != "check")
-    if command == "time" || command == "check" {
-        return
-    }
+    if command == "time" || command == "check" { return }
     if command == "count" {
         var blocks = 0
         var instructions = 0
@@ -160,15 +148,11 @@ fn main() {
     }
     if command == "emit" {
         let text = ir_print_module(lw.m)
-        if text.len() > 0 {
-            print(text.slice(0, text.len() - 1))
-        }
+        if text.len() > 0 { print(text.slice(0, text.len() - 1)) }
         lower_tool_verify(lw.m)
         return
     }
-    if command != "run" {
-        lower_tool_usage()
-    }
+    if command != "run" { lower_tool_usage() }
     lower_tool_verify(lw.m)
     var mach = irm_new(lw.m)
     mach.step_limit = steps
@@ -192,9 +176,7 @@ fn main() {
         exit(3)
     }
     if mach.stopped {
-        if mach.stop_message.len() > 0 {
-            eprint(mach.stop_message)
-        }
+        if mach.stop_message.len() > 0 { eprint(mach.stop_message) }
         exit(mach.exit_code)
     }
     let left = irm_live_blocks(mach)
@@ -202,7 +184,5 @@ fn main() {
         eprint("ir-interp: " + str(left) + " blocks were never freed")
         exit(3)
     }
-    if returned.len() > 0 {
-        exit(returned[0] & 255)
-    }
+    if returned.len() > 0 { exit(returned[0] & 255) }
 }

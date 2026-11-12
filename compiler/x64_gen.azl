@@ -16,13 +16,9 @@ fn x_stmt(g: mut Gen, c: Checker, p: Parser, id: i64) {
         StmtIf(_, _, _) => keeps = true
         _ => {}
     }
-    if !keeps {
-        x_forget(mut g)
-    }
+    if !keeps { x_forget(mut g) }
     x_stmt_inner(mut g, c, p, id)
-    if !keeps {
-        x_forget(mut g)
-    }
+    if !keeps { x_forget(mut g) }
 }
 
 // Patches the jumps of the innermost loop that were added to `continues`
@@ -122,9 +118,7 @@ fn x_stmt_inner(g: mut Gen, c: Checker, p: Parser, id: i64) {
             x_enter_loop(mut g)
             x_block(mut g, c, p, body)
             x_patch_continues(mut g)
-            if enter >= 0 {
-                x_patch(mut g, enter)
-            }
+            if enter >= 0 { x_patch(mut g, enter) }
             let again = g.jumps.len()
             x_test(mut g, c, p, id, cond, true)
             var i = again
@@ -169,9 +163,7 @@ fn x_test(g: mut Gen, c: Checker, p: Parser, id: i64, cond: i64, when: bool) {
     x_drop_temps(mut g, c, id, true)
     x_op(mut g, X_TEST, RAX, RAX)
     var cc = CC_E
-    if when {
-        cc = CC_NE
-    }
+    if when { cc = CC_NE }
     let at = x_jump_if(mut g, cc)
     g.jumps.push(at)
 }
@@ -238,9 +230,7 @@ fn x_branch(g: mut Gen, c: Checker, p: Parser, cond: i64, when: bool) {
         if cc >= 0 && (ty == TY_I64 || ty == TY_BOOL) {
             x_compare_flags(mut g, c, p, lhs, rhs)
             var taken = cc ^ 1
-            if when {
-                taken = cc
-            }
+            if when { taken = cc }
             let at = x_jump_if(mut g, taken)
             g.jumps.push(at)
             return
@@ -258,9 +248,7 @@ fn x_branch(g: mut Gen, c: Checker, p: Parser, cond: i64, when: bool) {
         x_op(mut g, X_TEST, RAX, RAX)
     }
     var cc = CC_E
-    if when {
-        cc = CC_NE
-    }
+    if when { cc = CC_NE }
     let at = x_jump_if(mut g, cc)
     g.jumps.push(at)
 }
@@ -321,9 +309,7 @@ fn x_assign(g: mut Gen, c: Checker, p: Parser, id: i64, target: i64, value: i64)
         } else if place >= 0 {
             x_store_slot(mut g, (place & 4095) + (place >> 13), source)
         } else {
-            if source != RAX {
-                x_mov(mut g, RAX, source)
-            }
+            if source != RAX { x_mov(mut g, RAX, source) }
             // The target is a list element: its address is only known
             // once the index has been evaluated.
             x_push(mut g)
@@ -342,9 +328,7 @@ fn x_assign(g: mut Gen, c: Checker, p: Parser, id: i64, target: i64, value: i64)
         x_address(mut g, c, p, value)
         if (place & 4096) != 0 {
             let pointer = x_pointer(mut g, place, R8)
-            if pointer != R8 {
-                x_mov(mut g, R8, pointer)
-            }
+            if pointer != R8 { x_mov(mut g, R8, pointer) }
             x_copy_to_pointer(mut g, place >> 13, size)
         } else {
             x_copy_to_frame(mut g, (place & 4095) + (place >> 13), size)
@@ -360,24 +344,18 @@ fn x_assign(g: mut Gen, c: Checker, p: Parser, id: i64, target: i64, value: i64)
         // A variable that is not used again: its value moves straight
         // out of its own slots.
         source = x_variable_slot(g, c, value)
-        if source < 0 {
-            source = c.expr_tmp[g.sh_e + value]
-        }
+        if source < 0 { source = c.expr_tmp[g.sh_e + value] }
     } else {
         let scratch = c.stmt_slot[g.sh_s + id]
         x_copy_to_frame(mut g, scratch, size)
-        if owning {
-            x_clone_frame(mut g, c, scratch, ty)
-        }
+        if owning { x_clone_frame(mut g, c, scratch, ty) }
         source = scratch
     }
     // Then find the target, free what it holds and move the value in.
     x_address(mut g, c, p, target)
     let scratch_slot = g.scratch_slot
     x_store_slot(mut g, scratch_slot, RAX)
-    if owning {
-        x_drop_pointer(mut g, c, scratch_slot, ty)
-    }
+    if owning { x_drop_pointer(mut g, c, scratch_slot, ty) }
     x_frame_address(mut g, RAX, source)
     x_load(mut g, R8, scratch_slot)
     x_copy_to_pointer(mut g, 0, size)
@@ -403,17 +381,13 @@ fn x_assign_element(g: mut Gen, c: Checker, p: Parser, path: XPath, value: i64) 
     let waits = !is_constant && register < 0 && !x_index_keeps_rax(g, c, path.base, path.index)
     if !is_constant && register < 0 {
         x_value(mut g, c, p, value)
-        if waits {
-            x_push(mut g)
-        }
+        if waits { x_push(mut g) }
     }
     let at = x_element(mut g, c, p, path.base, path.index)
     if is_constant {
         x_store_imm_at(mut g, at, path.offset, constant)
     } else {
-        if waits {
-            x_pop(mut g, RAX)
-        }
+        if waits { x_pop(mut g, RAX) }
         if register >= 0 {
             x_store_at(mut g, at, path.offset, register)
         } else {
@@ -439,9 +413,7 @@ fn x_return_stmt(g: mut Gen, c: Checker, p: Parser, id: i64, value: i64) {
                     x_clone_pointer(mut g, c, slot, ty)
                 } else if x_kind(g, c, value) == K_IDENT {
                     let place = x_place(g, c, value)
-                    if place >= 0 {
-                        moved_local = place & 4095
-                    }
+                    if place >= 0 { moved_local = place & 4095 }
                 }
             }
         } else {
@@ -450,23 +422,17 @@ fn x_return_stmt(g: mut Gen, c: Checker, p: Parser, id: i64, value: i64) {
         }
     }
     let frees_something = c.stmt_drops_len[g.sh_s + id] > 0 || g.live_slots.len() > 0
-    if scalar && frees_something {
-        x_push(mut g)
-    }
+    if scalar && frees_something { x_push(mut g) }
     x_drop_temps(mut g, c, id, false)
     var i = g.live_slots.len() - 1
     while i >= 0 {
         let slot = g.live_slots[i]
         let ty = g.live_tys[i]
-        if slot != moved_local {
-            x_drop_frame(mut g, c, slot, ty)
-        }
+        if slot != moved_local { x_drop_frame(mut g, c, slot, ty) }
         i = i - 1
     }
     if scalar {
-        if frees_something {
-            x_pop(mut g, RAX)
-        }
+        if frees_something { x_pop(mut g, RAX) }
     } else {
         // Nothing, or an aggregate written through the result address:
         // `main` still hands back exit code 0.
@@ -491,9 +457,7 @@ fn x_for_stmt(g: mut Gen, c: Checker, p: Parser, id: i64, has_index: bool, iter:
         // copy of a list that is part of a temporary.
         x_address(mut g, c, p, iter)
         x_copy_to_frame(mut g, own_list, 3)
-        if flag == COPIED {
-            x_clone_frame(mut g, c, own_list, list_ty)
-        }
+        if flag == COPIED { x_clone_frame(mut g, c, own_list, list_ty) }
     }
     x_drop_temps(mut g, c, id, false)
     if !in_place {
@@ -511,9 +475,7 @@ fn x_for_stmt(g: mut Gen, c: Checker, p: Parser, id: i64, has_index: bool, iter:
     let exit = x_jump_if(mut g, CC_AE)
     x_forget(mut g)
     let top = g.code.len()
-    if has_index {
-        x_store_slot(mut g, index_slot, RCX)
-    }
+    if has_index { x_store_slot(mut g, index_slot, RCX) }
     // buffer
     x_load_mem(mut g, R8, header, disp)
     let at = x_scaled(mut g, RCX, elem_size)
@@ -580,9 +542,7 @@ fn x_match_stmt(g: mut Gen, c: Checker, p: Parser, id: i64, scrutinee: i64, arms
             let own = base + 1
             x_copy_to_frame(mut g, own, ck_size_of(c, ty))
             if ck_needs_drop(c, ty) {
-                if flag == COPIED {
-                    x_clone_frame(mut g, c, own, ty)
-                }
+                if flag == COPIED { x_clone_frame(mut g, c, own, ty) }
                 owned = true
             }
             x_frame_address(mut g, RAX, own)
@@ -666,12 +626,8 @@ fn x_match_stmt(g: mut Gen, c: Checker, p: Parser, id: i64, scrutinee: i64, arms
             x_store_slot(mut g, c.pat_slot[pat], R8)
         }
         x_block(mut g, c, p, p.ast.arms[arm_id].body)
-        if test {
-            ends.push(x_jump(mut g))
-        }
-        if next >= 0 {
-            x_patch(mut g, next)
-        }
+        if test { ends.push(x_jump(mut g)) }
+        if next >= 0 { x_patch(mut g, next) }
         i = i + 1
     }
     for at in ends {
@@ -712,22 +668,16 @@ fn x_store(g: mut Gen, c: Checker, p: Parser, value: i64, slot: i64) {
 // the register it is in: the one the variable lives in, or rax.
 fn x_source(g: mut Gen, c: Checker, p: Parser, value: i64) -> i64 {
     let reg = x_in_register(g, c, value)
-    if reg >= 0 {
-        return reg
-    }
+    if reg >= 0 { return reg }
     x_value(mut g, c, p, value)
     return RAX
 }
 
 // The frame slot of `id` when it is a whole local variable, or -1.
 fn x_variable_slot(g: Gen, c: Checker, id: i64) -> i64 {
-    if g.kinds[id] != K_IDENT {
-        return -1
-    }
+    if g.kinds[id] != K_IDENT { return -1 }
     let place = x_place(g, c, id)
-    if place < 0 || (place & 4096) != 0 {
-        return -1
-    }
+    if place < 0 || (place & 4096) != 0 { return -1 }
     return place & 4095
 }
 
@@ -735,13 +685,9 @@ fn x_variable_slot(g: Gen, c: Checker, id: i64) -> i64 {
 // a variable whose buffers the store took over, the variable is left
 // owning nothing, so that the end of its scope frees nothing.
 fn x_moved_out(g: mut Gen, c: Checker, id: i64) {
-    if c.expr_moved[g.sh_e + id] != 1 {
-        return
-    }
+    if c.expr_moved[g.sh_e + id] != 1 { return }
     let slot = x_variable_slot(g, c, id)
-    if slot >= 0 {
-        x_zero_idle(mut g, c, slot, c.expr_ty[g.sh_e + id])
-    }
+    if slot >= 0 { x_zero_idle(mut g, c, slot, c.expr_ty[g.sh_e + id]) }
 }
 
 // Writes string literal number `index` into three frame slots.
@@ -804,9 +750,7 @@ fn x_copy_to_pointer(g: mut Gen, offset: i64, size: i64) {
 // times 8. One slot needs no instruction at all; other sizes are worked
 // out in rcx, the only register this changes.
 fn x_scaled(g: mut Gen, index: i64, elem_size: i64) -> i64 {
-    if elem_size == 1 {
-        return index
-    }
+    if elem_size == 1 { return index }
     if elem_size == 2 {
         x_lea_index(mut g, RCX, index, index, 0, 0)
     } else if elem_size == 3 {
@@ -887,9 +831,7 @@ fn x_checked_index(g: mut Gen, c: Checker, p: Parser, base: i64, index: i64) -> 
         disp = found >> 4
     } else {
         x_address(mut g, c, p, base)
-        if at == RCX {
-            x_pop(mut g, RCX)
-        }
+        if at == RCX { x_pop(mut g, RCX) }
     }
     // length
     x_cmp_mem(mut g, at, header, disp + 8)
@@ -913,14 +855,10 @@ fn x_element(g: mut Gen, c: Checker, p: Parser, base: i64, index: i64) -> XMem {
 // instruction; a negative one is left to fail its check.
 fn x_index_key(g: Gen, c: Checker, index: i64, slots: i64) -> i64 {
     let reg = x_in_register(g, c, index)
-    if reg >= 0 {
-        return reg
-    }
+    if reg >= 0 { return reg }
     if slots < 256 && x_kind(g, c, index) == K_INT {
         let value = x_int_value(g, c, index)
-        if value >= 0 && value < 1048576 {
-            return 16 + value
-        }
+        if value >= 0 && value < 1048576 { return 16 + value }
     }
     return -1
 }
@@ -936,14 +874,10 @@ fn x_index_key(g: Gen, c: Checker, index: i64, slots: i64) -> i64 {
 fn x_indexed(g: mut Gen, c: Checker, p: Parser, base: i64, index: i64, slots: i64, shift: i64) -> XMem {
     let place = x_place(g, c, base)
     var at = -1
-    if place >= 0 {
-        at = x_index_key(g, c, index, slots)
-    }
+    if place >= 0 { at = x_index_key(g, c, index, slots) }
     if at < 0 {
         let reg = x_checked_index(mut g, c, p, base, index)
-        if slots == 1 {
-            return XMem { base: R8, index: reg, scale: shift, disp: 0 }
-        }
+        if slots == 1 { return XMem { base: R8, index: reg, scale: shift, disp: 0 } }
         let scaled = x_scaled(mut g, reg, slots)
         return XMem { base: R8, index: scaled, scale: 3, disp: 0 }
     }
@@ -951,15 +885,11 @@ fn x_indexed(g: mut Gen, c: Checker, p: Parser, base: i64, index: i64, slots: i6
     // other only the buffer is kept, which serves every index.
     let whole = slots != 1 && at < 16
     var wanted = -1
-    if whole {
-        wanted = at
-    }
+    if whole { wanted = at }
     var known = false
     var i = 0
     while i < g.known_len {
-        if g.known_places[i] == place && g.known_ats[i] == at {
-            known = true
-        }
+        if g.known_places[i] == place && g.known_ats[i] == at { known = true }
         i = i + 1
     }
     let held = g.held_ok && g.held_place == place && g.held_at == wanted
@@ -1006,12 +936,8 @@ fn x_indexed(g: mut Gen, c: Checker, p: Parser, base: i64, index: i64, slots: i6
             g.held_since = g.code.len()
         }
     }
-    if whole {
-        return XMem { base: R10, index: -1, scale: 0, disp: 0 }
-    }
-    if at < 16 {
-        return XMem { base: R10, index: at, scale: shift, disp: 0 }
-    }
+    if whole { return XMem { base: R10, index: -1, scale: 0, disp: 0 } }
+    if at < 16 { return XMem { base: R10, index: at, scale: shift, disp: 0 } }
     return XMem { base: R10, index: -1, scale: 0, disp: (at - 16) * (slots << shift) }
 }
 
@@ -1020,19 +946,11 @@ fn x_indexed(g: mut Gen, c: Checker, p: Parser, base: i64, index: i64, slots: i6
 // address, or a list element whose index takes no work.
 fn x_in_memory(g: Gen, c: Checker, id: i64) -> bool {
     let kind = g.kinds[id]
-    if kind != K_IDENT && kind != K_FIELD && kind != K_INDEX {
-        return false
-    }
-    if c.expr_ty[g.sh_e + id] >= 3 {
-        return false
-    }
-    if kind == K_IDENT && c.expr_aux[g.sh_e + id] >= CONST_STR {
-        return false
-    }
+    if kind != K_IDENT && kind != K_FIELD && kind != K_INDEX { return false }
+    if c.expr_ty[g.sh_e + id] >= 3 { return false }
+    if kind == K_IDENT && c.expr_aux[g.sh_e + id] >= CONST_STR { return false }
     let place = x_place(g, c, id)
-    if place >= 0 {
-        return x_register(g, place) < 0
-    }
+    if place >= 0 { return x_register(g, place) < 0 }
     let path = x_element_path(g, c, id)
     return path.ok && x_index_keeps_rax(g, c, path.base, path.index)
 }
@@ -1060,9 +978,7 @@ fn x_indexed_by(g: Gen, c: Checker, id: i64, reg: i64) -> bool {
 
 // True when `x_indexed` leaves rax alone for these two.
 fn x_index_keeps_rax(g: Gen, c: Checker, base: i64, index: i64) -> bool {
-    if x_place(g, c, base) < 0 {
-        return false
-    }
+    if x_place(g, c, base) < 0 { return false }
     return x_in_register(g, c, index) >= 0 || x_is_simple(g, c, index)
 }
 
@@ -1074,24 +990,18 @@ fn x_place(g: Gen, c: Checker, id: i64) -> i64 {
     let kind = g.kinds[id]
     if kind == K_IDENT {
         let at = g.sh_e + id
-        if c.expr_aux[at] >= CONST_STR {
-            return -1
-        }
+        if c.expr_aux[at] >= CONST_STR { return -1 }
         let res = c.expr_res[at]
         if res == VARIANT {
             // `None` and the like are values, not variables.
             return -1
         }
-        if res >= BY_REF {
-            return res - BY_REF + 4096
-        }
+        if res >= BY_REF { return res - BY_REF + 4096 }
         return res
     }
     if kind == K_FIELD {
         let place = x_place(g, c, g.ea[id])
-        if place < 0 {
-            return -1
-        }
+        if place < 0 { return -1 }
         return place + c.expr_res[g.sh_e + id] * 8192
     }
     return -1
@@ -1181,9 +1091,7 @@ fn x_address(g: mut Gen, c: Checker, p: Parser, id: i64) {
         // above.
         x_address(mut g, c, p, g.ea[id])
         let offset = c.expr_res[g.sh_e + id]
-        if offset > 0 {
-            x_lea(mut g, RAX, RAX, 8 * offset)
-        }
+        if offset > 0 { x_lea(mut g, RAX, RAX, 8 * offset) }
     }
 }
 
@@ -1312,14 +1220,10 @@ fn x_list_literal(g: mut Gen, c: Checker, p: Parser, id: i64) {
 // of a variable.
 fn x_is_simple(g: Gen, c: Checker, id: i64) -> bool {
     let kind = g.kinds[id]
-    if kind == K_INT || kind == K_BOOL {
-        return true
-    }
+    if kind == K_INT || kind == K_BOOL { return true }
     if kind == K_IDENT {
         let aux = c.expr_aux[g.sh_e + id]
-        if aux >= CONST_STR {
-            return aux != CONST_STR
-        }
+        if aux >= CONST_STR { return aux != CONST_STR }
     } else if kind != K_FIELD {
         return false
     }
@@ -1348,9 +1252,7 @@ fn x_load_simple(g: mut Gen, c: Checker, id: i64, reg: i64) {
     }
     let home = x_register(g, place)
     if home >= 0 {
-        if home != reg {
-            x_mov(mut g, reg, home)
-        }
+        if home != reg { x_mov(mut g, reg, home) }
     } else {
         x_load(mut g, reg, (place & 4095) + (place >> 13))
     }
@@ -1359,9 +1261,7 @@ fn x_load_simple(g: mut Gen, c: Checker, id: i64, reg: i64) {
 // True when `id` is a number written in the program (or a constant
 // naming one) that fits in an instruction.
 fn x_is_small_constant(g: Gen, c: Checker, id: i64) -> bool {
-    if x_kind(g, c, id) != K_INT {
-        return false
-    }
+    if x_kind(g, c, id) != K_INT { return false }
     let value = c.ints[c.expr_res[g.sh_e + id]]
     return value >= -2147483648 && value <= 2147483647
 }
@@ -1426,9 +1326,7 @@ fn x_operands(g: mut Gen, c: Checker, p: Parser, lhs: i64, rhs: i64, constants: 
         x_store_at(mut g, at, 0, RAX)
         x_value(mut g, c, p, rhs)
         g.waiting = g.waiting - 1
-        if constants {
-            return XOps { left: RAX, kind: RIGHT_WAITING, value: 0, mem: at }
-        }
+        if constants { return XOps { left: RAX, kind: RIGHT_WAITING, value: 0, mem: at } }
         x_load_at(mut g, RCX, at, 0)
     }
     return XOps { left: RCX, kind: RIGHT_REG, value: RAX, mem: x_no_mem() }
@@ -1440,25 +1338,17 @@ fn x_operands(g: mut Gen, c: Checker, p: Parser, lhs: i64, rhs: i64, constants: 
 // refused.
 fn x_fits(g: Gen, c: Checker, id: i64, free: i64) -> bool {
     let kind = x_kind(g, c, id)
-    if kind == K_INT || kind == K_BOOL {
-        return true
-    }
-    if kind == K_IDENT {
-        return x_is_simple(g, c, id)
-    }
+    if kind == K_INT || kind == K_BOOL { return true }
+    if kind == K_IDENT { return x_is_simple(g, c, id) }
     if kind == K_INDEX && c.expr_ty[g.sh_e + g.ea[id]] == TY_STR {
         return x_place(g, c, g.ea[id]) >= 0 && x_fits(g, c, g.eb[id], free)
     }
     if kind == K_FIELD || kind == K_INDEX {
-        if x_is_simple(g, c, id) {
-            return true
-        }
+        if x_is_simple(g, c, id) { return true }
         let path = x_element_path(g, c, id)
         return path.ok && c.expr_ty[g.sh_e + id] < 3 && x_place(g, c, path.base) >= 0 && x_fits(g, c, path.index, free)
     }
-    if kind == K_UNARY {
-        return x_fits(g, c, g.ea[id], free)
-    }
+    if kind == K_UNARY { return x_fits(g, c, g.ea[id], free) }
     if kind == K_BINARY {
         let ty = c.expr_ty[g.sh_e + g.ea[id]]
         return (ty == TY_I64 || ty == TY_BOOL) && free > 0 && x_fits(g, c, g.ea[id], free) && x_fits(g, c, g.eb[id], free - 1)
@@ -1601,9 +1491,7 @@ fn x_value(g: mut Gen, c: Checker, p: Parser, id: i64) {
             x_value(mut g, c, p, lhs)
             x_op(mut g, X_TEST, RAX, RAX)
             var cc = CC_E
-            if op == OP_OR {
-                cc = CC_NE
-            }
+            if op == OP_OR { cc = CC_NE }
             let skip = x_jump_if(mut g, cc)
             x_value(mut g, c, p, rhs)
             x_patch(mut g, skip)
@@ -1651,9 +1539,7 @@ fn x_value(g: mut Gen, c: Checker, p: Parser, id: i64) {
             x_mov(mut g, RSI, RAX)
             x_pop(mut g, RDI)
             x_runtime(mut g, RT_STR_EQ)
-            if op == OP_NE {
-                x_op_imm(mut g, XOR_I, RAX, 1)
-            }
+            if op == OP_NE { x_op_imm(mut g, XOR_I, RAX, 1) }
             return
         }
         x_binary(mut g, c, p, op, lhs, rhs, RAX)
@@ -1670,9 +1556,7 @@ fn x_binary(g: mut Gen, c: Checker, p: Parser, op: i64, lhs_in: i64, rhs_in: i64
     if cc >= 0 {
         x_compare_flags(mut g, c, p, lhs_in, rhs_in)
         x_set_flag(mut g, cc)
-        if dest != RAX {
-            x_mov(mut g, dest, RAX)
-        }
+        if dest != RAX { x_mov(mut g, dest, RAX) }
         return
     }
     if op == OP_SHL || op == OP_SHR {
@@ -1685,9 +1569,7 @@ fn x_binary(g: mut Gen, c: Checker, p: Parser, op: i64, lhs_in: i64, rhs_in: i64
                 x_value(mut g, c, p, lhs_in)
                 left = RAX
             }
-            if left != dest {
-                x_mov(mut g, dest, left)
-            }
+            if left != dest { x_mov(mut g, dest, left) }
             x_shift_imm(mut g, dest, right, count & 63)
             return
         }
@@ -1703,9 +1585,7 @@ fn x_binary(g: mut Gen, c: Checker, p: Parser, op: i64, lhs_in: i64, rhs_in: i64
         } else if ops.value != RCX {
             x_mov(mut g, RCX, ops.value)
         }
-        if left != dest {
-            x_mov(mut g, dest, left)
-        }
+        if left != dest { x_mov(mut g, dest, left) }
         x_shift_cl(mut g, dest, right)
         return
     }
@@ -1735,9 +1615,7 @@ fn x_binary(g: mut Gen, c: Checker, p: Parser, op: i64, lhs_in: i64, rhs_in: i64
             }
         } else {
             x_mov(mut g, RCX, right)
-            if left != RAX {
-                x_mov(mut g, RAX, left)
-            }
+            if left != RAX { x_mov(mut g, RAX, left) }
         }
         // Dividing by a constant other than zero needs no check.
         if !literal || by == 0 {
@@ -1771,16 +1649,10 @@ fn x_binary(g: mut Gen, c: Checker, p: Parser, op: i64, lhs_in: i64, rhs_in: i64
         g.code.push(0xF7)
         // idiv rcx
         g.code.push(0xF9)
-        if done >= 0 {
-            x_patch(mut g, done)
-        }
+        if done >= 0 { x_patch(mut g, done) }
         var result = RAX
-        if op == OP_REM {
-            result = RDX
-        }
-        if result != dest {
-            x_mov(mut g, dest, result)
-        }
+        if op == OP_REM { result = RDX }
+        if result != dest { x_mov(mut g, dest, result) }
         return
     }
     // `+ - * & | ^`
@@ -1792,9 +1664,7 @@ fn x_binary(g: mut Gen, c: Checker, p: Parser, op: i64, lhs_in: i64, rhs_in: i64
             let constant = x_int_value(g, c, lhs)
             x_value_in(mut g, c, p, rhs, dest)
             x_neg(mut g, dest)
-            if constant != 0 {
-                x_op_imm(mut g, ADD_I, dest, constant)
-            }
+            if constant != 0 { x_op_imm(mut g, ADD_I, dest, constant) }
             return
         }
         // The other operations give the same either way round, and a
@@ -1809,9 +1679,7 @@ fn x_binary(g: mut Gen, c: Checker, p: Parser, op: i64, lhs_in: i64, rhs_in: i64
     let small = x_is_small_constant(g, c, rhs)
     let right_reg = x_in_register(g, c, rhs)
     var at_hand = small || (right_reg >= 0 && right_reg != dest)
-    if !at_hand {
-        at_hand = x_in_memory(g, c, rhs) && !x_indexed_by(g, c, rhs, dest)
-    }
+    if !at_hand { at_hand = x_in_memory(g, c, rhs) && !x_indexed_by(g, c, rhs, dest) }
     if at_hand && dest != RAX && dest != RCX && dest != R8 && dest != R10 && x_in_register(g, c, lhs) < 0 {
         x_value_in(mut g, c, p, lhs, dest)
         if small {
@@ -1916,20 +1784,14 @@ fn x_combine(g: mut Gen, op: i64, dest: i64, ops: XOps) {
         // operand is about to be moved to: then the work is done in rax,
         // which no address uses.
         var target = dest
-        if left != dest && (ops.mem.base == dest || ops.mem.index == dest) {
-            target = RAX
-        }
-        if left != target {
-            x_mov(mut g, target, left)
-        }
+        if left != dest && (ops.mem.base == dest || ops.mem.index == dest) { target = RAX }
+        if left != target { x_mov(mut g, target, left) }
         if op == OP_MUL {
             x_imul_at(mut g, target, ops.mem)
         } else {
             x_op_at(mut g, x_opcode(op), target, ops.mem)
         }
-        if target != dest {
-            x_mov(mut g, dest, target)
-        }
+        if target != dest { x_mov(mut g, dest, target) }
         return
     }
     // rax holds the right operand, memory the left one.
@@ -1942,9 +1804,7 @@ fn x_combine(g: mut Gen, op: i64, dest: i64, ops: XOps) {
     } else {
         x_op_at(mut g, x_opcode(op), RAX, ops.mem)
     }
-    if dest != RAX {
-        x_mov(mut g, dest, RAX)
-    }
+    if dest != RAX { x_mov(mut g, dest, RAX) }
 }
 
 // Divides by a constant without the processor's slow division: the
@@ -1978,9 +1838,7 @@ fn x_divide_by_constant(g: mut Gen, c: Checker, p: Parser, op: i64, lhs: i64, by
     } else if by < 0 && magic > 0 {
         x_op(mut g, X_SUB, RDX, dividend)
     }
-    if shift > 0 {
-        x_shift_imm(mut g, RDX, true, shift)
-    }
+    if shift > 0 { x_shift_imm(mut g, RDX, true, shift) }
     // Add one when the result is negative: its sign bit, as a number.
     x_mov(mut g, RAX, RDX)
     g.code.push(0x48)
@@ -1990,9 +1848,7 @@ fn x_divide_by_constant(g: mut Gen, c: Checker, p: Parser, op: i64, lhs: i64, by
     g.code.push(63)
     x_op(mut g, X_ADD, RDX, RAX)
     if op == OP_DIV {
-        if dest != RDX {
-            x_mov(mut g, dest, RDX)
-        }
+        if dest != RDX { x_mov(mut g, dest, RDX) }
         return
     }
     // remainder = dividend - quotient * divisor
@@ -2008,33 +1864,21 @@ fn x_divide_by_constant(g: mut Gen, c: Checker, p: Parser, op: i64, lhs: i64, by
         x_op(mut g, X_ADD, RDX, dividend)
     } else if dividend == RCX {
         x_op(mut g, X_SUB, RCX, RDX)
-        if dest != RCX {
-            x_mov(mut g, dest, RCX)
-        }
+        if dest != RCX { x_mov(mut g, dest, RCX) }
     } else {
         // The variable itself must stay as it is, unless it is the one
         // being assigned.
-        if dest != dividend {
-            x_mov(mut g, dest, dividend)
-        }
+        if dest != dividend { x_mov(mut g, dest, dividend) }
         x_op(mut g, X_SUB, dest, RDX)
     }
 }
 
 // The two-operand instruction for an operator that has one.
 fn x_opcode(op: i64) -> i64 {
-    if op == OP_ADD {
-        return X_ADD
-    }
-    if op == OP_SUB {
-        return X_SUB
-    }
-    if op == OP_BITAND {
-        return X_AND
-    }
-    if op == OP_BITOR {
-        return X_OR
-    }
+    if op == OP_ADD { return X_ADD }
+    if op == OP_SUB { return X_SUB }
+    if op == OP_BITAND { return X_AND }
+    if op == OP_BITOR { return X_OR }
     return X_XOR
 }
 
@@ -2075,12 +1919,8 @@ fn x_value_in(g: mut Gen, c: Checker, p: Parser, id: i64, dest: i64) {
 // True when an argument can be put in its register directly: a simple
 // value, or the address of a variable or a part of one.
 fn x_is_simple_arg(g: Gen, c: Checker, arg: i64, by_ref: bool) -> bool {
-    if g.kinds[arg] == K_MUTARG {
-        return x_place(g, c, g.ea[arg]) >= 0
-    }
-    if by_ref {
-        return x_place(g, c, arg) >= 0
-    }
+    if g.kinds[arg] == K_MUTARG { return x_place(g, c, g.ea[arg]) >= 0 }
+    if by_ref { return x_place(g, c, arg) >= 0 }
     return x_is_simple(g, c, arg)
 }
 
@@ -2115,9 +1955,7 @@ fn x_call(g: mut Gen, c: Checker, p: Parser, id: i64) {
     let args_len = g.ec[id]
     // In `value.method(...)` the value is the receiver.
     var receiver = -1
-    if g.kinds[callee] == K_FIELD {
-        receiver = g.ea[callee]
-    }
+    if g.kinds[callee] == K_FIELD { receiver = g.ea[callee] }
     if target == BUILTIN_STR_PUSH || target == BUILTIN_STR_SET {
         x_byte_method(mut g, c, p, id, target, receiver)
         return
@@ -2132,28 +1970,20 @@ fn x_call(g: mut Gen, c: Checker, p: Parser, id: i64) {
     // on the stack; the simple ones after it go straight into their
     // registers.
     var first = 0
-    if receiver >= 0 {
-        first = 1
-    }
+    if receiver >= 0 { first = 1 }
     let count = first + args_len
     var worked = 0
     var i = 0
     while i < count {
         var arg = receiver
-        if i >= first {
-            arg = p.ast.lists[args_start + i - first]
-        }
-        if !x_is_simple_arg(g, c, arg, x_arg_by_ref(c, target, i)) {
-            worked = i + 1
-        }
+        if i >= first { arg = p.ast.lists[args_start + i - first] }
+        if !x_is_simple_arg(g, c, arg, x_arg_by_ref(c, target, i)) { worked = i + 1 }
         i = i + 1
     }
     i = 0
     while i < count {
         var arg = receiver
-        if i >= first {
-            arg = p.ast.lists[args_start + i - first]
-        }
+        if i >= first { arg = p.ast.lists[args_start + i - first] }
         let by_ref = x_arg_by_ref(c, target, i)
         if i >= worked {
             x_load_simple_arg(mut g, c, arg, by_ref, x_arg(i))
@@ -2175,9 +2005,7 @@ fn x_call(g: mut Gen, c: Checker, p: Parser, id: i64) {
             } else {
                 // An address is still in rax: move it into place. Then
                 // bring the earlier ones back.
-                if by_ref || is_mut {
-                    x_mov(mut g, x_arg(i), RAX)
-                }
+                if by_ref || is_mut { x_mov(mut g, x_arg(i), RAX) }
                 var earlier = i - 1
                 while earlier >= 0 {
                     x_pop(mut g, x_arg(earlier))
@@ -2473,9 +2301,7 @@ fn x_list_method(g: mut Gen, c: Checker, p: Parser, id: i64, method: i64, base: 
         x_frame_address(mut g, RSI, tmp)
         x_mov_imm(mut g, RDX, elem_size * 8)
         x_runtime(mut g, RT_LIST_PUSH)
-        if done >= 0 {
-            x_patch(mut g, done)
-        }
+        if done >= 0 { x_patch(mut g, done) }
         // The list is longer now and may have moved.
         x_forget(mut g)
         return

@@ -1,0 +1,9 @@
+; Everything is at most the largest number and at least the smallest.
+fn main(p0: i64) -> bool, bool, bool, bool {
+b0:
+    v0 = sle p0, 9223372036854775807
+    v1 = sge p0, -9223372036854775808
+    v2 = uge p0, 0
+    v3 = ule p0, -1
+    ret v0, v1, v2, v3
+}

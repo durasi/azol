@@ -13,9 +13,7 @@ enum Failure {
 
 fn find(accounts: List[Account], owner: str) -> Option[i64] {
     for i, account in accounts {
-        if account.owner == owner {
-            return Some(i)
-        }
+        if account.owner == owner { return Some(i) }
     }
     return None
 }
@@ -25,9 +23,7 @@ fn withdraw(accounts: mut List[Account], owner: str, amount: i64) -> Result[i64,
         None => return Err(NoSuchAccount(owner))
         Some(i) => {
             let balance = accounts[i].balance
-            if balance < amount {
-                return Err(NotEnough(amount - balance))
-            }
+            if balance < amount { return Err(NotEnough(amount - balance)) }
             accounts[i].balance = balance - amount
             return Ok(balance - amount)
         }

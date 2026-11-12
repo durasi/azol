@@ -1,0 +1,7 @@
+; x - c is written x + (-c), so that sums of constants meet.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = sub p0, 5
+    v1 = add v0, 7
+    ret v1
+}

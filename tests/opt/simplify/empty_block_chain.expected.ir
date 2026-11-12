@@ -1,0 +1,6 @@
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = slt p0, 0
+    callrt print_i64(p0)
+    ret p0
+}

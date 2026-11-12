@@ -1,0 +1,229 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The machine-level view of a function: what an instruction selector
+// produces and the register allocator (`regalloc.azl`) works on. It is
+// the same for every processor: a selector fills it with its own
+// operations, and the allocator reads only what this file names.
+//
+//   register   A number. 0 to 31 are the processor's own registers
+//              (which one each is, the selector knows); MF_VREG0 and up
+//              are virtual registers, each defined exactly once, by one
+//              operand of one instruction or as a parameter of a block.
+//              After allocation every operand holds a processor
+//              register, or MF_SLOT0 + N for spill slot N.
+//   operand    One register an instruction reads or writes, with its
+//              role, a sum of:
+//                MF_USE   read
+//                MF_DEF   written (after every plain read of the same
+//                         instruction has happened)
+//                MF_LATE  with MF_USE: read after the instruction has
+//                         begun to write its definitions, so it cannot
+//                         share a register with one of them
+//                MF_ANY   with MF_USE: may sit in a spill slot; the
+//                         emitter can read it from memory
+//              A fixed register is asked for by naming it: `RAX = copy
+//              v1`, `idiv v2` (uses and defines RAX), `v3 = copy RAX`.
+//              A processor register lives only inside one block.
+//   clobber    `clob`: the processor registers an instruction destroys
+//              without defining anything in them (a call).
+//   block      Instructions `b_first` to `b_last`, in layout order: the
+//              blocks are numbered as they are laid out, and block 0 is
+//              the entry. Every block ends in its one terminator. Its
+//              parameters are `b_pn` entries of `params` from `b_ps`;
+//              its ways out are `b_sn` entries of the `s_*` lists from
+//              `b_ss`, each with a target and the `s_an` arguments in
+//              `args` from `s_as`: a virtual register, or a constant
+//              written -(k + 2) for entry k of `consts`.
+//   hint       `hint_a[v]`, `hint_b[v]`: registers (virtual or not)
+//              that virtual register v would like to share a place
+//              with, or -1. They cost nothing when ignored.
+//
+// The rule about edges: no edge may leave a block with several ways out
+// and enter a block with several ways in (a critical edge). The
+// selector splits such edges before it builds this view, because the
+// moves that an edge needs must have a place of their own.
+
+const MF_VREG0 = 32
+const MF_SLOT0 = 1048576
+
+const MF_USE = 1
+const MF_DEF = 2
+const MF_LATE = 4
+const MF_ANY = 8
+
+struct MFunc {
+    name: str
+    // Instructions. What `x`, `y`, `z` and `imm` mean is the selector's.
+    op: List[i64]
+    os: List[i64]
+    on: List[i64]
+    imm: List[i64]
+    x: List[i64]
+    y: List[i64]
+    z: List[i64]
+    clob: List[i64]
+    // Operands.
+    o_reg: List[i64]
+    o_role: List[i64]
+    // Blocks.
+    b_first: List[i64]
+    b_last: List[i64]
+    b_ps: List[i64]
+    b_pn: List[i64]
+    b_ss: List[i64]
+    b_sn: List[i64]
+    params: List[i64]
+    s_blk: List[i64]
+    s_as: List[i64]
+    s_an: List[i64]
+    args: List[i64]
+    consts: List[i64]
+    // The next virtual register.
+    vregs: i64
+    hint_a: List[i64]
+    hint_b: List[i64]
+}
+
+fn mf_new(name: str) -> MFunc {
+    return MFunc {
+        name: name,
+        op: [],
+        os: [],
+        on: [],
+        imm: [],
+        x: [],
+        y: [],
+        z: [],
+        clob: [],
+        o_reg: [],
+        o_role: [],
+        b_first: [],
+        b_last: [],
+        b_ps: [],
+        b_pn: [],
+        b_ss: [],
+        b_sn: [],
+        params: [],
+        s_blk: [],
+        s_as: [],
+        s_an: [],
+        args: [],
+        consts: [],
+        vregs: MF_VREG0,
+        hint_a: [],
+        hint_b: []
+    }
+}
+
+// A new virtual register.
+fn mf_vreg(m: mut MFunc) -> i64 {
+    m.vregs = m.vregs + 1
+    m.hint_a.push(-1)
+    m.hint_b.push(-1)
+    return m.vregs - 1
+}
+
+// Says that `v` would like the place of `other`. The first two wishes
+// of a register are kept.
+fn mf_hint(m: mut MFunc, v: i64, other: i64) {
+    if v < MF_VREG0 || other < 0 || v == other { return }
+    let at = v - MF_VREG0
+    if m.hint_a[at] < 0 {
+        m.hint_a[at] = other
+    } else if m.hint_b[at] < 0 && m.hint_a[at] != other {
+        m.hint_b[at] = other
+    }
+}
+
+// Says that `v` would like the place of `other` more than anything it
+// wished for before: for a value that is copied to a fixed register,
+// which costs an instruction whenever the wish is not granted.
+fn mf_hint_first(m: mut MFunc, v: i64, other: i64) {
+    if v < MF_VREG0 || other < 0 || v == other { return }
+    let at = v - MF_VREG0
+    if m.hint_a[at] != other {
+        m.hint_b[at] = m.hint_a[at]
+        m.hint_a[at] = other
+    }
+}
+
+// Starts the next block in layout order and gives its number. Blocks
+// are made one after the other: all instructions, parameters and ways
+// out that follow belong to this one.
+fn mf_block(m: mut MFunc) -> i64 {
+    m.b_first.push(m.op.len())
+    m.b_last.push(m.op.len() - 1)
+    m.b_ps.push(m.params.len())
+    m.b_pn.push(0)
+    m.b_ss.push(m.s_blk.len())
+    m.b_sn.push(0)
+    return m.b_first.len() - 1
+}
+
+// Gives the current block one more parameter.
+fn mf_param(m: mut MFunc, v: i64) {
+    let b = m.b_first.len() - 1
+    m.params.push(v)
+    m.b_pn[b] = m.b_pn[b] + 1
+}
+
+// A new instruction at the end of the current block. Its operands are
+// added with `mf_operand`.
+fn mf_ins(m: mut MFunc, op: i64, imm: i64, x: i64, y: i64, z: i64) -> i64 {
+    m.op.push(op)
+    m.os.push(m.o_reg.len())
+    m.on.push(0)
+    m.imm.push(imm)
+    m.x.push(x)
+    m.y.push(y)
+    m.z.push(z)
+    m.clob.push(0)
+    let at = m.op.len() - 1
+    m.b_last[m.b_first.len() - 1] = at
+    return at
+}
+
+// Gives the newest instruction one more operand.
+fn mf_operand(m: mut MFunc, reg: i64, role: i64) {
+    let at = m.op.len() - 1
+    m.o_reg.push(reg)
+    m.o_role.push(role)
+    m.on[at] = m.on[at] + 1
+}
+
+// Operand `k` of instruction `i`.
+fn mf_reg(m: MFunc, i: i64, k: i64) -> i64 {
+    return m.o_reg[m.os[i] + k]
+}
+
+// Gives the current block one more way out, to block `target`. The
+// arguments it passes are added with `mf_edge_arg`.
+fn mf_succ(m: mut MFunc, target: i64) -> i64 {
+    let b = m.b_first.len() - 1
+    m.s_blk.push(target)
+    m.s_as.push(m.args.len())
+    m.s_an.push(0)
+    m.b_sn[b] = m.b_sn[b] + 1
+    return m.s_blk.len() - 1
+}
+
+// Gives the newest way out one more argument: a virtual register.
+fn mf_edge_arg(m: mut MFunc, v: i64) {
+    let e = m.s_blk.len() - 1
+    m.args.push(v)
+    m.s_an[e] = m.s_an[e] + 1
+}
+
+// The same for a constant.
+fn mf_edge_const(m: mut MFunc, n: i64) {
+    m.consts.push(n)
+    mf_edge_arg(mut m, 0 - m.consts.len() - 1)
+}
+
+fn mf_is_const(x: i64) -> bool {
+    return x < -1
+}
+
+fn mf_const_value(m: MFunc, x: i64) -> i64 {
+    return m.consts[0 - x - 2]
+}

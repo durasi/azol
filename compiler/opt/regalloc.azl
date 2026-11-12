@@ -1,0 +1,1649 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The register allocator of the optimising back end: linear scan over
+// live intervals with holes and with splitting (Wimmer and Mössenböck,
+// "Optimized Interval Splitting in a Linear Scan Register Allocator";
+// Wimmer and Franz, "Linear Scan Register Allocation on SSA Form"),
+// docs/design/optimizer.md section 6.1.
+//
+// It knows nothing about a processor. It works on the machine-level
+// view of `mach.azl` and is told by an `RaTarget` which registers it
+// may hand out, in which order it should like them, and which one
+// register is its own for breaking cycles of moves. A selector for
+// another processor fills an `MFunc` the same way and calls
+// `ra_allocate`; nothing here changes.
+//
+// Positions. Instruction `i` reads at position 2i and writes at 2i + 1;
+// a late read (MF_LATE) is at 2i + 1 too. An interval is a set of
+// half-open ranges of positions. A value read at 2i and a value written
+// by the same instruction may share a register; a value read late and
+// one written may not, because their ranges overlap at 2i + 1.
+//
+// What comes out:
+//
+//   - every operand of the `MFunc` holds a processor register, or
+//     MF_SLOT0 + N for spill slot N (only where the role has MF_ANY);
+//   - a list of moves to do before each instruction, already put in an
+//     order that is safe to do one by one (`mv_*`);
+//   - how many spill slots there are, and which registers were used.
+//
+// How a value gets to its spill slot: a virtual register that sits in
+// its slot anywhere is stored there once, right after its definition
+// (a parameter of a block: at the start of the block). After that the
+// slot always holds the value, so going from a register to the slot
+// costs nothing, at any position. Going to a register (from the slot,
+// or from another register) is a move before an instruction, so a part
+// of an interval that gets a register starts at an even position, or
+// at the odd position of the instruction that writes the value (when
+// the block of the definition is laid out after a block that reads it,
+// the definition is not in the first part: no move is needed there).
+//
+// Edges. A way out of a block passes arguments to parameters, and a
+// value that lives across it may be in different places at its two
+// ends. The moves for an edge are done together, as one parallel move:
+// before the terminator of the block the edge leaves when that block
+// has no other way out, and otherwise at the top of the block it enters
+// (which then has no other way in: the selector split critical edges).
+//
+// `ra_check` verifies an allocation after the fact, from the result
+// alone: it walks every block with a table of which virtual register
+// each processor register and each slot holds, does the moves and the
+// instructions on that table, and reports the first operand that would
+// read something other than what its definition wrote.
+
+const RA_MAX = 4611686018427387904
+
+// Where an interval is.
+const RA_NONE = -1
+const RA_MEM = -2
+
+// The moves of the result.
+const RA_MV_RR = 0
+const RA_MV_LOAD = 1
+const RA_MV_STORE = 2
+const RA_MV_SLOTS = 3
+const RA_MV_CONST_R = 4
+const RA_MV_CONST_S = 5
+
+// What the checker's table holds besides virtual registers.
+const RA_UNKNOWN = -1
+const RA_CONSTANT = -2
+
+struct RaTarget {
+    // The registers the allocator may hand out, most wanted first.
+    order: List[i64]
+    // A register that is not in `order`, for cycles of moves.
+    scratch: i64
+}
+
+struct RaResult {
+    ok: bool
+    error: str
+    slots: i64
+    // One bit for every register that holds a virtual register somewhere.
+    used: i64
+    // The moves before instruction `i` are the entries from
+    // `mv_start[i]` up to `mv_start[i + 1]`. RR: register `a` to
+    // register `b`. LOAD: slot `a` to register `b`. STORE: register `a`
+    // to slot `b`. SLOTS: slot `a` to slot `b`. CONST_R and CONST_S:
+    // entry `a` of the function's `consts` to register or slot `b`.
+    mv_start: List[i64]
+    mv_kind: List[i64]
+    mv_a: List[i64]
+    mv_b: List[i64]
+    // For `ra_check`: the operands as they were; where every block
+    // parameter is at the top of its block; and for every block where,
+    // among the moves before its first instruction, those of the edge
+    // that enters it end.
+    orig: List[i64]
+    param_loc: List[i64]
+    edge_end: List[i64]
+}
+
+struct Ra {
+    words: i64
+    live_in: List[i64]
+    live_out: List[i64]
+    // Ranges and uses while they are collected: linked, earliest first.
+    n_from: List[i64]
+    n_to: List[i64]
+    n_next: List[i64]
+    head: List[i64]
+    un_pos: List[i64]
+    un_kind: List[i64]
+    un_next: List[i64]
+    uhead: List[i64]
+    // Ranges of the processor registers, collected the same way.
+    fhead: List[i64]
+    // The intervals. Ranges are `iv_rn` entries of `r_from`/`r_to` from
+    // `iv_rs`; uses `iv_un` entries of `u_pos`/`u_kind` from `iv_us`.
+    iv_vreg: List[i64]
+    iv_rs: List[i64]
+    iv_rn: List[i64]
+    iv_us: List[i64]
+    iv_un: List[i64]
+    iv_loc: List[i64]
+    iv_sib: List[i64]
+    iv_cur: List[i64]
+    r_from: List[i64]
+    r_to: List[i64]
+    u_pos: List[i64]
+    u_kind: List[i64]
+    // Per virtual register: its first interval, its slot or -1, and the
+    // instruction that defines it (-1 for a parameter of a block).
+    vr_first: List[i64]
+    vr_slot: List[i64]
+    vr_def: List[i64]
+    slots: i64
+    // Fixed intervals, per processor register.
+    fx_rs: List[i64]
+    fx_rn: List[i64]
+    fx_cur: List[i64]
+    f_from: List[i64]
+    f_to: List[i64]
+    // The scan.
+    unhandled: List[i64]
+    active: List[i64]
+    inactive: List[i64]
+    free: List[i64]
+    usep: List[i64]
+    blockp: List[i64]
+    used: i64
+    // Whether instruction `i` is the first of its block.
+    first_of_block: List[bool]
+    // Moves as they are found: instruction, phase, kind, a, b.
+    raw_ins: List[i64]
+    raw_phase: List[i64]
+    raw_kind: List[i64]
+    raw_a: List[i64]
+    raw_b: List[i64]
+    // The parallel move being put in order.
+    pm_src: List[i64]
+    pm_dst: List[i64]
+    failed: bool
+    error: str
+}
+
+fn ra_new() -> Ra {
+    return Ra {
+        words: 0,
+        live_in: [],
+        live_out: [],
+        n_from: [],
+        n_to: [],
+        n_next: [],
+        head: [],
+        un_pos: [],
+        un_kind: [],
+        un_next: [],
+        uhead: [],
+        fhead: [],
+        iv_vreg: [],
+        iv_rs: [],
+        iv_rn: [],
+        iv_us: [],
+        iv_un: [],
+        iv_loc: [],
+        iv_sib: [],
+        iv_cur: [],
+        r_from: [],
+        r_to: [],
+        u_pos: [],
+        u_kind: [],
+        vr_first: [],
+        vr_slot: [],
+        vr_def: [],
+        slots: 0,
+        fx_rs: [],
+        fx_rn: [],
+        fx_cur: [],
+        f_from: [],
+        f_to: [],
+        unhandled: [],
+        active: [],
+        inactive: [],
+        free: [],
+        usep: [],
+        blockp: [],
+        used: 0,
+        first_of_block: [],
+        raw_ins: [],
+        raw_phase: [],
+        raw_kind: [],
+        raw_a: [],
+        raw_b: [],
+        pm_src: [],
+        pm_dst: [],
+        failed: false,
+        error: ""
+    }
+}
+
+fn ra_fail(r: mut Ra, message: str) {
+    if !r.failed {
+        r.failed = true
+        r.error = message
+    }
+}
+
+// ---- liveness -------------------------------------------------------------------
+
+fn ra_bit(bits: List[i64], base: i64, v: i64) -> bool {
+    return (bits[base + (v >> 6)] >> (v & 63)) & 1 != 0
+}
+
+// Which virtual registers are alive on the way into and out of every
+// block. An argument of an edge is alive to the end of the block the
+// edge leaves; a parameter is defined at the top of its block.
+fn ra_liveness(m: MFunc, r: mut Ra) {
+    let blocks = m.b_first.len()
+    let count = m.vregs - MF_VREG0
+    let words = (count + 63) / 64
+    r.words = words
+    var used = 0.filled(blocks * words)
+    var defined = 0.filled(blocks * words)
+    var passed = 0.filled(blocks * words)
+    var b = 0
+    while b < blocks {
+        let base = b * words
+        var k = 0
+        while k < m.b_pn[b] {
+            let v = m.params[m.b_ps[b] + k] - MF_VREG0
+            defined[base + (v >> 6)] = defined[base + (v >> 6)] | (1 << (v & 63))
+            k = k + 1
+        }
+        var i = m.b_first[b]
+        while i <= m.b_last[b] {
+            // Reads first, of every sort: a late read still reads what
+            // was there before the instruction.
+            k = m.os[i]
+            let end = k + m.on[i]
+            while k < end {
+                let v = m.o_reg[k] - MF_VREG0
+                if v >= 0 && m.o_role[k] & MF_USE != 0 && !ra_bit(defined, base, v) {
+                    used[base + (v >> 6)] = used[base + (v >> 6)] | (1 << (v & 63))
+                }
+                k = k + 1
+            }
+            k = m.os[i]
+            while k < end {
+                let v = m.o_reg[k] - MF_VREG0
+                if v >= 0 && m.o_role[k] & MF_DEF != 0 {
+                    defined[base + (v >> 6)] = defined[base + (v >> 6)] | (1 << (v & 63))
+                }
+                k = k + 1
+            }
+            i = i + 1
+        }
+        var e = m.b_ss[b]
+        while e < m.b_ss[b] + m.b_sn[b] {
+            k = m.s_as[e]
+            while k < m.s_as[e] + m.s_an[e] {
+                let v = m.args[k] - MF_VREG0
+                if v >= 0 {
+                    passed[base + (v >> 6)] = passed[base + (v >> 6)] | (1 << (v & 63))
+                    if !ra_bit(defined, base, v) {
+                        used[base + (v >> 6)] = used[base + (v >> 6)] | (1 << (v & 63))
+                    }
+                }
+                k = k + 1
+            }
+            e = e + 1
+        }
+        b = b + 1
+    }
+    var live_in = 0.filled(blocks * words)
+    var live_out = 0.filled(blocks * words)
+    var changed = true
+    while changed {
+        changed = false
+        b = blocks - 1
+        while b >= 0 {
+            let base = b * words
+            var w = 0
+            while w < words {
+                var out = passed[base + w]
+                var e = m.b_ss[b]
+                while e < m.b_ss[b] + m.b_sn[b] {
+                    out = out | live_in[m.s_blk[e] * words + w]
+                    e = e + 1
+                }
+                let into = used[base + w] | (out & (defined[base + w] ^ -1))
+                if out != live_out[base + w] || into != live_in[base + w] {
+                    live_out[base + w] = out
+                    live_in[base + w] = into
+                    changed = true
+                }
+                w = w + 1
+            }
+            b = b - 1
+        }
+    }
+    r.live_in = live_in
+    r.live_out = live_out
+}
+
+// ---- building the intervals -----------------------------------------------------
+
+// Adds the range [from, to) in front of what virtual register `v` has.
+// Ranges arrive latest first, so a new one touches at most the first.
+fn ra_add_range(r: mut Ra, v: i64, from: i64, to: i64) {
+    let first = r.head[v]
+    if first >= 0 && to >= r.n_from[first] {
+        if from < r.n_from[first] { r.n_from[first] = from }
+        if to > r.n_to[first] { r.n_to[first] = to }
+        return
+    }
+    r.n_from.push(from)
+    r.n_to.push(to)
+    r.n_next.push(first)
+    r.head[v] = r.n_from.len() - 1
+}
+
+// The same for processor register `reg`.
+fn ra_add_fixed(r: mut Ra, reg: i64, from: i64, to: i64) {
+    let first = r.fhead[reg]
+    if first >= 0 && to >= r.n_from[first] {
+        if from < r.n_from[first] { r.n_from[first] = from }
+        if to > r.n_to[first] { r.n_to[first] = to }
+        return
+    }
+    r.n_from.push(from)
+    r.n_to.push(to)
+    r.n_next.push(first)
+    r.fhead[reg] = r.n_from.len() - 1
+}
+
+// `kind` is 1 for a use that needs a register.
+fn ra_add_use(r: mut Ra, v: i64, pos: i64, kind: i64) {
+    r.un_pos.push(pos)
+    r.un_kind.push(kind)
+    r.un_next.push(r.uhead[v])
+    r.uhead[v] = r.un_pos.len() - 1
+}
+
+fn ra_build(m: MFunc, r: mut Ra) {
+    let blocks = m.b_first.len()
+    let count = m.vregs - MF_VREG0
+    r.head = (-1).filled(count)
+    r.uhead = (-1).filled(count)
+    r.fhead = (-1).filled(32)
+    r.vr_def = (-1).filled(count)
+    r.first_of_block = false.filled(m.op.len() + 1)
+    // Until where each processor register is still needed, while going
+    // backwards; -1 when it is not.
+    var pending = (-1).filled(32)
+    var b = blocks - 1
+    while b >= 0 {
+        let from = m.b_first[b] * 2
+        let to = m.b_last[b] * 2 + 2
+        r.first_of_block[m.b_first[b]] = true
+        let base = b * r.words
+        var w = 0
+        while w < r.words {
+            var bits = r.live_out[base + w]
+            var v = w * 64
+            while bits != 0 {
+                if bits & 1 != 0 { ra_add_range(mut r, v, from, to) }
+                bits = (bits >> 1) & 9223372036854775807
+                v = v + 1
+            }
+            w = w + 1
+        }
+        var i = m.b_last[b]
+        while i >= m.b_first[b] {
+            let s = m.os[i]
+            let end = s + m.on[i]
+            // What the instruction destroys.
+            var clob = m.clob[i]
+            var reg = 0
+            while clob != 0 {
+                if clob & 1 != 0 {
+                    // Destroying a register is writing it: what a call
+                    // leaves there may be read afterwards.
+                    var until = pending[reg]
+                    if until < 0 { until = i * 2 + 2 }
+                    ra_add_fixed(mut r, reg, i * 2 + 1, until)
+                    pending[reg] = -1
+                }
+                clob = (clob >> 1) & 9223372036854775807
+                reg = reg + 1
+            }
+            // Definitions.
+            var k = s
+            while k < end {
+                if m.o_role[k] & MF_DEF != 0 {
+                    let x = m.o_reg[k]
+                    if x < MF_VREG0 {
+                        var until = pending[x]
+                        if until < 0 { until = i * 2 + 2 }
+                        ra_add_fixed(mut r, x, i * 2 + 1, until)
+                        pending[x] = -1
+                    } else {
+                        let v = x - MF_VREG0
+                        if r.head[v] >= 0 {
+                            r.n_from[r.head[v]] = i * 2 + 1
+                        } else {
+                            ra_add_range(mut r, v, i * 2 + 1, i * 2 + 2)
+                        }
+                        ra_add_use(mut r, v, i * 2 + 1, 1)
+                        r.vr_def[v] = i
+                    }
+                }
+                k = k + 1
+            }
+            // Uses; late ones first, so that the uses of one register
+            // stay in the order of their positions.
+            var late = 1
+            while late >= 0 {
+                k = s
+                while k < end {
+                    let role = m.o_role[k]
+                    var is_late = 0
+                    if role & MF_LATE != 0 { is_late = 1 }
+                    if role & MF_USE != 0 && is_late == late {
+                        let x = m.o_reg[k]
+                        let pos = i * 2 + late
+                        if x < MF_VREG0 {
+                            if pending[x] < pos + 1 { pending[x] = pos + 1 }
+                        } else {
+                            let v = x - MF_VREG0
+                            ra_add_range(mut r, v, from, pos + 1)
+                            var kind = 1
+                            if role & MF_ANY != 0 { kind = 0 }
+                            ra_add_use(mut r, v, pos, kind)
+                        }
+                    }
+                    k = k + 1
+                }
+                late = late - 1
+            }
+            i = i - 1
+        }
+        // A processor register read without being written in its block
+        // came in from outside: that is not allowed.
+        var reg = 0
+        while reg < 32 {
+            if pending[reg] >= 0 {
+                ra_fail(mut r, "register " + str(reg) + " is read in block " + str(b) + " before it is written there")
+                pending[reg] = -1
+            }
+            reg = reg + 1
+        }
+        var k = 0
+        while k < m.b_pn[b] {
+            let v = m.params[m.b_ps[b] + k] - MF_VREG0
+            if r.head[v] >= 0 {
+                r.n_from[r.head[v]] = from
+            } else {
+                ra_add_range(mut r, v, from, from + 1)
+            }
+            k = k + 1
+        }
+        b = b - 1
+    }
+    // Lay the ranges and uses out flat, one interval per register.
+    r.vr_first = (-1).filled(count)
+    r.vr_slot = (-1).filled(count)
+    var v = 0
+    while v < count {
+        if r.head[v] >= 0 {
+            r.iv_vreg.push(v)
+            r.iv_rs.push(r.r_from.len())
+            var at = r.head[v]
+            var n = 0
+            while at >= 0 {
+                r.r_from.push(r.n_from[at])
+                r.r_to.push(r.n_to[at])
+                n = n + 1
+                at = r.n_next[at]
+            }
+            r.iv_rn.push(n)
+            r.iv_us.push(r.u_pos.len())
+            at = r.uhead[v]
+            n = 0
+            while at >= 0 {
+                r.u_pos.push(r.un_pos[at])
+                r.u_kind.push(r.un_kind[at])
+                n = n + 1
+                at = r.un_next[at]
+            }
+            r.iv_un.push(n)
+            r.iv_loc.push(RA_NONE)
+            r.iv_sib.push(-1)
+            r.iv_cur.push(r.iv_rs[r.iv_rs.len() - 1])
+            r.vr_first[v] = r.iv_vreg.len() - 1
+        }
+        v = v + 1
+    }
+    r.fx_rs = 0.filled(32)
+    r.fx_rn = 0.filled(32)
+    r.fx_cur = 0.filled(32)
+    var reg = 0
+    while reg < 32 {
+        r.fx_rs[reg] = r.f_from.len()
+        var at = r.fhead[reg]
+        var n = 0
+        while at >= 0 {
+            r.f_from.push(r.n_from[at])
+            r.f_to.push(r.n_to[at])
+            n = n + 1
+            at = r.n_next[at]
+        }
+        r.fx_rn[reg] = n
+        r.fx_cur[reg] = r.fx_rs[reg]
+        reg = reg + 1
+    }
+}
+
+// ---- intervals --------------------------------------------------------------------
+
+fn ra_start(r: Ra, iv: i64) -> i64 {
+    return r.r_from[r.iv_rs[iv]]
+}
+
+fn ra_end(r: Ra, iv: i64) -> i64 {
+    return r.r_to[r.iv_rs[iv] + r.iv_rn[iv] - 1]
+}
+
+// Moves the interval's place in its ranges up to `pos` and says whether
+// it covers `pos`.
+fn ra_covers(r: mut Ra, iv: i64, pos: i64) -> bool {
+    var c = r.iv_cur[iv]
+    let end = r.iv_rs[iv] + r.iv_rn[iv]
+    while c < end && r.r_to[c] <= pos {
+        c = c + 1
+    }
+    r.iv_cur[iv] = c
+    return c < end && r.r_from[c] <= pos
+}
+
+// The first position where interval `a`, from where it is now, and
+// interval `c` are both alive; -1 when there is none.
+fn ra_intersect(r: Ra, a: i64, c: i64) -> i64 {
+    var i = r.iv_cur[a]
+    let i_end = r.iv_rs[a] + r.iv_rn[a]
+    var j = r.iv_rs[c]
+    let j_end = j + r.iv_rn[c]
+    while i < i_end && j < j_end {
+        if r.r_to[i] <= r.r_from[j] {
+            i = i + 1
+        } else if r.r_to[j] <= r.r_from[i] {
+            j = j + 1
+        } else if r.r_from[i] > r.r_from[j] {
+            return r.r_from[i]
+        } else {
+            return r.r_from[j]
+        }
+    }
+    return -1
+}
+
+// The same for the fixed interval of processor register `reg`.
+fn ra_intersect_fixed(r: Ra, reg: i64, c: i64) -> i64 {
+    var i = r.fx_cur[reg]
+    let i_end = r.fx_rs[reg] + r.fx_rn[reg]
+    var j = r.iv_rs[c]
+    let j_end = j + r.iv_rn[c]
+    while i < i_end && j < j_end {
+        if r.f_to[i] <= r.r_from[j] {
+            i = i + 1
+        } else if r.r_to[j] <= r.f_from[i] {
+            j = j + 1
+        } else if r.f_from[i] > r.r_from[j] {
+            return r.f_from[i]
+        } else {
+            return r.r_from[j]
+        }
+    }
+    return -1
+}
+
+// The first use of the interval at `pos` or later that needs a
+// register; -1 when there is none.
+fn ra_next_reg_use(r: Ra, iv: i64, pos: i64) -> i64 {
+    var u = r.iv_us[iv]
+    let end = u + r.iv_un[iv]
+    while u < end {
+        if r.u_pos[u] >= pos && r.u_kind[u] == 1 { return r.u_pos[u] }
+        u = u + 1
+    }
+    return -1
+}
+
+// Cuts interval `iv` in two at `pos`, which must be after its start and
+// before its end, and gives the later part. It has no place yet.
+fn ra_split(r: mut Ra, iv: i64, pos: i64) -> i64 {
+    let rs = r.iv_rs[iv]
+    let re = rs + r.iv_rn[iv]
+    var k = rs
+    while r.r_to[k] <= pos {
+        k = k + 1
+    }
+    var child_rs = k
+    if r.r_from[k] < pos {
+        // The range is cut: the later part gets ranges of its own.
+        child_rs = r.r_from.len()
+        r.r_from.push(pos)
+        r.r_to.push(r.r_to[k])
+        var j = k + 1
+        while j < re {
+            r.r_from.push(r.r_from[j])
+            r.r_to.push(r.r_to[j])
+            j = j + 1
+        }
+        r.r_to[k] = pos
+        r.iv_rn[iv] = k + 1 - rs
+    } else {
+        r.iv_rn[iv] = k - rs
+    }
+    if r.iv_cur[iv] > rs + r.iv_rn[iv] { r.iv_cur[iv] = rs + r.iv_rn[iv] }
+    let us = r.iv_us[iv]
+    let ue = us + r.iv_un[iv]
+    var u = us
+    while u < ue && r.u_pos[u] < pos {
+        u = u + 1
+    }
+    r.iv_un[iv] = u - us
+    r.iv_vreg.push(r.iv_vreg[iv])
+    r.iv_rs.push(child_rs)
+    r.iv_rn.push(re - k)
+    r.iv_us.push(u)
+    r.iv_un.push(ue - u)
+    r.iv_loc.push(RA_NONE)
+    r.iv_sib.push(r.iv_sib[iv])
+    r.iv_cur.push(child_rs)
+    let child = r.iv_vreg.len() - 1
+    r.iv_sib[iv] = child
+    return child
+}
+
+// Puts an interval among those still to be given a place; the list is
+// kept with the earliest start last.
+fn ra_queue(r: mut Ra, iv: i64) {
+    let start = ra_start(r, iv)
+    var low = 0
+    var high = r.unhandled.len()
+    while low < high {
+        let middle = (low + high) / 2
+        if ra_start(r, r.unhandled[middle]) > start {
+            low = middle + 1
+        } else {
+            high = middle
+        }
+    }
+    r.unhandled.insert(low, iv)
+}
+
+fn ra_even(pos: i64) -> i64 {
+    return pos - (pos & 1)
+}
+
+fn ra_set_reg(r: mut Ra, iv: i64, reg: i64) {
+    r.iv_loc[iv] = reg
+    r.used = r.used | (1 << reg)
+}
+
+// A register that `iv` would like, its first wish or its second: where
+// the register it has a wish for is at the start of `iv`, or was last
+// before it. -1 for no wish.
+fn ra_hint(m: MFunc, r: Ra, iv: i64, second: bool) -> i64 {
+    let v = r.iv_vreg[iv]
+    let start = ra_start(r, iv)
+    var wish = m.hint_a[v]
+    if second { wish = m.hint_b[v] }
+    if wish < MF_VREG0 { return wish }
+    var at = r.vr_first[wish - MF_VREG0]
+    var found = -1
+    while at >= 0 && ra_start(r, at) <= start {
+        if r.iv_loc[at] >= 0 { found = r.iv_loc[at] }
+        at = r.iv_sib[at]
+    }
+    return found
+}
+
+// ---- the scan -----------------------------------------------------------------------
+
+// Tries to give `cur` a register that is free at its start: all of it
+// when one is free that long, otherwise up to where the register is
+// taken. False when no register is free at all.
+fn ra_try_free(m: MFunc, t: RaTarget, r: mut Ra, cur: i64) -> bool {
+    let start = ra_start(r, cur)
+    let end = ra_end(r, cur)
+    for reg in t.order {
+        r.free[reg] = RA_MAX
+    }
+    var k = 0
+    while k < r.active.len() {
+        r.free[r.iv_loc[r.active[k]]] = 0
+        k = k + 1
+    }
+    k = 0
+    while k < r.inactive.len() {
+        let a = r.inactive[k]
+        let at = ra_intersect(r, a, cur)
+        if at >= 0 && at < r.free[r.iv_loc[a]] { r.free[r.iv_loc[a]] = at }
+        k = k + 1
+    }
+    for reg in t.order {
+        let at = ra_intersect_fixed(r, reg, cur)
+        if at >= 0 && at < r.free[reg] { r.free[reg] = at }
+    }
+    var best = -1
+    var best_free = -1
+    for reg in t.order {
+        if r.free[reg] > best_free {
+            best = reg
+            best_free = r.free[reg]
+        }
+    }
+    // A wished register wins when it is free as long as the best one,
+    // or for all of the interval.
+    let first = ra_hint(m, r, cur, false)
+    let second = ra_hint(m, r, cur, true)
+    if first >= 0 && t.order.contains(first) && (r.free[first] >= end || r.free[first] == best_free) {
+        best = first
+        best_free = r.free[first]
+    } else if second >= 0 && t.order.contains(second) && (r.free[second] >= end || r.free[second] == best_free) {
+        best = second
+        best_free = r.free[second]
+    }
+    if best < 0 || best_free <= start { return false }
+    if best_free >= end {
+        ra_set_reg(mut r, cur, best)
+        return true
+    }
+    let cut = ra_even(best_free)
+    if cut <= start { return false }
+    if ra_next_reg_use(r, cur, cut) >= 0 {
+        let quiet = ra_quiet_register(t, mut r, cur)
+        if quiet >= 0 {
+            ra_set_reg(mut r, cur, quiet)
+            ra_evict(mut r, cur, quiet, start)
+            return true
+        }
+    }
+    ra_set_reg(mut r, cur, best)
+    let rest = ra_split(mut r, cur, cut)
+    ra_queue(mut r, rest)
+    return true
+}
+
+// Takes interval `a` out of its register from `pos` on: it is in its
+// slot until just before its next use that needs a register, and the
+// part from there is given a place later.
+fn ra_spill_from(r: mut Ra, a: i64, pos: i64) {
+    var tail = a
+    if ra_start(r, a) < pos { tail = ra_split(mut r, a, pos) }
+    r.iv_loc[tail] = RA_MEM
+    let next = ra_next_reg_use(r, tail, pos)
+    if next < 0 { return }
+    let again = ra_even(next)
+    if again <= ra_start(r, tail) {
+        ra_fail(mut r, "an interval was taken out of its register where it is used")
+        return
+    }
+    let rest = ra_split(mut r, tail, again)
+    ra_queue(mut r, rest)
+}
+
+// No register is free at the start of `cur`: either `cur` waits in its
+// slot until it needs one, or it takes the register whose values are
+// needed last, and those go to their slots.
+fn ra_take(m: MFunc, t: RaTarget, r: mut Ra, cur: i64) {
+    let start = ra_start(r, cur)
+    let end = ra_end(r, cur)
+    let first = ra_next_reg_use(r, cur, start)
+    if first < 0 {
+        r.iv_loc[cur] = RA_MEM
+        return
+    }
+    let first_even = ra_even(first)
+    for reg in t.order {
+        r.usep[reg] = RA_MAX
+        r.blockp[reg] = RA_MAX
+    }
+    var k = 0
+    while k < r.active.len() {
+        let a = r.active[k]
+        k = k + 1
+        let reg = r.iv_loc[a]
+        let next = ra_next_reg_use(r, a, start)
+        var at = RA_MAX - 1
+        if next >= 0 {
+            at = next
+            if ra_even(next) <= start {
+                // It is an operand of this very instruction.
+                at = start
+            }
+        }
+        if at < r.usep[reg] { r.usep[reg] = at }
+    }
+    k = 0
+    while k < r.inactive.len() {
+        let a = r.inactive[k]
+        k = k + 1
+        if ra_intersect(r, a, cur) >= 0 {
+            let reg = r.iv_loc[a]
+            let next = ra_next_reg_use(r, a, start)
+            var at = RA_MAX - 1
+            if next >= 0 { at = next }
+            if at < r.usep[reg] { r.usep[reg] = at }
+        }
+    }
+    for reg in t.order {
+        let at = ra_intersect_fixed(r, reg, cur)
+        if at >= 0 {
+            var limit = at
+            if ra_even(at) <= start {
+                // Not usable even for a moment.
+                limit = start
+            }
+            r.blockp[reg] = limit
+            if limit < r.usep[reg] { r.usep[reg] = limit }
+        }
+    }
+    var best = -1
+    var best_use = -1
+    for reg in t.order {
+        if r.usep[reg] > best_use {
+            best = reg
+            best_use = r.usep[reg]
+        }
+    }
+    let wish = ra_hint(m, r, cur, false)
+    if wish >= 0 && t.order.contains(wish) && r.usep[wish] == best_use { best = wish }
+    if best < 0 || best_use <= start || best_use < first {
+        // Everything else is needed sooner: `cur` waits in its slot.
+        if first_even <= start {
+            ra_fail(mut r, "out of registers at position " + str(start) + " of `" + m.name + "`")
+            return
+        }
+        r.iv_loc[cur] = RA_MEM
+        let rest = ra_split(mut r, cur, first_even)
+        ra_queue(mut r, rest)
+        return
+    }
+    ra_set_reg(mut r, cur, best)
+    if r.blockp[best] < end {
+        let rest = ra_split(mut r, cur, ra_even(r.blockp[best]))
+        ra_queue(mut r, rest)
+    }
+    ra_evict(mut r, cur, best, start)
+}
+
+// `cur` has just been given register `best` at `start`: who had the
+// register gives it up.
+fn ra_evict(r: mut Ra, cur: i64, best: i64, start: i64) {
+    var kept: List[i64] = []
+    var gone: List[i64] = []
+    var k = 0
+    while k < r.active.len() {
+        let a = r.active[k]
+        k = k + 1
+        if r.iv_loc[a] == best && a != cur {
+            gone.push(a)
+        } else {
+            kept.push(a)
+        }
+    }
+    r.active = kept
+    for a in gone {
+        ra_spill_from(mut r, a, start)
+    }
+    gone.truncate(0)
+    k = 0
+    while k < r.inactive.len() {
+        let a = r.inactive[k]
+        k = k + 1
+        if r.iv_loc[a] == best && ra_intersect(r, a, cur) >= 0 { gone.push(a) }
+    }
+    for a in gone {
+        // In a hole now: what comes after the hole is given a place
+        // again when the scan gets there.
+        let next = r.r_from[r.iv_cur[a]]
+        if next > ra_start(r, a) {
+            let rest = ra_split(mut r, a, next)
+            ra_queue(mut r, rest)
+        }
+    }
+}
+
+// A register that `cur` can have for all of its life at the price of
+// sending to their slots values that are not needed in a register
+// before `cur` ends; -1 when there is none. Used when the registers
+// that are free are free only for a part of `cur` (a call destroys
+// them) and `cur` is read again after that part: cutting `cur` there
+// costs a reload every time round a loop, and the moves that put
+// everything back where the top of the loop expects it, while the
+// values sent away here are read again only after `cur` is gone.
+fn ra_quiet_register(t: RaTarget, r: mut Ra, cur: i64) -> i64 {
+    let start = ra_start(r, cur)
+    let end = ra_end(r, cur)
+    for reg in t.order {
+        r.usep[reg] = RA_MAX
+    }
+    var k = 0
+    while k < r.active.len() {
+        let a = r.active[k]
+        k = k + 1
+        let reg = r.iv_loc[a]
+        var at = ra_next_reg_use(r, a, start)
+        if at < 0 { at = RA_MAX - 1 }
+        if at < r.usep[reg] { r.usep[reg] = at }
+    }
+    k = 0
+    while k < r.inactive.len() {
+        let a = r.inactive[k]
+        k = k + 1
+        if ra_intersect(r, a, cur) >= 0 {
+            // Its range comes back while `cur` lives: leave it alone.
+            r.usep[r.iv_loc[a]] = 0
+        }
+    }
+    var best = -1
+    var best_use = -1
+    for reg in t.order {
+        if ra_intersect_fixed(r, reg, cur) >= 0 { continue }
+        // Not a register that is simply free: that case is the caller's.
+        if r.usep[reg] == RA_MAX { continue }
+        if r.usep[reg] >= end && r.usep[reg] > best_use {
+            best = reg
+            best_use = r.usep[reg]
+        }
+    }
+    return best
+}
+
+fn ra_scan(m: MFunc, t: RaTarget, r: mut Ra) {
+    r.free = 0.filled(32)
+    r.usep = 0.filled(32)
+    r.blockp = 0.filled(32)
+    // Sorted by start, the earliest last.
+    var order: List[i64] = []
+    var iv = 0
+    while iv < r.iv_vreg.len() {
+        order.push(ra_start(r, iv) * 1048576 + iv)
+        iv = iv + 1
+    }
+    order = order.sorted()
+    var k = order.len() - 1
+    while k >= 0 {
+        r.unhandled.push(order[k] & 1048575)
+        k = k - 1
+    }
+    var kept: List[i64] = []
+    var moved: List[i64] = []
+    while r.unhandled.len() > 0 && !r.failed {
+        let cur = r.unhandled.pop()
+        let pos = ra_start(r, cur)
+        kept.truncate(0)
+        moved.truncate(0)
+        k = 0
+        while k < r.active.len() {
+            let a = r.active[k]
+            k = k + 1
+            if ra_end(r, a) <= pos { continue }
+            if ra_covers(mut r, a, pos) {
+                kept.push(a)
+            } else {
+                moved.push(a)
+            }
+        }
+        r.active.truncate(0)
+        for a in kept {
+            r.active.push(a)
+        }
+        kept.truncate(0)
+        k = 0
+        while k < r.inactive.len() {
+            let a = r.inactive[k]
+            k = k + 1
+            if ra_end(r, a) <= pos { continue }
+            if ra_covers(mut r, a, pos) {
+                r.active.push(a)
+            } else {
+                kept.push(a)
+            }
+        }
+        r.inactive.truncate(0)
+        for a in kept {
+            r.inactive.push(a)
+        }
+        for a in moved {
+            r.inactive.push(a)
+        }
+        var reg = 0
+        while reg < 32 {
+            var c = r.fx_cur[reg]
+            let end = r.fx_rs[reg] + r.fx_rn[reg]
+            while c < end && r.f_to[c] <= pos {
+                c = c + 1
+            }
+            r.fx_cur[reg] = c
+            reg = reg + 1
+        }
+        if !ra_try_free(m, t, mut r, cur) { ra_take(m, t, mut r, cur) }
+        if r.iv_loc[cur] >= 0 { r.active.push(cur) }
+    }
+}
+
+// ---- places -------------------------------------------------------------------------
+
+// The slot of virtual register `v`, made when first asked for.
+fn ra_slot(r: mut Ra, v: i64) -> i64 {
+    if r.vr_slot[v] < 0 {
+        r.vr_slot[v] = r.slots
+        r.slots = r.slots + 1
+    }
+    return r.vr_slot[v]
+}
+
+// Where virtual register `v` is at position `pos`: a processor
+// register, or MF_SLOT0 + its slot. -1 when it is not alive there.
+fn ra_loc_at(r: mut Ra, v: i64, pos: i64) -> i64 {
+    var at = r.vr_first[v]
+    while at >= 0 {
+        if ra_start(r, at) > pos { return -1 }
+        if pos < ra_end(r, at) {
+            if r.iv_loc[at] >= 0 { return r.iv_loc[at] }
+            return MF_SLOT0 + ra_slot(mut r, v)
+        }
+        at = r.iv_sib[at]
+    }
+    return -1
+}
+
+fn ra_raw(r: mut Ra, ins: i64, phase: i64, kind: i64, a: i64, b: i64) {
+    r.raw_ins.push(ins)
+    r.raw_phase.push(phase)
+    r.raw_kind.push(kind)
+    r.raw_a.push(a)
+    r.raw_b.push(b)
+}
+
+// One move from place or constant `src` to place `dst`.
+fn ra_one_move(r: mut Ra, ins: i64, phase: i64, src: i64, dst: i64) {
+    if src < 0 {
+        if dst >= MF_SLOT0 {
+            ra_raw(mut r, ins, phase, RA_MV_CONST_S, 0 - src - 2, dst - MF_SLOT0)
+        } else {
+            ra_raw(mut r, ins, phase, RA_MV_CONST_R, 0 - src - 2, dst)
+        }
+    } else if src >= MF_SLOT0 {
+        if dst >= MF_SLOT0 {
+            ra_raw(mut r, ins, phase, RA_MV_SLOTS, src - MF_SLOT0, dst - MF_SLOT0)
+        } else {
+            ra_raw(mut r, ins, phase, RA_MV_LOAD, src - MF_SLOT0, dst)
+        }
+    } else if dst >= MF_SLOT0 {
+        ra_raw(mut r, ins, phase, RA_MV_STORE, src, dst - MF_SLOT0)
+    } else {
+        ra_raw(mut r, ins, phase, RA_MV_RR, src, dst)
+    }
+}
+
+// Does the moves in `pm_src`/`pm_dst` as if all at once: a move is done
+// when nothing still to be done reads its destination; when only cycles
+// are left, one destination is saved in the scratch register first.
+fn ra_parallel(t: RaTarget, r: mut Ra, ins: i64, phase: i64) {
+    let n = r.pm_src.len()
+    var left = n
+    var done = false.filled(n)
+    while left > 0 {
+        var progress = false
+        var i = 0
+        while i < n {
+            if !done[i] {
+                var blocked = false
+                var j = 0
+                while j < n {
+                    if j != i && !done[j] && r.pm_src[j] == r.pm_dst[i] {
+                        blocked = true
+                        break
+                    }
+                    j = j + 1
+                }
+                if !blocked {
+                    ra_one_move(mut r, ins, phase, r.pm_src[i], r.pm_dst[i])
+                    done[i] = true
+                    left = left - 1
+                    progress = true
+                }
+            }
+            i = i + 1
+        }
+        if !progress {
+            i = 0
+            while done[i] {
+                i = i + 1
+            }
+            let held = r.pm_dst[i]
+            ra_one_move(mut r, ins, phase, held, t.scratch)
+            var j = 0
+            while j < n {
+                if !done[j] && r.pm_src[j] == held { r.pm_src[j] = t.scratch }
+                j = j + 1
+            }
+        }
+    }
+    r.pm_src.truncate(0)
+    r.pm_dst.truncate(0)
+}
+
+// Gives every operand its place and finds every move.
+fn ra_resolve(m: mut MFunc, t: RaTarget, r: mut Ra, result: mut RaResult) {
+    let blocks = m.b_first.len()
+    let count = m.vregs - MF_VREG0
+    // Slots for everything that is in memory somewhere.
+    var iv = 0
+    while iv < r.iv_vreg.len() {
+        if r.iv_loc[iv] == RA_MEM { ra_slot(mut r, r.iv_vreg[iv]) }
+        iv = iv + 1
+    }
+    // Operands.
+    var i = 0
+    while i < m.op.len() {
+        var k = m.os[i]
+        let end = k + m.on[i]
+        while k < end {
+            let x = m.o_reg[k]
+            if x >= MF_VREG0 {
+                let role = m.o_role[k]
+                var pos = i * 2
+                if role & MF_DEF != 0 || role & MF_LATE != 0 { pos = pos + 1 }
+                let place = ra_loc_at(mut r, x - MF_VREG0, pos)
+                if place < 0 {
+                    ra_fail(mut r, "an operand of instruction " + str(i) + " is not alive there")
+                } else if place >= MF_SLOT0 && (role & MF_ANY == 0 || role & MF_DEF != 0) {
+                    ra_fail(mut r, "an operand of instruction " + str(i) + " needs a register and has none")
+                }
+                m.o_reg[k] = place
+            }
+            k = k + 1
+        }
+        i = i + 1
+    }
+    if r.failed { return }
+    // A value with a slot is stored once, after its definition.
+    var v = 0
+    while v < count {
+        if r.vr_slot[v] >= 0 && r.vr_def[v] >= 0 {
+            let place = ra_loc_at(mut r, v, r.vr_def[v] * 2 + 1)
+            if place >= 0 && place < MF_SLOT0 {
+                ra_raw(mut r, r.vr_def[v] + 1, 0, RA_MV_STORE, place, r.vr_slot[v])
+            }
+        }
+        v = v + 1
+    }
+    // An interval that starts in a register in the middle of a block
+    // gets its value from where the part before it was.
+    iv = 0
+    while iv < r.iv_vreg.len() {
+        let next = r.iv_sib[iv]
+        iv = iv + 1
+        if next < 0 || r.iv_loc[next] < 0 { continue }
+        let start = ra_start(r, next)
+        if start == r.vr_def[r.iv_vreg[next]] * 2 + 1 {
+            // It starts where the value is defined: a block that uses
+            // the value is laid out before the block that defines it,
+            // and the part for that block came first. The definition
+            // itself writes the register.
+            continue
+        }
+        if start & 1 != 0 {
+            // A part can start at an odd position only where the
+            // instruction there writes the value: the block of the
+            // definition comes, in the order of the blocks, after a
+            // block that reads the value, so the definition is not in
+            // the first part. Nothing is moved: the instruction writes
+            // straight into the register of this part.
+            if r.vr_def[r.iv_vreg[next]] * 2 + 1 == start { continue }
+            ra_fail(mut r, "an interval moves to a register in the middle of an instruction")
+            return
+        }
+        if r.first_of_block[start / 2] { continue }
+        let before = iv - 1
+        var src = r.iv_loc[before]
+        if src == RA_MEM { src = MF_SLOT0 + r.vr_slot[r.iv_vreg[before]] }
+        if src != r.iv_loc[next] { ra_raw(mut r, start / 2, 3, 0, src, r.iv_loc[next]) }
+    }
+    // The moves of phase 3 at one instruction happen together.
+    ra_group_phase3(t, mut r)
+    // Edges.
+    var b = 0
+    while b < blocks {
+        var k = 0
+        while k < m.b_pn[b] {
+            let p = m.params[m.b_ps[b] + k] - MF_VREG0
+            let place = ra_loc_at(mut r, p, m.b_first[b] * 2)
+            result.param_loc.push(place)
+            if place >= 0 && place < MF_SLOT0 && r.vr_slot[p] >= 0 {
+                ra_raw(mut r, m.b_first[b], 2, RA_MV_STORE, place, r.vr_slot[p])
+            }
+            k = k + 1
+        }
+        b = b + 1
+    }
+    // How many ways into each block.
+    var ways_in = 0.filled(blocks)
+    var e = 0
+    while e < m.s_blk.len() {
+        ways_in[m.s_blk[e]] = ways_in[m.s_blk[e]] + 1
+        e = e + 1
+    }
+    b = 0
+    while b < blocks {
+        let out_pos = m.b_last[b] * 2 + 1
+        e = m.b_ss[b]
+        while e < m.b_ss[b] + m.b_sn[b] {
+            let to = m.s_blk[e]
+            let in_pos = m.b_first[to] * 2
+            let base = to * r.words
+            var w = 0
+            while w < r.words {
+                var bits = r.live_in[base + w]
+                v = w * 64
+                while bits != 0 {
+                    if bits & 1 != 0 {
+                        let src = ra_loc_at(mut r, v, out_pos)
+                        let dst = ra_loc_at(mut r, v, in_pos)
+                        if src < 0 || dst < 0 {
+                            ra_fail(mut r, "a value that lives across an edge has no place at one end of it")
+                            return
+                        }
+                        if src != dst && dst < MF_SLOT0 {
+                            r.pm_src.push(src)
+                            r.pm_dst.push(dst)
+                        }
+                    }
+                    bits = (bits >> 1) & 9223372036854775807
+                    v = v + 1
+                }
+                w = w + 1
+            }
+            var k = 0
+            while k < m.s_an[e] {
+                let p = m.params[m.b_ps[to] + k] - MF_VREG0
+                let dst = ra_loc_at(mut r, p, in_pos)
+                let x = m.args[m.s_as[e] + k]
+                var src = x
+                if x >= 0 {
+                    src = ra_loc_at(mut r, x - MF_VREG0, out_pos)
+                    if src < 0 {
+                        ra_fail(mut r, "an argument of an edge has no place at the end of its block")
+                        return
+                    }
+                }
+                if src != dst {
+                    r.pm_src.push(src)
+                    r.pm_dst.push(dst)
+                }
+                k = k + 1
+            }
+            if r.pm_src.len() > 0 {
+                if m.b_sn[b] == 1 {
+                    ra_parallel(t, mut r, m.b_last[b], 4)
+                } else if ways_in[to] == 1 {
+                    ra_parallel(t, mut r, m.b_first[to], 1)
+                } else {
+                    ra_fail(mut r, "the edge from block " + str(b) + " to block " + str(to) + " is critical and needs moves")
+                    return
+                }
+            }
+            e = e + 1
+        }
+        b = b + 1
+    }
+}
+
+// The raw moves of phase 3 were found one interval at a time. Those at
+// the same instruction are one parallel move: this replaces them by
+// their safe order.
+fn ra_group_phase3(t: RaTarget, r: mut Ra) {
+    let n = r.raw_ins.len()
+    var at: List[i64] = []
+    var k = 0
+    while k < n {
+        if r.raw_phase[k] == 3 { at.push(r.raw_ins[k] * 1048576 + k) }
+        k = k + 1
+    }
+    if at.len() == 0 { return }
+    at = at.sorted()
+    // Mark the old ones as gone, then write the groups again.
+    k = 0
+    while k < at.len() {
+        let ins = at[k] >> 20
+        while k < at.len() && at[k] >> 20 == ins {
+            let raw = at[k] & 1048575
+            r.pm_src.push(r.raw_a[raw])
+            r.pm_dst.push(r.raw_b[raw])
+            r.raw_phase[raw] = -1
+            k = k + 1
+        }
+        ra_parallel(t, mut r, ins, 3)
+    }
+}
+
+// Sorts the moves by instruction and phase into the result.
+fn ra_finish(m: MFunc, r: mut Ra, result: mut RaResult) {
+    let instructions = m.op.len()
+    let keys = (instructions + 1) * 5
+    var count = 0.filled(keys + 1)
+    var k = 0
+    while k < r.raw_ins.len() {
+        if r.raw_phase[k] >= 0 {
+            let key = r.raw_ins[k] * 5 + r.raw_phase[k]
+            count[key + 1] = count[key + 1] + 1
+        }
+        k = k + 1
+    }
+    k = 0
+    while k < keys {
+        count[k + 1] = count[k + 1] + count[k]
+        k = k + 1
+    }
+    let total = count[keys]
+    result.mv_kind = 0.filled(total)
+    result.mv_a = 0.filled(total)
+    result.mv_b = 0.filled(total)
+    result.mv_start = 0.filled(instructions + 2)
+    k = 0
+    while k <= instructions {
+        result.mv_start[k] = count[k * 5]
+        k = k + 1
+    }
+    result.mv_start[instructions + 1] = total
+    var b = 0
+    while b < m.b_first.len() {
+        // Phases 0 and 1 of the block's first instruction come first.
+        result.edge_end.push(count[m.b_first[b] * 5 + 2])
+        b = b + 1
+    }
+    k = 0
+    while k < r.raw_ins.len() {
+        if r.raw_phase[k] >= 0 {
+            let key = r.raw_ins[k] * 5 + r.raw_phase[k]
+            let at = count[key]
+            count[key] = at + 1
+            result.mv_kind[at] = r.raw_kind[k]
+            result.mv_a[at] = r.raw_a[k]
+            result.mv_b[at] = r.raw_b[k]
+        }
+        k = k + 1
+    }
+}
+
+fn ra_new_result() -> RaResult {
+    return RaResult {
+        ok: true,
+        error: "",
+        slots: 0,
+        used: 0,
+        mv_start: [],
+        mv_kind: [],
+        mv_a: [],
+        mv_b: [],
+        orig: [],
+        param_loc: [],
+        edge_end: []
+    }
+}
+
+// Allocates registers for `m`, whose operands are changed in place.
+fn ra_allocate(m: mut MFunc, t: RaTarget) -> RaResult {
+    var result = ra_new_result()
+    var r = ra_new()
+    result.orig = m.o_reg
+    ra_liveness(m, mut r)
+    ra_build(m, mut r)
+    if !r.failed { ra_scan(m, t, mut r) }
+    if !r.failed { ra_resolve(mut m, t, mut r, mut result) }
+    if !r.failed { ra_finish(m, mut r, mut result) }
+    result.ok = !r.failed
+    result.error = r.error
+    result.slots = r.slots
+    result.used = r.used
+    return result
+}
+
+// ---- the checker ------------------------------------------------------------------------
+
+fn ra_check_index(place: i64) -> i64 {
+    if place >= MF_SLOT0 { return 32 + place - MF_SLOT0 }
+    return place
+}
+
+fn ra_check_name(x: i64) -> str {
+    if x == RA_UNKNOWN { return "nothing known" }
+    if x == RA_CONSTANT { return "a constant" }
+    return "v" + str(x - MF_VREG0)
+}
+
+fn ra_check_place(index: i64) -> str {
+    if index >= 32 { return "slot " + str(index - 32) }
+    return "register " + str(index)
+}
+
+// Does the moves `from` up to `to` of the result on the table `s`.
+fn ra_check_moves(result: RaResult, s: mut List[i64], from: i64, to: i64) {
+    var k = from
+    while k < to {
+        let kind = result.mv_kind[k]
+        let a = result.mv_a[k]
+        let b = result.mv_b[k]
+        if kind == RA_MV_RR {
+            s[b] = s[a]
+        } else if kind == RA_MV_LOAD {
+            s[b] = s[32 + a]
+        } else if kind == RA_MV_STORE {
+            s[32 + b] = s[a]
+        } else if kind == RA_MV_SLOTS {
+            s[32 + b] = s[32 + a]
+        } else if kind == RA_MV_CONST_R {
+            s[b] = RA_CONSTANT
+        } else {
+            s[32 + b] = RA_CONSTANT
+        }
+        k = k + 1
+    }
+}
+
+// Gives the parameters of block `to` their names in table `s`, which
+// is the table at the end of edge `e`. With `report`, gives the first
+// parameter that did not get its argument, as a message.
+fn ra_check_edge(m: MFunc, result: RaResult, s: mut List[i64], e: i64, report: bool) -> str {
+    let to = m.s_blk[e]
+    var problem = ""
+    // All are read before any is named: two parameters may get the
+    // same argument.
+    var k = 0
+    while k < m.s_an[e] {
+        let place = ra_check_index(result.param_loc[m.b_ps[to] + k])
+        let x = m.args[m.s_as[e] + k]
+        var want = x
+        if x < 0 { want = RA_CONSTANT }
+        if report && s[place] != want && problem.len() == 0 {
+            problem = "parameter " + str(k) + " of block " + str(to) + " should get " + ra_check_name(want) + " in " + ra_check_place(place) + ", which holds " + ra_check_name(s[place])
+        }
+        k = k + 1
+    }
+    k = 0
+    while k < m.s_an[e] {
+        s[ra_check_index(result.param_loc[m.b_ps[to] + k])] = m.params[m.b_ps[to] + k]
+        k = k + 1
+    }
+    return problem
+}
+
+// Checks the allocation `result` of `m`. Gives "" when every operand
+// reads what its definition wrote, or the first thing that is wrong.
+fn ra_check(m: MFunc, result: RaResult) -> str {
+    let blocks = m.b_first.len()
+    let width = 32 + result.slots
+    // Ways in: for each block the edges that enter it and their blocks.
+    var in_n = 0.filled(blocks)
+    var e = 0
+    while e < m.s_blk.len() {
+        in_n[m.s_blk[e]] = in_n[m.s_blk[e]] + 1
+        e = e + 1
+    }
+    var in_s = 0.filled(blocks + 1)
+    var b = 0
+    while b < blocks {
+        in_s[b + 1] = in_s[b] + in_n[b]
+        in_n[b] = 0
+        b = b + 1
+    }
+    var in_edge = 0.filled(m.s_blk.len())
+    var in_blk = 0.filled(m.s_blk.len())
+    b = 0
+    while b < blocks {
+        e = m.b_ss[b]
+        while e < m.b_ss[b] + m.b_sn[b] {
+            let to = m.s_blk[e]
+            in_edge[in_s[to] + in_n[to]] = e
+            in_blk[in_s[to] + in_n[to]] = b
+            in_n[to] = in_n[to] + 1
+            e = e + 1
+        }
+        b = b + 1
+    }
+    var out = RA_UNKNOWN.filled(blocks * width)
+    var seen = false.filled(blocks)
+    var s = RA_UNKNOWN.filled(width)
+    var tmp = RA_UNKNOWN.filled(width)
+    // Rounds until the tables at the ends of the blocks stop changing,
+    // then one more that reports.
+    var report = false
+    var rounds = 0
+    while true {
+        var changed = false
+        b = 0
+        while b < blocks {
+            var k = 0
+            while k < width {
+                s[k] = RA_UNKNOWN
+                k = k + 1
+            }
+            let first = m.b_first[b]
+            var moves_done = result.mv_start[first]
+            // A block none of whose ways in has been walked yet says
+            // nothing: its table would be all unknown and would spoil
+            // the tables of the blocks after it.
+            var reached = b == 0
+            if in_n[b] == 1 {
+                let from = in_blk[in_s[b]]
+                if seen[from] {
+                    reached = true
+                    k = 0
+                    while k < width {
+                        s[k] = out[from * width + k]
+                        k = k + 1
+                    }
+                }
+                ra_check_moves(result, mut s, moves_done, result.edge_end[b])
+                moves_done = result.edge_end[b]
+                let problem = ra_check_edge(m, result, mut s, in_edge[in_s[b]], report && seen[from])
+                if problem.len() > 0 { return problem }
+            } else if in_n[b] > 1 {
+                var met = false
+                var way = 0
+                while way < in_n[b] {
+                    let from = in_blk[in_s[b] + way]
+                    if seen[from] {
+                        k = 0
+                        while k < width {
+                            tmp[k] = out[from * width + k]
+                            k = k + 1
+                        }
+                        let problem = ra_check_edge(m, result, mut tmp, in_edge[in_s[b] + way], report)
+                        if problem.len() > 0 { return problem }
+                        k = 0
+                        while k < width {
+                            if !met {
+                                s[k] = tmp[k]
+                            } else if s[k] != tmp[k] {
+                                s[k] = RA_UNKNOWN
+                            }
+                            k = k + 1
+                        }
+                        met = true
+                    }
+                    way = way + 1
+                }
+                reached = met
+            }
+            if !reached {
+                b = b + 1
+                continue
+            }
+            var i = first
+            while i <= m.b_last[b] {
+                ra_check_moves(result, mut s, moves_done, result.mv_start[i + 1])
+                moves_done = result.mv_start[i + 1]
+                let os = m.os[i]
+                let oe = os + m.on[i]
+                if report {
+                    k = os
+                    while k < oe {
+                        let role = m.o_role[k]
+                        if role & MF_USE != 0 && role & MF_LATE == 0 && result.orig[k] >= MF_VREG0 {
+                            let at = ra_check_index(m.o_reg[k])
+                            if s[at] != result.orig[k] {
+                                return "instruction " + str(i) + " of `" + m.name + "` reads " + ra_check_name(result.orig[k]) + " from " + ra_check_place(at) + ", which holds " + ra_check_name(s[at])
+                            }
+                        }
+                        k = k + 1
+                    }
+                }
+                var clob = m.clob[i]
+                var reg = 0
+                while clob != 0 {
+                    if clob & 1 != 0 { s[reg] = RA_UNKNOWN }
+                    clob = (clob >> 1) & 9223372036854775807
+                    reg = reg + 1
+                }
+                k = os
+                while k < oe {
+                    if m.o_role[k] & MF_DEF != 0 {
+                        if result.orig[k] >= MF_VREG0 {
+                            s[ra_check_index(m.o_reg[k])] = result.orig[k]
+                        } else {
+                            s[m.o_reg[k]] = RA_UNKNOWN
+                        }
+                    }
+                    k = k + 1
+                }
+                if report {
+                    k = os
+                    while k < oe {
+                        let role = m.o_role[k]
+                        if role & MF_USE != 0 && role & MF_LATE != 0 && result.orig[k] >= MF_VREG0 {
+                            let at = ra_check_index(m.o_reg[k])
+                            if s[at] != result.orig[k] {
+                                return "instruction " + str(i) + " of `" + m.name + "` reads " + ra_check_name(result.orig[k]) + " late from " + ra_check_place(at) + ", which holds " + ra_check_name(s[at])
+                            }
+                        }
+                        k = k + 1
+                    }
+                }
+                i = i + 1
+            }
+            k = 0
+            while k < width {
+                if out[b * width + k] != s[k] || !seen[b] {
+                    out[b * width + k] = s[k]
+                    changed = true
+                }
+                k = k + 1
+            }
+            seen[b] = true
+            b = b + 1
+        }
+        if report { break }
+        rounds = rounds + 1
+        if !changed || rounds > 1000 { report = true }
+    }
+    return ""
+}

@@ -5,9 +5,7 @@
 
 fn first_above(xs: List[i64], limit: i64) -> i64 {
     for i, x in xs {
-        if x > limit {
-            return i
-        }
+        if x > limit { return i }
     }
     return 0 - 1
 }
@@ -16,9 +14,7 @@ fn find_pair(rows: List[List[i64]], wanted: i64) -> i64 {
     var r = 0
     while r < rows.len() {
         for c, value in rows[r] {
-            if value == wanted {
-                return r * 10 + c
-            }
+            if value == wanted { return r * 10 + c }
         }
         r = r + 1
     }
@@ -29,9 +25,7 @@ fn count_to(n: i64) -> i64 {
     var steps = 0
     var i = 0
     while true {
-        if i >= n {
-            break
-        }
+        if i >= n { break }
         i = i + 1
         steps = steps + 1
     }
@@ -43,9 +37,7 @@ fn skip_odd(n: i64) -> i64 {
     var i = 0
     while i < n {
         i = i + 1
-        if i % 2 == 1 {
-            continue
-        }
+        if i % 2 == 1 { continue }
         total = total + i
     }
     return total
@@ -58,18 +50,12 @@ fn nested_breaks(n: i64) -> i64 {
         var b = 0
         while b < n {
             b = b + 1
-            if b == a {
-                continue
-            }
-            if b > a + 2 {
-                break
-            }
+            if b == a { continue }
+            if b > a + 2 { break }
             hits = hits + 1
         }
         a = a + 1
-        if a == 4 {
-            break
-        }
+        if a == 4 { break }
     }
     return hits * 100 + a
 }
@@ -142,12 +128,8 @@ fn main() {
     // `continue` and `break` inside `for`, with the position going on.
     var seen = 0
     for k, x in [10, 20, 30, 40, 50, 60] {
-        if k == 1 {
-            continue
-        }
-        if x == 50 {
-            break
-        }
+        if k == 1 { continue }
+        if x == 50 { break }
         seen = seen * 10 + k
     }
     print(seen)
@@ -157,9 +139,7 @@ fn main() {
     let ys = [3, 1, 2]
     for a in ys {
         for b in ys {
-            if b == a {
-                break
-            }
+            if b == a { break }
             pairs = pairs + a * 10 + b
         }
     }

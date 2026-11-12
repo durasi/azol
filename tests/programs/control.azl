@@ -14,12 +14,8 @@ fn main() -> i64 {
     var i = 0
     while i < 100 {
         i = i + 1
-        if i % 2 == 0 {
-            continue
-        }
-        if i > 9 {
-            break
-        }
+        if i % 2 == 0 { continue }
+        if i > 9 { break }
         print(i)
     }
     print(100)
@@ -52,16 +48,12 @@ fn main() -> i64 {
 
     let yes = 3 > 2
     let no = !yes
-    if yes && !no {
-        print(1)
-    }
+    if yes && !no { print(1) }
     if no || yes == false {
         print(99)
     } else {
         print(0)
     }
-    if yes != no {
-        print(1)
-    }
+    if yes != no { print(1) }
     return 7
 }

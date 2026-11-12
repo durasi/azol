@@ -1,0 +1,19 @@
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v0 = eq p0, 0
+    br v0, b1, b2
+b1:
+    ret 100
+b2:
+    v1 = eq p1, 1
+    br v1, b3, b4
+b3:
+    ret 200
+b4:
+    v2 = eq p0, 5
+    br v2, b5, b6
+b5:
+    ret 300
+b6:
+    ret -1
+}

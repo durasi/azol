@@ -7,16 +7,12 @@
 const SMALL = false
 
 fn size(full: i64, small: i64) -> i64 {
-    if SMALL {
-        return small
-    }
+    if SMALL { return small }
     return full
 }
 
 fn quicksort(xs: mut List[i64], low: i64, high: i64) {
-    if low >= high {
-        return
-    }
+    if low >= high { return }
     let pivot = xs[(low + high) / 2]
     var i = low
     var j = high
@@ -59,9 +55,7 @@ fn main() {
     var ordered = 1
     var m = 1
     while m < count {
-        if xs[m - 1] > xs[m] {
-            ordered = 0
-        }
+        if xs[m - 1] > xs[m] { ordered = 0 }
         m = m + 1
     }
     print(checksum + ordered)

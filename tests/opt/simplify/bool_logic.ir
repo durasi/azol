@@ -1,0 +1,9 @@
+; The same identities on `bool`: b & true, b | false, b ^ false are b.
+fn main(p0: i64) -> bool, bool, bool {
+b0:
+    v0 = slt p0, 5
+    v1 = and v0, 1
+    v2 = or v0, 0
+    v3 = xor v0, 0
+    ret v1, v2, v3
+}

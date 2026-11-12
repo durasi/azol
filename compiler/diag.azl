@@ -52,11 +52,9 @@ struct Diagnostic {
 
 // Whether `message` is `pattern` with each `{}` standing for some text.
 fn diag_fits(pattern: str, message: str) -> bool {
-    let parts = pattern.split("{}")
+    let parts = pattern.split("\{}")
     let first = parts[0]
-    if !message.starts_with(first) {
-        return false
-    }
+    if !message.starts_with(first) { return false }
     var at = first.len()
     if parts.len() == 1 {
         // No `{}` at all: the whole text must be the same.
@@ -92,9 +90,7 @@ fn diag_classify(table: List[DiagEntry], message: str) -> i64 {
     }
     for index, entry in table {
         for pattern in entry.patterns {
-            if diag_fits(pattern, text) {
-                return index
-            }
+            if diag_fits(pattern, text) { return index }
         }
     }
     return -1
@@ -103,9 +99,7 @@ fn diag_classify(table: List[DiagEntry], message: str) -> i64 {
 // The code of a message.
 fn diag_code(table: List[DiagEntry], message: str) -> str {
     let index = diag_classify(table, message)
-    if index < 0 {
-        return diag_unclassified().code
-    }
+    if index < 0 { return diag_unclassified().code }
     return table[index].code
 }
 
@@ -129,15 +123,11 @@ fn diag_explain(table: List[DiagEntry], code: str) -> str {
     for entry in table {
         if entry.code == code {
             var text = entry.code + ": " + entry.rule + "\n"
-            if entry.help.len() > 0 {
-                text = text + "\nWhat to do: " + entry.help + "\n"
-            }
-            if entry.explain.len() > 0 {
-                text = text + "\n" + entry.explain + "\n"
-            }
+            if entry.help.len() > 0 { text = text + "\nWhat to do: " + entry.help + "\n" }
+            if entry.explain.len() > 0 { text = text + "\n" + entry.explain + "\n" }
             text = text + "\nMessages with this code:\n"
             for pattern in entry.patterns {
-                text = text + "    " + pattern.replace("{}", "...") + "\n"
+                text = text + "    " + pattern.replace("\{}", "...") + "\n"
             }
             return text
         }
@@ -160,15 +150,11 @@ fn diag_errors_md(table: List[DiagEntry]) -> str {
     for index in diag_sorted(table) {
         let entry = table[index]
         text = text + "\n## " + entry.code + "\n\n" + entry.rule + "\n"
-        if entry.help.len() > 0 {
-            text = text + "\nWhat to do: " + entry.help + "\n"
-        }
-        if entry.explain.len() > 0 {
-            text = text + "\n" + entry.explain + "\n"
-        }
+        if entry.help.len() > 0 { text = text + "\nWhat to do: " + entry.help + "\n" }
+        if entry.explain.len() > 0 { text = text + "\n" + entry.explain + "\n" }
         text = text + "\nMessages:\n\n"
         for pattern in entry.patterns {
-            text = text + "- " + pattern.replace("{}", "...") + "\n"
+            text = text + "- " + pattern.replace("\{}", "...") + "\n"
         }
     }
     return text
@@ -206,9 +192,7 @@ fn token_at(tokens: Tokens, offset: i64) -> i64 {
     while low < high {
         let middle = (low + high) / 2
         let start = tokens.starts[middle]
-        if start == offset {
-            return middle
-        }
+        if start == offset { return middle }
         if start < offset {
             low = middle + 1
         } else {
@@ -227,13 +211,9 @@ fn closer_of(tokens: Tokens, open: i64) -> i64 {
         if opens_bracket(kind) {
             depth = depth + 1
         } else if closes_bracket(kind) {
-            if depth == 0 {
-                return -1
-            }
+            if depth == 0 { return -1 }
             depth = depth - 1
-            if depth == 0 {
-                return at
-            }
+            if depth == 0 { return at }
         }
         at = at + 1
     }
@@ -244,9 +224,7 @@ fn closer_of(tokens: Tokens, open: i64) -> i64 {
 // token starts there.
 fn token_end(tokens: Tokens, offset: i64) -> i64 {
     let at = token_at(tokens, offset)
-    if at >= 0 && tokens.lens[at] > 0 {
-        return offset + tokens.lens[at]
-    }
+    if at >= 0 && tokens.lens[at] > 0 { return offset + tokens.lens[at] }
     return offset + 1
 }
 
@@ -257,9 +235,7 @@ fn bracket_end(tokens: Tokens, after: i64) -> i64 {
     let next = first_token_from(tokens, after)
     if next < tokens.kinds.len() && opens_bracket(tokens.kinds[next]) {
         let close = closer_of(tokens, next)
-        if close >= 0 {
-            return tokens.starts[close] + tokens.lens[close]
-        }
+        if close >= 0 { return tokens.starts[close] + tokens.lens[close] }
     }
     return after
 }
@@ -324,18 +300,14 @@ fn balance(tokens: Tokens, start: i64, end: i64) -> i64 {
 // A fix as a replacement of the text from `start` to `end`. `kind` is
 // `FIX_NONE` when the source is not laid out the way the fix needs.
 fn replacement_of(fix: Fix, tokens: Tokens, src: str) -> Fix {
-    if fix.kind == FIX_REPLACE {
-        return fix
-    }
+    if fix.kind == FIX_REPLACE { return fix }
     if fix.kind == FIX_AFTER_NAME {
         let end = token_end(tokens, fix.start)
         return Fix { kind: FIX_REPLACE, start: end, end: end, text: fix.text }
     }
     if fix.kind == FIX_EMPTY_PARENS {
         let name = token_at(tokens, fix.start)
-        if name < 0 || name + 2 >= tokens.kinds.len() {
-            return no_fix()
-        }
+        if name < 0 || name + 2 >= tokens.kinds.len() { return no_fix() }
         if tokens.kinds[name + 1] != TOK_LPAREN || tokens.kinds[name + 2] != TOK_RPAREN {
             return no_fix()
         }
@@ -345,9 +317,7 @@ fn replacement_of(fix: Fix, tokens: Tokens, src: str) -> Fix {
         // The body is the first `{` after `match` that is not inside
         // parentheses or brackets of the value being matched.
         var at = token_at(tokens, fix.start)
-        if at < 0 {
-            return no_fix()
-        }
+        if at < 0 { return no_fix() }
         var depth = 0
         var open = -1
         while at < tokens.kinds.len() && open < 0 {
@@ -362,9 +332,7 @@ fn replacement_of(fix: Fix, tokens: Tokens, src: str) -> Fix {
             at = at + 1
         }
         let closing = closer_of(tokens, open)
-        if closing < 0 {
-            return no_fix()
-        }
+        if closing < 0 { return no_fix() }
         let close = tokens.starts[closing]
         // New arms go on lines of their own, before a closing brace
         // that stands first on its line.
@@ -374,9 +342,7 @@ fn replacement_of(fix: Fix, tokens: Tokens, src: str) -> Fix {
         }
         let indent = src.slice(line_start, close)
         for b in indent.bytes() {
-            if b != ' ' && b != '\t' {
-                return no_fix()
-            }
+            if b != ' ' && b != '\t' { return no_fix() }
         }
         var text = ""
         for arm in fix.text.split("\n") {
@@ -387,27 +353,49 @@ fn replacement_of(fix: Fix, tokens: Tokens, src: str) -> Fix {
     return no_fix()
 }
 
+// The repair of a mistake of form that the lexer or the parser found at
+// `at`, when the edit is the same every time.
+fn syntax_fix(message: str, at: i64, src: str, end: i64) -> Fix {
+    if message.starts_with("azoL has no `++`") || message.starts_with("azoL has no `--`") {
+        // After a name or `]`: `x++` becomes `x += 1`.
+        if at + 1 < end && at > 0 && (is_name_byte(src[at - 1]) || src[at - 1] == ']') {
+            var text = " += 1"
+            if src[at] == '-' { text = " -= 1" }
+            return Fix { kind: FIX_REPLACE, start: at, end: at + 2, text: text }
+        }
+    }
+    if message.starts_with("azoL has no `=+`") && at + 1 < end {
+        return Fix { kind: FIX_REPLACE, start: at, end: at + 2, text: "+=" }
+    }
+    if message.starts_with("azoL has no `=-`") && at + 1 < end {
+        return Fix { kind: FIX_REPLACE, start: at, end: at + 2, text: "-=" }
+    }
+    // Mistakes in a text with values (see `parse_text`).
+    if message.starts_with("this `\{` starts a value") || message.starts_with("`\{}` in a text") ||
+        message.starts_with("a pattern is a fixed text") {
+        return Fix { kind: FIX_REPLACE, start: at, end: at, text: "\\" }
+    }
+    if message.ends_with("without `$`") || message.starts_with("a text needs no `f`") {
+        return Fix { kind: FIX_REPLACE, start: at, end: at + 1, text: "" }
+    }
+    return no_fix()
+}
+
 // Line `line` (counted from 1) of `text`, without its line ending; an
 // empty text when there is no such line.
 fn line_of(text: str, line: i64) -> str {
     var start = 0
     var seen = 1
     while seen < line && start < text.len() {
-        if text[start] == '\n' {
-            seen = seen + 1
-        }
+        if text[start] == '\n' { seen = seen + 1 }
         start = start + 1
     }
-    if seen < line || start >= text.len() {
-        return ""
-    }
+    if seen < line || start >= text.len() { return "" }
     var end = start
     while end < text.len() && text[end] != '\n' {
         end = end + 1
     }
-    if end < text.len() && end > start && text[end - 1] == '\r' {
-        end = end - 1
-    }
+    if end < text.len() && end > start && text[end - 1] == '\r' { end = end - 1 }
     return text.slice(start, end)
 }
 
@@ -430,9 +418,7 @@ fn diagnose(problems: List[SemaError], files: List[SourceFile], src: str, ast: A
         var index = files.len() - 1
         var k = files.len() - 1
         while k >= 0 {
-            if problem.offset <= files[k].start + files[k].len {
-                index = k
-            }
+            if problem.offset <= files[k].start + files[k].len { index = k }
             k = k - 1
         }
         let file_start = files[index].start
@@ -449,21 +435,15 @@ fn diagnose(problems: List[SemaError], files: List[SourceFile], src: str, ast: A
             }
             var i = 0
             var count = tokens.starts.len()
-            if file_start == 0 {
-                count = 0
-            }
+            if file_start == 0 { count = 0 }
             while i < count {
                 tokens.starts[i] = tokens.starts[i] + file_start
                 i = i + 1
             }
         }
         var start = problem.offset
-        if start < file_start {
-            start = file_start
-        }
-        if start > file_end {
-            start = file_end
-        }
+        if start < file_start { start = file_start }
+        if start > file_end { start = file_end }
         // An error moved to the call that caused it no longer is about
         // the expression it was found in.
         var end = start + 1
@@ -472,19 +452,13 @@ fn diagnose(problems: List[SemaError], files: List[SourceFile], src: str, ast: A
         } else {
             end = token_end(tokens, start)
         }
-        if end < start {
-            end = start
-        }
-        if end > file_end {
-            end = file_end
-        }
+        if end < start { end = start }
+        if end > file_end { end = file_end }
         let from = line_column(text, start - file_start)
         let to = line_column(text, end - file_start)
         let kind = diag_classify(table, problem.message)
         var entry = diag_unclassified()
-        if kind >= 0 {
-            entry = table[kind]
-        }
+        if kind >= 0 { entry = table[kind] }
         var found = Diagnostic {
             code: entry.code,
             message: problem.message,
@@ -504,8 +478,10 @@ fn diagnose(problems: List[SemaError], files: List[SourceFile], src: str, ast: A
             fix_end_column: 0,
             replacement: "",
         }
-        if problem.fix.kind != FIX_NONE {
-            let edit = replacement_of(problem.fix, tokens, src)
+        var repair = problem.fix
+        if repair.kind == FIX_NONE { repair = syntax_fix(problem.message, start, src, file_end) }
+        if repair.kind != FIX_NONE {
+            let edit = replacement_of(repair, tokens, src)
             if edit.kind == FIX_REPLACE && edit.start >= file_start && edit.end <= file_end && edit.start <= edit.end {
                 let fix_from = line_column(text, edit.start - file_start)
                 let fix_to = line_column(text, edit.end - file_start)
@@ -558,7 +534,7 @@ fn json_string(out: mut str, text: str) {
 
 // One diagnostic as a JSON object on one line.
 fn json_line(found: Diagnostic, path: str) -> str {
-    var line = "{\"severity\":\"error\",\"code\":\"" + found.code + "\",\"message\":"
+    var line = "\{\"severity\":\"error\",\"code\":\"" + found.code + "\",\"message\":"
     json_string(mut line, found.message)
     line = line + ",\"file\":"
     json_string(mut line, path)
@@ -572,7 +548,7 @@ fn json_line(found: Diagnostic, path: str) -> str {
         json_string(mut line, found.help)
     }
     if found.has_fix {
-        line = line + ",\"fix\":{\"file\":"
+        line = line + ",\"fix\":\{\"file\":"
         json_string(mut line, path)
         line = line + ",\"line\":" + str(found.fix_line) + ",\"column\":" + str(found.fix_column) + ",\"end_line\":" +
             str(found.fix_end_line) + ",\"end_column\":" + str(found.fix_end_column) + ",\"replacement\":"
@@ -584,5 +560,5 @@ fn json_line(found: Diagnostic, path: str) -> str {
 
 // The last line of JSON output.
 fn json_summary(errors: i64, files: i64) -> str {
-    return "{\"summary\":{\"errors\":" + str(errors) + ",\"files\":" + str(files) + "}}"
+    return "\{\"summary\":\{\"errors\":" + str(errors) + ",\"files\":" + str(files) + "}}"
 }

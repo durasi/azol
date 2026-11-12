@@ -265,9 +265,7 @@ fn show(n: i64) {
 fn count_even(xs: List[i64]) -> i64 {
     var even = 0
     for x in xs {
-        if x % 2 == 0 && x % 16 != 0 {
-            even = even + 1
-        }
+        if x % 2 == 0 && x % 16 != 0 { even = even + 1 }
     }
     return even
 }
@@ -285,9 +283,7 @@ fn main() {
         var local = i
         sum = sum + local / 4 * 100 + local % 4
         local = local * 16
-        if local % 32 == 0 {
-            sum = sum + 1
-        }
+        if local % 32 == 0 { sum = sum + 1 }
         i = i + 1
     }
     print(sum)

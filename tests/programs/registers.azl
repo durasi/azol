@@ -50,18 +50,14 @@ fn squares(n: i64) -> i64 {
 
 // Every call keeps its own `n` and `a` while the calls below it run.
 fn fib(n: i64) -> i64 {
-    if n < 2 {
-        return n
-    }
+    if n < 2 { return n }
     let a = fib(n - 1)
     let b = fib(n - 2)
     return a + b
 }
 
 fn factorial(n: i64) -> i64 {
-    if n <= 1 {
-        return 1
-    }
+    if n <= 1 { return 1 }
     return n * factorial(n - 1)
 }
 
@@ -102,9 +98,7 @@ fn divide(a: i64, b: i64) -> i64 {
     let quotient = a / b
     let remainder = a % b
     let check = quotient * b + remainder
-    if check != a {
-        return 0 - 1
-    }
+    if check != a { return 0 - 1 }
     return quotient * 10 + remainder
 }
 

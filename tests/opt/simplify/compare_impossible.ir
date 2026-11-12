@@ -1,0 +1,9 @@
+; Nothing is below the smallest number or above the largest; nothing is below 0 unsigned.
+fn main(p0: i64) -> bool, bool, bool, bool {
+b0:
+    v0 = slt p0, -9223372036854775808
+    v1 = sgt p0, 9223372036854775807
+    v2 = ult p0, 0
+    v3 = ugt p0, -1
+    ret v0, v1, v2, v3
+}

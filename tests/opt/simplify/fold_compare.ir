@@ -1,0 +1,9 @@
+; Signed and unsigned comparisons of constants.
+fn main() -> bool, bool, bool, bool {
+b0:
+    v0 = slt -1, 0
+    v1 = ult -1, 0
+    v2 = uge -1, 1
+    v3 = sle 3, 3
+    ret v0, v1, v2, v3
+}

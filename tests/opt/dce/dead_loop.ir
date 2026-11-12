@@ -1,0 +1,14 @@
+; A loop that counts up to a bound, does nothing else, and whose values nothing uses afterwards: it ends, so it goes.
+fn main(p0: i64) -> i64 {
+b0:
+    jump b1(0, 1)
+b1(v0: i64, v1: i64):
+    v2 = slt v0, p0
+    br v2, b2, b3
+b2:
+    v3 = mul v1, 3
+    v4 = add v0, 1
+    jump b1(v4, v3)
+b3:
+    ret p0
+}

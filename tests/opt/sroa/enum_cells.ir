@@ -1,0 +1,43 @@
+; A value with a tag and two fields, as lowering lays out an enum, and
+; inside it another one: built in one branch as one variant and in the
+; other as another, then matched by a chain of comparisons.
+fn f(p0: i64) -> i64 {
+    frames 32
+b0:
+    v0 = frame 0
+    v1 = gep v0, 0, 1, 8
+    v2 = gep v1, 0, 1, 8
+    jump b1
+b1:
+    v3 = sgt p0, 0
+    br v3, b2, b3
+b2:
+    store i64, v0, 0, 1  [frame 0]
+    store i64, v1, 0, 2  [frame 0]
+    store i64, v2, 0, p0  [frame 0]
+    store i64, v2, 8, 0  [frame 0]
+    jump b4
+b3:
+    store i64, v0, 0, 2  [frame 0]
+    store i64, v1, 0, 1  [frame 0]
+    store i64, v2, 0, 0  [frame 0]
+    store i64, v2, 8, 5  [frame 0]
+    jump b4
+b4:
+    v4 = load i64, v0, 0  [frame 0]
+    v5 = eq v4, 1
+    br v5, b5, b6
+b5:
+    v6 = load i64, v1, 0  [frame 0]
+    v7 = eq v6, 2
+    br v7, b7, b8
+b6:
+    v8 = load i64, v0, 24  [frame 0]
+    ret v8
+b7:
+    v9 = load i64, v0, 16  [frame 0]
+    v10 = mul v9, 10
+    ret v10
+b8:
+    ret -1
+}

@@ -4,9 +4,7 @@
 // `exit` ends the program at once with the given code.
 
 fn check(value: i64) {
-    if value > 1 {
-        exit(value)
-    }
+    if value > 1 { exit(value) }
     print(value)
 }
 

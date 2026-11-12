@@ -1,0 +1,6 @@
+; A constant count outside 0..63 is written as its remainder.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = shl p0, 67
+    ret v0
+}

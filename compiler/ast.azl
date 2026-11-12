@@ -257,14 +257,10 @@ fn span_text(src: str, span: Span) -> str {
 
 // True when the span's text is exactly `text`.
 fn span_is(src: str, span: Span, text: str) -> bool {
-    if span.len != text.len() {
-        return false
-    }
+    if span.len != text.len() { return false }
     var i = 0
     while i < span.len {
-        if src[span.start + i] != text[i] {
-            return false
-        }
+        if src[span.start + i] != text[i] { return false }
         i = i + 1
     }
     return true
@@ -272,17 +268,11 @@ fn span_is(src: str, span: Span, text: str) -> bool {
 
 // True when two spans of the same source cover the same text.
 fn spans_equal(src: str, a: Span, b: Span) -> bool {
-    if a.len != b.len {
-        return false
-    }
-    if a.start == b.start {
-        return true
-    }
+    if a.len != b.len { return false }
+    if a.start == b.start { return true }
     var i = 0
     while i < a.len {
-        if src[a.start + i] != src[b.start + i] {
-            return false
-        }
+        if src[a.start + i] != src[b.start + i] { return false }
         i = i + 1
     }
     return true

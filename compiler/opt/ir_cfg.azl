@@ -132,9 +132,7 @@ fn ir_cfg(f: IrFunc) -> IrCfg {
         let at = stack_blk[top]
         let last = f.blk_last[at]
         var edges = 0
-        if last >= 0 {
-            edges = f.ins_en[last]
-        }
+        if last >= 0 { edges = f.ins_en[last] }
         if stack_edge[top] < edges {
             // The last way out first, so that in the finished order the
             // first way out of a block comes right after it.
@@ -159,9 +157,7 @@ fn ir_cfg(f: IrFunc) -> IrCfg {
     }
     // Dominators.
     var idom = (-1).filled(blocks)
-    if rpo.len() > 0 {
-        idom[rpo[0]] = rpo[0]
-    }
+    if rpo.len() > 0 { idom[rpo[0]] = rpo[0] }
     var changed = true
     while changed {
         changed = false
@@ -225,9 +221,7 @@ fn ir_cfg(f: IrFunc) -> IrCfg {
 // Whether every path from the entry to `b` goes through `a`. A block
 // dominates itself. False when either cannot be reached.
 fn ir_dominates(cfg: IrCfg, a: i64, b: i64) -> bool {
-    if cfg.rpo_at[a] < 0 || cfg.rpo_at[b] < 0 {
-        return false
-    }
+    if cfg.rpo_at[a] < 0 || cfg.rpo_at[b] < 0 { return false }
     var at = b
     while cfg.dom_depth[at] > cfg.dom_depth[a] {
         at = cfg.idom[at]
@@ -251,20 +245,14 @@ fn ir_cfg_loops(f: IrFunc, cfg: mut IrCfg) {
         while k < cfg.pred_n[header] {
             let from = cfg.pred_blk[cfg.pred_s[header] + k]
             k = k + 1
-            if cfg.rpo_at[from] < 0 || cfg.rpo_at[from] < cfg.rpo_at[header] {
-                continue
-            }
+            if cfg.rpo_at[from] < 0 || cfg.rpo_at[from] < cfg.rpo_at[header] { continue }
             if !ir_dominates(cfg, header, from) {
                 cfg.irreducible = cfg.irreducible + 1
                 continue
             }
-            if !latches.contains(from) {
-                latches.push(from)
-            }
+            if !latches.contains(from) { latches.push(from) }
         }
-        if latches.len() == 0 {
-            continue
-        }
+        if latches.len() == 0 { continue }
         let id = cfg.loop_header.len()
         cfg.loop_header.push(header)
         cfg.loop_parent.push(cfg.blk_loop[header])
@@ -330,9 +318,7 @@ fn ir_cfg_loops(f: IrFunc, cfg: mut IrCfg) {
 fn ir_in_loop(cfg: IrCfg, b: i64, l: i64) -> bool {
     var at = cfg.blk_loop[b]
     while at >= 0 {
-        if at == l {
-            return true
-        }
+        if at == l { return true }
         at = cfg.loop_parent[at]
     }
     return false

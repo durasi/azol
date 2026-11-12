@@ -1,0 +1,8 @@
+; A shift by 0 is the value.
+fn main(p0: i64) -> i64, i64, i64 {
+b0:
+    v0 = shl p0, 0
+    v1 = sar p0, 0
+    v2 = shr p0, 0
+    ret v0, v1, v2
+}

@@ -1,9 +1,7 @@
 // Measuring program: function calls and recursion.
 
 fn fib(n: i64) -> i64 {
-    if n < 2 {
-        return n
-    }
+    if n < 2 { return n }
     return fib(n - 1) + fib(n - 2)
 }
 
@@ -12,12 +10,8 @@ fn square(x: i64) -> i64 {
 }
 
 fn clamp(x: i64, low: i64, high: i64) -> i64 {
-    if x < low {
-        return low
-    }
-    if x > high {
-        return high
-    }
+    if x < low { return low }
+    if x > high { return high }
     return x
 }
 
@@ -31,9 +25,7 @@ fn main() {
     var i = 0
     while i < 20000 {
         total = total + square(i) % 7 + clamp(i, 100, 15000)
-        if is_even(i) {
-            total = total - 1
-        }
+        if is_even(i) { total = total - 1 }
         i = i + 1
     }
     print(total)

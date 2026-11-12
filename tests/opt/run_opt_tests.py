@@ -898,15 +898,22 @@ def main():
         compared, refused = lower_tests(azol, binary, problems)
         print("%d whole programs lowered: interpreted like their executables, verified, printed and read back (%d more are not programs)" % (compared, refused))
         print("the compiler lowered: verified, read back, and interpreted it builds examples/hello.azl and itself as azol does")
+    # The back end (x86-64 Linux): tests/opt/run_back_tests.py.
+    import run_back_tests
+    run_back_tests.run(azol, binary, folder, total, seed, problems)
+    # The passes `simplify`, `dce`, `dse` and the pipeline: tests/opt/run_pass_tests.py.
+    import run_pass_tests
+    run_pass_tests.run(azol, folder, min(total, 3000), seed, problems)
+    # The back end for ARM64, in emulators: tests/opt/run_back_arm64_tests.py.
+    import run_back_arm64_tests
+    run_back_arm64_tests.run(azol, binary, folder, total, seed, problems)
     for problem in problems:
         print("FAIL " + problem)
     if problems:
         print("%d FAILED; files are in %s" % (len(problems), folder))
         sys.exit(1)
     if "--keep" not in argv:
-        for name in os.listdir(folder):
-            os.unlink(os.path.join(folder, name))
-        os.rmdir(folder)
+        shutil.rmtree(folder, ignore_errors=True)
     print("ALL OPT TESTS PASSED")
 
 

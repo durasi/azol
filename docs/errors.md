@@ -2,7 +2,7 @@
 
 Written by `azol explain --markdown` from the compiler's table of error codes; do not edit by hand. `azol explain <code>` prints the same text.
 
-Areas: E01 syntax, E02 names, E03 types, E04 ownership and exclusivity, E05 patterns, E06 generics, E07 constants, E08 limits.
+Areas: E01 syntax, E02 names, E03 types, E04 ownership and exclusivity, E05 patterns, E06 generics, E07 constants, E08 limits, E14 the short forms.
 
 ## E0101
 
@@ -1056,3 +1056,187 @@ The only number type so far is `i64`.
 Messages:
 
 - there are no floating-point numbers yet; the only number type is `i64`
+
+## E1401
+
+Adding to a variable is written `x += 1`; there is no `++`, no `--`, and the sign comes before the `=`.
+
+What to do: Write `+= 1` or `-= 1`.
+
+`a op= b` means `a = a op b` for `+`, `-`, `*`, `/`, `%`, `&`, `|`, `^`, `<<` and `>>`. It is a statement, not a value.
+
+Wrong:
+
+    count++
+
+Right:
+
+    count += 1
+
+Messages:
+
+- azoL has no `++`; write `x += 1`
+- azoL has no `--`; write `x -= 1`
+- azoL has no `=+`; write `x += 1`
+- azoL has no `=-`; write `x -= 1`, or `x = -1` for the negative number
+
+## E1402
+
+`a..b` and `a..=b` are written only after `for ... in`; a range is not a value.
+
+A range cannot be stored, passed or indexed with. To count backwards write `for i in n - 1..=0 step -1`. For a part of a list use `xs.slice(a, b)`, `xs.take(n)` or `xs.skip(n)`.
+
+Messages:
+
+- a range exists only in `for i in a..b`; for a part of a list use `xs.slice(a, b)`
+
+## E1403
+
+Both ends of a range are `i64`.
+
+`for i in a..b` counts `a`, `a + 1`, and so on while `i < b`; `a..=b` while `i <= b`. Both ends are worked out once, `a` first.
+
+Messages:
+
+- a range goes from one `i64` to another but this is `...`
+
+## E1404
+
+After `step` comes a number written out, other than zero; a negative one counts down.
+
+`for i in 0..10 step 2` visits 0, 2, 4, 6, 8. `for i in n - 1..=0 step -1` visits `n - 1` down to `0`. The step is not a variable, because its sign decides which way the loop runs.
+
+Messages:
+
+- the step of a range cannot be zero
+- the step of a range is a number written out, as in `step 2` or `step -1`
+
+## E1405
+
+A loop over numbers is `for i in a..b`, with `..=` to include the end and `step k` for another step; there is no `range(n)`, no `.rev()` and no `.step_by(k)`.
+
+What to do: Write the range after `in`: `for i in 0..n`, `for i in n - 1..=0 step -1`.
+
+Wrong:
+
+    for i in range(n) {
+        print(i)
+    }
+
+Right:
+
+    for i in 0..n {
+        print(i)
+    }
+
+Messages:
+
+- there is no `range`; a loop over numbers is written `for i in 0..n`
+- a range has no methods; write `for i in a..b step 2`, and `step -1` to count down
+
+## E1410
+
+In a text, `{value}` puts the text of `value` there: an `i64`, a `bool` or a `str` that exists at that point. A constant text holds no values.
+
+What to do: Write `\{` where a brace itself is meant.
+
+`"total: {sum}"` means `"total: " + str(sum)`. Any expression without a text or a brace of its own may stand between the braces: `"{name.len()} of {xs[i] + 1}"`. Each is worked out once, left to right.
+
+A brace that is only a brace is written `\{`; `}` needs nothing:
+
+    print("\{\"id\": {id}}")
+
+Messages:
+
+- `...` in a text stands for the value of a variable, and there is no variable of that name; write `\{` for a brace
+- a value in a text is an `i64`, a `bool` or a `str` but this is `...`; turn it into text first
+- a constant text cannot hold a value, as constants are worked out before any variable exists; write `\{` for a brace
+
+## E1411
+
+In a text `{` starts a value and the next `}` ends it; a brace that is only a brace is written `\{`.
+
+What to do: Write `\{`.
+
+Wrong:
+
+    print("use { and }")
+
+Right:
+
+    print("use \{ and }")
+
+Messages:
+
+- this `{` starts a value in the text, but no `}` ends it; write `\{` for a brace
+- `...` in a text holds no value; write `\...` for the braces themselves
+- a pattern is a fixed text and holds no values; write `\{` for a brace
+
+## E1412
+
+The value between `{` and `}` in a text contains no text literal and no brace.
+
+Wrong:
+
+    print("name: {names.get("first")}")
+
+Right:
+
+    let first = names.get("first")
+    print("name: {first}")
+
+Messages:
+
+- a value in a text cannot hold a text or a brace of its own; give the value a name with `let` first
+
+## E1413
+
+A value in a text is written `{value}` and nothing else: no `$`, no `f` before the text, no number that stands for a later argument, no format after `:`.
+
+From other languages:
+
+    "${x}"      is  "{x}"
+    f"{x}"      is  "{x}"
+    "{0}", x    is  "{x}"
+    "{x:>5}"    is  `let shown = str(x).pad_left(5, " ")` and then "{shown}"
+
+A dollar sign in front of a value is written apart: `"$" + "{price}"`.
+
+Messages:
+
+- a value in a text is written `{value}`, without `$`
+- a value in a text is written where it goes, `{value}`, not numbered and given afterwards
+- a value in a text has no format after `:`; base and padding are methods, as in `{n.to_hex()}`
+- a text needs no `f` in front to hold values: write `"total: {sum}"`
+- a value in a text is one expression, and this is more than one; write `\{` if a brace was meant
+
+## E1419
+
+In a struct literal `Pair { key, value }` means `Pair { key: key, value: value }`: a field written by its name alone takes the variable of that name.
+
+A field may be given either way in the same literal: `Pair { key, value: 0 }`.
+
+Messages:
+
+- field `...` is given by its name alone, but there is no variable `...`; write `...: <value>`
+
+## E1421
+
+In `a op= b` the place `a` is a variable, a field or a list element whose index is made of names, numbers, fields and arithmetic.
+
+`xs[next()] += 1` would have to call `next` once and use the result twice. Say so yourself:
+
+    let at = next()
+    xs[at] += 1
+
+Messages:
+
+- the place of `...=` is worked out twice, so its index cannot call a function; give the index a name with `let` first
+
+## E1422
+
+`for i, x in xs` gives a position and an item of a list; a range has only the number.
+
+Messages:
+
+- a loop over a range has one variable, the number itself: write `for ... in a..b`

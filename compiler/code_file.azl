@@ -100,9 +100,7 @@ fn bad_code_file(reader: Reader, problem: str) {
 fn skip_spaces(reader: mut Reader) {
     while reader.at < reader.text.len() {
         let c = reader.text[reader.at]
-        if c != ' ' && c != '\n' && c != '\r' {
-            break
-        }
+        if c != ' ' && c != '\n' && c != '\r' { break }
         reader.at = reader.at + 1
     }
 }
@@ -113,9 +111,7 @@ fn read_word(reader: mut Reader) -> str {
     let start = reader.at
     while reader.at < reader.text.len() {
         let c = reader.text[reader.at]
-        if c == ' ' || c == '\n' || c == '\r' {
-            break
-        }
+        if c == ' ' || c == '\n' || c == '\r' { break }
         reader.at = reader.at + 1
     }
     return reader.text.slice(start, reader.at)
@@ -123,9 +119,7 @@ fn read_word(reader: mut Reader) -> str {
 
 // The rest of the current line, without the space in front of it.
 fn read_rest_of_line(reader: mut Reader) -> str {
-    if reader.at < reader.text.len() && reader.text[reader.at] == ' ' {
-        reader.at = reader.at + 1
-    }
+    if reader.at < reader.text.len() && reader.text[reader.at] == ' ' { reader.at = reader.at + 1 }
     let start = reader.at
     while reader.at < reader.text.len() && reader.text[reader.at] != '\n' {
         reader.at = reader.at + 1
@@ -140,25 +134,19 @@ fn read_number(reader: mut Reader) -> i64 {
     var digits = 0
     while reader.at < reader.text.len() {
         let c = reader.text[reader.at]
-        if c < '0' || c > '9' {
-            break
-        }
+        if c < '0' || c > '9' { break }
         value = value * 10 + (c - '0')
         digits = digits + 1
         reader.at = reader.at + 1
     }
-    if digits == 0 {
-        bad_code_file(reader, "a number is missing")
-    }
+    if digits == 0 { bad_code_file(reader, "a number is missing") }
     return value
 }
 
 // The next word must be exactly `word`.
 fn expect_word(reader: mut Reader, word: str) {
     let found = read_word(mut reader)
-    if found != word {
-        bad_code_file(reader, "expected `" + word + "` but found `" + found + "`")
-    }
+    if found != word { bad_code_file(reader, "expected `" + word + "` but found `" + found + "`") }
 }
 
 // `word` followed by a number.
@@ -169,12 +157,8 @@ fn read_field(reader: mut Reader, word: str) -> i64 {
 
 // The value of a hexadecimal digit, or -1.
 fn hex_digit(c: i64) -> i64 {
-    if c >= '0' && c <= '9' {
-        return c - '0'
-    }
-    if c >= 'a' && c <= 'f' {
-        return c - 'a' + 10
-    }
+    if c >= '0' && c <= '9' { return c - '0' }
+    if c >= 'a' && c <= 'f' { return c - 'a' + 10 }
     return -1
 }
 
@@ -188,9 +172,7 @@ fn read_bytes(reader: mut Reader, count: i64) -> str {
         }
         let high = hex_digit(reader.text[reader.at])
         let low = hex_digit(reader.text[reader.at + 1])
-        if high < 0 || low < 0 {
-            bad_code_file(reader, "a byte is not two hexadecimal digits")
-        }
+        if high < 0 || low < 0 { bad_code_file(reader, "a byte is not two hexadecimal digits") }
         bytes.push(high * 16 + low)
         reader.at = reader.at + 2
     }
@@ -201,9 +183,7 @@ fn read_bytes(reader: mut Reader, count: i64) -> str {
 fn read_code_file(text: str) -> CodeFile {
     var reader = Reader { text: text, at: 0 }
     expect_word(mut reader, "azol-code")
-    if read_number(mut reader) != 1 {
-        bad_code_file(reader, "this is not version 1 of the format")
-    }
+    if read_number(mut reader) != 1 { bad_code_file(reader, "this is not version 1 of the format") }
     expect_word(mut reader, "target")
     let target = read_word(mut reader)
 
@@ -254,9 +234,7 @@ fn read_code_file(text: str) -> CodeFile {
             entries: entries, calls: calls, refs: refs,
         }
     }
-    if target != "x86_64-linux" {
-        bad_code_file(reader, "unknown target `" + target + "`")
-    }
+    if target != "x86_64-linux" { bad_code_file(reader, "unknown target `" + target + "`") }
     let entry = read_field(mut reader, "entry")
     base = read_field(mut reader, "runtime")
     text_offset = read_number(mut reader)

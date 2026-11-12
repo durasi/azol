@@ -1,0 +1,8 @@
+; A branch on false takes its second edge, with that edge's arguments.
+fn main(p0: i64) -> i64 {
+b0:
+    br 0, b1(1), b1(p0)
+b1(v0: i64):
+    v1 = mul v0, 3
+    ret v1
+}

@@ -1,0 +1,15 @@
+; A loop parameter that only feeds its own next value.
+fn main(p0: i64) -> i64 {
+b0:
+    jump b1(0, 0)
+b1(v0: i64, v1: i64):
+    v2 = slt v0, p0
+    br v2, b2, b3
+b2:
+    callrt print_i64(v0)
+    v3 = add v1, v0
+    v4 = add v0, 1
+    jump b1(v4, v3)
+b3:
+    ret p0
+}

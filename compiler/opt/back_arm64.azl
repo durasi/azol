@@ -1,0 +1,336 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The optimising back end for ARM64, macOS and Linux, as one piece:
+// from a module in the intermediate form to the bytes of an executable.
+// Selection (`sel_arm64.azl`), register allocation (`regalloc.azl`) and
+// emission (`emit_arm64.azl`) for every function, then the runtime
+// (`../runtime_arm64.azl`) and the calls, and the file: for macOS
+// through `build_macho` (`../macho.azl`), which also signs it, from the
+// same `CodeFile` the default code generator hands it; for Linux
+// through `bka_link_linux` below, which is `a_build_linux` of
+// `../arm64_link.azl` for a list of instructions instead of the default
+// generator's own state, so that this back end can be built without
+// the rest of the compiler.
+
+// The instructions as bytes, lowest byte first.
+fn bka_words_to_bytes(words: List[i64]) -> str {
+    var bytes = ""
+    for word in words {
+        bytes.push(word)
+        bytes.push(word >> 8)
+        bytes.push(word >> 16)
+        bytes.push(word >> 24)
+    }
+    return bytes
+}
+
+// The name a macOS signature is made for: the last part of the output
+// path, or `azol-program` when the path has none. As `a_ident`.
+fn bka_ident(out: str) -> str {
+    var name = ""
+    var has_name = false
+    var start = 0
+    var at = 0
+    let end = out.len()
+    while at <= end {
+        if at == end || out[at] == '/' {
+            let part = out.slice(start, at)
+            if part == ".." {
+                has_name = false
+            } else if part.len() > 0 && (part != "." || start == 0) {
+                name = part
+                has_name = part != "."
+            }
+            start = at + 1
+        }
+        at = at + 1
+    }
+    if !has_name { return "azol-program" }
+    return name
+}
+
+// The Linux executable: the file `a_build_linux` writes, byte for byte,
+// for the instructions `words` with `main` at instruction `entry`.
+// `data` is the runtime's text followed by the program's; `library` is
+// the content of `runtime/linux_arm64/runtime.bin`. Gives "" when the
+// program is too large.
+fn bka_link_linux(words: mut List[i64], relocs: List[Reloc], entry: i64, data: str, library: str) -> str {
+    let page = 65536
+    let jump = ALR_TEXT_OFFSET + library.len()
+    let code_at = jump + 4
+    let data_at = code_at + words.len() * 4
+    let file_size = data_at + data.len()
+    if ALR_BASE + file_size > ALR_MEMORY || code_at + words.len() * 4 >= 134217728 { return "" }
+    var text = ""
+    put8(mut text, 0x7F)
+    put_text(mut text, "ELF")
+    put8(mut text, 2)
+    put8(mut text, 1)
+    put8(mut text, 1)
+    put8(mut text, 0)
+    put64(mut text, 0)
+    put16(mut text, 2)
+    put16(mut text, 183)
+    put32(mut text, 1)
+    put64(mut text, ALR_BASE + ALR_TEXT_OFFSET + ALR_START)
+    put64(mut text, 64)
+    put64(mut text, 0)
+    put32(mut text, 0)
+    put16(mut text, 64)
+    put16(mut text, 56)
+    put16(mut text, 3)
+    put16(mut text, 64)
+    put16(mut text, 0)
+    put16(mut text, 0)
+    bka_program_header(mut text, pt_load(), pf_r() | pf_x(), ALR_BASE, file_size, file_size, page)
+    bka_program_header(mut text, pt_load(), pf_r() | pf_w(), ALR_MEMORY, 0, ALR_MEMORY_SIZE, page)
+    bka_program_header(mut text, pt_gnu_stack(), pf_r() | pf_w(), 0, 0, 0, 16)
+    pad_to(mut text, ALR_TEXT_OFFSET, 0)
+    text = text + library
+    // The library calls this spot: `b main`.
+    put32(mut text, ax_b((code_at + entry * 4 - jump) >> 2))
+    let offsets = alr_import_offsets()
+    for reloc in relocs {
+        match reloc {
+            Import(at, import) => {
+                // Room for the three instructions macOS needs; a direct
+                // call takes one.
+                words[at] = ax_bl((ALR_TEXT_OFFSET + offsets[import] - (code_at + at * 4)) >> 2)
+                words[at + 1] = AX_NOP
+                words[at + 2] = AX_NOP
+            }
+            Data(at, offset, register) => {
+                let pc = ALR_BASE + code_at + at * 4
+                let target = ALR_BASE + data_at + offset
+                words[at] = adrp(register, pc, target)
+                words[at + 1] = ax_addsub_imm(0, 0, register, register, target & 0xFFF, 0)
+            }
+        }
+    }
+    return text + bka_words_to_bytes(words) + data
+}
+
+fn bka_program_header(out: mut str, kind: i64, flags: i64, address: i64, file_size: i64, memory_size: i64, align: i64) {
+    put32(mut out, kind)
+    put32(mut out, flags)
+    put64(mut out, 0)
+    put64(mut out, address)
+    put64(mut out, address)
+    put64(mut out, file_size)
+    put64(mut out, memory_size)
+    put64(mut out, align)
+}
+
+fn bka_reg_name(reg: i64) -> str {
+    if reg >= MF_SLOT0 { return "slot" + str(reg - MF_SLOT0) }
+    if reg >= MF_VREG0 { return "%" + str(reg - MF_VREG0) }
+    return "x" + str(reg)
+}
+
+fn bka_op_name(op: i64) -> str {
+    let names = ["?", "entry", "movi", "lea", "copy", "alu", "alui", "madd", "rem", "neg", "shi", "ext", "load", "loadp", "store", "storep", "cmpset", "select", "cmpbr", "tstbr", "bcc", "jmp", "switch", "ret", "trap", "call", "callrt", "callimp", "nop"]
+    if op < 0 || op >= names.len() { return "?" }
+    return names[op]
+}
+
+// The machine code of a function as text, with the moves the allocator
+// put before each instruction. Each operand shows the virtual register
+// it was and the place it got.
+fn bka_dump(m: MFunc, result: RaResult) -> str {
+    var out = "fn " + m.name + ": " + str(result.slots) + " slots\n"
+    var b = 0
+    while b < m.b_first.len() {
+        out = out + "  B" + str(b)
+        var k = 0
+        while k < m.b_pn[b] {
+            let p = m.b_ps[b] + k
+            out = out + " " + bka_reg_name(m.params[p]) + "@" + bka_reg_name(result.param_loc[p])
+            k = k + 1
+        }
+        out = out + "\n"
+        var i = m.b_first[b]
+        while i <= m.b_last[b] {
+            k = result.mv_start[i]
+            while k < result.mv_start[i + 1] {
+                let kind = result.mv_kind[k]
+                var from = bka_reg_name(result.mv_a[k])
+                var to = bka_reg_name(result.mv_b[k])
+                if kind == RA_MV_LOAD || kind == RA_MV_SLOTS { from = "slot" + str(result.mv_a[k]) }
+                if kind == RA_MV_STORE || kind == RA_MV_SLOTS || kind == RA_MV_CONST_S {
+                    to = "slot" + str(result.mv_b[k])
+                }
+                if kind == RA_MV_CONST_R || kind == RA_MV_CONST_S {
+                    from = str(m.consts[result.mv_a[k]])
+                }
+                out = out + "      move " + from + " -> " + to + "\n"
+                k = k + 1
+            }
+            out = out + "    " + bka_op_name(m.op[i]) + " imm=" + str(m.imm[i]) + " x=" + str(m.x[i]) + " y=" + str(m.y[i]) + " z=" + str(m.z[i]) + " :"
+            k = 0
+            while k < m.on[i] {
+                let o = m.os[i] + k
+                out = out + " "
+                if m.o_role[o] & MF_DEF != 0 { out = out + "=" }
+                if result.orig[o] >= MF_VREG0 { out = out + bka_reg_name(result.orig[o]) + "@" }
+                out = out + bka_reg_name(m.o_reg[o])
+                k = k + 1
+            }
+            if m.b_sn[b] > 0 && i == m.b_last[b] {
+                out = out + " ->"
+                k = 0
+                while k < m.b_sn[b] {
+                    out = out + " B" + str(m.s_blk[m.b_ss[b] + k])
+                    k = k + 1
+                }
+            }
+            out = out + "\n"
+            i = i + 1
+        }
+        b = b + 1
+    }
+    return out
+}
+
+// Builds the executable whose entry is function `entry` of `m`, for
+// macOS when `macos` is set and for Linux otherwise. `out` is where it
+// will be written, which a macOS signature names. The module must
+// already hold `__memcpy` (BK_HELPERS); its `__realloc` is for the
+// x86-64 runtime and is left out here, where `realloc` is the system's.
+//
+// `runtime_data` is the content of `runtime/runtime_data.bin`, the text
+// of the ARM64 runtime; `library` that of
+// `runtime/linux_arm64/runtime.bin`, which only Linux needs.
+fn bka_build(m: IrModule, entry: i64, options: BkOptions, macos: bool, out_path: str, runtime_data: str, library: str) -> BkResult {
+    var out = bk_fail("")
+    out.ok = true
+    var data = m.data
+    var trap_at: List[i64] = []
+    var kind = 0
+    while kind < 7 {
+        trap_at.push(data.len())
+        data = data + ir_trap_message(kind)
+        kind = kind + 1
+    }
+    let memcpy_fn = ir_find_func(m, "__memcpy")
+    var target = sa_target()
+    if options.stress { target = sa_stress_target() }
+    var words: List[i64] = []
+    var links: List[Reloc] = []
+    var starts: List[i64] = []
+    var call_at: List[i64] = []
+    var call_fn: List[i64] = []
+    var rt: List[Fixup] = []
+    var at = 0
+    while at < m.funcs.len() {
+        var f = m.funcs[at]
+        at = at + 1
+        starts.push(words.len())
+        if f.name == "__realloc" { continue }
+        var targets: List[i64] = []
+        for name in f.callees {
+            let found = ir_find_func(m, name)
+            if found < 0 {
+                return bk_fail("`" + f.name + "` calls `" + name + "`, which the module does not have")
+            }
+            targets.push(found)
+        }
+        let t0 = clock()
+        var sa = sa_function(mut f, targets, memcpy_fn)
+        if !sa.ok { return bk_fail(f.name + ": " + sa.error) }
+        let t1 = clock()
+        let result = ra_allocate(mut sa.mf, target)
+        let t2 = clock()
+        if !result.ok { return bk_fail(f.name + ": " + result.error) }
+        if options.check {
+            let problem = ra_check(sa.mf, result)
+            if problem.len() > 0 {
+                return bk_fail(f.name + ": the allocation is wrong: " + problem)
+            }
+        }
+        if options.dump { print(bka_dump(sa.mf, result)) }
+        let t3 = clock()
+        let made = ea_function(sa, result, f.frames, trap_at)
+        if !made.ok { return bk_fail(f.name + ": " + made.error) }
+        let start = words.len()
+        for word in made.words {
+            words.push(word)
+        }
+        var k = 0
+        while k < made.call_at.len() {
+            call_at.push(start + made.call_at[k])
+            call_fn.push(made.call_fn[k])
+            k = k + 1
+        }
+        for fix in made.rt {
+            rt.push(Fixup { field: start + fix.field, value: fix.value })
+        }
+        for reloc in made.relocs {
+            match reloc {
+                Import(where, import) => links.push(Import(start + where, import))
+                Data(where, offset, register) => links.push(Data(start + where, offset, register))
+            }
+        }
+        let t4 = clock()
+        out.select_ns = out.select_ns + (t1 - t0)
+        out.allocate_ns = out.allocate_ns + (t2 - t1)
+        out.emit_ns = out.emit_ns + (t4 - t3)
+    }
+    out.code_bytes = words.len() * 4
+    // The runtime follows, as it does in `a_generate`.
+    let runtime_start = words.len()
+    for word in art_words() {
+        words.push(word)
+    }
+    let relocs = art_relocs()
+    let offsets = art_data_offsets()
+    var r = 0
+    while r < relocs.len() {
+        if relocs[r] == 0 {
+            links.push(Import(runtime_start + relocs[r + 1], relocs[r + 2]))
+        } else {
+            links.push(Data(runtime_start + relocs[r + 1], offsets[relocs[r + 2]], relocs[r + 3]))
+        }
+        r = r + 4
+    }
+    var k = 0
+    while k < call_at.len() {
+        words[call_at[k]] = ax_bl(starts[call_fn[k]] - call_at[k])
+        k = k + 1
+    }
+    for fix in rt {
+        words[fix.field] = ax_bl(runtime_start + fix.value - fix.field)
+    }
+    // The runtime's text comes first in the data, then the program's.
+    let all = runtime_data + data
+    if !macos {
+        out.image = bka_link_linux(mut words, links, starts[entry], all, library)
+        if out.image.len() == 0 {
+            return bk_fail("the program is too large for this executable layout")
+        }
+        return out
+    }
+    // On macOS a program starts in the runtime's `_rt_start`, which
+    // calls `main` through a word that is filled in here, as
+    // `a_start_through_runtime` does.
+    let call = runtime_start + ART_START_MAIN
+    words[call] = ax_bl(starts[entry] - call)
+    let code = CodeFile {
+        target: "aarch64-macos",
+        entry: runtime_start + ART_START,
+        code: bka_words_to_bytes(words),
+        data: all,
+        ident: bka_ident(out_path),
+        imports: art_imports(),
+        relocs: links,
+        base: 0,
+        text_offset: 0,
+        start: 0,
+        memory: 0,
+        memory_size: 0,
+        entries: [],
+        calls: [],
+        refs: []
+    }
+    out.image = build_macho(code)
+    return out
+}

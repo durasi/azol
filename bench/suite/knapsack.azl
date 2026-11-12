@@ -7,9 +7,7 @@
 const SMALL = false
 
 fn size(full: i64, small: i64) -> i64 {
-    if SMALL {
-        return small
-    }
+    if SMALL { return small }
     return full
 }
 
@@ -27,9 +25,7 @@ fn main() {
         var c = capacity
         while c >= weight {
             let with_item = best[c - weight] + value
-            if with_item > best[c] {
-                best[c] = with_item
-            }
+            if with_item > best[c] { best[c] = with_item }
             c = c - 1
         }
         n = n + 1

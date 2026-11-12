@@ -55,9 +55,7 @@ fn repeat(s: str, n: i64) -> str {
 fn join(parts: List[str], sep: str) -> str {
     var out = ""
     for i, part in parts {
-        if i > 0 {
-            out = out + sep
-        }
+        if i > 0 { out = out + sep }
         out = out + part
     }
     return out
@@ -68,9 +66,7 @@ fn shout(s: mut str) {
 }
 
 fn pick(flag: bool) -> str {
-    if flag {
-        return "yes"
-    }
+    if flag { return "yes" }
     return "no" + "pe"
 }
 
@@ -105,9 +101,7 @@ fn main() {
     print("abc" != "ab")
     print(both == "Hello, " + "World")
     print("" == "")
-    if pick(true) == "yes" && pick(false) == "nope" {
-        print("picked")
-    }
+    if pick(true) == "yes" && pick(false) == "nope" { print("picked") }
 
     var names = ["Grace", "Ada"]
     names.push("Alan" + " " + "T")

@@ -1,0 +1,6 @@
+; x % -8 is x % 8: the sign of the divisor does not count.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = srem p0, -8
+    ret v0
+}

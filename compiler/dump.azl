@@ -26,15 +26,11 @@ fn dump_indent(depth: i64, out: mut str) {
 
 // `[T, U]` after a name, or nothing.
 fn dump_generics(ast: Ast, src: str, generics: IdRange, out: mut str) {
-    if generics.len == 0 {
-        return
-    }
+    if generics.len == 0 { return }
     out = out + "["
     var i = 0
     while i < generics.len {
-        if i > 0 {
-            out = out + ", "
-        }
+        if i > 0 { out = out + ", " }
         dump_span(src, ast.names[ast.lists[generics.start + i]], mut out)
         i = i + 1
     }
@@ -50,15 +46,11 @@ fn dump_item(ast: Ast, src: str, item: Item, out: mut str) {
             out = out + "("
             var i = 0
             while i < params.len {
-                if i > 0 {
-                    out = out + ", "
-                }
+                if i > 0 { out = out + ", " }
                 let param = ast.params[ast.lists[params.start + i]]
                 dump_span(src, param.name, mut out)
                 out = out + ": "
-                if param.mutable {
-                    out = out + "mut "
-                }
+                if param.mutable { out = out + "mut " }
                 dump_type(ast, src, param.ty, mut out)
                 i = i + 1
             }
@@ -111,9 +103,7 @@ fn dump_item(ast: Ast, src: str, item: Item, out: mut str) {
                     out = out + "("
                     var j = 0
                     while j < variant.fields.len {
-                        if j > 0 {
-                            out = out + ", "
-                        }
+                        if j > 0 { out = out + ", " }
                         dump_type(ast, src, ast.lists[variant.fields.start + j], mut out)
                         j = j + 1
                     }
@@ -133,9 +123,7 @@ fn dump_type(ast: Ast, src: str, id: i64, out: mut str) {
         out = out + "["
         var i = 0
         while i < ty.args.len {
-            if i > 0 {
-                out = out + ", "
-            }
+            if i > 0 { out = out + ", " }
             dump_type(ast, src, ast.lists[ty.args.start + i], mut out)
             i = i + 1
         }
@@ -274,18 +262,14 @@ fn dump_pattern(ast: Ast, src: str, id: i64, out: mut str) {
             out = out + "("
             var i = 0
             while i < args.len {
-                if i > 0 {
-                    out = out + ", "
-                }
+                if i > 0 { out = out + ", " }
                 dump_pattern(ast, src, ast.lists[args.start + i], mut out)
                 i = i + 1
             }
             out = out + ")"
         }
         PatInt(negative, digits) => {
-            if negative {
-                out = out + "-"
-            }
+            if negative { out = out + "-" }
             dump_span(src, digits, mut out)
         }
         PatStr(text) => dump_span(src, text, mut out)
@@ -301,9 +285,25 @@ fn dump_pattern(ast: Ast, src: str, id: i64, out: mut str) {
 
 fn dump_expr(ast: Ast, src: str, id: i64, out: mut str) {
     match ast.exprs[id] {
-        ExprInt(text) => dump_span(src, text, mut out)
+        ExprInt(text) => {
+            if text.len == 0 {
+                // A number the parser made up for a range loop.
+                out = out + str(text.start)
+            } else {
+                dump_span(src, text, mut out)
+            }
+        }
         ExprFloat(text) => dump_span(src, text, mut out)
-        ExprStr(text) => dump_span(src, text, mut out)
+        ExprStr(text) => {
+            if src[text.start] == '"' {
+                dump_span(src, text, mut out)
+            } else {
+                // A piece of a text with values.
+                out = out + "\""
+                dump_span(src, text, mut out)
+                out = out + "\""
+            }
+        }
         ExprIdent(text) => dump_span(src, text, mut out)
         ExprBool(value) => {
             if value {
@@ -331,8 +331,12 @@ fn dump_expr(ast: Ast, src: str, id: i64, out: mut str) {
             out = out + ")"
         }
         ExprCall(callee, args) => {
-            out = out + "(call "
-            dump_expr(ast, src, callee, mut out)
+            if ast.expr_pos[callee] == ast.expr_pos[id] && dump_is_text_of(ast, callee) {
+                out = out + "(text"
+            } else {
+                out = out + "(call "
+                dump_expr(ast, src, callee, mut out)
+            }
             var i = 0
             while i < args.len {
                 out = out + " "
@@ -387,5 +391,14 @@ fn dump_expr(ast: Ast, src: str, id: i64, out: mut str) {
             }
             out = out + ")"
         }
+    }
+}
+
+// True for the function without a name that stands for "the text of
+// this value" in a text with values.
+fn dump_is_text_of(ast: Ast, callee: i64) -> bool {
+    match ast.exprs[callee] {
+        ExprIdent(name) => return name.len == 0
+        _ => return false
     }
 }

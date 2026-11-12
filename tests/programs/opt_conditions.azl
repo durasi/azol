@@ -170,9 +170,7 @@ fn check(a: bool, b: bool, c: bool) {
     } else {
         print("no 1")
     }
-    if say("a", a) || say("b", b) && say("c", c) {
-        print("yes 2")
-    }
+    if say("a", a) || say("b", b) && say("c", c) { print("yes 2") }
     if !(say("a", a) && !say("b", b)) || !say("c", c) {
         print("yes 3")
     } else if !say("b", b) {
@@ -180,9 +178,7 @@ fn check(a: bool, b: bool, c: bool) {
     } else {
         print("no 3")
     }
-    if (say("a", a) || say("b", b)) && (say("c", c) || say("a", a)) {
-        print("yes 4")
-    }
+    if (say("a", a) || say("b", b)) && (say("c", c) || say("a", a)) { print("yes 4") }
     let kept = say("a", a) && say("b", b) || !say("c", c)
     print(kept)
     var n = 0
@@ -199,18 +195,10 @@ fn main() {
     check(false, true, true)
     check(false, true, false)
     check(false, false, false)
-    if number("left", 3) < number("right", 4) && number("x", 0) == 0 {
-        print("ordered")
-    }
-    if number("left", 5) % 4 == 0 || number("right", 12) % 4 == 0 {
-        print("a multiple")
-    }
-    if number("zero", 0) != 0 {
-        print("wrong")
-    }
-    if true && !false {
-        print("constants")
-    }
+    if number("left", 3) < number("right", 4) && number("x", 0) == 0 { print("ordered") }
+    if number("left", 5) % 4 == 0 || number("right", 12) % 4 == 0 { print("a multiple") }
+    if number("zero", 0) != 0 { print("wrong") }
+    if true && !false { print("constants") }
     if false || !true {
         print("wrong")
     } else {
@@ -220,9 +208,7 @@ fn main() {
         print("wrong")
     }
     // A condition with a temporary to free before it branches.
-    if empty_list().len() == 0 && say("after", true) {
-        print("empty")
-    }
+    if empty_list().len() == 0 && say("after", true) { print("empty") }
     var round = 0
     while empty_list().len() == 0 && round < 2 {
         round = round + 1

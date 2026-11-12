@@ -1,0 +1,15 @@
+; On the false side the condition is false.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = slt p0, 10
+    br v0, b4, b1
+b1:
+    callrt print_i64(p0)
+    br v0, b2, b3
+b2:
+    ret 1
+b3:
+    ret 2
+b4:
+    ret 3
+}

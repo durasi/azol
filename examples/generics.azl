@@ -15,18 +15,14 @@ fn push[T](stack: mut Stack[T], item: T) {
 }
 
 fn pop[T](stack: mut Stack[T]) -> Option[T] {
-    if stack.items.len() == 0 {
-        return None
-    }
+    if stack.items.len() == 0 { return None }
     return Some(stack.items.pop())
 }
 
 fn zip[A, B](left: List[A], right: List[B]) -> List[Pair[A, B]] {
     var pairs: List[Pair[A, B]] = []
     for i, item in left {
-        if i < right.len() {
-            pairs.push(Pair { first: item, second: right[i] })
-        }
+        if i < right.len() { pairs.push(Pair { first: item, second: right[i] }) }
     }
     return pairs
 }

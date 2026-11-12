@@ -168,9 +168,7 @@ fn main() {
     }
     n = 0
     while n < board.size {
-        if board.marks[n] {
-            board.cells[n].c = board.cells[n].a + board.cells[n].b + 1
-        }
+        if board.marks[n] { board.cells[n].c = board.cells[n].a + board.cells[n].b + 1 }
         board.marks[n] = !board.marks[n]
         n = n + 1
     }

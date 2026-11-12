@@ -1,0 +1,367 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The pass `dse` (docs/design/optimizer.md, section 5.10): a `store`
+// that nothing can read goes.
+//
+//     fn ir_dse(f: mut IrFunc) -> i64        how many stores were removed
+//
+// Two parts.
+//
+// 1. Frame objects whose address stays in the function (`ds_frames`).
+//    Such an object is touched by this function's own loads and stores
+//    and by nothing else, so what is alive in it is known exactly: one
+//    bit for every eight bytes, worked out backwards over the whole
+//    function. A store goes when none of the bytes it writes is read
+//    on any path before it is written again or the function ends. This
+//    is where a store before a stop goes: a block that holds a `trap`
+//    reads nothing, and the frame is gone with the program.
+//
+// 2. Everything else, one block at a time (`ds_blocks`). A store goes
+//    when a later store in the same block writes the same bytes of the
+//    same address and nothing in between can have read them. What can:
+//    a load from the same region; a load from any buffer when the
+//    store is to a buffer (a buffer changes owner when a value is
+//    moved, and its region with it); any call of a function; a call of
+//    a runtime routine that is given an address.
+//
+// What it never removes: a store to memory a call could read, a store
+// whose bytes are only partly written again, and a store to anything
+// but a frame object because the program stops afterwards (that needs
+// to know what the routines that end the program print, and none of
+// the code this was measured on has such a store).
+
+// The value an address starts from: the address itself, or the base of
+// the steps by a constant that lead to it.
+fn ds_root(f: IrFunc, x: i64) -> i64 {
+    var cur = x
+    while true {
+        let d = su_def(f, cur)
+        if d < 0 || f.ins_op[d] != IR_GEP || !ir_is_const(f.ins_b[d]) { return cur }
+        cur = f.ins_a[d]
+    }
+    return cur
+}
+
+// How far the address is from `ds_root` of it, in bytes.
+fn ds_offset(f: IrFunc, x: i64) -> i64 {
+    var cur = x
+    var total = 0
+    while true {
+        let d = su_def(f, cur)
+        if d < 0 || f.ins_op[d] != IR_GEP || !ir_is_const(f.ins_b[d]) { return total }
+        total = total + f.ins_imm[d] + ir_const_value(f, f.ins_b[d]) * f.ins_imm2[d]
+        cur = f.ins_a[d]
+    }
+    return total
+}
+
+// The frame object an address points into, through steps of any kind;
+// -1 when it does not start at a `frame`.
+fn ds_object(f: IrFunc, x: i64) -> i64 {
+    var cur = x
+    while true {
+        let d = su_def(f, cur)
+        if d < 0 { return -1 }
+        if f.ins_op[d] == IR_FRAME { return f.ins_imm[d] }
+        if f.ins_op[d] != IR_GEP { return -1 }
+        cur = f.ins_a[d]
+    }
+    return -1
+}
+
+// ---- frame objects ------------------------------------------------------------
+
+// For every frame object, the first of its bits, or -1 when the object
+// cannot be followed: its address is stored, passed on or compared, or
+// something reaches into it at a place that is not a constant.
+fn ds_private_objects(f: IrFunc) -> List[i64] {
+    var private = true.filled(f.frames.len())
+    for b in f.order {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            let op = f.ins_op[ins]
+            let n = ir_operand_count(f, ins)
+            var k = 0
+            while k < n {
+                let x = ir_operand(f, ins, k)
+                k = k + 1
+                if x < 0 { continue }
+                let object = ds_object(f, x)
+                if object < 0 { continue }
+                // As the address of a load or a store, at a known place
+                // inside the object, or as the base of a step.
+                var fine = false
+                if k == 1 && (op == IR_LOAD || op == IR_STORE) {
+                    let root = su_def(f, ds_root(f, x))
+                    let at = ds_offset(f, x) + f.ins_imm[ins]
+                    fine = root >= 0 && f.ins_op[root] == IR_FRAME && at >= 0 && at + ir_type_bytes(f.ins_ty[ins]) <= f.frames[object]
+                } else if k == 1 && op == IR_GEP {
+                    fine = true
+                }
+                if !fine { private[object] = false }
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    var first: List[i64] = []
+    var bits = 0
+    for object, bytes in f.frames {
+        if private[object] {
+            first.push(bits)
+            bits = bits + (bytes + 7) / 8
+        } else {
+            first.push(-1)
+        }
+    }
+    first.push(bits)
+    return first
+}
+
+// The first bit a load or store touches, or -1 when it is not on an
+// object that is followed. It touches that bit and, when it crosses
+// into the next eight bytes, the one after.
+fn ds_bit(f: IrFunc, first: List[i64], ins: i64) -> i64 {
+    let p = f.ins_a[ins]
+    if p < 0 { return -1 }
+    let object = ds_object(f, p)
+    if object < 0 || first[object] < 0 { return -1 }
+    return first[object] + (ds_offset(f, p) + f.ins_imm[ins]) / 8
+}
+
+fn ds_last_bit(f: IrFunc, first: List[i64], ins: i64, bit: i64) -> i64 {
+    let at = ds_offset(f, f.ins_a[ins]) + f.ins_imm[ins]
+    return bit + (at % 8 + ir_type_bytes(f.ins_ty[ins]) - 1) / 8
+}
+
+// Whether a store writes all eight bytes of its bit.
+fn ds_covers(f: IrFunc, ins: i64) -> bool {
+    return ir_type_bytes(f.ins_ty[ins]) == 8 && (ds_offset(f, f.ins_a[ins]) + f.ins_imm[ins]) % 8 == 0
+}
+
+// Goes backwards through block `b` from what is alive at its end,
+// `cur`, to what is alive at its start. With `remove`, takes out the
+// stores that write only what is not alive. Gives how many.
+fn ds_walk(f: mut IrFunc, first: List[i64], bit_of: List[i64], b: i64, cur: mut List[i64], remove: bool) -> i64 {
+    var removed = 0
+    var ins = f.blk_last[b]
+    while ins >= 0 {
+        let before = f.ins_prev[ins]
+        let bit = bit_of[ins]
+        if bit >= 0 {
+            let last = ds_last_bit(f, first, ins, bit)
+            if f.ins_op[ins] == IR_LOAD {
+                var at = bit
+                while at <= last {
+                    cur[at / 64] = cur[at / 64] | 1 << at % 64
+                    at = at + 1
+                }
+            } else {
+                var alive = false
+                var at = bit
+                while at <= last {
+                    alive = alive || cur[at / 64] >> at % 64 & 1 == 1
+                    at = at + 1
+                }
+                if !alive && remove {
+                    ir_remove(mut f, ins)
+                    removed = removed + 1
+                } else if ds_covers(f, ins) {
+                    cur[bit / 64] = cur[bit / 64] & (0 - 1 ^ 1 << bit % 64)
+                }
+            }
+        }
+        ins = before
+    }
+    return removed
+}
+
+fn ds_frames(f: mut IrFunc, first: List[i64]) -> i64 {
+    if f.frames.len() == 0 { return 0 }
+    let bits = first[f.frames.len()]
+    if bits == 0 { return 0 }
+    // The bit of every load and store, found once.
+    var bit_of = (0 - 1).filled(f.ins_op.len())
+    var stores = 0
+    for b in f.order {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            if f.ins_op[ins] == IR_LOAD || f.ins_op[ins] == IR_STORE {
+                bit_of[ins] = ds_bit(f, first, ins)
+                if bit_of[ins] >= 0 && f.ins_op[ins] == IR_STORE { stores = stores + 1 }
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    if stores == 0 { return 0 }
+    let words = (bits + 63) / 64
+    let blocks = f.blk_first.len()
+    var live_in = 0.filled(blocks * words)
+    var cur = 0.filled(words)
+    var changed = true
+    while changed {
+        changed = false
+        var at = f.order.len() - 1
+        while at >= 0 {
+            let b = f.order[at]
+            at = at - 1
+            var w = 0
+            while w < words {
+                cur[w] = 0
+                w = w + 1
+            }
+            let last = f.blk_last[b]
+            var e = f.ins_es[last]
+            let end = e + f.ins_en[last]
+            while e < end {
+                let target = f.edge_blk[e]
+                w = 0
+                while w < words {
+                    cur[w] = cur[w] | live_in[target * words + w]
+                    w = w + 1
+                }
+                e = e + 1
+            }
+            ds_walk(mut f, first, bit_of, b, mut cur, false)
+            w = 0
+            while w < words {
+                if live_in[b * words + w] != cur[w] {
+                    live_in[b * words + w] = cur[w]
+                    changed = true
+                }
+                w = w + 1
+            }
+        }
+    }
+    var removed = 0
+    var at = 0
+    while at < f.order.len() {
+        let b = f.order[at]
+        at = at + 1
+        var w = 0
+        while w < words {
+            cur[w] = 0
+            w = w + 1
+        }
+        let last = f.blk_last[b]
+        var e = f.ins_es[last]
+        let end = e + f.ins_en[last]
+        while e < end {
+            let target = f.edge_blk[e]
+            w = 0
+            while w < words {
+                cur[w] = cur[w] | live_in[target * words + w]
+                w = w + 1
+            }
+            e = e + 1
+        }
+        removed = removed + ds_walk(mut f, first, bit_of, b, mut cur, true)
+    }
+    return removed
+}
+
+// ---- one block at a time --------------------------------------------------------
+
+// Whether a load from region `read` can see what a store to region
+// `written` wrote.
+fn ds_may_read(f: IrFunc, read: i64, written: i64) -> bool {
+    if read == written { return true }
+    return f.reg_kind[read] == IR_REGION_BUF && f.reg_kind[written] == IR_REGION_BUF
+}
+
+fn ds_blocks(f: mut IrFunc, first: List[i64]) -> i64 {
+    var removed = 0
+    // The stores further down the block that nothing has read yet:
+    // where each starts from, its bytes, and its region.
+    var roots: List[i64] = []
+    var from: List[i64] = []
+    var to: List[i64] = []
+    var regions: List[i64] = []
+    var at = 0
+    while at < f.order.len() {
+        let b = f.order[at]
+        at = at + 1
+        roots = []
+        from = []
+        to = []
+        regions = []
+        var ins = f.blk_last[b]
+        while ins >= 0 {
+            let before = f.ins_prev[ins]
+            let op = f.ins_op[ins]
+            if (op == IR_STORE || op == IR_LOAD) && ds_bit(f, first, ins) >= 0 {
+                // An object `ds_frames` follows exactly: nothing to add.
+            } else if op == IR_STORE || op == IR_LOAD {
+                let p = f.ins_a[ins]
+                let root = ds_root(f, p)
+                let start = ds_offset(f, p) + f.ins_imm[ins]
+                let end = start + ir_type_bytes(f.ins_ty[ins])
+                let region = f.ins_reg[ins]
+                if op == IR_STORE {
+                    var hidden = false
+                    var k = 0
+                    while k < roots.len() && !hidden {
+                        hidden = roots[k] == root && regions[k] == region && from[k] <= start && end <= to[k] && root >= 0
+                        k = k + 1
+                    }
+                    if hidden {
+                        ir_remove(mut f, ins)
+                        removed = removed + 1
+                    } else if roots.len() < 64 {
+                        roots.push(root)
+                        from.push(start)
+                        to.push(end)
+                        regions.push(region)
+                    }
+                } else {
+                    // Forget every store this load may read.
+                    var kept = 0
+                    var k = 0
+                    while k < roots.len() {
+                        var seen = ds_may_read(f, region, regions[k])
+                        if seen && roots[k] == root && root >= 0 && (end <= from[k] || to[k] <= start) {
+                            seen = false
+                        }
+                        if !seen {
+                            roots[kept] = roots[k]
+                            from[kept] = from[k]
+                            to[kept] = to[k]
+                            regions[kept] = regions[k]
+                            kept = kept + 1
+                        }
+                        k = k + 1
+                    }
+                    roots.truncate(kept)
+                    from.truncate(kept)
+                    to.truncate(kept)
+                    regions.truncate(kept)
+                }
+            } else if op == IR_CALL {
+                roots = []
+                from = []
+                to = []
+                regions = []
+            } else if op == IR_CALLRT {
+                var reads = false
+                var k = 0
+                while k < f.ins_an[ins] {
+                    reads = reads || ir_operand_type(f, f.args[f.ins_as[ins] + k]) == IR_PTR
+                    k = k + 1
+                }
+                if reads {
+                    roots = []
+                    from = []
+                    to = []
+                    regions = []
+                }
+            }
+            ins = before
+        }
+    }
+    return removed
+}
+
+fn ir_dse(f: mut IrFunc) -> i64 {
+    let first = ds_private_objects(f)
+    let frames = ds_frames(mut f, first)
+    return frames + ds_blocks(mut f, first)
+}

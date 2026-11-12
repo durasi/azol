@@ -1,0 +1,17 @@
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    jump b1(0)
+b1(v0: i64):
+    v1 = slt v0, p0
+    br v1, b2, b3
+b2:
+    v2 = ne v0, p1
+    br v2, b4, b5
+b4:
+    v3 = add v0, 1
+    jump b1(v3)
+b5:
+    trap divide
+b3:
+    ret p0
+}

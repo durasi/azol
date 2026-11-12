@@ -6,9 +6,7 @@ struct Lexer {
 }
 
 fn next(lx: mut Lexer) -> Kind {
-    if lx.pos >= lx.src.len() {
-        return End
-    }
+    if lx.pos >= lx.src.len() { return End }
 
     let c = lx.src[lx.pos] // current
     lx.pos = lx.pos + 1

@@ -34,9 +34,7 @@ fn main() -> i64 {
     var at = first + 1
     while at < arguments.len() {
         let text = read_or_exit(arguments[at])
-        if starts.len() > 0 {
-            src = src + "\n"
-        }
+        if starts.len() > 0 { src = src + "\n" }
         starts.push(src.len())
         paths.push(arguments[at])
         lens.push(text.len())

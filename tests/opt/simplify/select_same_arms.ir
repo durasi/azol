@@ -1,0 +1,7 @@
+; Both arms the same: the condition does not matter.
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v0 = slt p0, p1
+    v1 = select v0, p1, p1
+    ret v1
+}

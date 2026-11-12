@@ -187,6 +187,9 @@ const SYM_RENAME_FILE = 32
 const SYM_CLOCK = 33
 const SYM_EMBED = 34
 const SYM_IS_UTF8 = 35
+// The library method that gives the text of a `str` in a text with
+// values: `str_text`.
+const SYM_TEXT = 36
 
 // One struct type. A generic struct has one per combination of type
 // arguments that the program uses.
@@ -566,9 +569,7 @@ fn names_grow(n: mut Names) {
     var sym = 0
     while sym < n.starts.len() {
         var h = n.packed[sym] * 0x9E3779B97F4A7C15
-        if n.packed[sym] == 0 {
-            h = names_hash(n.text, n.starts[sym], n.lens[sym])
-        }
+        if n.packed[sym] == 0 { h = names_hash(n.text, n.starts[sym], n.lens[sym]) }
         var at = ((h >> 48) ^ (h >> 32)) & mask
         while table[at] != 0 {
             at = (at + 1) & mask
@@ -597,23 +598,17 @@ fn names_intern(n: mut Names, text: str, start: i64, len: i64) -> i64 {
     var at = ((h >> 48) ^ (h >> 32)) & n.mask
     while true {
         let entry = n.table[at]
-        if entry == 0 {
-            break
-        }
+        if entry == 0 { break }
         let sym = entry - 1
         if key != 0 {
-            if n.packed[sym] == key {
-                return sym
-            }
+            if n.packed[sym] == key { return sym }
         } else if n.packed[sym] == 0 && n.lens[sym] == len {
             let known = n.starts[sym]
             var i = 0
             while i < len && n.text[known + i] == text[start + i] {
                 i = i + 1
             }
-            if i == len {
-                return sym
-            }
+            if i == len { return sym }
         }
         at = (at + 1) & n.mask
     }
@@ -623,9 +618,7 @@ fn names_intern(n: mut Names, text: str, start: i64, len: i64) -> i64 {
     n.lens.push(len)
     n.packed.push(key)
     n.text = n.text + text.slice(start, start + len)
-    if sym * 2 > n.mask {
-        names_grow(mut n)
-    }
+    if sym * 2 > n.mask { names_grow(mut n) }
     return sym
 }
 
@@ -641,15 +634,11 @@ fn ck_intern(c: mut Checker, p: Parser, span: Span) -> i64 {
 
 // True when the text of `span` is the name `sym`. Interns nothing.
 fn ck_span_is_sym(c: Checker, p: Parser, span: Span, sym: i64) -> bool {
-    if c.names.lens[sym] != span.len {
-        return false
-    }
+    if c.names.lens[sym] != span.len { return false }
     let known = c.names.starts[sym]
     var i = 0
     while i < span.len {
-        if c.names.text[known + i] != p.src[span.start + i] {
-            return false
-        }
+        if c.names.text[known + i] != p.src[span.start + i] { return false }
         i = i + 1
     }
     return true
@@ -657,9 +646,7 @@ fn ck_span_is_sym(c: Checker, p: Parser, span: Span, sym: i64) -> bool {
 
 // A list indexed by sym: the value for `sym`, or -1.
 fn tab_get(tab: List[i64], sym: i64) -> i64 {
-    if sym < tab.len() {
-        return tab[sym]
-    }
+    if sym < tab.len() { return tab[sym] }
     return -1
 }
 
@@ -694,9 +681,7 @@ fn int_map_place(m: IntMap, key: i64) -> i64 {
 // The value stored for `key` (which is never negative), or -1.
 fn int_map_get(m: IntMap, key: i64) -> i64 {
     let at = int_map_place(m, key)
-    if m.keys[at] == key {
-        return m.values[at]
-    }
+    if m.keys[at] == key { return m.values[at] }
     return -1
 }
 
@@ -754,9 +739,7 @@ fn ck_err_expr(p: Parser, expr: i64, message: str, c: mut Checker) {
 }
 
 fn plural(count: i64) -> str {
-    if count == 1 {
-        return ""
-    }
+    if count == 1 { return "" }
     return "s"
 }
 
@@ -765,9 +748,7 @@ fn repeated(what: str, count: i64) -> str {
     var out = ""
     var i = 0
     while i < count {
-        if i > 0 {
-            out = out + ", "
-        }
+        if i > 0 { out = out + ", " }
         out = out + what
         i = i + 1
     }
@@ -777,94 +758,56 @@ fn repeated(what: str, count: i64) -> str {
 // ---- types ------------------------------------------------------------
 
 fn ck_ty_name(c: Checker, ty: i64) -> str {
-    if ty == TY_I64 {
-        return "i64"
-    }
-    if ty == TY_BOOL {
-        return "bool"
-    }
-    if ty == TY_STR {
-        return "str"
-    }
-    if ty == TY_UNIT {
-        return "no value"
-    }
-    if ty_is_struct(ty) {
-        return c.structs[ty_index(ty)].name
-    }
-    if ty_is_list(ty) {
-        return "List[" + ck_ty_name(c, c.lists[ty_index(ty)]) + "]"
-    }
+    if ty == TY_I64 { return "i64" }
+    if ty == TY_BOOL { return "bool" }
+    if ty == TY_STR { return "str" }
+    if ty == TY_UNIT { return "no value" }
+    if ty_is_struct(ty) { return c.structs[ty_index(ty)].name }
+    if ty_is_list(ty) { return "List[" + ck_ty_name(c, c.lists[ty_index(ty)]) + "]" }
     return c.enums[ty_index(ty)].name
 }
 
 fn ck_size_of(c: Checker, ty: i64) -> i64 {
-    if ty == TY_I64 || ty == TY_BOOL {
-        return 1
-    }
-    if ty == TY_UNIT {
-        return 0
-    }
-    if ty_is_struct(ty) {
-        return c.structs[ty_index(ty)].size
-    }
-    if ty_is_enum(ty) {
-        return c.enums[ty_index(ty)].size
-    }
+    if ty == TY_I64 || ty == TY_BOOL { return 1 }
+    if ty == TY_UNIT { return 0 }
+    if ty_is_struct(ty) { return c.structs[ty_index(ty)].size }
+    if ty_is_enum(ty) { return c.enums[ty_index(ty)].size }
     return 3
 }
 
 fn ck_needs_drop(c: Checker, ty: i64) -> bool {
-    if ty < 3 {
-        return false
-    }
-    if ty_is_struct(ty) {
-        return c.structs[ty_index(ty)].heap_tys.len() > 0
-    }
-    if ty_is_enum(ty) {
-        return c.enums[ty_index(ty)].owning
-    }
+    if ty < 3 { return false }
+    if ty_is_struct(ty) { return c.structs[ty_index(ty)].heap_tys.len() > 0 }
+    if ty_is_enum(ty) { return c.enums[ty_index(ty)].owning }
     return true
 }
 
 // How many lists, strings and owning enums sit directly inside a value
 // of this type; `ck_owned_offset` and `ck_owned_ty` give each of them.
 fn ck_owned_count(c: Checker, ty: i64) -> i64 {
-    if ty < 3 {
-        return 0
-    }
-    if ty_is_struct(ty) {
-        return c.structs[ty_index(ty)].heap_tys.len()
-    }
+    if ty < 3 { return 0 }
+    if ty_is_struct(ty) { return c.structs[ty_index(ty)].heap_tys.len() }
     if ty_is_enum(ty) {
-        if c.enums[ty_index(ty)].owning {
-            return 1
-        }
+        if c.enums[ty_index(ty)].owning { return 1 }
         return 0
     }
     return 1
 }
 
 fn ck_owned_offset(c: Checker, ty: i64, k: i64) -> i64 {
-    if ty_is_struct(ty) {
-        return c.structs[ty_index(ty)].heap_offsets[k]
-    }
+    if ty_is_struct(ty) { return c.structs[ty_index(ty)].heap_offsets[k] }
     return 0
 }
 
 fn ck_owned_ty(c: Checker, ty: i64, k: i64) -> i64 {
-    if ty_is_struct(ty) {
-        return c.structs[ty_index(ty)].heap_tys[k]
-    }
+    if ty_is_struct(ty) { return c.structs[ty_index(ty)].heap_tys[k] }
     return ty
 }
 
 // Inside a list, a string or an owning enum, the slot that says "this
 // owns nothing" when it is zero: the capacity, or the enum's tag.
 fn idle_slot(ty: i64) -> i64 {
-    if ty_is_enum(ty) {
-        return 0
-    }
+    if ty_is_enum(ty) { return 0 }
     return 2
 }
 
@@ -872,9 +815,7 @@ fn ck_list_of(c: mut Checker, elem: i64) -> i64 {
     var index = 0
     let count = c.lists.len()
     while index < count {
-        if c.lists[index] == elem {
-            return ty_list(index)
-        }
+        if c.lists[index] == elem { return ty_list(index) }
         index = index + 1
     }
     c.lists.push(elem)
@@ -882,14 +823,10 @@ fn ck_list_of(c: mut Checker, elem: i64) -> i64 {
 }
 
 fn same_types(a: List[i64], b: List[i64]) -> bool {
-    if a.len() != b.len() {
-        return false
-    }
+    if a.len() != b.len() { return false }
     var i = 0
     while i < a.len() {
-        if a[i] != b[i] {
-            return false
-        }
+        if a[i] != b[i] { return false }
         i = i + 1
     }
     return true
@@ -920,9 +857,7 @@ fn ck_new_shape_args(c: mut Checker, kind: i64, template: i64, args: List[i64]) 
 fn ck_ty(c: mut Checker, p: Parser, id: i64) -> i64 {
     let at = p.ast.types[id].name.start
     let shape = ck_shape(mut c, p, id)
-    if c.failed {
-        return TY_UNIT
-    }
+    if c.failed { return TY_UNIT }
     var ty = TY_UNIT
     if c.tparams.len() == 0 {
         let none: List[i64] = []
@@ -931,18 +866,14 @@ fn ck_ty(c: mut Checker, p: Parser, id: i64) -> i64 {
         let bound = c.fn_bound
         ty = ck_realize(mut c, shape, bound, at)
     }
-    if c.failed {
-        return TY_UNIT
-    }
+    if c.failed { return TY_UNIT }
     ck_settle(mut c)
     return ty
 }
 
 // The message for a type written with the wrong number of type arguments.
 fn wrong_type_arguments(name: str, want: i64) -> str {
-    if want == 0 {
-        return "`" + name + "` takes no type arguments"
-    }
+    if want == 0 { return "`" + name + "` takes no type arguments" }
     return "`" + name + "` takes " + str(want) + " type argument" + plural(want) + ", as in `" + name + "[" +
         repeated("i64", want) + "]`"
 }
@@ -967,9 +898,7 @@ fn ck_shape(c: mut Checker, p: Parser, id: i64) -> i64 {
             name = SYM_BOOL
         }
     }
-    if name < 0 {
-        name = ck_intern(mut c, p, node.name)
-    }
+    if name < 0 { name = ck_intern(mut c, p, node.name) }
     var k = 0
     while k < c.tparams.len() {
         if c.tparams[k] == name {
@@ -995,9 +924,7 @@ fn ck_shape(c: mut Checker, p: Parser, id: i64) -> i64 {
             return 0
         }
         let elem = ck_shape(mut c, p, p.ast.lists[node.args.start])
-        if c.failed {
-            return 0
-        }
+        if c.failed { return 0 }
         return ck_new_shape(mut c, SHAPE_LIST, elem)
     }
     let template = tab_get(c.template_names, name)
@@ -1011,9 +938,7 @@ fn ck_shape(c: mut Checker, p: Parser, id: i64) -> i64 {
         var i = 0
         while i < argc {
             let shape = ck_shape(mut c, p, p.ast.lists[node.args.start + i])
-            if c.failed {
-                return 0
-            }
+            if c.failed { return 0 }
             shapes.push(shape)
             i = i + 1
         }
@@ -1039,9 +964,7 @@ fn ck_shape(c: mut Checker, p: Parser, id: i64) -> i64 {
     var i = 0
     while i < argc {
         let shape = ck_shape(mut c, p, p.ast.lists[node.args.start + i])
-        if c.failed {
-            return 0
-        }
+        if c.failed { return 0 }
         shapes.push(shape)
         i = i + 1
     }
@@ -1051,21 +974,13 @@ fn ck_shape(c: mut Checker, p: Parser, id: i64) -> i64 {
 // True when `shape` mentions no type parameter that is still unknown.
 fn ck_ready(c: Checker, shape: i64, bound: List[i64]) -> bool {
     let kind = c.shape_kind[shape]
-    if kind == SHAPE_PARAM {
-        return bound[c.shape_a[shape]] != TY_NONE
-    }
-    if kind == SHAPE_KNOWN {
-        return true
-    }
-    if kind == SHAPE_LIST {
-        return ck_ready(c, c.shape_a[shape], bound)
-    }
+    if kind == SHAPE_PARAM { return bound[c.shape_a[shape]] != TY_NONE }
+    if kind == SHAPE_KNOWN { return true }
+    if kind == SHAPE_LIST { return ck_ready(c, c.shape_a[shape], bound) }
     let start = c.shape_start[shape]
     var i = 0
     while i < c.shape_len[shape] {
-        if !ck_ready(c, c.shape_ids[start + i], bound) {
-            return false
-        }
+        if !ck_ready(c, c.shape_ids[start + i], bound) { return false }
         i = i + 1
     }
     return true
@@ -1076,17 +991,11 @@ fn ck_ready(c: Checker, shape: i64, bound: List[i64]) -> bool {
 fn ck_realize(c: mut Checker, shape: i64, bound: List[i64], at: i64) -> i64 {
     let kind = c.shape_kind[shape]
     let a = c.shape_a[shape]
-    if kind == SHAPE_KNOWN {
-        return a
-    }
-    if kind == SHAPE_PARAM {
-        return bound[a]
-    }
+    if kind == SHAPE_KNOWN { return a }
+    if kind == SHAPE_PARAM { return bound[a] }
     if kind == SHAPE_LIST {
         let elem = ck_realize(mut c, a, bound, at)
-        if c.failed {
-            return TY_UNIT
-        }
+        if c.failed { return TY_UNIT }
         return ck_list_of(mut c, elem)
     }
     let start = c.shape_start[shape]
@@ -1095,15 +1004,11 @@ fn ck_realize(c: mut Checker, shape: i64, bound: List[i64], at: i64) -> i64 {
     var i = 0
     while i < len {
         let arg = ck_realize(mut c, c.shape_ids[start + i], bound, at)
-        if c.failed {
-            return TY_UNIT
-        }
+        if c.failed { return TY_UNIT }
         args.push(arg)
         i = i + 1
     }
-    if kind == SHAPE_STRUCT {
-        return ck_struct_instance(mut c, a, args, at)
-    }
+    if kind == SHAPE_STRUCT { return ck_struct_instance(mut c, a, args, at) }
     return ck_instance(mut c, a, args, at)
 }
 
@@ -1113,9 +1018,7 @@ fn ck_instance_name(c: Checker, name: i64, args: List[i64]) -> str {
     if args.len() > 0 {
         text = text + "["
         for i, arg in args {
-            if i > 0 {
-                text = text + ", "
-            }
+            if i > 0 { text = text + ", " }
             text = text + ck_ty_name(c, arg)
         }
         text = text + "]"
@@ -1130,9 +1033,7 @@ fn ck_struct_instance(c: mut Checker, template: i64, args: List[i64], at: i64) -
     let known = c.struct_templates[template].instances.len()
     while j < known {
         let index = c.struct_templates[template].instances[j]
-        if same_types(c.structs[index].args, args) {
-            return ty_struct(index)
-        }
+        if same_types(c.structs[index].args, args) { return ty_struct(index) }
         j = j + 1
     }
     if c.nesting >= 200 {
@@ -1162,9 +1063,7 @@ fn ck_struct_instance(c: mut Checker, template: i64, args: List[i64], at: i64) -
     var k = 0
     while k < count {
         let ty = ck_realize(mut c, c.struct_templates[template].field_shapes[k], args, at)
-        if c.failed {
-            return TY_UNIT
-        }
+        if c.failed { return TY_UNIT }
         names.push(c.struct_templates[template].field_names[k])
         tys.push(ty)
         offsets.push(0)
@@ -1184,9 +1083,7 @@ fn ck_instance(c: mut Checker, template: i64, args: List[i64], at: i64) -> i64 {
     let known = c.templates[template].instances.len()
     while j < known {
         let index = c.templates[template].instances[j]
-        if same_types(c.enums[index].args, args) {
-            return ty_enum(index)
-        }
+        if same_types(c.enums[index].args, args) { return ty_enum(index) }
         j = j + 1
     }
     // `enum E[T] { A(E[List[T]]) }` would ask for ever larger types.
@@ -1211,9 +1108,7 @@ fn ck_instance(c: mut Checker, template: i64, args: List[i64], at: i64) -> i64 {
         var k = 0
         while k < fields {
             let ty = ck_realize(mut c, c.templates[template].variant_fields[v][k], args, at)
-            if c.failed {
-                return TY_UNIT
-            }
+            if c.failed { return TY_UNIT }
             tys.push(ty)
             offsets.push(0)
             k = k + 1
@@ -1228,21 +1123,15 @@ fn ck_instance(c: mut Checker, template: i64, args: List[i64], at: i64) -> i64 {
 
 // Lays out the struct and enum types made since the last call.
 fn ck_settle(c: mut Checker) {
-    if !c.declared {
-        return
-    }
+    if !c.declared { return }
     while c.settled_structs < c.structs.len() {
         ck_layout_struct(mut c, c.settled_structs)
-        if c.failed {
-            return
-        }
+        if c.failed { return }
         c.settled_structs = c.settled_structs + 1
     }
     while c.settled < c.enums.len() {
         ck_layout_enum(mut c, c.settled)
-        if c.failed {
-            return
-        }
+        if c.failed { return }
         c.settled = c.settled + 1
     }
 }
@@ -1251,15 +1140,9 @@ fn ck_settle(c: mut Checker) {
 fn ck_shape_name(c: Checker, shape: i64, params: List[i64]) -> str {
     let kind = c.shape_kind[shape]
     let a = c.shape_a[shape]
-    if kind == SHAPE_PARAM {
-        return sym_text(c, params[a])
-    }
-    if kind == SHAPE_KNOWN {
-        return ck_ty_name(c, a)
-    }
-    if kind == SHAPE_LIST {
-        return "List[" + ck_shape_name(c, a, params) + "]"
-    }
+    if kind == SHAPE_PARAM { return sym_text(c, params[a]) }
+    if kind == SHAPE_KNOWN { return ck_ty_name(c, a) }
+    if kind == SHAPE_LIST { return "List[" + ck_shape_name(c, a, params) + "]" }
     var text = ""
     if kind == SHAPE_STRUCT {
         text = sym_text(c, c.struct_templates[a].name)
@@ -1271,9 +1154,7 @@ fn ck_shape_name(c: Checker, shape: i64, params: List[i64]) -> str {
         text = text + "["
         var i = 0
         while i < len {
-            if i > 0 {
-                text = text + ", "
-            }
+            if i > 0 { text = text + ", " }
             text = text + ck_shape_name(c, c.shape_ids[c.shape_start[shape] + i], params)
             i = i + 1
         }
@@ -1294,22 +1175,16 @@ fn ck_unify(c: Checker, shape: i64, ty: i64, bound: mut List[i64]) -> bool {
         }
         return bound[a] == ty
     }
-    if kind == SHAPE_KNOWN {
-        return a == ty
-    }
+    if kind == SHAPE_KNOWN { return a == ty }
     if kind == SHAPE_LIST {
-        if !ty_is_list(ty) {
-            return false
-        }
+        if !ty_is_list(ty) { return false }
         return ck_unify(c, a, c.lists[ty_index(ty)], mut bound)
     }
     let start = c.shape_start[shape]
     let len = c.shape_len[shape]
     let index = ty_index(ty)
     if kind == SHAPE_STRUCT {
-        if !ty_is_struct(ty) || c.structs[index].template != a {
-            return false
-        }
+        if !ty_is_struct(ty) || c.structs[index].template != a { return false }
         var i = 0
         while i < len && i < c.structs[index].args.len() {
             if !ck_unify(c, c.shape_ids[start + i], c.structs[index].args[i], mut bound) {
@@ -1319,14 +1194,10 @@ fn ck_unify(c: Checker, shape: i64, ty: i64, bound: mut List[i64]) -> bool {
         }
         return true
     }
-    if !ty_is_enum(ty) || c.enums[index].template != a {
-        return false
-    }
+    if !ty_is_enum(ty) || c.enums[index].template != a { return false }
     var i = 0
     while i < len && i < c.enums[index].args.len() {
-        if !ck_unify(c, c.shape_ids[start + i], c.enums[index].args[i], mut bound) {
-            return false
-        }
+        if !ck_unify(c, c.shape_ids[start + i], c.enums[index].args[i], mut bound) { return false }
         i = i + 1
     }
     return true
@@ -1514,9 +1385,7 @@ fn ck_declare_types(c: mut Checker, p: Parser) {
             var f = 0
             while f < variant.fields.len {
                 let shape = ck_shape(mut c, p, p.ast.lists[variant.fields.start + f])
-                if c.failed {
-                    return
-                }
+                if c.failed { return }
                 shapes.push(shape)
                 f = f + 1
             }
@@ -1547,9 +1416,7 @@ fn ck_declare_types(c: mut Checker, p: Parser) {
                 return
             }
             let shape = ck_shape(mut c, p, field.ty)
-            if c.failed {
-                return
-            }
+            if c.failed { return }
             names.push(sym)
             shapes.push(shape)
             f = f + 1
@@ -1565,18 +1432,14 @@ fn ck_declare_types(c: mut Checker, p: Parser) {
     for index in struct_decls {
         if c.struct_templates[index].params.len() == 0 {
             let ty = ck_struct_instance(mut c, index, no_params, c.struct_templates[index].pos)
-            if c.failed {
-                return
-            }
+            if c.failed { return }
             c.struct_templates[index].only = ty_index(ty)
         }
     }
     for index in enum_decls {
         if c.templates[index].params.len() == 0 {
             ck_instance(mut c, index, no_params, c.templates[index].pos)
-            if c.failed {
-                return
-            }
+            if c.failed { return }
         }
     }
 
@@ -1588,21 +1451,15 @@ fn ck_declare_types(c: mut Checker, p: Parser) {
 
 // The size of a type in slots, laying it out first if needed.
 fn ck_layout(c: mut Checker, ty: i64) -> i64 {
-    if ty_is_struct(ty) {
-        return ck_layout_struct(mut c, ty_index(ty))
-    }
-    if ty_is_enum(ty) {
-        return ck_layout_enum(mut c, ty_index(ty))
-    }
+    if ty_is_struct(ty) { return ck_layout_struct(mut c, ty_index(ty)) }
+    if ty_is_enum(ty) { return ck_layout_enum(mut c, ty_index(ty)) }
     return ck_size_of(c, ty)
 }
 
 fn ck_layout_struct(c: mut Checker, index: i64) -> i64 {
     let pos = c.struct_templates[c.structs[index].template].pos
     let state = c.struct_state[index]
-    if state == 2 {
-        return c.structs[index].size
-    }
+    if state == 2 { return c.structs[index].size }
     if state == 1 {
         ck_err(pos, "struct `" + c.structs[index].name + "` contains itself, so it would have no finite size", mut c)
         return 0
@@ -1616,9 +1473,7 @@ fn ck_layout_struct(c: mut Checker, index: i64) -> i64 {
     while field < count {
         let ty = c.structs[index].field_tys[field]
         let size = ck_layout(mut c, ty)
-        if c.failed {
-            return 0
-        }
+        if c.failed { return 0 }
         c.structs[index].field_offsets[field] = offset
         let owned = ck_owned_count(c, ty)
         var k = 0
@@ -1644,9 +1499,7 @@ fn ck_layout_struct(c: mut Checker, index: i64) -> i64 {
 fn ck_layout_enum(c: mut Checker, index: i64) -> i64 {
     let pos = c.templates[c.enums[index].template].pos
     let state = c.enum_state[index]
-    if state == 2 {
-        return c.enums[index].size
-    }
+    if state == 2 { return c.enums[index].size }
     if state == 1 {
         ck_err(pos, "enum `" + c.enums[index].name +
                 "` contains itself, so it would have no finite size; put the inner value in a `List`", mut c)
@@ -1667,9 +1520,7 @@ fn ck_layout_enum(c: mut Checker, index: i64) -> i64 {
         while field < fields {
             let ty = c.enums[index].variants[variant].field_tys[field]
             let field_size = ck_layout(mut c, ty)
-            if c.failed {
-                return 0
-            }
+            if c.failed { return 0 }
             c.enums[index].variants[variant].field_offsets[field] = offset
             let owned = ck_owned_count(c, ty)
             var k = 0
@@ -1681,14 +1532,10 @@ fn ck_layout_enum(c: mut Checker, index: i64) -> i64 {
             offset = offset + field_size
             field = field + 1
         }
-        if heap_tys.len() > 0 {
-            owning = true
-        }
+        if heap_tys.len() > 0 { owning = true }
         c.enums[index].variants[variant].heap_offsets = heap_offsets
         c.enums[index].variants[variant].heap_tys = heap_tys
-        if offset > size {
-            size = offset
-        }
+        if offset > size { size = offset }
         variant = variant + 1
     }
     if size > MAX_SIZE {
@@ -1775,9 +1622,7 @@ fn ck_signatures(c: mut Checker, p: Parser) {
             while i < params.len {
                 let param = p.ast.params[p.ast.lists[params.start + i]]
                 let shape = ck_shape(mut c, p, param.ty)
-                if c.failed {
-                    return
-                }
+                if c.failed { return }
                 shapes.push(shape)
                 muts.push(param.mutable)
                 i = i + 1
@@ -1785,9 +1630,7 @@ fn ck_signatures(c: mut Checker, p: Parser) {
             var ret_shape = -1
             if ret != NO_NODE {
                 ret_shape = ck_shape(mut c, p, ret)
-                if c.failed {
-                    return
-                }
+                if c.failed { return }
             }
             c.tparams = no_params
             let index = c.generic_fns.len()
@@ -1836,9 +1679,7 @@ fn ck_signatures(c: mut Checker, p: Parser) {
         while i < params.len {
             let param = p.ast.params[p.ast.lists[params.start + i]]
             let ty = ck_ty(mut c, p, param.ty)
-            if c.failed {
-                return
-            }
+            if c.failed { return }
             tys.push(ty)
             by_ref.push(param.mutable || ty_is_aggregate(ty))
             muts.push(param.mutable)
@@ -1847,9 +1688,7 @@ fn ck_signatures(c: mut Checker, p: Parser) {
         var ret_ty = TY_UNIT
         if ret != NO_NODE {
             ret_ty = ck_ty(mut c, p, ret)
-            if c.failed {
-                return
-            }
+            if c.failed { return }
         }
         if sym == SYM_MAIN {
             if tys.len() > 0 {

@@ -4,19 +4,11 @@ fn main() {
     var hits = 0
     var i = 0
     while i < 60000 {
-        if i % 3 == 0 && i % 5 != 0 || i == 7 {
-            hits = hits + 1
-        }
+        if i % 3 == 0 && i % 5 != 0 || i == 7 { hits = hits + 1 }
         let odd = i % 2 == 1
-        if !odd && i > 100 {
-            hits = hits + 2
-        }
-        if odd || i < 10 {
-            hits = hits - 1
-        }
-        if i != 0 {
-            hits = hits + 0
-        }
+        if !odd && i > 100 { hits = hits + 2 }
+        if odd || i < 10 { hits = hits - 1 }
+        if i != 0 { hits = hits + 0 }
         i = i + 1
     }
     var a = 0

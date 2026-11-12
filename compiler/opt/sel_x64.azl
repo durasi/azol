@@ -1,0 +1,1309 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Instruction selection for x86-64: from the intermediate form of one
+// function to the machine-level view of `mach.azl`, ready for the
+// register allocator. `emit_x64.azl` turns the result into bytes.
+// docs/design/optimizer.md section 6.3.
+//
+// What is folded into its user instead of getting a register:
+//
+//   - `iconst`, `bconst`, `addr` and `frame` never get one: a constant
+//     becomes an immediate where the instruction has room for it, and
+//     is otherwise made again right before each use;
+//   - a `gep` whose every use is as the address of a `load` or `store`
+//     becomes the addressing mode of each of them;
+//   - a comparison whose only use is the condition of a `br` or of a
+//     `select` is done there, and its flags are used directly;
+//   - a `load` of eight bytes whose only use is such a comparison at
+//     the end of its own block (or the `br` itself), with nothing after
+//     it in the block that can write memory, becomes the memory operand
+//     of the `cmp`.
+//
+// The internal calling convention (section 6.2), in its simple fixed
+// form: the first eight arguments in rdi, rsi, rdx, rcx, r8, r9, rax
+// and r10, the rest in the caller's frame at the bottom of its stack;
+// the first four results in rax, rdx, rcx and rsi, the rest in the same
+// place the stack arguments were. rbx, rbp and r12 to r15 survive a
+// call, like in the platform's convention, which the runtime uses.
+//
+// The machine instructions. `d` is the register defined; operands are
+// listed in the order they are added. A memory operand is described by
+// `y` and `z` (see `sx_mem_y`) and adds a base register, an index
+// register, both or neither.
+//
+//   SX_ENTRY           defines the registers the arguments arrive in
+//   SX_MOVI    d       d = imm
+//   SX_LEA     d mem   d = the address
+//   SX_COPY    d s     d = s (s may be in a slot)
+//   SX_ALU     d a b   d = a x b, x one of EX_ADD .. EX_XOR, SX_IMUL; d may
+//                      be b's register except for EX_SUB
+//   SX_ALUI    d a     d = a x imm
+//   SX_NEG     d a
+//   SX_SHI     d a     d = a shifted by imm; x is EX_SHL, EX_SHR, EX_SAR
+//   SX_SHC     d a RCX the same by the count in cl
+//   SX_MULH    RAX b RAX RDX   rdx:rax = rax * b; x is 1 for signed
+//   SX_DIV     RAX b RAX RDX   rax = rax / b, rdx = the rest; x is 1
+//                      when b is known not to be -1
+//   SX_EXT     d a     x is the IR operation (ext8u ... trunc32)
+//   SX_LOAD    d mem   x is the IR width
+//   SX_STORE   [v] mem x is the IR width; the value is `imm` when y
+//                      says so
+//   SX_CMPSET  d a [b] d = a x b as 0 or 1; x is the condition; b is
+//                      `imm` when y is 1
+//   SX_SELECT  d a [b] [p] q   d = (a x b) ? p : q; y bit 0: b is
+//                      `imm`; y bit 1: p is `z`
+//   SX_CMPBR   a [b]   to the first way out when a x b, else the second
+//   SX_CMPBRM  [a] mem the same with memory as the second thing compared:
+//                      `a x mem`, or `mem x imm` when y says so
+//   SX_JMP
+//   SX_SWITCH  v       the keys of its ways out are x entries of the
+//                      function's `consts` from imm; the last way out
+//                      is the default
+//   SX_RET     ...     reads the result registers
+//   SX_TRAP            imm is the IR_TRAP_* kind
+//   SX_CALL    ...     imm is the function; reads the argument registers
+//   SX_CALLRT  ...     imm is the runtime's routine (RT_*)
+
+const SX_ENTRY = 1
+const SX_MOVI = 2
+const SX_LEA = 3
+const SX_COPY = 4
+const SX_ALU = 5
+const SX_ALUI = 6
+const SX_NEG = 7
+const SX_SHI = 8
+const SX_SHC = 9
+const SX_MULH = 10
+const SX_DIV = 11
+const SX_EXT = 12
+const SX_LOAD = 13
+const SX_STORE = 14
+const SX_CMPSET = 15
+const SX_SELECT = 16
+const SX_CMPBR = 17
+const SX_JMP = 18
+const SX_SWITCH = 19
+const SX_RET = 20
+const SX_TRAP = 21
+const SX_CALL = 22
+const SX_CALLRT = 23
+const SX_CMPBRM = 24
+
+// One more kind for SX_ALU and SX_ALUI, next to EX_ADD .. EX_XOR.
+const SX_IMUL = 8
+
+// Kinds of memory operand.
+const SX_M_REG = 0
+const SX_M_FRAME = 1
+const SX_M_DATA = 2
+const SX_M_SCRATCH = 3
+const SX_M_ARGIN = 4
+const SX_M_ARGOUT = 5
+
+// rax, rcx, rdx, rsi, rdi and r8 to r11: what a call may destroy.
+const SX_CALLER_SAVED = 4039
+// rbx, rbp and r12 to r15.
+const SX_CALLEE_SAVED = 61480
+
+// Bytes for the two string headers a runtime call may need.
+const SX_SCRATCH_BYTES = 48
+
+fn sx_arg_reg(k: i64) -> i64 {
+    match k {
+        0 => return EX_RDI
+        1 => return EX_RSI
+        2 => return EX_RDX
+        3 => return EX_RCX
+        4 => return EX_R8
+        5 => return EX_R9
+        6 => return EX_RAX
+        _ => return EX_R10
+    }
+}
+
+const SX_ARG_REGS = 8
+
+fn sx_result_reg(k: i64) -> i64 {
+    match k {
+        0 => return EX_RAX
+        1 => return EX_RDX
+        2 => return EX_RCX
+        _ => return EX_RSI
+    }
+}
+
+const SX_RESULT_REGS = 4
+
+// The registers the allocator may use, most wanted first: those a call
+// destroys, then those that must be saved. r11 is the scratch register.
+fn sx_target() -> RaTarget {
+    return RaTarget {
+        order: [EX_RAX, EX_RCX, EX_RDX, EX_RSI, EX_RDI, EX_R8, EX_R9, EX_R10, EX_RBX, EX_R12, EX_R13, EX_R14, EX_R15, EX_RBP],
+        scratch: EX_R11
+    }
+}
+
+// Three registers only, to make every function spill, split and move:
+// for tests.
+fn sx_stress_target() -> RaTarget {
+    return RaTarget { order: [EX_RSI, EX_RDI, EX_RBX], scratch: EX_R11 }
+}
+
+// `y` of an instruction with a memory operand: the kind, the scale of
+// the index (as a power of two), whether there is an index register,
+// and for SX_M_FRAME the frame object. `z` is the displacement, for
+// SX_M_DATA the offset in the data.
+fn sx_mem_y(kind: i64, scale: i64, has_index: bool, n: i64) -> i64 {
+    var y = kind | (ex_scale_bits(scale) << 4) | (n << 16)
+    if has_index { y = y | 256 }
+    return y
+}
+
+fn sx_y_kind(y: i64) -> i64 {
+    return y & 15
+}
+
+fn sx_y_scale(y: i64) -> i64 {
+    return 1 << ((y >> 4) & 3)
+}
+
+fn sx_y_has_index(y: i64) -> bool {
+    return y & 256 != 0
+}
+
+// Bit 9 of `y` of an SX_STORE: the value is `imm`.
+const SX_Y_IMM = 512
+
+fn sx_y_object(y: i64) -> i64 {
+    return y >> 16
+}
+
+// The condition an IR comparison stands for.
+fn sx_cc(op: i64) -> i64 {
+    match op {
+        18 => return EX_CC_E
+        19 => return EX_CC_NE
+        20 => return EX_CC_L
+        21 => return EX_CC_LE
+        22 => return EX_CC_G
+        23 => return EX_CC_GE
+        24 => return EX_CC_B
+        25 => return EX_CC_BE
+        26 => return EX_CC_A
+        _ => return EX_CC_AE
+    }
+}
+
+// The condition that holds for (b, a) when `cc` holds for (a, b).
+fn sx_cc_swapped(cc: i64) -> i64 {
+    match cc {
+        12 => return EX_CC_G
+        15 => return EX_CC_L
+        14 => return EX_CC_GE
+        13 => return EX_CC_LE
+        2 => return EX_CC_A
+        7 => return EX_CC_B
+        6 => return EX_CC_AE
+        3 => return EX_CC_BE
+        _ => return cc
+    }
+}
+
+struct Sx {
+    // For each IR value its virtual register, or -1.
+    vr: List[i64]
+    // 1 for a `gep` that is only ever an address, 2 for a comparison
+    // done where it is used, 3 for a `load` done in the `cmp` of the
+    // `br` that ends its block.
+    fold: List[i64]
+    // For each IR block its machine block, or -1.
+    blk: List[i64]
+    // The function each entry of the IR function's `callees` is.
+    targets: List[i64]
+    memcpy_fn: i64
+    realloc_fn: i64
+    // The memory operand that was prepared last.
+    mem_kind: i64
+    mem_base: i64
+    mem_index: i64
+    mem_scale: i64
+    mem_n: i64
+    mem_disp: i64
+    // The comparison that was prepared last.
+    cc: i64
+    ca: i64
+    cb: i64
+    cb_imm: i64
+    cb_is_imm: bool
+    // The arguments of the ways out of the terminator being selected:
+    // 1 and a constant, or 0 and a virtual register.
+    ea_kind: List[i64]
+    ea_val: List[i64]
+    // What the frame must have.
+    out_bytes: i64
+    scratch: bool
+    calls: bool
+    failed: bool
+    error: str
+}
+
+// What selection gives.
+struct SxFunc {
+    mf: MFunc
+    out_bytes: i64
+    scratch: bool
+    calls: bool
+    ok: bool
+    error: str
+}
+
+fn sx_fail(s: mut Sx, message: str) {
+    if !s.failed {
+        s.failed = true
+        s.error = message
+    }
+}
+
+// ---- operands ------------------------------------------------------------------------
+
+// Whether operand `x` is a known number.
+fn sx_is_imm(f: IrFunc, x: i64) -> bool {
+    if x < -1 { return true }
+    if x < 0 { return false }
+    let def = f.val_ins[x]
+    return def >= 0 && (f.ins_op[def] == IR_ICONST || f.ins_op[def] == IR_BCONST)
+}
+
+fn sx_imm(f: IrFunc, x: i64) -> i64 {
+    if x < -1 { return f.consts[0 - x - 2] }
+    return f.ins_imm[f.val_ins[x]]
+}
+
+fn sx_is_imm32(f: IrFunc, x: i64) -> bool {
+    return sx_is_imm(f, x) && ex_fits32(sx_imm(f, x))
+}
+
+// The operation that defines value `x`, or IR_NONE for a parameter.
+fn sx_def_op(f: IrFunc, x: i64) -> i64 {
+    if x < 0 || f.val_ins[x] < 0 { return IR_NONE }
+    return f.ins_op[f.val_ins[x]]
+}
+
+// The virtual register of an IR value that has one.
+fn sx_value(s: mut Sx, mf: mut MFunc, v: i64) -> i64 {
+    if s.vr[v] < 0 { s.vr[v] = mf_vreg(mut mf) }
+    return s.vr[v]
+}
+
+fn sx_movi(mf: mut MFunc, dst: i64, value: i64) {
+    mf_ins(mut mf, SX_MOVI, value, 0, 0, 0)
+    mf_operand(mut mf, dst, MF_DEF)
+}
+
+// The instruction `op` with the prepared memory operand; `first` is
+// its first operand with role `role`, or -1 for none.
+fn sx_mem_ins(s: Sx, mf: mut MFunc, op: i64, imm: i64, x: i64, first: i64, role: i64) -> i64 {
+    var y = sx_mem_y(s.mem_kind, s.mem_scale, s.mem_index >= 0, s.mem_n)
+    if op == SX_STORE && first < 0 { y = y | SX_Y_IMM }
+    let at = mf_ins(mut mf, op, imm, x, y, s.mem_disp)
+    if first >= 0 { mf_operand(mut mf, first, role) }
+    if s.mem_kind == SX_M_REG { mf_operand(mut mf, s.mem_base, MF_USE) }
+    if s.mem_index >= 0 { mf_operand(mut mf, s.mem_index, MF_USE) }
+    return at
+}
+
+fn sx_set_mem(s: mut Sx, kind: i64, base: i64, n: i64, disp: i64) {
+    s.mem_kind = kind
+    s.mem_base = base
+    s.mem_index = -1
+    s.mem_scale = 1
+    s.mem_n = n
+    s.mem_disp = disp
+}
+
+// Puts operand `x` in register `dst`, a virtual one or not.
+fn sx_into(f: IrFunc, s: mut Sx, mf: mut MFunc, dst: i64, x: i64) {
+    if sx_is_imm(f, x) {
+        sx_movi(mut mf, dst, sx_imm(f, x))
+        return
+    }
+    let op = sx_def_op(f, x)
+    if op == IR_ADDR {
+        sx_set_mem(mut s, SX_M_DATA, -1, 0, f.ins_imm[f.val_ins[x]])
+        sx_mem_ins(s, mut mf, SX_LEA, 0, 0, dst, MF_DEF)
+        return
+    }
+    if op == IR_FRAME {
+        sx_set_mem(mut s, SX_M_FRAME, -1, f.ins_imm[f.val_ins[x]], 0)
+        sx_mem_ins(s, mut mf, SX_LEA, 0, 0, dst, MF_DEF)
+        return
+    }
+    let v = sx_value(mut s, mut mf, x)
+    mf_ins(mut mf, SX_COPY, 0, 0, 0, 0)
+    mf_operand(mut mf, dst, MF_DEF)
+    mf_operand(mut mf, v, MF_USE | MF_ANY)
+    mf_hint(mut mf, v, dst)
+    mf_hint(mut mf, dst, v)
+}
+
+// Operand `x` in a virtual register: its own, or a fresh one for
+// something that never has a register.
+fn sx_reg(f: IrFunc, s: mut Sx, mf: mut MFunc, x: i64) -> i64 {
+    if x == -1 {
+        sx_fail(mut s, "an operand is missing")
+        return mf_vreg(mut mf)
+    }
+    let op = sx_def_op(f, x)
+    if x < -1 || op == IR_ICONST || op == IR_BCONST || op == IR_ADDR || op == IR_FRAME {
+        let t = mf_vreg(mut mf)
+        sx_into(f, mut s, mut mf, t, x)
+        return t
+    }
+    return sx_value(mut s, mut mf, x)
+}
+
+// Prepares `[base + index * scale + disp]` as the memory operand, where
+// `base` and `index` are IR operands (`index` -1 for none).
+fn sx_address(f: IrFunc, s: mut Sx, mf: mut MFunc, base: i64, index: i64, scale: i64, disp: i64) {
+    var total = disp
+    var idx = index
+    var factor = scale
+    if idx != -1 && sx_is_imm(f, idx) {
+        total = total + sx_imm(f, idx) * factor
+        idx = -1
+    }
+    var index_reg = -1
+    if idx != -1 {
+        index_reg = sx_reg(f, mut s, mut mf, idx)
+        if factor != 1 && factor != 2 && factor != 4 && factor != 8 {
+            let scaled = mf_vreg(mut mf)
+            if ex_fits32(factor) {
+                mf_ins(mut mf, SX_ALUI, factor, SX_IMUL, 0, 0)
+                mf_operand(mut mf, scaled, MF_DEF)
+                mf_operand(mut mf, index_reg, MF_USE)
+            } else {
+                let by = mf_vreg(mut mf)
+                sx_movi(mut mf, by, factor)
+                mf_ins(mut mf, SX_ALU, 0, SX_IMUL, 0, 0)
+                mf_operand(mut mf, scaled, MF_DEF)
+                mf_operand(mut mf, index_reg, MF_USE)
+                mf_operand(mut mf, by, MF_USE | MF_LATE)
+            }
+            index_reg = scaled
+            factor = 1
+        }
+    }
+    if !ex_fits32(total) {
+        // The displacement does not fit: it becomes the index, and what
+        // was the index goes into the base.
+        let far = mf_vreg(mut mf)
+        sx_movi(mut mf, far, total)
+        total = 0
+        if index_reg >= 0 {
+            let near = mf_vreg(mut mf)
+            sx_address_base(f, mut s, mut mf, base, 0)
+            s.mem_index = index_reg
+            s.mem_scale = factor
+            if s.mem_kind == SX_M_DATA {
+                let start = mf_vreg(mut mf)
+                sx_mem_ins(s, mut mf, SX_LEA, 0, 0, start, MF_DEF)
+                sx_set_mem(mut s, SX_M_REG, start, 0, 0)
+                s.mem_index = index_reg
+                s.mem_scale = factor
+            }
+            sx_mem_ins(s, mut mf, SX_LEA, 0, 0, near, MF_DEF)
+            sx_set_mem(mut s, SX_M_REG, near, 0, 0)
+            s.mem_index = far
+            return
+        }
+        index_reg = far
+        factor = 1
+    }
+    sx_address_base(f, mut s, mut mf, base, total)
+    if index_reg >= 0 {
+        if s.mem_kind == SX_M_DATA {
+            // The data is reached from the instruction pointer, which
+            // takes no index.
+            let start = mf_vreg(mut mf)
+            let at = s.mem_disp
+            s.mem_disp = 0
+            sx_mem_ins(s, mut mf, SX_LEA, 0, 0, start, MF_DEF)
+            sx_set_mem(mut s, SX_M_REG, start, 0, 0)
+            if ex_fits32(at) { s.mem_disp = at }
+        }
+        s.mem_index = index_reg
+        s.mem_scale = factor
+    }
+}
+
+// The base part of a memory operand: a frame object, the data, or a
+// register.
+fn sx_address_base(f: IrFunc, s: mut Sx, mf: mut MFunc, base: i64, disp: i64) {
+    let op = sx_def_op(f, base)
+    if op == IR_FRAME {
+        sx_set_mem(mut s, SX_M_FRAME, -1, f.ins_imm[f.val_ins[base]], disp)
+    } else if op == IR_ADDR && ex_fits32(f.ins_imm[f.val_ins[base]] + disp) {
+        sx_set_mem(mut s, SX_M_DATA, -1, 0, f.ins_imm[f.val_ins[base]] + disp)
+    } else {
+        let reg = sx_reg(f, mut s, mut mf, base)
+        sx_set_mem(mut s, SX_M_REG, reg, 0, disp)
+    }
+}
+
+// Prepares the memory operand for an access at `p + offset`.
+fn sx_access(f: IrFunc, s: mut Sx, mf: mut MFunc, p: i64, offset: i64) {
+    if p >= 0 && s.fold[p] == 1 {
+        let gep = f.val_ins[p]
+        sx_address(f, mut s, mut mf, f.ins_a[gep], f.ins_b[gep], f.ins_imm2[gep], f.ins_imm[gep] + offset)
+        return
+    }
+    sx_address(f, mut s, mut mf, p, -1, 1, offset)
+}
+
+// Prepares the comparison that the condition `c` of a `br` or `select`
+// stands for.
+fn sx_condition(f: IrFunc, s: mut Sx, mf: mut MFunc, c: i64) {
+    s.cb = -1
+    s.cb_imm = 0
+    s.cb_is_imm = false
+    if c >= 0 && s.fold[c] == 2 {
+        let ins = f.val_ins[c]
+        var a = f.ins_a[ins]
+        var b = f.ins_b[ins]
+        s.cc = sx_cc(f.ins_op[ins])
+        if sx_is_imm(f, a) && !sx_is_imm(f, b) {
+            a = f.ins_b[ins]
+            b = f.ins_a[ins]
+            s.cc = sx_cc_swapped(s.cc)
+        }
+        s.ca = sx_reg(f, mut s, mut mf, a)
+        if sx_is_imm32(f, b) {
+            s.cb_is_imm = true
+            s.cb_imm = sx_imm(f, b)
+        } else {
+            s.cb = sx_reg(f, mut s, mut mf, b)
+        }
+        return
+    }
+    s.ca = sx_reg(f, mut s, mut mf, c)
+    s.cc = EX_CC_NE
+    s.cb_is_imm = true
+}
+
+// ---- instructions ----------------------------------------------------------------------
+
+fn sx_alu_kind(op: i64) -> i64 {
+    match op {
+        4 => return EX_ADD
+        5 => return EX_SUB
+        6 => return SX_IMUL
+        9 => return EX_AND
+        10 => return EX_OR
+        _ => return EX_XOR
+    }
+}
+
+fn sx_binary(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64) {
+    let op = f.ins_op[ins]
+    var a = f.ins_a[ins]
+    var b = f.ins_b[ins]
+    let kind = sx_alu_kind(op)
+    if op != IR_SUB && sx_is_imm(f, a) && !sx_is_imm(f, b) {
+        a = f.ins_b[ins]
+        b = f.ins_a[ins]
+    }
+    let left = sx_reg(f, mut s, mut mf, a)
+    if sx_is_imm32(f, b) {
+        let d = sx_value(mut s, mut mf, f.ins_res[ins])
+        mf_ins(mut mf, SX_ALUI, sx_imm(f, b), kind, 0, 0)
+        mf_operand(mut mf, d, MF_DEF)
+        mf_operand(mut mf, left, MF_USE)
+        mf_hint(mut mf, d, left)
+        return
+    }
+    let right = sx_reg(f, mut s, mut mf, b)
+    let d = sx_value(mut s, mut mf, f.ins_res[ins])
+    mf_ins(mut mf, SX_ALU, 0, kind, 0, 0)
+    mf_operand(mut mf, d, MF_DEF)
+    mf_operand(mut mf, left, MF_USE)
+    if op == IR_SUB {
+        // `d = a; d -= b`: b must outlive the copy.
+        mf_operand(mut mf, right, MF_USE | MF_LATE | MF_ANY)
+    } else {
+        // Either operand's register may become the result's: the
+        // emitter turns the operation round.
+        mf_operand(mut mf, right, MF_USE | MF_ANY)
+    }
+    mf_hint(mut mf, d, left)
+}
+
+fn sx_copy_from(mf: mut MFunc, dst: i64, reg: i64) {
+    mf_ins(mut mf, SX_COPY, 0, 0, 0, 0)
+    mf_operand(mut mf, dst, MF_DEF)
+    mf_operand(mut mf, reg, MF_USE)
+    mf_hint(mut mf, dst, reg)
+}
+
+// The one result of `ins` is what arrives in register `reg`.
+fn sx_result_from(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64, reg: i64) {
+    let d = sx_value(mut s, mut mf, f.ins_res[ins])
+    sx_copy_from(mut mf, d, reg)
+}
+
+fn sx_divide(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64) {
+    let b = f.ins_b[ins]
+    var plain = 0
+    if sx_is_imm(f, b) && sx_imm(f, b) != -1 { plain = 1 }
+    let by = sx_reg(f, mut s, mut mf, b)
+    sx_into(f, mut s, mut mf, EX_RAX, f.ins_a[ins])
+    mf_ins(mut mf, SX_DIV, 0, plain, 0, 0)
+    mf_operand(mut mf, EX_RAX, MF_USE)
+    mf_operand(mut mf, by, MF_USE | MF_LATE)
+    mf_operand(mut mf, EX_RAX, MF_DEF)
+    mf_operand(mut mf, EX_RDX, MF_DEF)
+    let d = sx_value(mut s, mut mf, f.ins_res[ins])
+    if f.ins_op[ins] == IR_SDIV {
+        sx_copy_from(mut mf, d, EX_RAX)
+    } else {
+        sx_copy_from(mut mf, d, EX_RDX)
+    }
+}
+
+fn sx_mulh(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64) {
+    let by = sx_reg(f, mut s, mut mf, f.ins_b[ins])
+    sx_into(f, mut s, mut mf, EX_RAX, f.ins_a[ins])
+    var signed = 0
+    if f.ins_op[ins] == IR_SMULH { signed = 1 }
+    mf_ins(mut mf, SX_MULH, 0, signed, 0, 0)
+    mf_operand(mut mf, EX_RAX, MF_USE)
+    mf_operand(mut mf, by, MF_USE | MF_ANY)
+    mf_operand(mut mf, EX_RAX, MF_DEF)
+    mf_operand(mut mf, EX_RDX, MF_DEF)
+    sx_result_from(f, mut s, mut mf, ins, EX_RDX)
+}
+
+fn sx_shift(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64) {
+    var kind = EX_SHL
+    if f.ins_op[ins] == IR_SAR {
+        kind = EX_SAR
+    } else if f.ins_op[ins] == IR_SHR {
+        kind = EX_SHR
+    }
+    let a = sx_reg(f, mut s, mut mf, f.ins_a[ins])
+    let b = f.ins_b[ins]
+    if sx_is_imm(f, b) {
+        let d = sx_value(mut s, mut mf, f.ins_res[ins])
+        mf_ins(mut mf, SX_SHI, sx_imm(f, b) & 63, kind, 0, 0)
+        mf_operand(mut mf, d, MF_DEF)
+        mf_operand(mut mf, a, MF_USE)
+        mf_hint(mut mf, d, a)
+        return
+    }
+    sx_into(f, mut s, mut mf, EX_RCX, b)
+    let d = sx_value(mut s, mut mf, f.ins_res[ins])
+    mf_ins(mut mf, SX_SHC, 0, kind, 0, 0)
+    mf_operand(mut mf, d, MF_DEF)
+    mf_operand(mut mf, a, MF_USE)
+    mf_operand(mut mf, EX_RCX, MF_USE | MF_LATE)
+    mf_hint(mut mf, d, a)
+}
+
+// A comparison that needs its result as a number.
+fn sx_compare(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64) {
+    var a = f.ins_a[ins]
+    var b = f.ins_b[ins]
+    var cc = sx_cc(f.ins_op[ins])
+    if sx_is_imm(f, a) && !sx_is_imm(f, b) {
+        a = f.ins_b[ins]
+        b = f.ins_a[ins]
+        cc = sx_cc_swapped(cc)
+    }
+    let left = sx_reg(f, mut s, mut mf, a)
+    if sx_is_imm32(f, b) {
+        let d = sx_value(mut s, mut mf, f.ins_res[ins])
+        mf_ins(mut mf, SX_CMPSET, sx_imm(f, b), cc, 1, 0)
+        mf_operand(mut mf, d, MF_DEF)
+        mf_operand(mut mf, left, MF_USE)
+        return
+    }
+    let right = sx_reg(f, mut s, mut mf, b)
+    let d = sx_value(mut s, mut mf, f.ins_res[ins])
+    mf_ins(mut mf, SX_CMPSET, 0, cc, 0, 0)
+    mf_operand(mut mf, d, MF_DEF)
+    mf_operand(mut mf, left, MF_USE)
+    mf_operand(mut mf, right, MF_USE | MF_ANY)
+}
+
+fn sx_select(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64) {
+    sx_condition(f, mut s, mut mf, f.ins_a[ins])
+    let p = f.ins_b[ins]
+    var flags = 0
+    var p_imm = 0
+    var p_reg = -1
+    if s.cb_is_imm { flags = flags | 1 }
+    if sx_is_imm(f, p) {
+        flags = flags | 2
+        p_imm = sx_imm(f, p)
+    } else {
+        p_reg = sx_reg(f, mut s, mut mf, p)
+    }
+    let q = sx_reg(f, mut s, mut mf, f.ins_c[ins])
+    let d = sx_value(mut s, mut mf, f.ins_res[ins])
+    mf_ins(mut mf, SX_SELECT, s.cb_imm, s.cc, flags, p_imm)
+    mf_operand(mut mf, d, MF_DEF)
+    mf_operand(mut mf, s.ca, MF_USE)
+    if !s.cb_is_imm { mf_operand(mut mf, s.cb, MF_USE) }
+    if p_reg >= 0 {
+        mf_operand(mut mf, p_reg, MF_USE)
+        mf_hint(mut mf, d, p_reg)
+    }
+    mf_operand(mut mf, q, MF_USE | MF_LATE | MF_ANY)
+}
+
+fn sx_load(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64) {
+    sx_access(f, mut s, mut mf, f.ins_a[ins], f.ins_imm[ins])
+    let d = sx_value(mut s, mut mf, f.ins_res[ins])
+    sx_mem_ins(s, mut mf, SX_LOAD, 0, f.ins_ty[ins], d, MF_DEF)
+}
+
+// A store of IR operand `x` in the width `ty` to the prepared memory
+// operand. Preparing a register for `x` must not disturb the operand,
+// so the caller gives the register when one is needed: `reg`, or -1
+// for a constant that fits.
+fn sx_store_prepared(s: Sx, mf: mut MFunc, ty: i64, reg: i64, value: i64) {
+    if reg < 0 {
+        sx_mem_ins(s, mut mf, SX_STORE, value, ty, -1, 0)
+    } else {
+        sx_mem_ins(s, mut mf, SX_STORE, 0, ty, reg, MF_USE)
+    }
+}
+
+// Whether a store of IR operand `x` in width `ty` can carry it as a
+// constant in the instruction.
+fn sx_store_is_imm(f: IrFunc, ty: i64, x: i64) -> bool {
+    return sx_is_imm(f, x) && (ir_type_bytes(ty) < 8 || ex_fits32(sx_imm(f, x)))
+}
+
+fn sx_store(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64) {
+    let ty = f.ins_ty[ins]
+    let x = f.ins_b[ins]
+    var reg = -1
+    var value = 0
+    if sx_store_is_imm(f, ty, x) {
+        value = sx_imm(f, x)
+    } else {
+        reg = sx_reg(f, mut s, mut mf, x)
+    }
+    sx_access(f, mut s, mut mf, f.ins_a[ins], f.ins_imm[ins])
+    sx_store_prepared(s, mut mf, ty, reg, value)
+}
+
+// A store of IR operand `x`, eight bytes, at `offset` of the area of
+// kind `kind` in the frame.
+fn sx_store_area(f: IrFunc, s: mut Sx, mf: mut MFunc, kind: i64, offset: i64, x: i64) {
+    var reg = -1
+    var value = 0
+    if sx_store_is_imm(f, IR_I64, x) {
+        value = sx_imm(f, x)
+    } else {
+        reg = sx_reg(f, mut s, mut mf, x)
+    }
+    sx_set_mem(mut s, kind, -1, 0, offset)
+    sx_store_prepared(s, mut mf, IR_I64, reg, value)
+}
+
+fn sx_load_area(s: mut Sx, mf: mut MFunc, kind: i64, offset: i64, dst: i64) {
+    sx_set_mem(mut s, kind, -1, 0, offset)
+    sx_mem_ins(s, mut mf, SX_LOAD, 0, IR_I64, dst, MF_DEF)
+}
+
+fn sx_need_out(s: mut Sx, bytes: i64) {
+    if bytes > s.out_bytes { s.out_bytes = bytes }
+}
+
+// A call of function `target` with the arguments of IR instruction
+// `ins`; the results go to the instruction's results.
+fn sx_call(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64, target: i64) {
+    let n = f.ins_an[ins]
+    s.calls = true
+    var k = SX_ARG_REGS
+    while k < n {
+        sx_store_area(f, mut s, mut mf, SX_M_ARGOUT, (k - SX_ARG_REGS) * 8, f.args[f.ins_as[ins] + k])
+        k = k + 1
+    }
+    if n > SX_ARG_REGS { sx_need_out(mut s, (n - SX_ARG_REGS) * 8) }
+    k = 0
+    while k < n && k < SX_ARG_REGS {
+        sx_into(f, mut s, mut mf, sx_arg_reg(k), f.args[f.ins_as[ins] + k])
+        k = k + 1
+    }
+    let at = mf_ins(mut mf, SX_CALL, target, 0, 0, 0)
+    k = 0
+    while k < n && k < SX_ARG_REGS {
+        mf_operand(mut mf, sx_arg_reg(k), MF_USE)
+        k = k + 1
+    }
+    mf.clob[at] = SX_CALLER_SAVED
+    let results = f.ins_rn[ins]
+    if results > SX_RESULT_REGS { sx_need_out(mut s, (results - SX_RESULT_REGS) * 8) }
+    k = 0
+    while k < results {
+        let d = sx_value(mut s, mut mf, f.results[f.ins_rs[ins] + k])
+        if k < SX_RESULT_REGS {
+            sx_copy_from(mut mf, d, sx_result_reg(k))
+        } else {
+            sx_load_area(mut s, mut mf, SX_M_ARGOUT, (k - SX_RESULT_REGS) * 8, d)
+        }
+        k = k + 1
+    }
+}
+
+// A call of runtime routine `routine` (RT_*) whose arguments, IR
+// operands, go to the platform's argument registers in order.
+fn sx_runtime(f: IrFunc, s: mut Sx, mf: mut MFunc, routine: i64, a: i64, has_a: bool) {
+    s.calls = true
+    if has_a { sx_into(f, mut s, mut mf, EX_RDI, a) }
+    let at = mf_ins(mut mf, SX_CALLRT, routine, 0, 0, 0)
+    if has_a { mf_operand(mut mf, EX_RDI, MF_USE) }
+    mf.clob[at] = SX_CALLER_SAVED
+}
+
+// Writes a string header (address, length, capacity) into the scratch
+// area at `offset`.
+fn sx_header(f: IrFunc, s: mut Sx, mf: mut MFunc, offset: i64, p: i64, n: i64, cap: i64) {
+    s.scratch = true
+    sx_store_area(f, mut s, mut mf, SX_M_SCRATCH, offset, p)
+    sx_store_area(f, mut s, mut mf, SX_M_SCRATCH, offset + 8, n)
+    if cap == -1 {
+        sx_set_mem(mut s, SX_M_SCRATCH, -1, 0, offset + 16)
+        sx_store_prepared(s, mut mf, IR_I64, -1, 0)
+    } else {
+        sx_store_area(f, mut s, mut mf, SX_M_SCRATCH, offset + 16, cap)
+    }
+}
+
+// A call of a runtime routine that takes the addresses of one or two
+// string headers in the scratch area.
+fn sx_runtime_headers(s: mut Sx, mf: mut MFunc, routine: i64, two: bool) {
+    s.calls = true
+    sx_set_mem(mut s, SX_M_SCRATCH, -1, 0, 0)
+    sx_mem_ins(s, mut mf, SX_LEA, 0, 0, EX_RDI, MF_DEF)
+    if two {
+        sx_set_mem(mut s, SX_M_SCRATCH, -1, 0, 24)
+        sx_mem_ins(s, mut mf, SX_LEA, 0, 0, EX_RSI, MF_DEF)
+    }
+    let at = mf_ins(mut mf, SX_CALLRT, routine, 0, 0, 0)
+    mf_operand(mut mf, EX_RDI, MF_USE)
+    if two { mf_operand(mut mf, EX_RSI, MF_USE) }
+    mf.clob[at] = SX_CALLER_SAVED
+}
+
+fn sx_callrt(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64) {
+    let routine = f.ins_imm[ins]
+    let a = f.ins_as[ins]
+    if routine == IR_RT_ALLOC {
+        sx_runtime(f, mut s, mut mf, RT_ALLOC, f.args[a], true)
+        sx_result_from(f, mut s, mut mf, ins, EX_RAX)
+    } else if routine == IR_RT_FREE {
+        sx_runtime(f, mut s, mut mf, RT_FREE, f.args[a], true)
+    } else if routine == IR_RT_REALLOC {
+        sx_call(f, mut s, mut mf, ins, s.realloc_fn)
+    } else if routine == IR_RT_MEMCPY {
+        sx_call(f, mut s, mut mf, ins, s.memcpy_fn)
+    } else if routine == IR_RT_PRINT_I64 {
+        sx_runtime(f, mut s, mut mf, RT_PRINT_I64, f.args[a], true)
+    } else if routine == IR_RT_PRINT_BOOL {
+        sx_runtime(f, mut s, mut mf, RT_PRINT_BOOL, f.args[a], true)
+    } else if routine == IR_RT_EXIT {
+        sx_runtime(f, mut s, mut mf, RT_EXIT, f.args[a], true)
+    } else if routine == IR_RT_PRINT_STR || routine == IR_RT_EPRINT_STR {
+        sx_header(f, mut s, mut mf, 0, f.args[a], f.args[a + 1], -1)
+        if routine == IR_RT_PRINT_STR {
+            sx_runtime_headers(mut s, mut mf, RT_PRINT_STR, false)
+        } else {
+            sx_runtime_headers(mut s, mut mf, RT_EPRINT_STR, false)
+        }
+    } else if routine == IR_RT_STR_EQ {
+        sx_header(f, mut s, mut mf, 0, f.args[a], f.args[a + 1], -1)
+        sx_header(f, mut s, mut mf, 24, f.args[a + 2], f.args[a + 3], -1)
+        sx_runtime_headers(mut s, mut mf, RT_STR_EQ, true)
+        sx_result_from(f, mut s, mut mf, ins, EX_RAX)
+    } else if routine == IR_RT_STR_APPEND {
+        sx_header(f, mut s, mut mf, 0, f.args[a], f.args[a + 1], f.args[a + 2])
+        sx_header(f, mut s, mut mf, 24, f.args[a + 3], f.args[a + 4], -1)
+        sx_runtime_headers(mut s, mut mf, RT_STR_APPEND, true)
+        var k = 0
+        while k < 3 {
+            let d = sx_value(mut s, mut mf, f.results[f.ins_rs[ins] + k])
+            sx_load_area(mut s, mut mf, SX_M_SCRATCH, k * 8, d)
+            k = k + 1
+        }
+    } else {
+        let real = sx_rt_by_name(ir_rt_name(routine))
+        if real == -1 {
+            sx_fail(mut s, "the runtime routine `" + ir_rt_name(routine) + "` is not known to the x86-64 selector")
+            return
+        }
+        sx_runtime_plain(f, mut s, mut mf, ins, real)
+    }
+}
+
+// The runtime's number (RT_*) for a routine that takes exactly the
+// arguments the runtime's own routine takes, by its name in the
+// intermediate form, or -1. These are the routines the lowering stage
+// calls: a string or a list travels as the address of its three slots.
+fn sx_rt_by_name(name: str) -> i64 {
+    match name {
+        "list_push" => return RT_LIST_PUSH
+        "list_clone" => return RT_LIST_CLONE
+        "drop" => return RT_DROP
+        "str_concat" => return RT_STR_CONCAT
+        "str_eq_buf" => return RT_STR_EQ
+        "str_from_i64" => return RT_STR_FROM_I64
+        "str_from_bool" => return RT_STR_FROM_BOOL
+        "str_slice" => return RT_STR_SLICE
+        "chr" => return RT_CHR
+        "str_append_buf" => return RT_STR_APPEND
+        "args" => return RT_ARGS
+        "read_file" => return RT_READ_FILE
+        "write_file" => return RT_WRITE_FILE
+        "set_executable" => return RT_SET_EXECUTABLE
+        "remove_file" => return RT_REMOVE_FILE
+        "rename_file" => return RT_RENAME_FILE
+        "clock" => return RT_CLOCK
+        "str_is_utf8" => return RT_STR_IS_UTF8
+        "print_buf" => return RT_PRINT_STR
+        "eprint_buf" => return RT_EPRINT_STR
+        _ => return -1
+    }
+}
+
+// A call of runtime routine `real` with the arguments of IR instruction
+// `ins` in the platform's argument registers, in order (at most six),
+// and its result, when the instruction has one, from rax.
+fn sx_runtime_plain(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64, real: i64) {
+    let n = f.ins_an[ins]
+    if n > 6 {
+        sx_fail(mut s, "a runtime routine with more than six arguments")
+        return
+    }
+    s.calls = true
+    var k = 0
+    while k < n {
+        sx_into(f, mut s, mut mf, sx_arg_reg(k), f.args[f.ins_as[ins] + k])
+        k = k + 1
+    }
+    let at = mf_ins(mut mf, SX_CALLRT, real, 0, 0, 0)
+    k = 0
+    while k < n {
+        mf_operand(mut mf, sx_arg_reg(k), MF_USE)
+        k = k + 1
+    }
+    mf.clob[at] = SX_CALLER_SAVED
+    if f.ins_res[ins] != -1 { sx_result_from(f, mut s, mut mf, ins, EX_RAX) }
+}
+
+fn sx_gep(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64) {
+    sx_address(f, mut s, mut mf, f.ins_a[ins], f.ins_b[ins], f.ins_imm2[ins], f.ins_imm[ins])
+    let d = sx_value(mut s, mut mf, f.ins_res[ins])
+    sx_mem_ins(s, mut mf, SX_LEA, 0, 0, d, MF_DEF)
+}
+
+fn sx_extend(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64) {
+    let a = sx_reg(f, mut s, mut mf, f.ins_a[ins])
+    let d = sx_value(mut s, mut mf, f.ins_res[ins])
+    if f.ins_op[ins] == IR_NEG {
+        mf_ins(mut mf, SX_NEG, 0, 0, 0, 0)
+        mf_hint(mut mf, d, a)
+    } else {
+        mf_ins(mut mf, SX_EXT, 0, f.ins_op[ins], 0, 0)
+    }
+    mf_operand(mut mf, d, MF_DEF)
+    mf_operand(mut mf, a, MF_USE)
+}
+
+// ---- terminators -----------------------------------------------------------------------
+
+// Gets the arguments of every way out of terminator `ins` ready, which
+// may take instructions; they must come before the terminator.
+fn sx_prepare_edges(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64) {
+    s.ea_kind.truncate(0)
+    s.ea_val.truncate(0)
+    var e = f.ins_es[ins]
+    while e < f.ins_es[ins] + f.ins_en[ins] {
+        var k = 0
+        while k < f.edge_an[e] {
+            let x = f.args[f.edge_as[e] + k]
+            if sx_is_imm(f, x) {
+                s.ea_kind.push(1)
+                s.ea_val.push(sx_imm(f, x))
+            } else {
+                s.ea_kind.push(0)
+                s.ea_val.push(sx_reg(f, mut s, mut mf, x))
+            }
+            k = k + 1
+        }
+        e = e + 1
+    }
+}
+
+// Gives the terminator that was just made its ways out.
+fn sx_edges(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64) {
+    var at = 0
+    var e = f.ins_es[ins]
+    while e < f.ins_es[ins] + f.ins_en[ins] {
+        let to = f.edge_blk[e]
+        mf_succ(mut mf, s.blk[to])
+        var k = 0
+        while k < f.edge_an[e] {
+            if s.ea_kind[at] == 1 {
+                mf_edge_const(mut mf, s.ea_val[at])
+            } else {
+                let p = sx_value(mut s, mut mf, f.bparams[f.blk_ps[to] + k])
+                mf_edge_arg(mut mf, s.ea_val[at])
+                mf_hint(mut mf, p, s.ea_val[at])
+                mf_hint(mut mf, s.ea_val[at], p)
+            }
+            at = at + 1
+            k = k + 1
+        }
+        e = e + 1
+    }
+}
+
+// Whether value `x` is a `load` that is done in a `cmp`.
+fn sx_is_folded_load(s: Sx, x: i64) -> bool {
+    return x >= 0 && s.fold[x] == 3
+}
+
+// The `br` `ins` as a comparison with memory, when its condition was
+// chosen for that; false when it was not, and then nothing was done.
+fn sx_branch_on_memory(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64) -> bool {
+    let c = f.ins_a[ins]
+    var loaded = -1
+    var other = -1
+    var cc = EX_CC_NE
+    var is_imm = true
+    var imm = 0
+    if sx_is_folded_load(s, c) {
+        // `br` on a `bool` in memory.
+        loaded = c
+    } else if c >= 0 && s.fold[c] == 2 {
+        let cmp = f.val_ins[c]
+        cc = sx_cc(f.ins_op[cmp])
+        if sx_is_folded_load(s, f.ins_b[cmp]) {
+            loaded = f.ins_b[cmp]
+            other = f.ins_a[cmp]
+            // `cmp other, mem` as it stands; `cmp mem, imm` is the
+            // comparison turned round.
+            if sx_is_imm32(f, other) { cc = sx_cc_swapped(cc) }
+        } else if sx_is_folded_load(s, f.ins_a[cmp]) {
+            loaded = f.ins_a[cmp]
+            other = f.ins_b[cmp]
+            if !sx_is_imm32(f, other) { cc = sx_cc_swapped(cc) }
+        }
+        if other != -1 {
+            is_imm = sx_is_imm32(f, other)
+            if is_imm { imm = sx_imm(f, other) }
+        }
+    }
+    if loaded < 0 { return false }
+    sx_prepare_edges(f, mut s, mut mf, ins)
+    var reg = -1
+    if !is_imm { reg = sx_reg(f, mut s, mut mf, other) }
+    let load = f.val_ins[loaded]
+    sx_access(f, mut s, mut mf, f.ins_a[load], f.ins_imm[load])
+    var y = sx_mem_y(s.mem_kind, s.mem_scale, s.mem_index >= 0, s.mem_n)
+    if is_imm { y = y | SX_Y_IMM }
+    mf_ins(mut mf, SX_CMPBRM, imm, cc, y, s.mem_disp)
+    if reg >= 0 { mf_operand(mut mf, reg, MF_USE) }
+    if s.mem_kind == SX_M_REG { mf_operand(mut mf, s.mem_base, MF_USE) }
+    if s.mem_index >= 0 { mf_operand(mut mf, s.mem_index, MF_USE) }
+    return true
+}
+
+fn sx_terminator(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64) {
+    let op = f.ins_op[ins]
+    if op == IR_JUMP {
+        sx_prepare_edges(f, mut s, mut mf, ins)
+        mf_ins(mut mf, SX_JMP, 0, 0, 0, 0)
+        sx_edges(f, mut s, mut mf, ins)
+    } else if op == IR_BR && sx_branch_on_memory(f, mut s, mut mf, ins) {
+        sx_edges(f, mut s, mut mf, ins)
+    } else if op == IR_BR {
+        sx_prepare_edges(f, mut s, mut mf, ins)
+        sx_condition(f, mut s, mut mf, f.ins_a[ins])
+        var flags = 0
+        if s.cb_is_imm { flags = 1 }
+        mf_ins(mut mf, SX_CMPBR, s.cb_imm, s.cc, flags, 0)
+        mf_operand(mut mf, s.ca, MF_USE)
+        if !s.cb_is_imm { mf_operand(mut mf, s.cb, MF_USE | MF_ANY) }
+        sx_edges(f, mut s, mut mf, ins)
+    } else if op == IR_SWITCH {
+        sx_prepare_edges(f, mut s, mut mf, ins)
+        let v = sx_reg(f, mut s, mut mf, f.ins_a[ins])
+        let keys = mf.consts.len()
+        var e = f.ins_es[ins]
+        while e < f.ins_es[ins] + f.ins_en[ins] - 1 {
+            mf.consts.push(f.edge_key[e])
+            e = e + 1
+        }
+        mf_ins(mut mf, SX_SWITCH, keys, f.ins_en[ins] - 1, 0, 0)
+        mf_operand(mut mf, v, MF_USE)
+        sx_edges(f, mut s, mut mf, ins)
+    } else if op == IR_RET {
+        let n = f.ins_an[ins]
+        var k = SX_RESULT_REGS
+        while k < n {
+            sx_store_area(f, mut s, mut mf, SX_M_ARGIN, (k - SX_RESULT_REGS) * 8, f.args[f.ins_as[ins] + k])
+            k = k + 1
+        }
+        k = 0
+        while k < n && k < SX_RESULT_REGS {
+            sx_into(f, mut s, mut mf, sx_result_reg(k), f.args[f.ins_as[ins] + k])
+            k = k + 1
+        }
+        mf_ins(mut mf, SX_RET, 0, 0, 0, 0)
+        k = 0
+        while k < n && k < SX_RESULT_REGS {
+            mf_operand(mut mf, sx_result_reg(k), MF_USE)
+            k = k + 1
+        }
+    } else {
+        mf_ins(mut mf, SX_TRAP, f.ins_imm[ins], 0, 0, 0)
+    }
+}
+
+fn sx_instruction(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64) {
+    let op = f.ins_op[ins]
+    if op == IR_ICONST || op == IR_BCONST || op == IR_ADDR || op == IR_FRAME { return }
+    if ir_is_terminator(op) {
+        sx_terminator(f, mut s, mut mf, ins)
+    } else if op == IR_SDIV || op == IR_SREM {
+        sx_divide(f, mut s, mut mf, ins)
+    } else if op == IR_UMULH || op == IR_SMULH {
+        sx_mulh(f, mut s, mut mf, ins)
+    } else if op == IR_SHL || op == IR_SAR || op == IR_SHR {
+        sx_shift(f, mut s, mut mf, ins)
+    } else if ir_is_compare(op) {
+        if s.fold[f.ins_res[ins]] != 2 { sx_compare(f, mut s, mut mf, ins) }
+    } else if ir_is_binary(op) {
+        sx_binary(f, mut s, mut mf, ins)
+    } else if ir_is_unary(op) {
+        sx_extend(f, mut s, mut mf, ins)
+    } else if op == IR_SELECT {
+        sx_select(f, mut s, mut mf, ins)
+    } else if op == IR_LOAD {
+        if s.fold[f.ins_res[ins]] != 3 { sx_load(f, mut s, mut mf, ins) }
+    } else if op == IR_STORE {
+        sx_store(f, mut s, mut mf, ins)
+    } else if op == IR_GEP {
+        if s.fold[f.ins_res[ins]] != 1 { sx_gep(f, mut s, mut mf, ins) }
+    } else if op == IR_CALL {
+        sx_call(f, mut s, mut mf, ins, s.targets[f.ins_imm[ins]])
+    } else if op == IR_CALLRT {
+        sx_callrt(f, mut s, mut mf, ins)
+    } else {
+        sx_fail(mut s, "the instruction `" + ir_op_name(op) + "` is not known to the x86-64 selector")
+    }
+}
+
+// ---- a function ------------------------------------------------------------------------
+
+// Decides what is folded into its users.
+fn sx_folds(f: IrFunc, s: mut Sx) {
+    let uses = ir_uses(f)
+    var v = 0
+    while v < f.val_ty.len() {
+        let def = f.val_ins[v]
+        v = v + 1
+        if def < 0 || f.val_ty[v - 1] < 0 { continue }
+        let x = v - 1
+        let op = f.ins_op[def]
+        let from = uses.start[x]
+        let n = uses.count[x]
+        if op == IR_GEP && n > 0 {
+            var only_addresses = true
+            var k = 0
+            while k < n {
+                let user = uses.ins[from + k]
+                let user_op = f.ins_op[user]
+                if user_op == IR_LOAD {
+                    // its one operand
+                } else if user_op == IR_STORE && f.ins_b[user] != x {
+                    // the address, not the value stored
+                } else {
+                    only_addresses = false
+                }
+                k = k + 1
+            }
+            if only_addresses { s.fold[x] = 1 }
+        } else if ir_is_compare(op) && n == 1 {
+            let user = uses.ins[from]
+            let user_op = f.ins_op[user]
+            if (user_op == IR_BR || user_op == IR_SELECT) && f.ins_a[user] == x { s.fold[x] = 2 }
+        }
+    }
+}
+
+// Decides which loads are done in the `cmp` that ends their block.
+// `blocks` are the blocks that can be reached.
+fn sx_fold_loads(f: IrFunc, s: mut Sx, blocks: List[i64]) {
+    let uses = ir_uses(f)
+    for b in blocks {
+        let last = f.blk_last[b]
+        if f.ins_op[last] != IR_BR { continue }
+        let c = f.ins_a[last]
+        // The loads of the block after which nothing writes memory.
+        var loads: List[i64] = []
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            let op = f.ins_op[ins]
+            if op == IR_STORE || op == IR_CALL || op == IR_CALLRT {
+                loads.truncate(0)
+            } else if op == IR_LOAD && ir_type_bytes(f.ins_ty[ins]) == 8 && uses.count[f.ins_res[ins]] == 1 {
+                loads.push(f.ins_res[ins])
+            }
+            ins = f.ins_next[ins]
+        }
+        if c < 0 { continue }
+        if loads.contains(c) {
+            s.fold[c] = 3
+        } else if s.fold[c] == 2 {
+            let cmp = f.val_ins[c]
+            let a = f.ins_a[cmp]
+            let other = f.ins_b[cmp]
+            if a != other {
+                if loads.contains(other) && !sx_is_imm(f, a) {
+                    s.fold[other] = 3
+                } else if loads.contains(a) {
+                    s.fold[a] = 3
+                } else if loads.contains(other) && sx_is_imm32(f, a) {
+                    s.fold[other] = 3
+                }
+            }
+        }
+    }
+}
+
+// Selects the instructions of `f`, which is changed: its critical
+// edges are split. `targets` says which function of the module each
+// entry of its `callees` is; `memcpy_fn` and `realloc_fn` are the
+// functions that stand in for those two runtime routines.
+fn sx_function(f: mut IrFunc, targets: List[i64], memcpy_fn: i64, realloc_fn: i64) -> SxFunc {
+    var s = Sx {
+        vr: [],
+        fold: [],
+        blk: [],
+        targets: targets,
+        memcpy_fn: memcpy_fn,
+        realloc_fn: realloc_fn,
+        mem_kind: 0,
+        mem_base: -1,
+        mem_index: -1,
+        mem_scale: 1,
+        mem_n: 0,
+        mem_disp: 0,
+        cc: 0,
+        ca: -1,
+        cb: -1,
+        cb_imm: 0,
+        cb_is_imm: false,
+        ea_kind: [],
+        ea_val: [],
+        out_bytes: 0,
+        scratch: false,
+        calls: false,
+        failed: false,
+        error: ""
+    }
+    var mf = mf_new(f.name)
+    // Which blocks can be reached, and how many ways lead into each.
+    let cfg = ir_cfg(f)
+    let before = f.blk_first.len()
+    var ways_in = 0.filled(before)
+    for b in cfg.rpo {
+        let last = f.blk_last[b]
+        var e = f.ins_es[last]
+        while e < f.ins_es[last] + f.ins_en[last] {
+            ways_in[f.edge_blk[e]] = ways_in[f.edge_blk[e]] + 1
+            e = e + 1
+        }
+    }
+    // The layout: the blocks in their order, each followed by the
+    // blocks put on its critical edges; blocks that stop the program
+    // come last.
+    var layout: List[i64] = []
+    var cold: List[i64] = []
+    var at = 0
+    while at < f.order.len() {
+        let b = f.order[at]
+        at = at + 1
+        if b >= before || cfg.rpo_at[b] < 0 { continue }
+        let last = f.blk_last[b]
+        if f.ins_op[last] == IR_TRAP {
+            cold.push(b)
+            continue
+        }
+        layout.push(b)
+        if f.ins_en[last] > 1 {
+            var e = f.ins_es[last]
+            let end = e + f.ins_en[last]
+            while e < end {
+                if ways_in[f.edge_blk[e]] > 1 { layout.push(ir_split_edge(mut f, e)) }
+                e = e + 1
+            }
+        }
+    }
+    for b in cold {
+        layout.push(b)
+    }
+    s.vr = (-1).filled(f.val_ty.len())
+    s.fold = 0.filled(f.val_ty.len())
+    s.blk = (-1).filled(f.blk_first.len())
+    var k = 0
+    while k < layout.len() {
+        s.blk[layout[k]] = k + 1
+        k = k + 1
+    }
+    sx_folds(f, mut s)
+    sx_fold_loads(f, mut s, layout)
+    // The first machine block: the arguments arrive.
+    mf_block(mut mf)
+    mf_ins(mut mf, SX_ENTRY, 0, 0, 0, 0)
+    k = 0
+    while k < f.param_count && k < SX_ARG_REGS {
+        mf_operand(mut mf, sx_arg_reg(k), MF_DEF)
+        k = k + 1
+    }
+    k = 0
+    while k < f.param_count {
+        let p = sx_value(mut s, mut mf, k)
+        if k < SX_ARG_REGS {
+            sx_copy_from(mut mf, p, sx_arg_reg(k))
+        } else {
+            sx_load_area(mut s, mut mf, SX_M_ARGIN, (k - SX_ARG_REGS) * 8, p)
+        }
+        k = k + 1
+    }
+    mf_ins(mut mf, SX_JMP, 0, 0, 0, 0)
+    mf_succ(mut mf, 1)
+    k = 0
+    while k < layout.len() {
+        let b = layout[k]
+        k = k + 1
+        mf_block(mut mf)
+        var j = 0
+        while j < f.blk_pn[b] {
+            let p = sx_value(mut s, mut mf, f.bparams[f.blk_ps[b] + j])
+            mf_param(mut mf, p)
+            j = j + 1
+        }
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            sx_instruction(f, mut s, mut mf, ins)
+            ins = f.ins_next[ins]
+        }
+    }
+    return SxFunc { mf: mf, out_bytes: s.out_bytes, scratch: s.scratch, calls: s.calls, ok: !s.failed, error: s.error }
+}

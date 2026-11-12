@@ -1,0 +1,16 @@
+struct Point { x: i64, y: i64 }
+
+fn main() {
+    var total = 0
+    for i in 1..=5 {
+        total += i
+    }
+    let x = 3
+    let y = 4
+    let p = Point { x, y }
+    var names = ""
+    for i in 0..6 step 2 {
+        names += "{i} "
+    }
+    print("total: {total}, point: {p.x},{p.y}, evens: {names}braces: \{}")
+}

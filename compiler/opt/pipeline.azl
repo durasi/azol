@@ -1,0 +1,250 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The order the passes of `-O` run in, and the one place that knows
+// them by name (docs/design/optimizer.md, section 4).
+//
+// A pass is a function `fn ir_NAME(f: mut IrFunc) -> i64` in a file of
+// its own that gives how many things it changed. To add one:
+//
+//   1. a line in `pl_run_pass` that calls it by its name;
+//   2. its name in `PL_ORDER`, where section 4 of the design puts it.
+//
+// A pass that needs the whole module (it looks at what the functions
+// that are called do) goes in `pl_run_module_pass` instead, and its
+// name also in `PL_MODULE_PASSES`. It runs once, on every function, at
+// its place in the order; the passes between two of those run function
+// by function.
+//
+// `simplify` runs between the others, as the design says. The passes
+// that do not exist yet are simply not in the order.
+
+// The order of the design with the passes that exist:
+//
+//     early   simplify, (sroa), (gvn), dce
+//     middle  (range, gvn, licm, bce, ...), dse, dce
+//     late    simplify
+const PL_ORDER = "simplify,sroa,simplify,dce,dse,dce,simplify"
+
+// Runs one pass on one function. Gives what the pass gives, or -1 for
+// a name that is no pass.
+fn pl_run_pass(name: str, f: mut IrFunc) -> i64 {
+    if name == "simplify" { return ir_simplify(mut f) }
+    if name == "dce" { return ir_dce(mut f) }
+    if name == "dse" { return ir_dse(mut f) }
+    return -1
+}
+
+// Runs one pass that works on the whole module. Gives what the pass
+// gives, or -1 for a name that is no such pass.
+fn pl_run_module_pass(name: str, m: mut IrModule) -> i64 {
+    if name == "sroa" {
+        var numbers = sroa_new_stats()
+        let removed = ir_sroa_module(mut m, mut numbers)
+        // Making a frame object narrower is a change too.
+        return removed + (numbers.bytes_before - numbers.bytes_after) / 8
+    }
+    return -1
+}
+
+// The names `pl_run_module_pass` knows, with a comma after each.
+const PL_MODULE_PASSES = "sroa,"
+
+fn pl_is_module_pass(name: str) -> bool {
+    return PL_MODULE_PASSES.contains(name + ",")
+}
+
+struct PlOptions {
+    // The passes to run, in order.
+    passes: List[str]
+    // Run the verifier after every pass on every function.
+    verify_each: bool
+    // Run the whole list again until a run of it changes nothing.
+    fixpoint: bool
+}
+
+// What the passes did: for each name of the list, how often it ran,
+// how many things it changed and how long it took, in nanoseconds.
+struct PlStats {
+    names: List[str]
+    runs: List[i64]
+    changes: List[i64]
+    ns: List[i64]
+    // Instructions in the module before and after.
+    before: i64
+    after: i64
+}
+
+fn pl_default_options() -> PlOptions {
+    return PlOptions { passes: PL_ORDER.split(","), verify_each: false, fixpoint: false }
+}
+
+fn pl_new_stats() -> PlStats {
+    return PlStats { names: [], runs: [], changes: [], ns: [], before: 0, after: 0 }
+}
+
+// How many instructions a function has.
+fn pl_size(f: IrFunc) -> i64 {
+    var n = 0
+    for b in f.order {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            n = n + 1
+            ins = f.ins_next[ins]
+        }
+    }
+    return n
+}
+
+// Whether the pass repeats itself until it finds nothing more, so that
+// a second run straight after the first has nothing to do.
+fn pl_settles(name: str) -> bool {
+    return name == "simplify"
+}
+
+fn pl_note(stats: mut PlStats, name: str, changed: i64, ns: i64) {
+    var at = 0
+    while at < stats.names.len() && stats.names[at] != name {
+        at = at + 1
+    }
+    if at == stats.names.len() {
+        stats.names.push(name)
+        stats.runs.push(0)
+        stats.changes.push(0)
+        stats.ns.push(0)
+    }
+    stats.runs[at] = stats.runs[at] + 1
+    stats.changes[at] = stats.changes[at] + changed
+    stats.ns[at] = stats.ns[at] + ns
+}
+
+// Runs the function passes `passes` on function `i` of the module.
+// Gives what is wrong, or "".
+fn pl_run_on(m: mut IrModule, i: i64, passes: List[str], options: PlOptions, stats: mut PlStats) -> str {
+    var rounds = 0
+    var idle: List[str] = []
+    while rounds < 16 {
+        rounds = rounds + 1
+        var changed = 0
+        for name in passes {
+            // A pass that found nothing, run again on a function
+            // nothing has changed since, finds nothing again.
+            var known = false
+            for other in idle {
+                known = known || other == name
+            }
+            if known { continue }
+            let start = clock()
+            let n = pl_run_pass(name, mut m.funcs[i])
+            if n < 0 { return "there is no pass `" + name + "`" }
+            pl_note(mut stats, name, n, clock() - start)
+            changed = changed + n
+            if n > 0 { idle = [] }
+            if n == 0 || pl_settles(name) { idle.push(name) }
+            if options.verify_each {
+                let problem = ir_verify_func(m, i)
+                if problem.len() > 0 { return "after `" + name + "`: " + problem }
+            }
+        }
+        if !options.fixpoint || changed == 0 { break }
+    }
+    return ""
+}
+
+// Runs the passes of `options` on the module: the function passes one
+// function at a time, in runs that a pass on the whole module ends.
+// Gives what is wrong, or "" when nothing is: a name that is no pass,
+// or, with `verify_each`, the first rule a pass broke.
+fn pl_run(m: mut IrModule, options: PlOptions, stats: mut PlStats) -> str {
+    var i = 0
+    while i < m.funcs.len() {
+        stats.before = stats.before + pl_size(m.funcs[i])
+        i = i + 1
+    }
+    // With `fixpoint` the whole list runs again, the passes on the
+    // whole module too, until a round changes nothing: `dse` and `dce`
+    // remove the last store or reader that kept `sroa` from making a
+    // cell a value or an object narrower, so one round is not always
+    // the end. Eight rounds at most.
+    var rounds = 0
+    var changed = 1
+    while rounds < 8 && changed != 0 {
+        rounds = rounds + 1
+        let before = pl_changes(stats)
+        let problem = pl_round(mut m, options, mut stats)
+        if problem.len() > 0 { return problem }
+        changed = 0
+        if options.fixpoint { changed = pl_changes(stats) - before }
+    }
+    i = 0
+    while i < m.funcs.len() {
+        stats.after = stats.after + pl_size(m.funcs[i])
+        i = i + 1
+    }
+    return ""
+}
+
+// All the changes counted so far.
+fn pl_changes(stats: PlStats) -> i64 {
+    var n = 0
+    for c in stats.changes {
+        n = n + c
+    }
+    return n
+}
+
+// The list of passes once.
+fn pl_round(m: mut IrModule, options: PlOptions, stats: mut PlStats) -> str {
+    var i = 0
+    var at = 0
+    while at <= options.passes.len() {
+        // The function passes up to the next pass on the whole module.
+        var run: List[str] = []
+        while at < options.passes.len() && !pl_is_module_pass(options.passes[at]) {
+            run.push(options.passes[at])
+            at = at + 1
+        }
+        if run.len() > 0 {
+            i = 0
+            while i < m.funcs.len() {
+                let problem = pl_run_on(mut m, i, run, options, mut stats)
+                if problem.len() > 0 { return problem }
+                i = i + 1
+            }
+        }
+        if at >= options.passes.len() { break }
+        let name = options.passes[at]
+        let start = clock()
+        let n = pl_run_module_pass(name, mut m)
+        if n < 0 { return "there is no pass `" + name + "`" }
+        pl_note(mut stats, name, n, clock() - start)
+        if options.verify_each {
+            i = 0
+            while i < m.funcs.len() {
+                let problem = ir_verify_func(m, i)
+                if problem.len() > 0 { return "after `" + name + "`: " + problem }
+                i = i + 1
+            }
+        }
+        at = at + 1
+    }
+    return ""
+}
+
+// The statistics as lines of text.
+fn pl_stats_text(stats: PlStats) -> str {
+    var out = "instructions " + str(stats.before)
+    out = out + " -> "
+    out = out + str(stats.after)
+    out = out + "\n"
+    for at, name in stats.names {
+        out = out + name
+        out = out + ": runs "
+        out = out + str(stats.runs[at])
+        out = out + ", changes "
+        out = out + str(stats.changes[at])
+        out = out + ", "
+        out = out + str((stats.ns[at] + 500) / 1000)
+        out = out + " us\n"
+    }
+    return out
+}

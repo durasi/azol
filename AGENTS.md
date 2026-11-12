@@ -29,8 +29,10 @@ carries a `fix`, apply it exactly: it is the edit that removes the error.
    not `&mut xs`.
 5. `if`, `match` and blocks are statements, not values. Write
    `var x = 0` and assign inside the arms; `let x = match ...` does not exist.
-6. `return` is always written. There is no `+=`, no `++`, no ranges (`0..n`):
-   count with `while`, or `for i, x in xs`.
+6. `return` is always written. `x += 1` exists, `x++` does not. Count with
+   `for i in 0..n` (to `n - 1`), `0..=n`, or `n - 1..=0 step -1`; a range is
+   written only after `for ... in`. In a text, `"{value}"` puts an `i64`, a
+   `bool` or a `str` there, and a brace that is only a brace is `\{`.
 7. Enum variants are bare, global names: `Circle(2)`, not `Shape::Circle(2)`.
    `Some`, `None`, `Ok`, `Err` are built in.
 8. An empty list or `None` needs a type from the context:

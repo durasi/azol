@@ -63,12 +63,8 @@ fn walk(steps: List[Step]) -> i64 {
         match step {
             Go(n) => {
                 for inner in range(n) {
-                    if inner == 2 {
-                        continue
-                    }
-                    if inner == 4 {
-                        break
-                    }
+                    if inner == 2 { continue }
+                    if inner == 4 { break }
                     total = total + inner
                 }
             }
@@ -101,9 +97,7 @@ fn count_while(limit: i64) -> i64 {
         match i % 3 {
             0 => continue
             1 => {
-                if i > 7 {
-                    break
-                }
+                if i > 7 { break }
             }
             _ => {}
         }
@@ -156,15 +150,11 @@ fn main() {
     print(count_while(5))
     print(count_while(50))
     for i, flag in [true, false, true] {
-        if flag {
-            print(i)
-        }
+        if flag { print(i) }
     }
     for i, color in [Red, Blue, Green, Blue] {
         print(name(color))
-        if color == Blue && i > 1 {
-            print(i)
-        }
+        if color == Blue && i > 1 { print(i) }
     }
     var points = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }, Point { x: 5, y: 6 }]
     var sum = 0
@@ -176,9 +166,7 @@ fn main() {
     }
     print(sum)
     for word in ["one", "two", "three"] {
-        if word == "two" {
-            continue
-        }
+        if word == "two" { continue }
         print(word)
     }
     // A list that grows by pushes, read and written by index.

@@ -1,0 +1,13 @@
+; A switch on a constant is a jump to its case.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = add 1, 1
+    switch v0, 1 -> b1, 2 -> b2(p0), default b3
+b1:
+    ret 100
+b2(v1: i64):
+    v2 = add v1, 200
+    ret v2
+b3:
+    ret -1
+}

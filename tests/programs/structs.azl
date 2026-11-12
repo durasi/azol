@@ -22,9 +22,7 @@ fn add(a: Point, b: Point) -> Point {
 }
 
 fn abs(n: i64) -> i64 {
-    if n < 0 {
-        return -n
-    }
+    if n < 0 { return -n }
     return n
 }
 
@@ -45,9 +43,7 @@ fn first(l: Line) -> Point {
 }
 
 fn step(p: Point, n: i64) -> Point {
-    if n == 0 {
-        return p
-    }
+    if n == 0 { return p }
     return step(Point { x: p.y, y: p.x + p.y }, n - 1)
 }
 
@@ -92,9 +88,7 @@ fn main() -> i64 {
     print(s.y)
 
     let f = Flags { on: true, count: 3 }
-    if f.on {
-        print(f.count)
-    }
+    if f.on { print(f.count) }
 
     var acc = make(0, 0)
     var i = 0

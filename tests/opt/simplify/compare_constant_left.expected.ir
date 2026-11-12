@@ -1,0 +1,7 @@
+fn main(p0: i64) -> bool, bool, bool {
+b0:
+    v0 = sgt p0, 5
+    v1 = ult p0, 6
+    v2 = eq p0, 5
+    ret v0, v1, v2
+}

@@ -8,9 +8,7 @@
 const SMALL = false
 
 fn size(full: i64, small: i64) -> i64 {
-    if SMALL {
-        return small
-    }
+    if SMALL { return small }
     return full
 }
 
@@ -21,9 +19,7 @@ fn main() {
     var n = 0
     while n < count {
         seed = seed * 48271 % 2147483647
-        if n > 0 {
-            text = text + " "
-        }
+        if n > 0 { text = text + " " }
         text = text + "w"
         text = text + str(seed % 5000)
         n = n + 1

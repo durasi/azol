@@ -35,9 +35,7 @@ fn p1(a: i64) -> i64 {
 }
 
 fn p2(a: bool, b: i64) -> i64 {
-    if a && b > 0 || !a && b < 0 {
-        return b + b
-    }
+    if a && b > 0 || !a && b < 0 { return b + b }
     return b - 1
 }
 
@@ -46,9 +44,7 @@ fn p3(a: i64, s: str, b: i64) -> i64 {
 }
 
 fn p4(p: Pair, a: i64, q: Pair, flag: bool) -> i64 {
-    if flag {
-        return p.a + q.b + a
-    }
+    if flag { return p.a + q.b + a }
     return p.b + q.a - a
 }
 
@@ -61,9 +57,7 @@ fn p6(xs: List[i64], a: i64, s: str, b: bool, p: Pair, c: i64) -> i64 {
     for x in xs {
         total = total + x * a - c
     }
-    if b {
-        total = total + s.len() + p.a
-    }
+    if b { total = total + s.len() + p.a }
     return total + a + c + a + c
 }
 
@@ -76,9 +70,7 @@ fn p8(a: i64, flag: bool, c: i64, s: str, e: i64, p: Pair, g: i64, h: i64) -> i6
     var i = 0
     while i < 3 {
         total = total + a + c + e + g + h + p.a * p.b + s.len()
-        if flag && i == 1 {
-            total = total * 2
-        }
+        if flag && i == 1 { total = total * 2 }
         i = i + 1
     }
     return total

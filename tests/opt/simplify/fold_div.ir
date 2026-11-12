@@ -1,0 +1,9 @@
+; Division of constants rounds toward zero; the remainder has the sign of the dividend.
+fn main() -> i64, i64, i64, i64 {
+b0:
+    v0 = sdiv -7, 2
+    v1 = srem -7, 2
+    v2 = sdiv 7, -2
+    v3 = srem 7, -2
+    ret v0, v1, v2, v3
+}

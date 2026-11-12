@@ -63,16 +63,12 @@ fn ir_tool_values(f: IrFunc, bits: List[i64], base: i64, words: i64) -> str {
     var v = 0
     while v < f.val_ty.len() {
         if bits[base + (v >> 6)] >> (v & 63) & 1 != 0 {
-            if out.len() > 0 {
-                out = out + " "
-            }
+            if out.len() > 0 { out = out + " " }
             ir_print_value(f, v, mut out)
         }
         v = v + 1
     }
-    if out.len() == 0 {
-        return "-"
-    }
+    if out.len() == 0 { return "-" }
     return out
 }
 
@@ -80,16 +76,12 @@ fn ir_tool_blocks(blocks: List[i64], start: i64, count: i64) -> str {
     var out = ""
     var k = 0
     while k < count {
-        if k > 0 {
-            out = out + " "
-        }
+        if k > 0 { out = out + " " }
         out = out + "b"
         out = out + str(blocks[start + k])
         k = k + 1
     }
-    if count == 0 {
-        return "-"
-    }
+    if count == 0 { return "-" }
     return out
 }
 
@@ -100,9 +92,7 @@ fn ir_tool_cfg(f: IrFunc) {
     print("  order: " + ir_tool_blocks(cfg.rpo, 0, cfg.rpo.len()))
     var unreachable: List[i64] = []
     for b in f.order {
-        if cfg.rpo_at[b] < 0 {
-            unreachable.push(b)
-        }
+        if cfg.rpo_at[b] < 0 { unreachable.push(b) }
     }
     if unreachable.len() > 0 {
         print("  unreachable: " + ir_tool_blocks(unreachable, 0, unreachable.len()))
@@ -135,9 +125,7 @@ fn ir_tool_cfg(f: IrFunc) {
         print(line)
         l = l + 1
     }
-    if cfg.irreducible > 0 {
-        print("  irreducible: " + str(cfg.irreducible))
-    }
+    if cfg.irreducible > 0 { print("  irreducible: " + str(cfg.irreducible)) }
     for b in cfg.rpo {
         print("  live b" + str(b) + ": in " + ir_tool_values(f, live.live_in, b * live.words, live.words) + " | out " + ir_tool_values(f, live.live_out, b * live.words, live.words))
     }
@@ -180,17 +168,13 @@ fn ir_tool_run(m: IrModule, rest: List[str]) {
         exit(3)
     }
     if mach.stopped {
-        if mach.stop_message.len() > 0 {
-            eprint(mach.stop_message)
-        }
+        if mach.stop_message.len() > 0 { eprint(mach.stop_message) }
         exit(mach.exit_code)
     }
     var line = "=>"
     var k = 0
     while k < returned.len() {
-        if k > 0 {
-            line = line + ","
-        }
+        if k > 0 { line = line + "," }
         let ty = m.funcs[at].ret_ty[k]
         if ty == IR_BOOL {
             line = line + " "
@@ -258,9 +242,7 @@ fn ir_tool_time(path: str) {
 
 fn main() {
     let a = args()
-    if a.len() < 3 {
-        ir_tool_usage()
-    }
+    if a.len() < 3 { ir_tool_usage() }
     let command = a[1]
     if command == "time" {
         ir_tool_time(a[2])
@@ -269,9 +251,7 @@ fn main() {
     let m = ir_tool_read(a[2])
     if command == "print" {
         let text = ir_print_module(m)
-        if text.len() > 0 {
-            print(text.slice(0, text.len() - 1))
-        }
+        if text.len() > 0 { print(text.slice(0, text.len() - 1)) }
     } else if command == "verify" {
         ir_tool_verify(m)
         print("ok")

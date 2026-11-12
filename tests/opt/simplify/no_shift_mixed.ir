@@ -1,0 +1,7 @@
+; Kept: (x << 3) >> 3 clears the top bits; the two shifts do not cancel.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = shl p0, 3
+    v1 = shr v0, 3
+    ret v1
+}

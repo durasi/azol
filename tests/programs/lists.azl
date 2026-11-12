@@ -44,18 +44,14 @@ fn double_all(xs: mut List[i64]) {
 }
 
 fn first_or(xs: List[i64], fallback: i64) -> i64 {
-    if xs.len() == 0 {
-        return fallback
-    }
+    if xs.len() == 0 { return fallback }
     return xs[0]
 }
 
 fn evens(xs: List[i64]) -> List[i64] {
     var out: List[i64] = []
     for x in xs {
-        if x % 2 != 0 {
-            continue
-        }
+        if x % 2 != 0 { continue }
         out.push(x)
     }
     return out
@@ -63,9 +59,7 @@ fn evens(xs: List[i64]) -> List[i64] {
 
 fn find(xs: List[i64], wanted: i64) -> i64 {
     for i, x in xs {
-        if x == wanted {
-            return i
-        }
+        if x == wanted { return i }
     }
     return -1
 }
@@ -117,12 +111,8 @@ fn main() {
     print(find(big, 7))
 
     for i, sq in squares(10) {
-        if i == 0 {
-            print(i)
-        }
-        if i > 0 && i < 10 {
-            print(sq)
-        }
+        if i == 0 { print(i) }
+        if i > 0 && i < 10 { print(sq) }
     }
     print(sum(squares(9)))
     print(squares(10).len())

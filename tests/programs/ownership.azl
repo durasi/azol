@@ -84,9 +84,7 @@ fn first_shared(xs: List[i64], ys: List[i64]) -> i64 {
         let more = range(2)
         for y in grown(ys, 0) {
             let inner = range(1)
-            if x == y {
-                return x + inner.len() + more.len() + scratch.len() - 6
-            }
+            if x == y { return x + inner.len() + more.len() + scratch.len() - 6 }
         }
     }
     return -1
@@ -96,12 +94,8 @@ fn count_until(limit: i64) -> i64 {
     var seen = 0
     for x in range(100) {
         let waste = range(x)
-        if x % 2 == 0 {
-            continue
-        }
-        if x > limit {
-            break
-        }
+        if x % 2 == 0 { continue }
+        if x > limit { break }
         seen = seen + waste.len() - x + 1
     }
     return seen
@@ -172,12 +166,8 @@ fn main() {
     range(4)
     bag("unused", 4)
     print(bag("temp", 2).items.len())
-    if is_long(range(1)) && is_long(range(50)) {
-        print(99)
-    }
-    if is_long(range(1)) || is_long(range(3)) {
-        print(1)
-    }
+    if is_long(range(1)) && is_long(range(50)) { print(99) }
+    if is_long(range(1)) || is_long(range(3)) { print(1) }
     var rounds = 0
     while sum(range(rounds)) < 6 {
         rounds = rounds + 1

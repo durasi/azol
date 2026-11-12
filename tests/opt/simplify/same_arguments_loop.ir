@@ -1,0 +1,14 @@
+; A loop parameter that is only ever passed itself or one value is that value.
+fn main(p0: i64) -> i64 {
+b0:
+    jump b1(0, p0)
+b1(v0: i64, v1: i64):
+    v2 = slt v0, 3
+    br v2, b2, b3
+b2:
+    callrt print_i64(v1)
+    v3 = add v0, 1
+    jump b1(v3, v1)
+b3:
+    ret v1
+}

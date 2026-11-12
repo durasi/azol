@@ -342,7 +342,7 @@ def check_json(section, label, folder, code, out):
     section.check((code == 1) == bool(found) and code in (0, 1), label + ": exit code 1 exactly when there are errors", "exit %d, %d errors" % (code, len(found)))
     for one in found:
         wanted = ["severity", "code", "message", "file", "line", "column", "end_line", "end_column", "source", "rule"]
-        section.check(list(one)[:10] == wanted and re.fullmatch(r"E0\d\d\d", one["code"]) and one["code"] != "E0000", label + ": an error has every field and a code", repr(list(one)))
+        section.check(list(one)[:10] == wanted and re.fullmatch(r"E[01]\d\d\d", one["code"]) and one["code"] != "E0000", label + ": an error has every field and a code", repr(list(one)))
         path = os.path.join(folder, one.get("file", ""))
         if os.path.isfile(path):
             source = read(path).decode("utf-8", errors="replace").split("\n")
@@ -913,7 +913,7 @@ def section_errors(suite):
     lines = text_of(listed).split("\n")[:-1]
     section.check(code == 0 and len(lines) > 50, "`explain` lists the codes", "%d lines" % len(lines))
     codes = [line[:5] for line in lines]
-    section.check(all(re.fullmatch(r"E0\d\d\d", one) for one in codes), "every code is `E0` and three digits")
+    section.check(all(re.fullmatch(r"E[01]\d\d\d", one) for one in codes), "every code is `E0` or `E1` and three digits")
     section.check(codes == sorted(set(codes)), "the codes are listed once each, in order")
     section.check(all(line[5:7] == "  " and line.rstrip().endswith(".") for line in lines), "every code has a rule that ends in a full stop")
 

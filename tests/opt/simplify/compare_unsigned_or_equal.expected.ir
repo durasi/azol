@@ -1,0 +1,6 @@
+fn main(p0: i64) -> bool, bool {
+b0:
+    v0 = ult p0, 6
+    v1 = ugt p0, 4
+    ret v0, v1
+}

@@ -1,0 +1,14 @@
+; Kept: the loop prints.
+fn main(p0: i64) -> i64 {
+b0:
+    jump b1(0)
+b1(v0: i64):
+    v1 = slt v0, p0
+    br v1, b2, b3
+b2:
+    callrt print_i64(v0)
+    v2 = add v0, 1
+    jump b1(v2)
+b3:
+    ret p0
+}

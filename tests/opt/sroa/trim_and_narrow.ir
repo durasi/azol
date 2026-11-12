@@ -1,0 +1,32 @@
+; An object of four cells: the first two become values, the third is
+; read byte by byte and stays, the fourth is passed to a
+; function that only reads it. The object shrinks to its last two cells and the
+; accesses that are left count from its new start.
+fn peek(p0: ptr [param 0 read]) -> i64 {
+b0:
+    v0 = load i64, p0, 0  [param 0]
+    ret v0
+}
+
+fn f(p0: i64) -> i64 {
+    frames 32
+b0:
+    v0 = frame 0
+    v1 = gep v0, 0, 1, 24
+    jump b1
+b1:
+    store i64, v0, 0, p0  [frame 0]
+    store i64, v0, 8, 2  [frame 0]
+    store i64, v0, 16, 258  [frame 0]
+    store i64, v1, 0, p0  [frame 0]
+    v2 = load u8, v0, 17  [frame 0]
+    v3 = load i64, v0, 0  [frame 0]
+    v4 = load i64, v0, 8  [frame 0]
+    callrt print_i64(v2)
+    v5 = call peek(v1) -> i64
+    v6 = load i64, v1, 0  [frame 0]
+    v7 = add v3, v4
+    v8 = add v7, v5
+    v9 = add v8, v6
+    ret v9
+}

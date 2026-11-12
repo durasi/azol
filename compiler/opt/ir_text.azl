@@ -95,9 +95,7 @@ fn ir_print_edge(f: IrFunc, e: i64, out: mut str) {
         out = out + "("
         var k = 0
         while k < f.edge_an[e] {
-            if k > 0 {
-                out = out + ", "
-            }
+            if k > 0 { out = out + ", " }
             ir_print_operand(f, f.args[f.edge_as[e] + k], mut out)
             k = k + 1
         }
@@ -108,9 +106,7 @@ fn ir_print_edge(f: IrFunc, e: i64, out: mut str) {
 fn ir_print_args(f: IrFunc, ins: i64, out: mut str) {
     var k = 0
     while k < f.ins_an[ins] {
-        if k > 0 {
-            out = out + ", "
-        }
+        if k > 0 { out = out + ", " }
         ir_print_operand(f, f.args[f.ins_as[ins] + k], mut out)
         k = k + 1
     }
@@ -121,15 +117,11 @@ fn ir_print_instruction(f: IrFunc, ins: i64, out: mut str) {
     out = out + "    "
     var k = 0
     while k < f.ins_rn[ins] {
-        if k > 0 {
-            out = out + ", "
-        }
+        if k > 0 { out = out + ", " }
         ir_print_value(f, f.results[f.ins_rs[ins] + k], mut out)
         k = k + 1
     }
-    if f.ins_rn[ins] > 0 {
-        out = out + " = "
-    }
+    if f.ins_rn[ins] > 0 { out = out + " = " }
     out = out + ir_op_name(op)
     if op == IR_ICONST || op == IR_BCONST || op == IR_FRAME {
         out = out + " "
@@ -242,21 +234,11 @@ fn ir_print_instruction(f: IrFunc, ins: i64, out: mut str) {
 }
 
 fn ir_print_fx(fx: i64, out: mut str) {
-    if fx & IR_FX_READ != 0 {
-        out = out + " read"
-    }
-    if fx & IR_FX_WRITE != 0 {
-        out = out + " write"
-    }
-    if fx & IR_FX_WRITEBUF != 0 {
-        out = out + " writebuf"
-    }
-    if fx & IR_FX_RESIZE != 0 {
-        out = out + " resize"
-    }
-    if fx & IR_FX_FREE != 0 {
-        out = out + " free"
-    }
+    if fx & IR_FX_READ != 0 { out = out + " read" }
+    if fx & IR_FX_WRITE != 0 { out = out + " write" }
+    if fx & IR_FX_WRITEBUF != 0 { out = out + " writebuf" }
+    if fx & IR_FX_RESIZE != 0 { out = out + " resize" }
+    if fx & IR_FX_FREE != 0 { out = out + " free" }
 }
 
 fn ir_print_func(f: IrFunc, out: mut str) {
@@ -265,9 +247,7 @@ fn ir_print_func(f: IrFunc, out: mut str) {
     out = out + "("
     var k = 0
     while k < f.param_count {
-        if k > 0 {
-            out = out + ", "
-        }
+        if k > 0 { out = out + ", " }
         out = out + "p"
         out = out + str(k)
         out = out + ": "
@@ -291,14 +271,12 @@ fn ir_print_func(f: IrFunc, out: mut str) {
         out = out + ir_type_name(f.ret_ty[k])
         k = k + 1
     }
-    out = out + " {\n"
+    out = out + " \{\n"
     if f.frames.len() > 0 {
         out = out + "    frames "
         k = 0
         while k < f.frames.len() {
-            if k > 0 {
-                out = out + ", "
-            }
+            if k > 0 { out = out + ", " }
             out = out + str(f.frames[k])
             k = k + 1
         }
@@ -311,9 +289,7 @@ fn ir_print_func(f: IrFunc, out: mut str) {
             out = out + "("
             k = 0
             while k < f.blk_pn[b] {
-                if k > 0 {
-                    out = out + ", "
-                }
+                if k > 0 { out = out + ", " }
                 let v = f.bparams[f.blk_ps[b] + k]
                 ir_print_value(f, v, mut out)
                 out = out + ": "
@@ -361,9 +337,7 @@ fn ir_print_module(m: IrModule) -> str {
     }
     var i = 0
     while i < m.funcs.len() {
-        if i > 0 {
-            out = out + "\n"
-        }
+        if i > 0 { out = out + "\n" }
         ir_print_func(m.funcs[i], mut out)
         i = i + 1
     }
@@ -408,9 +382,7 @@ fn irp_fail(p: mut IrParser, message: str) {
 
 // The byte at the current position; 0 at the end.
 fn irp_peek(p: IrParser) -> i64 {
-    if p.pos >= p.src.len() {
-        return 0
-    }
+    if p.pos >= p.src.len() { return 0 }
     return p.src[p.pos]
 }
 
@@ -432,9 +404,7 @@ fn irp_next_line(p: mut IrParser) {
     while p.pos < p.src.len() && p.src[p.pos] != '\n' {
         p.pos = p.pos + 1
     }
-    if p.pos < p.src.len() {
-        p.pos = p.pos + 1
-    }
+    if p.pos < p.src.len() { p.pos = p.pos + 1 }
 }
 
 // Moves to the first thing that is not space, a line end or a comment.
@@ -468,9 +438,7 @@ fn irp_accept(p: mut IrParser, c: i64) -> bool {
 }
 
 fn irp_expect(p: mut IrParser, c: i64) {
-    if !irp_accept(mut p, c) {
-        irp_fail(mut p, "expected `" + chr(c) + "`")
-    }
+    if !irp_accept(mut p, c) { irp_fail(mut p, "expected `" + chr(c) + "`") }
 }
 
 fn irp_int(p: mut IrParser) -> i64 {
@@ -491,9 +459,7 @@ fn irp_int(p: mut IrParser) -> i64 {
         at = at + 1
     }
     p.pos = at
-    if negative {
-        return 0 - n
-    }
+    if negative { return 0 - n }
     return n
 }
 
@@ -515,9 +481,7 @@ fn irp_numbered(p: mut IrParser, prefix: i64) -> i64 {
         }
         at = at + 1
     }
-    if at < p.src.len() && irp_is_word_byte(p.src[at]) {
-        return -1
-    }
+    if at < p.src.len() && irp_is_word_byte(p.src[at]) { return -1 }
     p.pos = at
     return n
 }
@@ -556,9 +520,7 @@ fn irp_value(p: mut IrParser, f: mut IrFunc) -> i64 {
         return n
     }
     n = irp_numbered(mut p, 'v')
-    if n < 0 {
-        return -1
-    }
+    if n < 0 { return -1 }
     irp_ensure_value(mut f, f.param_count + n)
     return f.param_count + n
 }
@@ -566,9 +528,7 @@ fn irp_value(p: mut IrParser, f: mut IrFunc) -> i64 {
 // A value or a number.
 fn irp_operand(p: mut IrParser, f: mut IrFunc) -> i64 {
     let v = irp_value(mut p, mut f)
-    if v >= 0 || p.failed {
-        return v
-    }
+    if v >= 0 || p.failed { return v }
     irp_spaces(mut p)
     let c = irp_peek(p)
     if c == '-' || c >= '0' && c <= '9' {
@@ -583,9 +543,7 @@ fn irp_type(p: mut IrParser) -> i64 {
     let word = irp_word(mut p)
     var ty = 0
     while ty < IR_TYPE_COUNT {
-        if ir_type_name(ty) == word {
-            return ty
-        }
+        if ir_type_name(ty) == word { return ty }
         ty = ty + 1
     }
     p.pos = p.pos - word.len()
@@ -619,15 +577,11 @@ fn irp_edge(p: mut IrParser, f: mut IrFunc, ins: i64, key: i64) {
     let target = irp_block(mut p, mut f)
     let e = ir_add_edge(mut f, ins, target, key)
     if irp_accept(mut p, '(') {
-        if irp_accept(mut p, ')') {
-            return
-        }
+        if irp_accept(mut p, ')') { return }
         while !p.failed {
             let x = irp_operand(mut p, mut f)
             ir_add_edge_arg(mut f, e, x)
-            if !irp_accept(mut p, ',') {
-                break
-            }
+            if !irp_accept(mut p, ',') { break }
         }
         irp_expect(mut p, ')')
     }
@@ -650,15 +604,9 @@ fn irp_region(p: mut IrParser, f: mut IrFunc) -> i64 {
         irp_expect(mut p, ')')
         return ir_region(mut f, IR_REGION_BUF, inner)
     }
-    if word == "ret" {
-        return ir_region(mut f, IR_REGION_RET, 0)
-    }
-    if word == "data" {
-        return ir_region(mut f, IR_REGION_DATA, 0)
-    }
-    if word == "rt" {
-        return ir_region(mut f, IR_REGION_RT, 0)
-    }
+    if word == "ret" { return ir_region(mut f, IR_REGION_RET, 0) }
+    if word == "data" { return ir_region(mut f, IR_REGION_DATA, 0) }
+    if word == "rt" { return ir_region(mut f, IR_REGION_RT, 0) }
     p.pos = p.pos - word.len()
     irp_fail(mut p, "expected a region: `frame N`, `buf(...)`, `param N`, `ret`, `data` or `rt`")
     return 0
@@ -667,15 +615,11 @@ fn irp_region(p: mut IrParser, f: mut IrFunc) -> i64 {
 // `(arguments)` of a call.
 fn irp_call_args(p: mut IrParser, f: mut IrFunc, ins: i64) {
     irp_expect(mut p, '(')
-    if irp_accept(mut p, ')') {
-        return
-    }
+    if irp_accept(mut p, ')') { return }
     while !p.failed {
         let x = irp_operand(mut p, mut f)
         ir_add_arg(mut f, ins, x)
-        if !irp_accept(mut p, ',') {
-            break
-        }
+        if !irp_accept(mut p, ',') { break }
     }
     irp_expect(mut p, ')')
 }
@@ -779,9 +723,7 @@ fn irp_instruction(p: mut IrParser, f: mut IrFunc, names: List[i64]) {
     } else if op == IR_CALL {
         single = false
         let name = irp_word(mut p)
-        if name.len() == 0 {
-            irp_fail(mut p, "expected the name of a function")
-        }
+        if name.len() == 0 { irp_fail(mut p, "expected the name of a function") }
         f.ins_imm[ins] = ir_callee(mut f, name)
         irp_call_args(mut p, mut f, ins)
         var count = 0
@@ -791,13 +733,9 @@ fn irp_instruction(p: mut IrParser, f: mut IrFunc, names: List[i64]) {
             irp_expect(mut p, '>')
             while !p.failed {
                 let ty = irp_value_type(mut p)
-                if count < names.len() {
-                    irp_define(mut p, mut f, ins, names[count], ty)
-                }
+                if count < names.len() { irp_define(mut p, mut f, ins, names[count], ty) }
                 count = count + 1
-                if !irp_accept(mut p, ',') {
-                    break
-                }
+                if !irp_accept(mut p, ',') { break }
             }
         }
         if !p.failed && count != names.len() {
@@ -869,9 +807,7 @@ fn irp_instruction(p: mut IrParser, f: mut IrFunc, names: List[i64]) {
             while !p.failed {
                 let x = irp_operand(mut p, mut f)
                 ir_add_arg(mut f, ins, x)
-                if !irp_accept(mut p, ',') {
-                    break
-                }
+                if !irp_accept(mut p, ',') { break }
             }
         }
     } else if op == IR_TRAP {
@@ -889,9 +825,7 @@ fn irp_instruction(p: mut IrParser, f: mut IrFunc, names: List[i64]) {
         }
         f.ins_imm[ins] = kind
     }
-    if p.failed {
-        return
-    }
+    if p.failed { return }
     if single {
         if names.len() != 1 {
             p.pos = word_at
@@ -900,12 +834,8 @@ fn irp_instruction(p: mut IrParser, f: mut IrFunc, names: List[i64]) {
             return
         }
         var ty = ir_result_type(f, op, f.ins_ty[ins], f.ins_a[ins], f.ins_b[ins])
-        if op == IR_SELECT {
-            ty = ir_result_type(f, op, IR_I64, f.ins_b[ins], f.ins_c[ins])
-        }
-        if op != IR_LOAD {
-            f.ins_ty[ins] = ty
-        }
+        if op == IR_SELECT { ty = ir_result_type(f, op, IR_I64, f.ins_b[ins], f.ins_c[ins]) }
+        if op != IR_LOAD { f.ins_ty[ins] = ty }
         irp_define(mut p, mut f, ins, names[0], ty)
     } else if names.len() > 0 && op != IR_CALL && op != IR_CALLRT {
         p.pos = word_at
@@ -924,9 +854,7 @@ fn irp_instruction(p: mut IrParser, f: mut IrFunc, names: List[i64]) {
 fn irp_block_line(p: mut IrParser, f: mut IrFunc) {
     let at = p.pos
     let b = irp_block(mut p, mut f)
-    if p.failed {
-        return
-    }
+    if p.failed { return }
     if f.blk_live[b] {
         p.pos = at
         irp_spaces(mut p)
@@ -947,9 +875,7 @@ fn irp_block_line(p: mut IrParser, f: mut IrFunc) {
             }
             irp_expect(mut p, ':')
             let ty = irp_value_type(mut p)
-            if p.failed {
-                return
-            }
+            if p.failed { return }
             if v < f.param_count || f.val_ty[v] != -1 {
                 p.pos = name_at
                 irp_spaces(mut p)
@@ -960,16 +886,12 @@ fn irp_block_line(p: mut IrParser, f: mut IrFunc) {
             f.val_blk[v] = b
             f.bparams.push(v)
             f.blk_pn[b] = f.blk_pn[b] + 1
-            if !irp_accept(mut p, ',') {
-                break
-            }
+            if !irp_accept(mut p, ',') { break }
         }
         irp_expect(mut p, ')')
     }
     irp_expect(mut p, ':')
-    if !p.failed && !irp_at_end_of_line(mut p) {
-        irp_fail(mut p, "expected the end of the line")
-    }
+    if !p.failed && !irp_at_end_of_line(mut p) { irp_fail(mut p, "expected the end of the line") }
 }
 
 // `and`, `or`, `xor` and `select` take their type from their operands,
@@ -1032,9 +954,7 @@ fn irp_function(p: mut IrParser) -> IrFunc {
                 let note_at = p.pos
                 let kind = irp_word(mut p)
                 var number = -1
-                if kind == "param" {
-                    number = irp_int(mut p)
-                }
+                if kind == "param" { number = irp_int(mut p) }
                 if !p.failed && (number != n || ty != IR_PTR) {
                     p.pos = note_at
                     irp_spaces(mut p)
@@ -1061,13 +981,9 @@ fn irp_function(p: mut IrParser) -> IrFunc {
                     }
                 }
             }
-            if p.failed {
-                return f
-            }
+            if p.failed { return f }
             ir_add_param(mut f, ty, fx)
-            if !irp_accept(mut p, ',') {
-                break
-            }
+            if !irp_accept(mut p, ',') { break }
         }
         irp_expect(mut p, ')')
     }
@@ -1075,15 +991,11 @@ fn irp_function(p: mut IrParser) -> IrFunc {
         irp_expect(mut p, '>')
         while !p.failed {
             f.ret_ty.push(irp_value_type(mut p))
-            if !irp_accept(mut p, ',') {
-                break
-            }
+            if !irp_accept(mut p, ',') { break }
         }
     }
     irp_expect(mut p, '{')
-    if !p.failed && !irp_at_end_of_line(mut p) {
-        irp_fail(mut p, "expected the end of the line")
-    }
+    if !p.failed && !irp_at_end_of_line(mut p) { irp_fail(mut p, "expected the end of the line") }
     p.block = -1
     var first = true
     while !p.failed {
@@ -1104,9 +1016,7 @@ fn irp_function(p: mut IrParser) -> IrFunc {
                 e = e + 1
             }
             p.pos = p.pos + 1
-            if !irp_at_end_of_line(mut p) {
-                irp_fail(mut p, "expected the end of the line")
-            }
+            if !irp_at_end_of_line(mut p) { irp_fail(mut p, "expected the end of the line") }
             break
         }
         let at = p.pos
@@ -1114,13 +1024,14 @@ fn irp_function(p: mut IrParser) -> IrFunc {
         if first && irp_word(mut p) == "frames" {
             while !p.failed {
                 let bytes = irp_int(mut p)
-                if !p.failed && bytes <= 0 {
-                    irp_fail(mut p, "a frame object has at least one byte")
+                // Size 0 is an object that `sroa` turned into values
+                // altogether; its number stays so that regions keep
+                // their names.
+                if !p.failed && bytes < 0 {
+                    irp_fail(mut p, "a frame object cannot have a negative size")
                 }
                 f.frames.push(bytes)
-                if !irp_accept(mut p, ',') {
-                    break
-                }
+                if !irp_accept(mut p, ',') { break }
             }
             if !p.failed && !irp_at_end_of_line(mut p) {
                 irp_fail(mut p, "expected the end of the line")
@@ -1141,20 +1052,14 @@ fn irp_function(p: mut IrParser) -> IrFunc {
             names.push(v)
             while !p.failed && irp_accept(mut p, ',') {
                 let more = irp_value(mut p, mut f)
-                if more < 0 {
-                    irp_fail(mut p, "expected a value name")
-                }
+                if more < 0 { irp_fail(mut p, "expected a value name") }
                 names.push(more)
             }
             irp_expect(mut p, '=')
         }
-        if !p.failed {
-            irp_instruction(mut p, mut f, names)
-        }
+        if !p.failed { irp_instruction(mut p, mut f, names) }
     }
-    if p.failed {
-        return f
-    }
+    if p.failed { return f }
     if f.order.len() == 0 {
         irp_fail(mut p, "the function `" + f.name + "` has no block")
         return f
@@ -1194,9 +1099,7 @@ fn irp_data(p: mut IrParser) -> str {
             p.pos = p.pos + 1
         }
     }
-    if !p.failed && !irp_at_end_of_line(mut p) {
-        irp_fail(mut p, "expected the end of the line")
-    }
+    if !p.failed && !irp_at_end_of_line(mut p) { irp_fail(mut p, "expected the end of the line") }
     irp_next_line(mut p)
     return data
 }
@@ -1240,9 +1143,7 @@ fn ir_parse_module(src: str, m: mut IrModule) -> IrParseError {
         }
         irp_skip_empty_lines(mut p)
     }
-    if !p.failed {
-        return IrParseError { message: "", line: 0, column: 0 }
-    }
+    if !p.failed { return IrParseError { message: "", line: 0, column: 0 } }
     var line = 1
     var column = 1
     var i = 0

@@ -1,0 +1,4 @@
+fn main() -> bool, bool, bool, bool {
+b0:
+    ret 1, 0, 1, 1
+}

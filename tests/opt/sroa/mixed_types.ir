@@ -1,0 +1,16 @@
+; One cell written as a number and read as a `bool`: it stays in
+; memory. Its neighbour is an ordinary variable.
+fn f(p0: i64) -> i64 {
+    frames 16
+b0:
+    v0 = frame 0
+    jump b1
+b1:
+    v1 = and p0, 1
+    store i64, v0, 0, v1  [frame 0]
+    store i64, v0, 8, p0  [frame 0]
+    v2 = load bool, v0, 0  [frame 0]
+    v3 = load i64, v0, 8  [frame 0]
+    v4 = select v2, v3, 0
+    ret v4
+}
