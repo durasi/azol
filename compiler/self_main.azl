@@ -10,18 +10,24 @@
 //
 // What differs, on purpose:
 //
-// - It builds for `x86_64-linux` only. Another target is accepted on the
-//   command line and the program is still checked, but then the build
-//   stops with one "not supported yet" error.
+// - Which machine it runs on, and so which target it builds for when
+//   none is named, is not found out but said when it is built: by the
+//   one of `host_x86_64_linux.azl`, `host_aarch64_macos.azl` and
+//   `host_aarch64_linux.azl` that is compiled with the other sources.
+//   (The Rust compiler has no such choice for Linux on ARM64 and builds
+//   for macOS there.)
+// - It writes an executable over the file that is there, where the Rust
+//   compiler removes that file first.
 // - It has no clock, so the times in the lines `built ...`,
 //   `checked ...`, `lexed ...` and `parsed ...` are zero.
 // - `build --map <path>` also writes where each function of the program
 //   starts in memory, one `address name` line each, for reading a
-//   profile of the executable. `sema-dump` is not here; the tool
+//   profile of the executable (for `x86_64-linux` only). `sema-dump` is not here; the tool
 //   `azol-sema` does that.
 //
-// The standard library's source and the runtime's machine code, which
-// the Rust compiler carries inside itself, are in `embedded.azl`.
+// The standard library's source and the runtimes' machine code, which
+// the Rust compiler carries inside itself, are in `embedded.azl` and
+// `runtime_arm64.azl`.
 
 const TARGET_AARCH64_MACOS = 0
 const TARGET_X86_64_LINUX = 1
@@ -263,7 +269,7 @@ struct BuildArguments {
 // Reads the arguments from `first` on: the source files, and `-o`,
 // `--target` and the like with their values, in any order.
 fn build_arguments(arguments: List[str], first: i64) -> BuildArguments {
-    var found = BuildArguments { ok: false, paths: [], out: "", target: TARGET_X86_64_LINUX, emit_code: "", map: "", json: false }
+    var found = BuildArguments { ok: false, paths: [], out: "", target: HOST_TARGET, emit_code: "", map: "", json: false }
     var has_out = false
     var at = first
     while at < arguments.len() {
@@ -504,12 +510,7 @@ fn run_build(arguments: BuildArguments, check_only: bool) -> i64 {
         return 1
     }
     if arguments.target != TARGET_X86_64_LINUX {
-        var name = "aarch64-macos"
-        if arguments.target == TARGET_AARCH64_LINUX {
-            name = "aarch64-linux"
-        }
-        eprint("error: not supported yet: the target `" + name + "`; the compiler written in azoL builds for `x86_64-linux` only")
-        return 1
+        return build_arm64(arguments, c, p, files.len())
     }
 
     var g = x_new_gen()
@@ -556,6 +557,52 @@ fn run_build(arguments: BuildArguments, check_only: bool) -> i64 {
     }
     if json {
         print(json_summary(0, files.len()))
+    }
+    eprint("built " + out + " (" + str(code_bytes) + " bytes of code) in 0.000 ms (read 0.000, parse 0.000, check 0.000, " +
+            "codegen 0.000, link 0.000, write 0.000)")
+    return 0
+}
+
+// The rest of a build for macOS or Linux on ARM64, once the program has
+// been checked: machine code, then the file format the system loads.
+fn build_arm64(arguments: BuildArguments, c: Checker, p: Parser, file_count: i64) -> i64 {
+    let out = arguments.out
+    let macos = arguments.target == TARGET_AARCH64_MACOS
+    if !macos && arguments.emit_code.len() > 0 {
+        eprint("error: `--emit-code` is not available for the target `aarch64-linux`")
+        return 1
+    }
+    var g = a_new_gen()
+    a_generate(mut g, c, p)
+    let code_bytes = g.words.len() * 4
+    // The runtime's text comes first in the data, then the program's.
+    var data = embedded_runtime_data()
+    data = data + c.data
+    var image = ""
+    if macos {
+        a_start_through_runtime(mut g)
+        let ident = a_ident(out)
+        if arguments.emit_code.len() > 0 {
+            if !write_or_say(arguments.emit_code, a_code_text_macos(g, data, ident)) {
+                return 1
+            }
+        }
+        image = a_build_macos(g, data, ident)
+    } else {
+        image = a_build_linux(mut g, data, embedded_runtime_arm64())
+    }
+    if !write_or_say(out, image) {
+        return 1
+    }
+    match set_executable(out) {
+        Ok(_) => {}
+        Err(why) => {
+            eprint("error: cannot write '" + out + "': " + os_error(why))
+            return 1
+        }
+    }
+    if arguments.json {
+        print(json_summary(0, file_count))
     }
     eprint("built " + out + " (" + str(code_bytes) + " bytes of code) in 0.000 ms (read 0.000, parse 0.000, check 0.000, " +
             "codegen 0.000, link 0.000, write 0.000)")

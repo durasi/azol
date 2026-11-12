@@ -24,25 +24,28 @@ fn sha256_initial_state() -> List[i64] {
     return [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
 }
 
-// A 32-bit value turned right by `count` bits.
-fn rotate_right(value: i64, count: i64) -> i64 {
-    return ((value >> count) | (value << (32 - count))) & 0xFFFFFFFF
-}
-
 // Mixes the 64 bytes of `data` that start at `at` into `state`. `w` is
 // working room with 64 elements; what it holds on entry does not matter.
+//
+// A value written twice side by side, `x | x << 32`, turned right by any
+// count up to 32 has the turned value in its low 32 bits: that makes a
+// rotation one shift. What such a shift leaves above the low 32 bits
+// does no harm in a sum, which is cut back to 32 bits before it is kept.
 fn sha256_compress(state: mut List[i64], k: List[i64], w: mut List[i64], data: List[i64], at: i64) {
     var i = 0
+    var from = at
     while i < 16 {
-        let from = at + i * 4
         w[i] = (data[from] << 24) | (data[from + 1] << 16) | (data[from + 2] << 8) | data[from + 3]
+        from = from + 4
         i = i + 1
     }
     while i < 64 {
         let x = w[i - 15]
         let y = w[i - 2]
-        let s0 = rotate_right(x, 7) ^ rotate_right(x, 18) ^ (x >> 3)
-        let s1 = rotate_right(y, 17) ^ rotate_right(y, 19) ^ (y >> 10)
+        let xx = x | x << 32
+        let yy = y | y << 32
+        let s0 = (xx >> 7) ^ (xx >> 18) ^ (x >> 3)
+        let s1 = (yy >> 17) ^ (yy >> 19) ^ (y >> 10)
         w[i] = (w[i - 16] + s0 + w[i - 7] + s1) & 0xFFFFFFFF
         i = i + 1
     }
@@ -56,12 +59,12 @@ fn sha256_compress(state: mut List[i64], k: List[i64], w: mut List[i64], data: L
     var h = state[7]
     i = 0
     while i < 64 {
-        let s1 = rotate_right(e, 6) ^ rotate_right(e, 11) ^ rotate_right(e, 25)
-        let choice = (e & f) ^ ((e ^ 0xFFFFFFFF) & g)
-        let t1 = (h + s1 + choice + k[i] + w[i]) & 0xFFFFFFFF
-        let s0 = rotate_right(a, 2) ^ rotate_right(a, 13) ^ rotate_right(a, 22)
-        let majority = (a & b) ^ (a & c) ^ (b & c)
-        let t2 = (s0 + majority) & 0xFFFFFFFF
+        let ee = e | e << 32
+        let s1 = (ee >> 6) ^ (ee >> 11) ^ (ee >> 25)
+        let t1 = h + s1 + (g ^ (e & (f ^ g))) + k[i] + w[i]
+        let aa = a | a << 32
+        let s0 = (aa >> 2) ^ (aa >> 13) ^ (aa >> 22)
+        let t2 = s0 + ((a & b) | (c & (a | b)))
         h = g
         g = f
         f = e

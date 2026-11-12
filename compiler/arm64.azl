@@ -1,0 +1,1429 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Turns a checked program into ARM64 machine code, in one pass over the
+// syntax tree: the ARM64 code generator of the azoL compiler, written in
+// azoL. It follows `src/arm64.rs` function by function (`a_value` is
+// `value` there, `a_binary` is `binary`, and so on) and writes the same
+// words, which `compiler/check_self.py` verifies. The same code serves
+// macOS and Linux; what differs is how it is linked.
+//
+// A scalar expression leaves its value in x0, an aggregate expression
+// leaves its address in x0, earlier values wait on the stack or in x13
+// to x15, and variables live in the function's frame or in x19 to x28.
+// See the notes at the top of `src/arm64.rs` for the registers and for
+// what the generator remembers about index checks.
+//
+// This file holds the state, the instruction encoding, the frame and
+// the helpers that free and copy values. `arm64_gen.azl` generates
+// statements and expressions.
+//
+// How it differs from the Rust text, on purpose (as `x64.azl` does):
+//
+// - The tree is read once into four lists of numbers (`kinds`, `ea`,
+//   `eb`, `ec`); the kinds and operators are the constants of `x64.azl`.
+// - A place is one number: the slot, 4096 when the slot holds an
+//   address, and the offset times 8192. -1 stands for "not a place".
+// - An index the generator remembers is one number: the register, or
+//   32 plus the constant. -1 stands for "none".
+// - A pending branch is one number: its position times 256, plus 128,
+//   32 for "not zero" and the register for `cbz`/`cbnz`, or plus 64 and
+//   the condition for `b.cond`, or plus nothing for `b`.
+// - "No register" and "no jump" are -1.
+
+const X0 = 0
+const X1 = 1
+const X2 = 2
+const X8 = 8
+const X9 = 9
+const X10 = 10
+const X11 = 11
+// Holds the buffer of a list or the address of one of its elements
+// between the steps of straight-line code.
+const X12 = 12
+// The first of the registers where a value waits while code that calls
+// nothing works out the next one: x13, x14, x15.
+const X13 = 13
+// How many of them there are.
+const PARKS = 3
+const X19 = 19
+const X20 = 20
+const X21 = 21
+const FP = 29
+const XZR = 31
+
+// Condition codes.
+const A_EQ = 0
+const A_NE = 1
+const A_GE = 10
+const A_LT = 11
+const A_GT = 12
+const A_LE = 13
+// Unsigned higher or same.
+const A_HS = 2
+// Unsigned lower.
+const A_LO = 3
+
+const A_RET = 0xD65F03C0
+const A_BRK_1 = 0xD4200020
+// str x0, [sp, #-16]!
+const A_PUSH_X0 = 0xF81F0FE0
+// `b.hi` over the next instruction.
+const A_SKIP_IF_HIGHER = 0x54000048
+// `b.lo` over the next instruction: an unsigned compare also rejects
+// negatives.
+const A_SKIP_IF_LOWER = 0x54000043
+
+// Largest slot offset the first of a pair of loads or stores can carry.
+const MAX_PAIR = 63
+// Largest frame, in bytes, that one `stp`/`ldp` can set up and tear down.
+const SMALL_FRAME = 496
+// Largest slot offset a single load or store can carry.
+const MAX_OFFSET = 4095
+
+// An element of a list (or a field of one, or a byte of a string) whose
+// list is in a fixed place and whose index takes no work to evaluate.
+struct ATracked {
+    ok: bool
+    place: i64
+    at: i64
+    // Slots in one element; 1 for a string, whose elements are bytes.
+    size: i64
+    // Slots from the start of the element to the part meant.
+    offset: i64
+    bytes: bool
+}
+
+struct AGen {
+    words: List[i64]
+    // The tree as numbers, per expression.
+    kinds: List[i64]
+    ea: List[i64]
+    eb: List[i64]
+    ec: List[i64]
+    fn_starts: List[i64]
+    // Instruction index and function index of every `bl` to patch.
+    call_ats: List[i64]
+    call_targets: List[i64]
+    // Instruction index and runtime entry of every `bl` into the runtime.
+    rt_ats: List[i64]
+    rt_targets: List[i64]
+    // Helper functions the compiler writes itself: one to free and one
+    // to copy each type whose values own other values. 1 means copy.
+    glue_tys: List[i64]
+    glue_copies: List[i64]
+    glue_ids: IntMap
+    glue_call_ats: List[i64]
+    glue_call_ids: List[i64]
+    relocs: List[Reloc]
+    // The loops being generated, innermost last: where the loop starts,
+    // how many owning locals were alive on entry, where their jumps
+    // start in `breaks` and `continues`, and 1 when `continue` jumps
+    // forward (0 when it jumps back to the start).
+    loop_starts: List[i64]
+    loop_live: List[i64]
+    loop_breaks: List[i64]
+    loop_continues: List[i64]
+    loop_forward: List[i64]
+    breaks: List[i64]
+    continues: List[i64]
+    // The pending branches of the conditions being generated.
+    jumps: List[i64]
+    // Local variables that own buffers and are in scope.
+    live_slots: List[i64]
+    live_tys: List[i64]
+    frame_bytes: i64
+    ret: i64
+    sret_slot: i64
+    scratch_slot: i64
+    // The slots that live in registers: entry `i` lives in x19 + i.
+    // First the `nreg` variables the checker chose, then the `nloop`
+    // slots of `for` loops, then the `nparam` addresses that arrived as
+    // parameters.
+    reg_slots: List[i64]
+    nreg: i64
+    nloop: i64
+    nparam: i64
+    // First frame slot of the area where those registers' old values
+    // are kept.
+    saved_slot: i64
+    // Where the function being generated keeps its entries in the
+    // checker's tables.
+    sh_e: i64
+    sh_s: i64
+    sh_p: i64
+    sh_i: i64
+    // The index checks that need not be made again here: the first
+    // `known_len` entries.
+    known_places: List[i64]
+    known_ats: List[i64]
+    known_since: List[i64]
+    known_len: i64
+    // What x12 holds here, when that is worth knowing.
+    held_ok: bool
+    held_place: i64
+    held_at: i64
+    held_since: i64
+    // How many of the waiting registers are taken at this point.
+    parked: i64
+    // What `a_element` found: the index register or -1, and the offset.
+    el_index: i64
+    el_offset: i64
+    // What `a_operands` found: the register of the left operand, and
+    // the register or the constant of the right one.
+    op_left: i64
+    op_right: i64
+    // How many bytes of the runtime's text come before the program's.
+    data_base: i64
+    // Index of the first instruction of `main`, or of the runtime's
+    // start on macOS.
+    entry: i64
+}
+
+fn a_new_gen() -> AGen {
+    return AGen {
+        words: [],
+        kinds: [],
+        ea: [],
+        eb: [],
+        ec: [],
+        fn_starts: [],
+        call_ats: [],
+        call_targets: [],
+        rt_ats: [],
+        rt_targets: [],
+        glue_tys: [],
+        glue_copies: [],
+        glue_ids: new_int_map(),
+        glue_call_ats: [],
+        glue_call_ids: [],
+        relocs: [],
+        loop_starts: [],
+        loop_live: [],
+        loop_breaks: [],
+        loop_continues: [],
+        loop_forward: [],
+        breaks: [],
+        continues: [],
+        jumps: [],
+        live_slots: [],
+        live_tys: [],
+        frame_bytes: 0,
+        ret: TY_UNIT,
+        sret_slot: -1,
+        scratch_slot: 0,
+        reg_slots: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        nreg: 0,
+        nloop: 0,
+        nparam: 0,
+        saved_slot: 0,
+        sh_e: 0,
+        sh_s: 0,
+        sh_p: 0,
+        sh_i: 0,
+        known_places: [0, 0, 0, 0],
+        known_ats: [0, 0, 0, 0],
+        known_since: [0, 0, 0, 0],
+        known_len: 0,
+        held_ok: false,
+        held_place: 0,
+        held_at: 0,
+        held_since: 0,
+        parked: 0,
+        el_index: -1,
+        el_offset: 0,
+        op_left: 0,
+        op_right: 0,
+        data_base: 0,
+        entry: 0,
+    }
+}
+
+// Reads the tree into `kinds`, `ea`, `eb` and `ec`, as `x_read_tree`.
+fn a_read_tree(g: mut AGen, p: Parser) {
+    for expr in p.ast.exprs {
+        var kind = K_INT
+        var a = 0
+        var b = 0
+        var c = 0
+        match expr {
+            ExprInt(_) => {}
+            ExprFloat(_) => kind = K_FLOAT
+            ExprStr(_) => kind = K_STR
+            ExprBool(value) => {
+                kind = K_BOOL
+                if value {
+                    a = 1
+                }
+            }
+            ExprIdent(_) => kind = K_IDENT
+            ExprUnary(op, operand) => {
+                kind = K_UNARY
+                a = operand
+                if op == OpNot {
+                    c = 1
+                }
+            }
+            ExprBinary(op, lhs, rhs) => {
+                kind = K_BINARY
+                a = lhs
+                b = rhs
+                c = x_binop_code(op)
+            }
+            ExprCall(callee, args) => {
+                kind = K_CALL
+                a = callee
+                b = args.start
+                c = args.len
+            }
+            ExprMutArg(inner) => {
+                kind = K_MUTARG
+                a = inner
+            }
+            ExprTry(inner) => {
+                kind = K_TRY
+                a = inner
+            }
+            ExprField(base, _) => {
+                kind = K_FIELD
+                a = base
+            }
+            ExprIndex(base, index) => {
+                kind = K_INDEX
+                a = base
+                b = index
+            }
+            ExprStructLit(_, fields) => {
+                kind = K_STRUCT
+                b = fields.start
+                c = fields.len
+            }
+            ExprArrayLit(items) => {
+                kind = K_ARRAY
+                b = items.start
+                c = items.len
+            }
+        }
+        g.kinds.push(kind)
+        g.ea.push(a)
+        g.eb.push(b)
+        g.ec.push(c)
+    }
+}
+
+// Generates the whole program: the functions, the helpers that free and
+// copy, then the runtime, with every call between them resolved.
+// Afterwards `g.words` holds the code, `g.relocs` what the linker
+// completes, and `g.entry` is where `main` starts. The program's string
+// literals follow the runtime's text in the data, `g.data_base` bytes in.
+fn a_generate(g: mut AGen, c: Checker, p: Parser) {
+    a_read_tree(mut g, p)
+    g.data_base = ART_DATA_SIZE
+    var index = 0
+    while index < c.fns.len() {
+        a_function(mut g, c, p, index)
+        index = index + 1
+    }
+    // Then the helpers that free and copy nested values. Writing one can
+    // ask for another, so the list grows while it is walked.
+    var glue_starts: List[i64] = []
+    var next = 0
+    while next < g.glue_tys.len() {
+        glue_starts.push(g.words.len())
+        let ty = g.glue_tys[next]
+        let copy = g.glue_copies[next] == 1
+        a_glue_function(mut g, c, ty, copy)
+        next = next + 1
+    }
+    // The runtime follows.
+    let runtime_start = g.words.len()
+    for word in art_words() {
+        g.words.push(word)
+    }
+    // Four numbers for each: 0 for an import or 1 for data, where, and
+    // which import, or which text item and the register.
+    let relocs = art_relocs()
+    let offsets = art_data_offsets()
+    var r = 0
+    while r < relocs.len() {
+        if relocs[r] == 0 {
+            g.relocs.push(Import(runtime_start + relocs[r + 1], relocs[r + 2]))
+        } else {
+            g.relocs.push(Data(runtime_start + relocs[r + 1], offsets[relocs[r + 2]], relocs[r + 3]))
+        }
+        r = r + 4
+    }
+    var i = 0
+    while i < g.call_ats.len() {
+        let at = g.call_ats[i]
+        g.words[at] = 0x94000000 | ((g.fn_starts[g.call_targets[i]] - at) & 0x03FFFFFF)
+        i = i + 1
+    }
+    i = 0
+    while i < g.rt_ats.len() {
+        let at = g.rt_ats[i]
+        g.words[at] = 0x94000000 | ((runtime_start + g.rt_targets[i] - at) & 0x03FFFFFF)
+        i = i + 1
+    }
+    i = 0
+    while i < g.glue_call_ats.len() {
+        let at = g.glue_call_ats[i]
+        g.words[at] = 0x94000000 | ((glue_starts[g.glue_call_ids[i]] - at) & 0x03FFFFFF)
+        i = i + 1
+    }
+    g.entry = g.fn_starts[c.main]
+}
+
+// On macOS a program starts in the runtime's `_rt_start` instead of in
+// `main`: the routine prepares for a stack that runs out and then calls
+// `main`, through a word that is filled in here. The runtime is the
+// last thing in the code, which is how it is found.
+fn a_start_through_runtime(g: mut AGen) {
+    let runtime_start = g.words.len() - ART_WORDS
+    let call = runtime_start + ART_START_MAIN
+    // bl main
+    g.words[call] = 0x94000000 | ((g.entry - call) & 0x03FFFFFF)
+    g.entry = runtime_start + ART_START
+}
+
+// ---- instruction encoding ---------------------------------------------
+
+// ldr reg, [sp], #16
+fn a_pop(reg: i64) -> i64 {
+    return 0xF84107E0 | reg
+}
+
+// `ldr rt, [rn, #8 * slots]`
+fn a_ldr(rt: i64, rn: i64, slots: i64) -> i64 {
+    return 0xF9400000 | slots << 10 | rn << 5 | rt
+}
+
+// `str rt, [rn, #8 * slots]`
+fn a_str(rt: i64, rn: i64, slots: i64) -> i64 {
+    return 0xF9000000 | slots << 10 | rn << 5 | rt
+}
+
+// `ldp rt, rt2, [rn, #8 * slots]`
+fn a_ldp(rt: i64, rt2: i64, rn: i64, slots: i64) -> i64 {
+    return 0xA9400000 | slots << 15 | rt2 << 10 | rn << 5 | rt
+}
+
+// `stp rt, rt2, [rn, #8 * slots]`
+fn a_stp(rt: i64, rt2: i64, rn: i64, slots: i64) -> i64 {
+    return 0xA9000000 | slots << 15 | rt2 << 10 | rn << 5 | rt
+}
+
+// `add rd, rn, #8 * slots`
+fn a_add_slots(rd: i64, rn: i64, slots: i64) -> i64 {
+    return 0x91000000 | (slots * 8) << 10 | rn << 5 | rd
+}
+
+// `add rd, rn, rm`
+fn a_add_reg(rd: i64, rn: i64, rm: i64) -> i64 {
+    return 0x8B000000 | rm << 16 | rn << 5 | rd
+}
+
+// `add rd, rn, rm, lsl #3`
+fn a_add_scaled(rd: i64, rn: i64, rm: i64) -> i64 {
+    return 0x8B000C00 | rm << 16 | rn << 5 | rd
+}
+
+// `add rd, rn, rm, lsl #shift`
+fn a_add_shifted(rd: i64, rn: i64, rm: i64, shift: i64) -> i64 {
+    return 0x8B000000 | rm << 16 | shift << 10 | rn << 5 | rd
+}
+
+// `ldrb rt, [rn, rm]`: one byte, the rest of the register cleared.
+fn a_ldrb_index(rt: i64, rn: i64, rm: i64) -> i64 {
+    return 0x38606800 | rm << 16 | rn << 5 | rt
+}
+
+// `ldrb rt, [rn, #bytes]`
+fn a_ldrb(rt: i64, rn: i64, bytes: i64) -> i64 {
+    return 0x39400000 | bytes << 10 | rn << 5 | rt
+}
+
+// `neg rd, rm`
+fn a_neg(rd: i64, rm: i64) -> i64 {
+    return 0xCB0003E0 | rm << 16 | rd
+}
+
+// `madd rd, rn, rm, ra`: rd = ra + rn * rm
+fn a_madd(rd: i64, rn: i64, rm: i64, ra: i64) -> i64 {
+    return 0x9B000000 | rm << 16 | ra << 10 | rn << 5 | rd
+}
+
+// `cmp x9, #value`
+fn a_cmp_x9_imm(value: i64) -> i64 {
+    return 0xF100013F | value << 10
+}
+
+fn a_cset_x0(cond: i64) -> i64 {
+    return 0x9A9F07E0 | (cond ^ 1) << 12
+}
+
+// `lsl to, from, #count`, with the low 6 bits of the count as when
+// shifting by a register.
+fn a_lsl_imm(to: i64, from: i64, count_in: i64) -> i64 {
+    let count = count_in & 63
+    return 0xD3400000 | ((64 - count) & 63) << 16 | (63 - count) << 10 | from << 5 | to
+}
+
+// `asr to, from, #count`, with the low 6 bits of the count.
+fn a_asr_imm(to: i64, from: i64, count: i64) -> i64 {
+    return 0x9340FC00 | (count & 63) << 16 | from << 5 | to
+}
+
+// `mov to, from`
+fn a_mov(to: i64, from: i64) -> i64 {
+    return 0xAA0003E0 | from << 16 | to
+}
+
+// `and to, from, #(2^bits - 1)`: the low `bits` bits, 1 to 63 of them.
+fn a_low_bits(to: i64, from: i64, bits: i64) -> i64 {
+    return 0x92400000 | (bits - 1) << 10 | from << 5 | to
+}
+
+// `tst from, #(2^bits - 1)`
+fn a_tst_low_bits(from: i64, bits: i64) -> i64 {
+    return 0xF240001F | (bits - 1) << 10 | from << 5
+}
+
+// `ldr rt, [buffer, index, lsl #3]`
+fn a_ldr_scaled(rt: i64, buffer: i64, index: i64) -> i64 {
+    return 0xF8607800 | index << 16 | buffer << 5 | rt
+}
+
+// `str rt, [buffer, index, lsl #3]`
+fn a_str_scaled(rt: i64, buffer: i64, index: i64) -> i64 {
+    return 0xF8207800 | index << 16 | buffer << 5 | rt
+}
+
+// `cmp left, right`
+fn a_cmp(left: i64, right: i64) -> i64 {
+    return 0xEB00001F | right << 16 | left << 5
+}
+
+// The condition code of a comparison operator, or -1.
+fn a_comparison(op: i64) -> i64 {
+    if op == OP_EQ {
+        return A_EQ
+    }
+    if op == OP_NE {
+        return A_NE
+    }
+    if op == OP_LT {
+        return A_LT
+    }
+    if op == OP_LE {
+        return A_LE
+    }
+    if op == OP_GT {
+        return A_GT
+    }
+    if op == OP_GE {
+        return A_GE
+    }
+    return -1
+}
+
+// Which power of two `n` is, or -1 when it is none. `n` is positive.
+fn a_log2(n: i64) -> i64 {
+    if (n & (n - 1)) != 0 {
+        return -1
+    }
+    var bits = 0
+    while (n >> bits) > 1 {
+        bits = bits + 1
+    }
+    return bits
+}
+
+// Emits a placeholder branch and returns its index for patching.
+fn a_placeholder(g: mut AGen) -> i64 {
+    g.words.push(0)
+    return g.words.len() - 1
+}
+
+// Completes a `cbz reg` (or `cbnz reg`) at `at` to jump here.
+fn a_patch_cbz_reg(g: mut AGen, at: i64, nonzero: bool, reg: i64) {
+    let delta = g.words.len() - at
+    var op = 0xB4000000
+    if nonzero {
+        op = 0xB5000000
+    }
+    g.words[at] = op | (delta & 0x7FFFF) << 5 | reg
+    a_forget_since(mut g, at)
+}
+
+// Completes a conditional branch at `at` to jump here.
+fn a_patch_branch_if(g: mut AGen, at: i64, cond: i64) {
+    let delta = g.words.len() - at
+    g.words[at] = 0x54000000 | (delta & 0x7FFFF) << 5 | cond
+    a_forget_since(mut g, at)
+}
+
+fn a_patch_jump(g: mut AGen, at: i64) {
+    let delta = g.words.len() - at
+    g.words[at] = 0x14000000 | (delta & 0x03FFFFFF)
+    a_forget_since(mut g, at)
+}
+
+// ---- what is known at this point ----------------------------------------
+//
+// Inside straight-line code an index is checked against the length of
+// its list once, and x12 keeps the buffer or the element's address for
+// the next use. Both are forgotten wherever the list could have changed
+// (a call, `push`, `pop`, any statement that stores more than a number
+// or a `bool`), where the index changes, and where another path joins
+// that has not made the check.
+
+// Forgets every index check and what x12 holds.
+fn a_forget(g: mut AGen) {
+    g.known_len = 0
+    g.held_ok = false
+}
+
+// Forgets what was learnt after position `from` in the code: it is not
+// known on a path that left before, or it concerns a variable that no
+// longer exists.
+fn a_forget_since(g: mut AGen, from: i64) {
+    if g.known_len == 0 && !g.held_ok {
+        return
+    }
+    var kept = 0
+    var i = 0
+    while i < g.known_len {
+        if g.known_since[i] <= from {
+            if kept != i {
+                g.known_places[kept] = g.known_places[i]
+                g.known_ats[kept] = g.known_ats[i]
+                g.known_since[kept] = g.known_since[i]
+            }
+            kept = kept + 1
+        }
+        i = i + 1
+    }
+    g.known_len = kept
+    if g.held_ok && g.held_since > from {
+        g.held_ok = false
+    }
+}
+
+// The variable that lives in `reg` has just been given a new value.
+fn a_writes(g: mut AGen, reg: i64) {
+    var kept = 0
+    var i = 0
+    while i < g.known_len {
+        if g.known_ats[i] != reg {
+            if kept != i {
+                g.known_places[kept] = g.known_places[i]
+                g.known_ats[kept] = g.known_ats[i]
+                g.known_since[kept] = g.known_since[i]
+            }
+            kept = kept + 1
+        }
+        i = i + 1
+    }
+    g.known_len = kept
+    if g.held_ok && g.held_at == reg {
+        g.held_ok = false
+    }
+}
+
+fn a_jump_back(g: mut AGen, to: i64) {
+    let delta = to - g.words.len()
+    g.words.push(0x14000000 | (delta & 0x03FFFFFF))
+}
+
+// Calls a runtime routine.
+fn a_runtime(g: mut AGen, entry: i64) {
+    // Any routine that comes back may have changed a list.
+    if entry != ART_INDEX_FAIL && entry != ART_POP_EMPTY && entry != ART_DIV_ZERO {
+        g.known_len = 0
+        g.held_ok = false
+    }
+    g.rt_ats.push(g.words.len())
+    g.rt_targets.push(entry)
+    g.words.push(0)
+}
+
+fn a_mov_imm(g: mut AGen, reg: i64, value: i64) {
+    var first = true
+    var chunk = 0
+    while chunk < 4 {
+        let part = (value >> (16 * chunk)) & 0xFFFF
+        if part != 0 || (first && chunk == 3) {
+            // movz / movk
+            var op = 0xF2800000
+            if first {
+                op = 0xD2800000
+            }
+            g.words.push(op | chunk << 21 | part << 5 | reg)
+            first = false
+        }
+        chunk = chunk + 1
+    }
+}
+
+// `reg = address of frame slot`. Slots far from the frame pointer need
+// two instructions.
+fn a_frame_address(g: mut AGen, reg: i64, slot: i64) {
+    let bytes = (slot + 2) * 8
+    if bytes < 4096 {
+        g.words.push(0x91000000 | bytes << 10 | FP << 5 | reg)
+    } else {
+        // add reg, x29, #high, lsl #12
+        g.words.push(0x91400000 | (bytes >> 12) << 10 | FP << 5 | reg)
+        // add reg, reg, #low
+        g.words.push(0x91000000 | (bytes & 0xFFF) << 10 | reg << 5 | reg)
+    }
+}
+
+// `ldr reg, [frame slot]`
+fn a_load(g: mut AGen, reg: i64, slot: i64) {
+    g.words.push(0xF9400000 | (slot + 2) << 10 | FP << 5 | reg)
+}
+
+// `str reg, [frame slot]`
+fn a_store_slot(g: mut AGen, slot: i64, reg: i64) {
+    g.words.push(0xF9000000 | (slot + 2) << 10 | FP << 5 | reg)
+}
+
+// What expression `id` is, with the name of a constant read as its value.
+fn a_kind(g: AGen, c: Checker, id: i64) -> i64 {
+    let kind = g.kinds[id]
+    if kind == K_IDENT {
+        let aux = c.expr_aux[g.sh_e + id]
+        if aux >= CONST_STR {
+            if aux == CONST_INT {
+                return K_INT
+            }
+            if aux == CONST_STR {
+                return K_STR
+            }
+            return K_BOOL
+        }
+    }
+    return kind
+}
+
+// The value of a `bool` written in the program or named by a constant.
+fn a_bool_value(g: AGen, c: Checker, id: i64) -> i64 {
+    if g.kinds[id] == K_BOOL {
+        return g.ea[id]
+    }
+    if c.expr_aux[g.sh_e + id] == CONST_TRUE {
+        return 1
+    }
+    return 0
+}
+
+// The value of a number written in the program or named by a constant.
+fn a_int_value(g: AGen, c: Checker, id: i64) -> i64 {
+    return c.ints[c.expr_res[g.sh_e + id]]
+}
+
+// ---- the frame --------------------------------------------------------
+
+fn a_function(g: mut AGen, c: Checker, p: Parser, index: i64) {
+    match p.ast.items[c.fns[index].item] {
+        ItemFn(_, _, _, _, body, nodes) => a_function_body(mut g, c, p, index, body, nodes)
+        _ => {}
+    }
+}
+
+fn a_function_body(g: mut AGen, c: Checker, p: Parser, index: i64, body: IdRange, nodes: Nodes) {
+    g.sh_e = c.fns[index].sh_e
+    g.sh_s = c.fns[index].sh_s
+    g.sh_p = c.fns[index].sh_p
+    g.sh_i = c.fns[index].sh_i
+    g.fn_starts.push(g.words.len())
+    let nreg = c.fns[index].reg_slots.len()
+    var i = 0
+    while i < nreg {
+        g.reg_slots[i] = c.fns[index].reg_slots[i]
+        i = i + 1
+    }
+    g.nreg = nreg
+    g.nloop = 0
+    g.nparam = 0
+    // Registers the checker left unused go to the `for` loops, in the
+    // order the loops are written: the position first, then the item
+    // when it is a number or `bool`, then the index.
+    var next = nreg
+    let first_stmt = nodes.stmts_start
+    let end_stmt = first_stmt + nodes.stmts_len
+    if next < REGISTERS {
+        var id = first_stmt
+        while id < end_stmt && next < REGISTERS {
+            match p.ast.stmts[id] {
+                StmtFor(has_index, _, _, iter, _) => {
+                    let elem = c.lists[ty_index(c.expr_ty[g.sh_e + iter])]
+                    let elem_size = ck_size_of(c, elem)
+                    let base = c.stmt_slot[g.sh_s + id]
+                    g.reg_slots[next] = base
+                    next = next + 1
+                    // Only a number or `bool` can live in a register;
+                    // other items are looked at through their address.
+                    if elem < 3 && next < REGISTERS {
+                        g.reg_slots[next] = base + 4
+                        next = next + 1
+                    }
+                    if has_index && next < REGISTERS {
+                        g.reg_slots[next] = base + 4 + elem_size
+                        next = next + 1
+                    }
+                }
+                _ => {}
+            }
+            id = id + 1
+        }
+    }
+    g.nloop = next - nreg
+    let params = c.fns[index].param_tys.len()
+    if next < REGISTERS {
+        var any_by_ref = false
+        i = 0
+        while i < params {
+            if c.fns[index].param_by_ref[i] {
+                any_by_ref = true
+            }
+            i = i + 1
+        }
+        if any_by_ref && a_has_loop(p, first_stmt, end_stmt) {
+            // A register costs a save and a restore on every call, so it
+            // goes only to an address the function uses more than once.
+            let first_expr = nodes.exprs_start
+            let end_expr = first_expr + nodes.exprs_len
+            var slot = 0
+            while slot < params && next < REGISTERS {
+                if c.fns[index].param_by_ref[slot] {
+                    let res = slot + BY_REF
+                    var uses = 0
+                    var id = first_expr
+                    while id < end_expr && uses < 2 {
+                        if c.expr_res[g.sh_e + id] == res && a_kind(g, c, id) == K_IDENT {
+                            uses = uses + 1
+                        }
+                        id = id + 1
+                    }
+                    if uses == 2 {
+                        g.reg_slots[next] = slot
+                        next = next + 1
+                    }
+                }
+                slot = slot + 1
+            }
+        }
+    }
+    g.nparam = next - nreg - g.nloop
+    // Above the slots, room for the caller's values of those registers.
+    let slots = c.fns[index].slots
+    g.saved_slot = slots
+    let saved = next
+    g.frame_bytes = (16 + 8 * (slots + saved) + 15) / 16 * 16
+    g.ret = c.fns[index].ret
+    g.sret_slot = c.fns[index].sret_slot
+    g.scratch_slot = c.fns[index].scratch_slot
+    while g.live_slots.len() > 0 {
+        let slot = g.live_slots.pop()
+        let ty = g.live_tys.pop()
+    }
+    a_forget(mut g)
+
+    // A function that begins by sending some calls straight back,
+    // `if n < 2 { return n }`, decides that before it sets up its frame:
+    // those calls then cost a compare, a branch and `ret`.
+    var skip = 0
+    if a_guard(mut g, c, p, index, body) {
+        skip = 1
+    }
+
+    if g.frame_bytes <= SMALL_FRAME {
+        // One instruction makes room and saves the two registers.
+        // stp x29, x30, [sp, #-frame]!
+        g.words.push(0xA9807BFD | ((0 - g.frame_bytes / 8) & 0x7F) << 15)
+    } else {
+        // A large frame takes two steps: the amount is split into what
+        // fits one instruction shifted by 12 bits and what fits one plain.
+        if (g.frame_bytes >> 12) > 0 {
+            // sub sp, sp, #high, lsl #12
+            g.words.push(0xD14003FF | (g.frame_bytes >> 12) << 10)
+        }
+        // sub sp, sp, #low
+        g.words.push(0xD10003FF | (g.frame_bytes & 0xFFF) << 10)
+        // stp x29, x30, [sp]
+        g.words.push(0xA9007BFD)
+    }
+    // mov x29, sp
+    g.words.push(0x910003FD)
+    // The registers in use are x19, x20, ... without gaps.
+    a_saved_registers(mut g, saved, true)
+    // Each parameter arrives in a register as a value or a pointer, and
+    // moves to its slot or to the register it lives in.
+    i = 0
+    while i < params {
+        var reg = a_slot_register(g, i)
+        if reg < 0 {
+            reg = a_param_register(g, i)
+        }
+        if reg >= 0 {
+            g.words.push(a_mov(reg, i))
+        } else {
+            g.words.push(a_str(i, FP, i + 2))
+        }
+        i = i + 1
+    }
+    if g.sret_slot >= 0 {
+        g.words.push(a_str(X8, FP, g.sret_slot + 2))
+    }
+    // A temporary may be freed without having been filled, when the
+    // expression that fills it was skipped. Null makes that harmless.
+    i = 0
+    while i < c.fns[index].zero_slots.len() {
+        g.words.push(a_str(XZR, FP, c.fns[index].zero_slots[i] + 2))
+        i = i + 1
+    }
+    a_block_from(mut g, c, p, body, skip)
+    if g.ret == TY_UNIT {
+        a_mov_imm(mut g, X0, 0)
+        a_epilogue(mut g)
+    } else {
+        // The checker proved every path returns; this is unreachable.
+        g.words.push(A_BRK_1)
+    }
+}
+
+// True when one of the statements `first .. end` is a loop.
+fn a_has_loop(p: Parser, first: i64, end: i64) -> bool {
+    var id = first
+    while id < end {
+        match p.ast.stmts[id] {
+            StmtWhile(_, _) => return true
+            StmtFor(_, _, _, _, _) => return true
+            _ => {}
+        }
+        id = id + 1
+    }
+    return false
+}
+
+// Saves, or brings back, the caller's values of the first `count`
+// registers that variables live in, two at a time where the frame is
+// small enough for that.
+fn a_saved_registers(g: mut AGen, count: i64, save: bool) {
+    let first = FIRST_REGISTER
+    var i = 0
+    while i < count {
+        let slot = g.saved_slot + i + 2
+        if i + 1 < count && slot + 1 <= MAX_PAIR {
+            if save {
+                g.words.push(a_stp(first + i, first + i + 1, FP, slot))
+            } else {
+                g.words.push(a_ldp(first + i, first + i + 1, FP, slot))
+            }
+            i = i + 2
+        } else {
+            if save {
+                g.words.push(a_str(first + i, FP, slot))
+            } else {
+                g.words.push(a_ldr(first + i, FP, slot))
+            }
+            i = i + 1
+        }
+    }
+}
+
+fn a_epilogue(g: mut AGen) {
+    let count = g.nreg + g.nloop + g.nparam
+    a_saved_registers(mut g, count, false)
+    // Everything parked on the stack during a statement has been taken
+    // off again by now, so sp is where the frame starts.
+    if g.frame_bytes <= SMALL_FRAME {
+        // ldp x29, x30, [sp], #frame
+        g.words.push(0xA8C07BFD | (g.frame_bytes / 8) << 15)
+    } else {
+        // ldp x29, x30, [sp]
+        g.words.push(0xA9407BFD)
+        // add sp, sp, #low
+        g.words.push(0x910003FF | (g.frame_bytes & 0xFFF) << 10)
+        if (g.frame_bytes >> 12) > 0 {
+            // add sp, sp, #high, lsl #12
+            g.words.push(0x914003FF | (g.frame_bytes >> 12) << 10)
+        }
+    }
+    g.words.push(A_RET)
+}
+
+// Whether a block ends by leaving it, so that nothing runs past its last
+// statement and no jump over what follows is needed.
+fn a_leaves(p: Parser, body: IdRange) -> bool {
+    if body.len == 0 {
+        return false
+    }
+    match p.ast.stmts[p.ast.lists[body.start + body.len - 1]] {
+        StmtReturn(_) => return true
+        StmtBreak => return true
+        StmtContinue => return true
+        _ => return false
+    }
+}
+
+// The register a parameter arrives in, when `id` names one that is a
+// number or a `bool` passed by value; -1 otherwise.
+fn a_arriving(g: AGen, c: Checker, id: i64, index: i64) -> i64 {
+    if a_kind(g, c, id) != K_IDENT {
+        return -1
+    }
+    let place = a_place(g, c, id)
+    if place < 0 || place >= 4096 {
+        return -1
+    }
+    if place >= c.fns[index].param_tys.len() {
+        return -1
+    }
+    if c.fns[index].param_by_ref[place] {
+        return -1
+    }
+    let ty = c.fns[index].param_tys[place]
+    if ty == TY_I64 || ty == TY_BOOL {
+        return place
+    }
+    return -1
+}
+
+// When the function's first statement is `if a < b { return c }` with
+// parameters and constants only, generates it ahead of the frame,
+// straight from the registers the arguments arrive in, and says so: the
+// body then starts at its second statement.
+fn a_guard(g: mut AGen, c: Checker, p: Parser, index: i64, body: IdRange) -> bool {
+    if body.len == 0 {
+        return false
+    }
+    let first = p.ast.lists[body.start]
+    var cond = -1
+    var only = -1
+    match p.ast.stmts[first] {
+        StmtIf(test, then_block, else_branch) => {
+            match else_branch {
+                ElseNone => {
+                    if then_block.len == 1 {
+                        cond = test
+                        only = p.ast.lists[then_block.start]
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+    if cond < 0 {
+        return false
+    }
+    var value = -1
+    var returns = false
+    match p.ast.stmts[only] {
+        StmtReturn(result) => {
+            returns = true
+            value = result
+        }
+        _ => {}
+    }
+    if !returns {
+        return false
+    }
+    if c.stmt_drops_len[g.sh_s + first] != 0 || c.stmt_drops_len[g.sh_s + only] != 0 {
+        return false
+    }
+    if a_kind(g, c, cond) != K_BINARY {
+        return false
+    }
+    let lhs = g.ea[cond]
+    let rhs = g.eb[cond]
+    let code = a_comparison(g.ec[cond])
+    if code < 0 {
+        return false
+    }
+    let left = a_arriving(g, c, lhs, index)
+    if left < 0 {
+        return false
+    }
+    // What to compare with: another parameter or a small constant.
+    var right_reg = -1
+    var right_value = 0
+    if a_kind(g, c, rhs) == K_INT {
+        right_value = a_int_value(g, c, rhs)
+        if right_value < 0 || right_value >= 4096 {
+            return false
+        }
+    } else {
+        right_reg = a_arriving(g, c, rhs, index)
+        if right_reg < 0 {
+            return false
+        }
+    }
+    // What to hand back: nothing, a parameter or a constant.
+    var result_reg = -1
+    var result_value = 0
+    if value >= 0 {
+        let kind = a_kind(g, c, value)
+        if kind == K_INT {
+            result_value = a_int_value(g, c, value)
+        } else if kind == K_BOOL {
+            result_value = a_bool_value(g, c, value)
+        } else {
+            result_reg = a_arriving(g, c, value, index)
+            if result_reg < 0 {
+                return false
+            }
+        }
+    }
+    if right_reg >= 0 {
+        g.words.push(a_cmp(left, right_reg))
+    } else {
+        // cmp left, #value
+        g.words.push(0xF100001F | right_value << 10 | left << 5)
+    }
+    let on = a_placeholder(mut g)
+    if result_reg > 0 {
+        g.words.push(a_mov(X0, result_reg))
+    } else if result_reg < 0 {
+        a_mov_imm(mut g, X0, result_value)
+    }
+    g.words.push(A_RET)
+    a_patch_branch_if(mut g, on, code ^ 1)
+    return true
+}
+
+fn a_block(g: mut AGen, c: Checker, p: Parser, body: IdRange) {
+    a_block_from(mut g, c, p, body, 0)
+}
+
+// Generates a block from its statement number `skip` on and frees the
+// owning locals declared in it.
+fn a_block_from(g: mut AGen, c: Checker, p: Parser, body: IdRange, skip: i64) {
+    let outer = g.live_slots.len()
+    let start = g.words.len()
+    var i = skip
+    while i < body.len {
+        a_stmt(mut g, c, p, p.ast.lists[body.start + i])
+        i = i + 1
+    }
+    if g.live_slots.len() > outer {
+        a_drop_live_from(mut g, c, outer)
+        while g.live_slots.len() > outer {
+            let slot = g.live_slots.pop()
+            let ty = g.live_tys.pop()
+        }
+    }
+    // Its variables are gone, and their slots may be used again.
+    a_forget_since(mut g, start)
+}
+
+// The register the variable in frame slot `slot` lives in, or -1.
+fn a_slot_register(g: AGen, slot: i64) -> i64 {
+    let count = g.nreg + g.nloop
+    var i = 0
+    while i < count {
+        if g.reg_slots[i] == slot {
+            return FIRST_REGISTER + i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// The register the address that arrived as parameter `slot` lives in,
+// or -1.
+fn a_param_register(g: AGen, slot: i64) -> i64 {
+    if g.nparam == 0 {
+        return -1
+    }
+    var i = g.nreg + g.nloop
+    let end = i + g.nparam
+    while i < end {
+        if g.reg_slots[i] == slot {
+            return FIRST_REGISTER + i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+// The register a place lives in, or -1: only whole variables have one.
+fn a_register(g: AGen, place: i64) -> i64 {
+    if place >= 4096 || (g.nreg == 0 && g.nloop == 0) {
+        return -1
+    }
+    return a_slot_register(g, place)
+}
+
+// The register `id` lives in, when it is a variable that has one, or
+// -1. Such a variable cannot change while an expression is evaluated:
+// only a statement can assign to it, and nothing has its address.
+fn a_in_register(g: AGen, c: Checker, id: i64) -> i64 {
+    if (g.nreg == 0 && g.nloop == 0) || g.kinds[id] != K_IDENT {
+        return -1
+    }
+    let place = a_place(g, c, id)
+    if place < 0 || place >= 4096 {
+        return -1
+    }
+    return a_slot_register(g, place)
+}
+
+// ---- ownership --------------------------------------------------------
+
+// Frees everything owned by the value whose address is in x0.
+fn a_drop_value(g: mut AGen, c: Checker, ty: i64) {
+    if ty == TY_STR {
+        a_runtime(mut g, ART_DROP)
+    } else if ty_is_list(ty) && !ck_needs_drop(c, c.lists[ty_index(ty)]) {
+        a_runtime(mut g, ART_DROP)
+    } else {
+        a_glue_call(mut g, ty, false)
+    }
+}
+
+// The value whose address is in x0 was copied bit by bit from another
+// owner. Gives it buffers of its own, all the way down.
+fn a_clone_value(g: mut AGen, c: Checker, ty: i64) {
+    if ty == TY_STR {
+        a_mov_imm(mut g, X1, 1)
+        a_runtime(mut g, ART_LIST_CLONE)
+    } else if ty_is_list(ty) && !ck_needs_drop(c, c.lists[ty_index(ty)]) {
+        a_mov_imm(mut g, X1, ck_size_of(c, c.lists[ty_index(ty)]) * 8)
+        a_runtime(mut g, ART_LIST_CLONE)
+    } else {
+        a_glue_call(mut g, ty, true)
+    }
+}
+
+// Calls the helper that frees (or copies) a `ty`, asking for it to be
+// written if this is its first use.
+fn a_glue_call(g: mut AGen, ty: i64, copy: bool) {
+    var key = ty * 2
+    if copy {
+        key = key + 1
+    }
+    var id = int_map_get(g.glue_ids, key)
+    if id < 0 {
+        id = g.glue_tys.len()
+        int_map_set(mut g.glue_ids, key, id)
+        g.glue_tys.push(ty)
+        g.glue_copies.push(key & 1)
+    }
+    a_forget(mut g)
+    g.glue_call_ats.push(g.words.len())
+    g.glue_call_ids.push(id)
+    g.words.push(0)
+}
+
+// Frees or copies the value whose address is in x0.
+fn a_glue_part(g: mut AGen, c: Checker, ty: i64, copy: bool) {
+    if copy {
+        a_clone_value(mut g, c, ty)
+    } else {
+        a_drop_value(mut g, c, ty)
+    }
+}
+
+// Writes the helper for one type. It takes the value's address in x0.
+fn a_glue_function(g: mut AGen, c: Checker, ty: i64, copy: bool) {
+    if ty_is_struct(ty) {
+        // Handle each list and string directly inside the struct.
+        // stp x29, x30, [sp, #-32]!
+        g.words.push(0xA9BE7BFD)
+        // mov x29, sp
+        g.words.push(0x910003FD)
+        // str x19, [sp, #16]
+        g.words.push(0xF9000BF3)
+        // mov x19, x0
+        g.words.push(0xAA0003F3)
+        let owned = ck_owned_count(c, ty)
+        var k = 0
+        while k < owned {
+            g.words.push(a_add_slots(X0, X19, ck_owned_offset(c, ty, k)))
+            a_glue_part(mut g, c, ck_owned_ty(c, ty, k), copy)
+            k = k + 1
+        }
+        // ldr x19, [sp, #16]
+        g.words.push(0xF9400BF3)
+        // ldp x29, x30, [sp], #32
+        g.words.push(0xA8C27BFD)
+        g.words.push(A_RET)
+    } else if ty_is_list(ty) {
+        // A list whose elements own something: visit every element.
+        let elem = c.lists[ty_index(ty)]
+        let elem_bytes = ck_size_of(c, elem) * 8
+        // stp x29, x30, [sp, #-48]!
+        g.words.push(0xA9BD7BFD)
+        // mov x29, sp
+        g.words.push(0x910003FD)
+        // stp x19, x20, [sp, #16]
+        g.words.push(0xA90153F3)
+        // str x21, [sp, #32]
+        g.words.push(0xF90013F5)
+        // mov x19, x0
+        g.words.push(0xAA0003F3)
+        if copy {
+            // First a private buffer holding the same bits.
+            a_mov_imm(mut g, X1, elem_bytes)
+            a_runtime(mut g, ART_LIST_CLONE)
+        }
+        // capacity
+        g.words.push(a_ldr(X9, X19, 2))
+        let nothing_owned = a_placeholder(mut g)
+        // x20 walks the elements
+        g.words.push(a_ldr(X20, X19, 0))
+        // x21 counts down the length
+        g.words.push(a_ldr(X21, X19, 1))
+        let top = g.words.len()
+        let finished = a_placeholder(mut g)
+        // mov x0, x20
+        g.words.push(0xAA1403E0)
+        a_glue_part(mut g, c, elem, copy)
+        if elem_bytes < 4096 {
+            // add x20, x20, #bytes
+            g.words.push(0x91000294 | elem_bytes << 10)
+        } else {
+            a_mov_imm(mut g, X10, elem_bytes)
+            g.words.push(a_add_reg(X20, X20, X10))
+        }
+        // sub x21, x21, #1
+        g.words.push(0xD10006B5)
+        a_jump_back(mut g, top)
+        a_patch_cbz_reg(mut g, finished, false, X21)
+        if !copy {
+            g.words.push(a_ldr(X0, X19, 0))
+            a_runtime(mut g, ART_FREE)
+        }
+        a_patch_cbz_reg(mut g, nothing_owned, false, X9)
+        // ldr x21, [sp, #32]
+        g.words.push(0xF94013F5)
+        // ldp x19, x20, [sp, #16]
+        g.words.push(0xA94153F3)
+        // ldp x29, x30, [sp], #48
+        g.words.push(0xA8C37BFD)
+        g.words.push(A_RET)
+    } else {
+        // Only the variant the value is in owns anything, so the tag
+        // selects what to visit.
+        let index = ty_index(ty)
+        // stp x29, x30, [sp, #-32]!
+        g.words.push(0xA9BE7BFD)
+        // mov x29, sp
+        g.words.push(0x910003FD)
+        // str x19, [sp, #16]
+        g.words.push(0xF9000BF3)
+        // mov x19, x0
+        g.words.push(0xAA0003F3)
+        // tag
+        g.words.push(a_ldr(X9, X19, 0))
+        var done: List[i64] = []
+        var variant = 0
+        while variant < c.enums[index].variants.len() {
+            let owned = c.enums[index].variants[variant].heap_tys.len()
+            if owned > 0 {
+                g.words.push(a_cmp_x9_imm(variant + 1))
+                let next = a_placeholder(mut g)
+                var k = 0
+                while k < owned {
+                    g.words.push(a_add_slots(X0, X19, c.enums[index].variants[variant].heap_offsets[k]))
+                    a_glue_part(mut g, c, c.enums[index].variants[variant].heap_tys[k], copy)
+                    k = k + 1
+                }
+                done.push(a_placeholder(mut g))
+                a_patch_branch_if(mut g, next, A_NE)
+            }
+            variant = variant + 1
+        }
+        for at in done {
+            a_patch_jump(mut g, at)
+        }
+        // ldr x19, [sp, #16]
+        g.words.push(0xF9400BF3)
+        // ldp x29, x30, [sp], #32
+        g.words.push(0xA8C27BFD)
+        g.words.push(A_RET)
+    }
+}
+
+// Frees everything owned by the value in frame slot `slot`.
+fn a_drop_frame(g: mut AGen, c: Checker, slot: i64, ty: i64) {
+    a_frame_address(mut g, X0, slot)
+    a_drop_value(mut g, c, ty)
+}
+
+// Frees everything owned by the value whose address is parked in frame
+// slot `pointer_slot`.
+fn a_drop_pointer(g: mut AGen, c: Checker, pointer_slot: i64, ty: i64) {
+    a_load(mut g, X0, pointer_slot)
+    a_drop_value(mut g, c, ty)
+}
+
+// Frees the owning locals declared since `from`, newest first, without
+// forgetting them: used on every way out of a scope.
+fn a_drop_live_from(g: mut AGen, c: Checker, from: i64) {
+    var i = g.live_slots.len() - 1
+    while i >= from {
+        let slot = g.live_slots[i]
+        let ty = g.live_tys[i]
+        a_drop_frame(mut g, c, slot, ty)
+        i = i - 1
+    }
+}
+
+// Zeroes, for every list, string and owning enum directly inside the
+// value of type `ty` at `slot`, the slot that says "this owns nothing".
+fn a_zero_idle(g: mut AGen, c: Checker, slot: i64, ty: i64) {
+    let owned = ck_owned_count(c, ty)
+    var k = 0
+    while k < owned {
+        a_store_slot(mut g, slot + ck_owned_offset(c, ty, k) + idle_slot(ck_owned_ty(c, ty, k)), XZR)
+        k = k + 1
+    }
+}
+
+// Frees the temporaries of statement `id`. `keep_x0` preserves a value
+// the statement still needs.
+fn a_drop_temps(g: mut AGen, c: Checker, id: i64, keep_x0: bool) {
+    a_drop_range(mut g, c, c.stmt_drops_start[g.sh_s + id], c.stmt_drops_len[g.sh_s + id], keep_x0)
+}
+
+// Frees the temporaries listed in `drops[start .. start + len]`.
+fn a_drop_range(g: mut AGen, c: Checker, start: i64, len: i64, keep_x0: bool) {
+    if len == 0 {
+        return
+    }
+    if keep_x0 {
+        g.words.push(A_PUSH_X0)
+    }
+    var i = start
+    while i < start + len {
+        let slot = c.drop_slots[i]
+        let ty = c.drop_tys[i]
+        a_drop_frame(mut g, c, slot, ty)
+        // Inside a loop the same temporary is freed again, and it may not
+        // have been refilled: a zero capacity or tag marks it as empty.
+        a_zero_idle(mut g, c, slot, ty)
+        i = i + 1
+    }
+    if keep_x0 {
+        g.words.push(a_pop(X0))
+    }
+}
+
+// The value in frame slot `slot` was copied bit by bit from another
+// owner. Gives it buffers of its own.
+fn a_clone_frame(g: mut AGen, c: Checker, slot: i64, ty: i64) {
+    a_frame_address(mut g, X0, slot)
+    a_clone_value(mut g, c, ty)
+}
+
+// Like `a_clone_frame`, for the value whose address is parked in frame
+// slot `pointer_slot`.
+fn a_clone_pointer(g: mut AGen, c: Checker, pointer_slot: i64, ty: i64) {
+    a_load(mut g, X0, pointer_slot)
+    a_clone_value(mut g, c, ty)
+}

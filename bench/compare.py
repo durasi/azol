@@ -5,6 +5,14 @@
     python3 bench/compare.py              everything, best of 5 runs
     python3 bench/compare.py --runs 9     more runs per measurement
     python3 bench/compare.py fib40 sort   only the named benchmarks
+    python3 bench/compare.py --write-readme
+                                          a full run that also replaces the
+                                          tables in README.md, between the
+                                          `<!-- bench:start -->` and
+                                          `<!-- bench:end -->` lines
+    python3 bench/compare.py --from-results [--write-readme]
+                                          no measuring: the tables again from
+                                          the bench/results.json of the last run
 
 It prints Markdown tables and writes the raw numbers to bench/results.json.
 
@@ -44,6 +52,8 @@ BUILD = os.path.join(HERE, "build")
 GENERATED = os.path.join(HERE, "generated")
 AZOL = os.path.join(ROOT, "target", "release", "azol")
 UNITS = 3000
+README_START = "<!-- bench:start -->"
+README_END = "<!-- bench:end -->"
 
 # What each benchmark mostly exercises, for the table.
 ABOUT = {
@@ -225,6 +235,114 @@ def table(header, rows):
     return "\n".join(out)
 
 
+def ratio(value):
+    """A ratio for prose: `5.8`, `70`, `950`."""
+    if value >= 100:
+        return "%d" % (round(value / 10) * 10)
+    if value >= 10:
+        return "%d" % round(value)
+    return "%.1f" % value
+
+
+def summary(run_results, build_result):
+    """Sentences worked out from the numbers, so that they stay true."""
+    out = []
+    if build_result:
+        times = build_result["seconds"]
+        azol = times.get("azol")
+        rust = [times.get(key) for key in ("rust_check", "rust_debug", "rust_opt")]
+        if azol and all(rust):
+            out.append("Build: azoL is %s times faster than Rust's type checking alone, %s times faster than an "
+                       "unoptimized Rust build and %s times faster than an optimized one."
+                       % tuple(ratio(value / azol) for value in rust))
+        if azol and times.get("node_check"):
+            out.append("Node.js checks the syntax of the JavaScript version in %s times azoL's whole build time."
+                       % ratio(times["node_check"] / azol))
+    full = {name: result["seconds"] for name, result in run_results.items()
+            if all(result["seconds"].get(key) for key in ("azol", "rust_opt", "rust_debug", "node"))}
+    if full:
+        count = len(full)
+        behind = sorted(((times["azol"] / times["rust_opt"], name) for name, times in full.items()), reverse=True)
+        slower = [item for item in behind if item[0] > 1.0]
+        line = ("Run: azoL is faster than unoptimized Rust in %d of %d and faster than Node.js in %d of %d. "
+                % (sum(times["azol"] < times["rust_debug"] for times in full.values()), count,
+                   sum(times["azol"] < times["node"] for times in full.values()), count))
+        if slower:
+            line += "It is slower than optimized Rust in %d of %d" % (len(slower), count)
+            line += "; the largest gaps are %s." % " and ".join(
+                "`%s` (%s times)" % (name, ratio(value)) for value, name in slower[:2])
+        else:
+            line += "It is at least as fast as optimized Rust in all of them."
+        out.append(line)
+    return out
+
+
+def report(results):
+    """The Markdown report, as a list of lines, from what `results.json` holds."""
+    info, runs = results["machine"], results["runs"]
+    run_results, build_result, sizes = results["run_time"], results["build_time"], results["sizes"]
+    have_rust, have_node = bool(info.get("rustc")), bool(info.get("node"))
+    out = []
+    out.append("Measured on %s, %s. Best of %d runs." % (info["cpu"], info["os"], runs))
+    out.append("Tools: %s." % ", ".join(str(info[tool]) for tool in ("azol", "rustc", "node") if info[tool]))
+    out.append("")
+    if run_results:
+        out.append("**Run time** (whole process, lower is better)\n")
+        rows = []
+        for name, result in run_results.items():
+            times = result["seconds"]
+            rows.append([
+                "`%s`: %s" % (name, ABOUT.get(name, "")),
+                "**%s**" % seconds(times.get("azol")),
+                seconds(times.get("rust_opt")),
+                seconds(times.get("rust_debug")),
+                seconds(times.get("node")),
+            ])
+        out.append(table(["", "azoL", "Rust (`-O`)", "Rust (unoptimized)", "JavaScript (Node.js)"], rows))
+        out.append("")
+    if build_result:
+        times = build_result["seconds"]
+        out.append("**Build time** of the same %s-line program\n" % format(build_result["lines"], ","))
+        rows = [["azoL, source to executable", "**%s**" % seconds(times.get("azol"))]]
+        if have_rust:
+            rows.append(["Rust, type checking only (`--emit=metadata`)", seconds(times.get("rust_check"))])
+            rows.append(["Rust, unoptimized build", seconds(times.get("rust_debug"))])
+            rows.append(["Rust, optimized build (`-O`)", seconds(times.get("rust_opt"))])
+        if have_node:
+            rows.append(["JavaScript, syntax check only (`node --check`)", seconds(times.get("node_check"))])
+            rows.append(["JavaScript, load and run (nothing to build)", seconds(times.get("node_run"))])
+        out.append(table(["", "Time"], rows))
+        out.append("")
+    if sizes.get("azol"):
+        out.append("**Executable size** of a small program (`fib40`)\n")
+        rows = [["azoL", "**%s**" % kilobytes(sizes.get("azol"))]]
+        if have_rust:
+            rows.append(["Rust (`-O`)", kilobytes(sizes.get("rust_opt"))])
+            rows.append(["Rust (unoptimized)", kilobytes(sizes.get("rust_debug"))])
+        if have_node:
+            rows.append(["JavaScript", "needs Node.js installed"])
+        out.append(table(["", "Size"], rows))
+        out.append("")
+    for line in summary(run_results, build_result):
+        out.append(line)
+        out.append("")
+    return out
+
+
+def write_readme(lines):
+    """Replaces what is between the two markers in README.md."""
+    path = os.path.join(ROOT, "README.md")
+    text = open(path, encoding="utf-8").read()
+    if README_START not in text or README_END not in text:
+        sys.exit("README.md has no %s ... %s block" % (README_START, README_END))
+    head, rest = text.split(README_START, 1)
+    tail = rest.split(README_END, 1)[1]
+    block = "\n".join(lines).rstrip("\n")
+    with open(path, "w", encoding="utf-8") as out:
+        out.write(head + README_START + "\n" + block + "\n" + README_END + tail)
+    print("README.md: the benchmark block is updated", file=sys.stderr)
+
+
 def main():
     args = sys.argv[1:]
     runs = 5
@@ -232,7 +350,19 @@ def main():
         at = args.index("--runs")
         runs = int(args[at + 1])
         del args[at:at + 2]
+    readme = "--write-readme" in args
+    stored = "--from-results" in args
+    args = [arg for arg in args if arg not in ("--write-readme", "--from-results")]
     only = set(args)
+
+    if stored:
+        with open(os.path.join(HERE, "results.json")) as source:
+            results = json.load(source)
+        lines = report(results)
+        print("\n".join(lines))
+        if readme:
+            write_readme(lines)
+        return
 
     if not os.path.exists(AZOL):
         sys.exit("%s is missing; run `cargo build --release` first" % AZOL)
@@ -249,55 +379,22 @@ def main():
     run_results = measure_runs(names, runs, have_rust, have_node, problems)
     build_result = None if only else measure_build(runs, have_rust, have_node, problems)
     sizes = measure_sizes(have_rust, problems)
+    results = {"machine": info, "runs": runs, "run_time": run_results, "build_time": build_result,
+               "sizes": sizes, "problems": problems}
 
+    lines = report(results)
     print()
-    print("Measured on %s, %s. Best of %d runs." % (info["cpu"], info["os"], runs))
-    print("Tools: %s." % ", ".join(str(info[tool]) for tool in ("azol", "rustc", "node") if info[tool]))
-    print()
-    if run_results:
-        print("**Run time** (whole process, lower is better)\n")
-        rows = []
-        for name, result in run_results.items():
-            times = result["seconds"]
-            rows.append([
-                "`%s`: %s" % (name, ABOUT.get(name, "")),
-                "**%s**" % seconds(times.get("azol")),
-                seconds(times.get("rust_opt")),
-                seconds(times.get("rust_debug")),
-                seconds(times.get("node")),
-            ])
-        print(table(["", "azoL", "Rust (`-O`)", "Rust (unoptimized)", "JavaScript (Node.js)"], rows))
-        print()
-    if build_result:
-        times = build_result["seconds"]
-        print("**Build time** of the same %s-line program\n" % format(build_result["lines"], ","))
-        rows = [["azoL, source to executable", "**%s**" % seconds(times.get("azol"))]]
-        if have_rust:
-            rows.append(["Rust, type checking only (`--emit=metadata`)", seconds(times.get("rust_check"))])
-            rows.append(["Rust, unoptimized build", seconds(times.get("rust_debug"))])
-            rows.append(["Rust, optimized build (`-O`)", seconds(times.get("rust_opt"))])
-        if have_node:
-            rows.append(["JavaScript, syntax check only (`node --check`)", seconds(times.get("node_check"))])
-            rows.append(["JavaScript, load and run (nothing to build)", seconds(times.get("node_run"))])
-        print(table(["", "Time"], rows))
-        print()
-    if sizes.get("azol"):
-        print("**Executable size** of a small program (`fib40`)\n")
-        rows = [["azoL", "**%s**" % kilobytes(sizes.get("azol"))]]
-        if have_rust:
-            rows.append(["Rust (`-O`)", kilobytes(sizes.get("rust_opt"))])
-            rows.append(["Rust (unoptimized)", kilobytes(sizes.get("rust_debug"))])
-        if have_node:
-            rows.append(["JavaScript", "needs Node.js installed"])
-        print(table(["", "Size"], rows))
-        print()
+    print("\n".join(lines))
     for problem in problems:
         print("note: " + problem)
 
     with open(os.path.join(HERE, "results.json"), "w") as out:
-        json.dump({"machine": info, "runs": runs, "run_time": run_results, "build_time": build_result,
-                   "sizes": sizes, "problems": problems}, out, indent=2)
+        json.dump(results, out, indent=2)
         out.write("\n")
+    if readme:
+        if only or problems:
+            sys.exit("README.md is left alone: it takes a full run with rustc and node and no problems")
+        write_readme(lines)
 
 
 if __name__ == "__main__":

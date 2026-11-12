@@ -10,6 +10,7 @@ goes away.
 | `logo-dark.svg` | the same, on dark backgrounds |
 | `mark.svg` | the L alone, square |
 | `favicon.svg` | the L alone, simplified for 16 px |
+| `compare/` | header tiles for the comparison table in the README: `azol.svg` carries the mark, `rust.svg` and `javascript.svg` carry the plain name only, in neutral grey that reads on light and dark backgrounds. They are our own drawings; no other project's logo is used |
 | `alternatives/` | two other ideas that were considered |
 
 ## Colours

@@ -26,8 +26,9 @@ comparison:
 
 - the times in the lines `built ...`, `checked ...`, `lexed ...` and
   `parsed ...`: azol-self has no clock and prints zeros;
-- command lines that build for a target other than x86_64-linux, which
-  azol-self refuses with "not supported yet" (that refusal is checked);
+- a build that names no target on a machine that is Linux on ARM64,
+  where the Rust compiler builds for macOS and azol-self for that
+  machine (this script runs on x86-64 Linux, where both agree);
 - `sema-dump` (the tool `azol-sema` does that) and azol-self's own
   `build --map`;
 - source files that are not valid UTF-8, which only the Rust compiler
@@ -312,14 +313,12 @@ def check(work, quick):
         print("DIFFERENT `azol-self explain --markdown` is not docs/errors.md")
         return 1
 
-    # Another target: the program is checked as always, then refused.
+    # The other targets: `--emit-code` exists for macOS and is refused
+    # for Linux on ARM64, by both in the same words.
     for target in ["aarch64-macos", "aarch64-linux"]:
-        fill(checker.ours, USAGE_FILES)
-        refused = run([tool, "build", "a.azl", "--target", target], cwd=checker.ours)
-        if refused.returncode != 1 or b"not supported yet" not in refused.stderr or snapshot(checker.ours) != dict(
-                (name, ((text if isinstance(text, bytes) else text.encode()), False)) for name, text in USAGE_FILES):
-            print(f"DIFFERENT azol-self build --target {target}: exit {refused.returncode}, {refused.stderr[:200]!r}")
-            return 1
+        expect(f"build for {target}", USAGE_FILES,
+               [["build", "a.azl", "--target", target], ["build", "--target", target, "--json", "a.azl", "-o", "out"],
+                ["build", "a.azl", "--target", target, "--emit-code", "code.txt"], ["build", "--emit-code", "code.txt", "--target", target, "a.azl", "-o", "folder/../out2"]])
         expect(f"wrong program for {target}", USAGE_FILES, [["check", "--target", target, "a.azl"], ["build", "--target", target, "wrong.azl"],
                                                                ["check", "--json", "--target", target, "wrong.azl"]])
 
@@ -338,7 +337,9 @@ def check(work, quick):
         if len(text) < 200000:
             commands.insert(2, ["lex", "in.azl"])
         if "/programs/" in shown or "/examples/" in shown or shown.startswith("examples"):
-            commands += [["build", "--json", "in.azl"], ["build", "in.azl", "--emit-code", "code.txt", "-o", "out"]]
+            commands += [["build", "--json", "in.azl"], ["build", "in.azl", "--emit-code", "code.txt", "-o", "out"],
+                         ["build", "--target", "aarch64-macos", "in.azl", "--emit-code", "code_macos.txt", "-o", "out_macos"],
+                         ["build", "--target", "aarch64-linux", "--json", "in.azl", "-o", "out_linux"]]
         ugly = uglier(text.decode("utf-8"))
         expect(shown, [("in.azl", text), ("ugly.azl", ugly)], commands, stdin=ugly.encode("utf-8"))
 

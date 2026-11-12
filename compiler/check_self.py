@@ -2,17 +2,19 @@
 """Checks the azoL compiler written in azoL against the one written in Rust.
 
 `azol-self` is the whole compiler in azoL: the lexer, the parser, the
-checker, the x86-64 code generator, the ELF writer, the diagnostics and
-the formatter in this folder, with `self_main.azl` on top. This script
-proves three things about it; `check_cli.py` compares the rest of the
-command line.
+checker, the code generators for x86-64 and ARM64, the writers of ELF and
+Mach-O files, the diagnostics and the formatter in this folder, with
+`self_main.azl` on top. This script proves four things about it;
+`check_cli.py` compares the rest of the command line.
 
-1. The same executables. For every program, `azol-self build` must write
-   the file `azol build --target x86_64-linux` writes, byte for byte:
-   every .azl file of tests/programs, examples, bench and this folder,
-   the programs of several files (tests/multi and the tools here), and
-   bench/generated/big.azl. A file that is not a program on its own must
-   be refused by both with the same words and the same exit code.
+1. The same executables. For every program and each of the three targets
+   (`x86_64-linux`, `aarch64-macos`, `aarch64-linux`), `azol-self build`
+   must write the file `azol build` writes, byte for byte, on macOS its
+   signature included: every .azl file of tests/programs, examples, bench
+   and this folder, the programs of several files (tests/multi and the
+   tools here), and bench/generated/big.azl. A file that is not a program
+   on its own must be refused by both with the same words and the same
+   exit code.
 
 2. The compiler compiles itself. Stage 1 is `azol-self` built by the
    Rust compiler. Stage 2 is the same sources built by stage 1, stage 3
@@ -20,7 +22,18 @@ command line.
    tests/programs is built by stage 2, run, and compared with the
    `// expect-...` lines at its top.
 
-3. The same errors. Wrong programs (the ones `check_front.py` and
+3. The compiler compiles itself on ARM64 too, as far as a machine that
+   is not ARM64 can show. Stage 1 builds `azol-self` for `aarch64-macos`
+   and for `aarch64-linux`; each must be the file the Rust compiler
+   builds for that target. Then each of the two runs in an emulator
+   (`emu_arm64.py`), where it builds a few programs and the compiler
+   itself for all three targets; what it writes must be what stage 1
+   writes. Where the checking emulators of the test programs are at
+   hand, each also builds one program under those: no memory may be
+   left behind or touched out of bounds. Without the Python package
+   `unicorn` the runs are skipped, and the script says so.
+
+4. The same errors. Wrong programs (the ones `check_front.py` and
    `check_sema.py` use, and right programs damaged at regular places)
    must be refused with the same text on standard error, error codes
    included, and the same exit code.
@@ -28,8 +41,10 @@ command line.
     python3 compiler/check_self.py           everything
     python3 compiler/check_self.py --quick   without bench/generated/big.azl
 
-`azol-self` is built for x86-64 Linux and run directly, so this script
-needs such a machine. Build the Rust compiler first: cargo build --release
+Which machine an `azol-self` runs on is said when it is built, by one of
+the files `host_*.azl` (see `self_main.azl`); `sources(target)` below
+names the right one. Stage 1 is built for x86-64 Linux and run directly,
+so this script needs such a machine. Build the Rust compiler first: cargo build --release
 """
 import glob, os, platform, re, shutil, subprocess, sys, tempfile, time
 
@@ -40,9 +55,21 @@ import check_front, check_sema  # noqa: E402  (the wrong programs come from them
 
 AZOL = os.path.join(ROOT, "target", "release", "azol")
 BIG = os.path.join(ROOT, "bench", "generated", "big.azl")
-SOURCES = ["self_main.azl", "driver.azl", "token.azl", "lexer.azl", "ast.azl", "parser.azl", "dump.azl", "sema.azl", "sema_fn.azl",
-           "x64.azl", "x64_gen.azl", "runtime_x64.azl", "code_file.azl", "elf.azl", "bytes.azl", "diag.azl", "diag_table.azl",
-           "embedded.azl", "format.azl"]
+TARGETS = ["x86_64-linux", "aarch64-macos", "aarch64-linux"]
+# The compiler's sources but for the one file that says where it runs.
+COMMON = ["self_main.azl", "driver.azl", "token.azl", "lexer.azl", "ast.azl", "parser.azl", "dump.azl", "sema.azl", "sema_fn.azl",
+          "x64.azl", "x64_gen.azl", "runtime_x64.azl", "code_file.azl", "elf.azl", "bytes.azl", "diag.azl", "diag_table.azl",
+          "embedded.azl", "format.azl", "arm64.azl", "arm64_gen.azl", "arm64_link.azl", "runtime_arm64.azl", "macho.azl",
+          "sha256.azl"]
+
+
+def sources(target):
+    """The files an `azol-self` that runs on `target` is built from."""
+    return COMMON + ["host_" + target.replace("-", "_") + ".azl"]
+
+
+# For the machine this script runs on.
+SOURCES = sources("x86_64-linux")
 SETS = check_sema.SETS + [["compiler/" + name for name in SOURCES]]
 
 
@@ -57,22 +84,25 @@ def first_difference(a, b):
     return min(len(a), len(b))
 
 
-def rust_build(paths, out):
-    return run([AZOL, "build", "--target", "x86_64-linux", "-o", out] + paths)
+def rust_build(paths, out, target="x86_64-linux"):
+    return run([AZOL, "build", "--target", target, "-o", out] + paths)
 
 
-def self_build(tool, paths, out):
-    return run([tool, "build", "-o", out] + paths)
+def self_build(tool, paths, out, target=None):
+    """Without a target `azol-self` builds for the machine it runs on."""
+    return run([tool, "build", "-o", out] + (["--target", target] if target else []) + paths)
 
 
-def compare(tool, paths, shown, work, counts):
+def compare(tool, paths, shown, work, counts, target=None):
     """Returns None when both compilers agree on the program, else a description."""
-    theirs, ours = os.path.join(work, "theirs"), os.path.join(work, "ours")
+    # The same file name for both: a macOS signature holds it.
+    theirs, ours = os.path.join(work, "theirs", "program"), os.path.join(work, "ours", "program")
     for path in (theirs, ours):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         if os.path.exists(path):
             os.remove(path)
-    want = rust_build(paths, theirs)
-    got = self_build(tool, paths, ours)
+    want = rust_build(paths, theirs, target or "x86_64-linux")
+    got = self_build(tool, paths, ours, target)
     if want.returncode != got.returncode:
         return (f"{shown}: exit code {got.returncode}, expected {want.returncode}\n  azol:      {want.stderr[:300]!r}\n"
                 f"  azol-self: {got.stderr[:300]!r}")
@@ -91,7 +121,132 @@ def compare(tool, paths, shown, work, counts):
         return f"{shown}: the executables differ, first at byte {first_difference(a, b)}, sizes {len(a)} and {len(b)}"
     if not os.access(ours, os.X_OK):
         return f"{shown}: the executable is not marked executable"
-    counts["built"] += 1
+    counts[target or "built"] += 1
+    return None
+
+
+def compare_all(tool, paths, shown, work, counts):
+    """`compare` for the machine this runs on, and for a program that builds, for the other targets too."""
+    before = counts["built"]
+    problem = compare(tool, paths, shown, work, counts)
+    if problem or counts["built"] == before:
+        return problem
+    for target in TARGETS[1:]:
+        problem = compare(tool, paths, f"{shown} for {target}", work, counts, target)
+        if problem:
+            return problem
+    return None
+
+
+def checked_run(host, tool, program, stage1, work):
+    """Runs the compiler for `host` on one program under the checking
+    emulator the test programs run under, when that is at hand (in the
+    folder `AZOL_EMU_DIR` names, or /home/claude/ref): it must leave no
+    block of memory behind, touch none it does not own and hand every
+    register back. Returns a description of what is wrong, or None."""
+    folder = os.environ.get("AZOL_EMU_DIR", "/home/claude/ref")
+    name = "emu" if host == "aarch64-macos" else "emu_linux_arm64"
+    if not os.path.exists(os.path.join(folder, name + ".py")):
+        print(f"SKIPPED the {host} compiler under the checking emulator: {name}.py is not in {folder}", flush=True)
+        return None
+    sys.path.insert(0, folder)
+    try:
+        checking = __import__(name)
+    except ImportError as error:
+        print(f"SKIPPED the {host} compiler under the checking emulator: {error}", flush=True)
+        return None
+    finally:
+        sys.path.remove(folder)
+    ours = os.path.join(work, "checked", host, "program")
+    os.makedirs(os.path.dirname(ours), exist_ok=True)
+    arguments = ["build", "--target", host, "-o", ours, program]
+    if host == "aarch64-macos":
+        out, code, trap, balanced, errs, heap = checking.run(tool, max_insn=4_000_000_000, argv=arguments)
+    else:
+        out, code, trap, balanced, errs, heap = checking.run(tool, max_insn=4_000_000_000, argv=arguments, repo=ROOT)
+    if code != 0 or trap is not None or not balanced or heap["leaks"] or heap["violations"]:
+        return f"the compiler for {host} under the checking emulator: exit {code}, trap {trap}, balanced {balanced}, heap {heap}, {errs[:200]!r}"
+    want_path = os.path.join(work, "checked", "native", "program")
+    os.makedirs(os.path.dirname(want_path), exist_ok=True)
+    self_build(stage1, [program], want_path, host)
+    if open(ours, "rb").read() != open(want_path, "rb").read():
+        return f"the compiler for {host} under the checking emulator builds {os.path.relpath(program, ROOT)} differently from stage 1"
+    print(f"clean {os.path.relpath(program, ROOT)} built by the {host} compiler under the checking emulator: "
+          f"{heap['allocs']} blocks of memory, all freed", flush=True)
+    return None
+
+
+def cross(stage1, work):
+    """Part 3 of the text at the top. Returns a description of what is wrong, or None."""
+    import emu_arm64
+    native, emulated = os.path.join(work, "native"), os.path.join(work, "emulated")
+    # What stage 1 builds for each target, with the file name every copy below gets.
+    made = {}
+    for target in TARGETS:
+        made[target] = os.path.join(native, target, "azol-self")
+        os.makedirs(os.path.dirname(made[target]))
+        paths = [os.path.join(HERE, name) for name in sources(target)]
+        built = self_build(stage1, paths, made[target], target)
+        if built.returncode != 0:
+            return f"stage 1 does not build the compiler for {target}: {built.stderr[:400]!r}"
+        theirs = os.path.join(work, "theirs", "azol-self")
+        os.makedirs(os.path.dirname(theirs), exist_ok=True)
+        if rust_build(paths, theirs, target).returncode != 0:
+            return f"azol does not build the compiler for {target}"
+        if open(theirs, "rb").read() != open(made[target], "rb").read():
+            return f"the compiler for {target}: stage 1 and azol write different files"
+        print(f"same  azol-self for {target}, built by stage 1 and by azol: {os.path.getsize(made[target])} bytes", flush=True)
+    if not emu_arm64.available():
+        print("SKIPPED running the ARM64 compilers: the Python package `unicorn` is not installed", flush=True)
+        return None
+    programs = [os.path.join(ROOT, path) for path in ["examples/hello.azl", "examples/wc.azl", "tests/programs/map.azl", "tests/programs/try_places.azl"]]
+    programs = [path for path in programs if os.path.exists(path)]
+    for host in TARGETS[1:]:
+        tool = made[host]
+        out, err, code, problem = emu_arm64.run(tool, ["--version"])
+        want = run([stage1, "--version"])
+        if problem or code != 0 or out != want.stdout:
+            return f"the compiler for {host}, run in the emulator, does not say its version: {problem or err[:200]!r}"
+        # Without a target it builds for where it runs.
+        for path in programs[:1]:
+            ours, theirs = os.path.join(emulated, "default", "program"), os.path.join(native, "default", "program")
+            for folder in (ours, theirs):
+                os.makedirs(os.path.dirname(folder), exist_ok=True)
+            out, err, code, problem = emu_arm64.run(tool, ["build", "-o", ours, path])
+            self_build(stage1, [path], theirs, host)
+            if problem or code != 0 or open(ours, "rb").read() != open(theirs, "rb").read():
+                return f"the compiler for {host}, run in the emulator, does not build for {host} when no target is named: {problem or err[:200]!r}"
+        for target in TARGETS:
+            jobs = [([path], os.path.join(native, "p", target, "program")) for path in programs]
+            jobs.append(([os.path.join(HERE, name) for name in sources(target)], made[target]))
+            for paths, want_path in jobs:
+                if len(paths) == 1:
+                    os.makedirs(os.path.dirname(want_path), exist_ok=True)
+                    self_build(stage1, paths, want_path, target)
+                ours = os.path.join(emulated, host, target, os.path.basename(want_path))
+                os.makedirs(os.path.dirname(ours), exist_ok=True)
+                if os.path.exists(ours):
+                    os.remove(ours)
+                out, err, code, problem = emu_arm64.run(tool, ["build", "--target", target, "-o", ours] + paths)
+                shown = "the compiler" if len(paths) > 1 else os.path.relpath(paths[0], ROOT)
+                if problem or code != 0:
+                    return f"the compiler for {host}, run in the emulator, does not build {shown} for {target}: {problem or err[:300]!r}"
+                if open(ours, "rb").read() != open(want_path, "rb").read():
+                    return f"the compiler for {host}, run in the emulator, builds {shown} for {target} differently from stage 1"
+                if not os.access(ours, os.X_OK):
+                    return f"the compiler for {host}, run in the emulator: {shown} for {target} is not marked executable"
+            print(f"same  {len(programs)} programs and the compiler for {target}, built by the {host} compiler in the emulator", flush=True)
+        problem = checked_run(host, tool, programs[0], stage1, work)
+        if problem:
+            return problem
+        # A wrong program is refused with the same words.
+        wrong = os.path.join(work, "wrong.azl")
+        with open(wrong, "w") as out_file:
+            out_file.write("fn main() {\n    let x = 1\n    x = 2\n}\n")
+        want = run([stage1, "check", wrong])
+        out, err, code, problem = emu_arm64.run(tool, ["check", wrong])
+        if problem or code != want.returncode or err != want.stderr or out != want.stdout:
+            return f"the compiler for {host}, run in the emulator, reports a wrong program differently: {problem or err[:300]!r}"
     return None
 
 
@@ -175,16 +330,16 @@ def check(work, quick):
         stale = run([sys.executable, os.path.join(HERE, generator), "--check"])
         if stale.returncode != 0:
             sys.exit(stale.stderr.decode().strip())
-    sources = [os.path.join(HERE, name) for name in SOURCES]
+    own = [os.path.join(HERE, name) for name in SOURCES]
 
     # The compiler compiles itself.
     stage1 = os.path.join(work, "azol-self")
-    built = rust_build(sources, stage1)
+    built = rust_build(own, stage1)
     if built.returncode != 0:
         sys.exit("azol-self does not build:\n" + built.stderr.decode(errors="replace"))
     stage2, stage3 = os.path.join(work, "stage2"), os.path.join(work, "stage3")
     for tool, out in [(stage1, stage2), (stage2, stage3)]:
-        built = self_build(tool, sources, out)
+        built = self_build(tool, own, out)
         if built.returncode != 0:
             print(f"DIFFERENT {os.path.basename(tool)} does not build the compiler: {built.stderr[:400]!r}")
             return 1
@@ -198,6 +353,12 @@ def check(work, quick):
     failed = run_tests(stage2, work)
     if failed:
         print(f"{failed} test programs built by stage 2 FAILED")
+        return 1
+
+    # The compiler for ARM64, built and then run in an emulator.
+    problem = cross(stage1, work)
+    if problem:
+        print("DIFFERENT " + problem)
         return 1
 
     # The same executables, and the same errors.
@@ -246,10 +407,10 @@ def check(work, quick):
     groups.append(("damaged ", damaged))
 
     count = 0
-    counts = {"built": 0, "refused": 0}
+    counts = {"built": 0, "refused": 0, "aarch64-macos": 0, "aarch64-linux": 0}
     for group, entries in groups:
         for paths, shown in entries:
-            problem = compare(stage2, paths, group + shown, work, counts)
+            problem = compare_all(stage2, paths, group + shown, work, counts)
             if problem:
                 print("DIFFERENT " + problem)
                 return 1
@@ -259,7 +420,7 @@ def check(work, quick):
     if not quick:
         if not os.path.exists(BIG):
             sys.exit("bench/generated/big.azl is missing: python3 bench/gen.py")
-        problem = compare(stage2, [BIG], "bench/generated/big.azl", work, counts)
+        problem = compare_all(stage2, [BIG], "bench/generated/big.azl", work, counts)
         if problem:
             print("DIFFERENT " + problem)
             return 1
@@ -267,20 +428,23 @@ def check(work, quick):
         count += 1
 
         out = os.path.join(work, "big")
-        ours = [stage2, "build", "-o", out, BIG]
-        theirs = [AZOL, "build", "--target", "x86_64-linux", "-o", out, BIG]
         print()
         print("big.azl, source to executable, best of 7, whole process:")
-        print(f"  azol-self build   {best_time(ours):7.1f} ms")
-        print(f"  azol build        {best_time(theirs):7.1f} ms")
-        a, b = instructions(ours), instructions(theirs)
-        if a and b:
-            print(f"  instructions executed: azol-self {a / 1e6:.0f} million, azol {b / 1e6:.0f} million ({a / b:.1f} times)")
-        inner = run(theirs).stderr.decode().strip()
-        print(f"  azol's own clock: {inner}")
+        for target in TARGETS:
+            ours = [stage2, "build", "--target", target, "-o", out, BIG]
+            theirs = [AZOL, "build", "--target", target, "-o", out, BIG]
+            print(f"  for {target}:")
+            print(f"    azol-self build   {best_time(ours):7.1f} ms")
+            print(f"    azol build        {best_time(theirs):7.1f} ms")
+            a, b = instructions(ours), instructions(theirs)
+            if a and b:
+                print(f"    instructions executed: azol-self {a / 1e6:.0f} million, azol {b / 1e6:.0f} million ({a / b:.1f} times)")
+            inner = run(theirs).stderr.decode().strip()
+            print(f"    azol's own clock: {inner}")
 
     print()
-    print(f"{count} comparisons: {counts['built']} programs built to the same executable, {counts['refused']} refused with the same errors")
+    print(f"{count} comparisons: {counts['built']} programs built to the same executable for x86_64-linux, {counts['aarch64-macos']} for "
+          f"aarch64-macos and {counts['aarch64-linux']} for aarch64-linux, {counts['refused']} refused with the same errors")
     print("ALL IDENTICAL")
     return 0
 

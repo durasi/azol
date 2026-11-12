@@ -1,0 +1,8 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Compiled into an `azol-self` that is built for `aarch64-linux`, and into no
+// other: it says which machine the compiler runs on, and so which target
+// it builds for when none is named. See `self_main.azl`.
+
+// `TARGET_AARCH64_LINUX`
+const HOST_TARGET = 2

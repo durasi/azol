@@ -1,0 +1,205 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// What happens to ARM64 code after it is generated: the text form that
+// `--emit-code` writes, the Mach-O executable for macOS (through
+// `macho.azl`) and the ELF executable for Linux, which follows
+// `src/elf_arm64.rs` and writes the same bytes.
+//
+// On Linux the code is the same as on macOS. There it calls functions of
+// the system library through addresses the loader fills in; here those
+// functions are part of the executable (`runtime/linux_arm64/runtime.c`,
+// whose machine code is in `embedded.azl`), so every such call becomes a
+// direct one. The file is mapped as it is:
+//
+//     file offset       address                 contents
+//     0                 ALR_BASE                ELF header, program headers
+//     ALR_TEXT_OFFSET   ALR_BASE + that         the library (fixed size)
+//                       ...                     a jump to the program's `main`
+//                       ...                     the program's code
+//                       ...                     the program's constant data
+//     (not in file)     ALR_MEMORY              the library's writable memory
+
+// The instructions as bytes, lowest byte first.
+fn a_words_to_bytes(words: List[i64]) -> List[i64] {
+    var bytes: List[i64] = []
+    for word in words {
+        bytes.push(word & 0xFF)
+        bytes.push((word >> 8) & 0xFF)
+        bytes.push((word >> 16) & 0xFF)
+        bytes.push((word >> 24) & 0xFF)
+    }
+    return bytes
+}
+
+// The name a macOS signature is made for: the last part of the output
+// path, as `Path::file_name` gives it, or `azol-program` when the path
+// has none.
+fn a_ident(out: str) -> str {
+    var name = ""
+    var has_name = false
+    var start = 0
+    var at = 0
+    let end = out.len()
+    while at <= end {
+        if at == end || out[at] == '/' {
+            let part = out.slice(start, at)
+            if part == ".." {
+                has_name = false
+            } else if part.len() > 0 && (part != "." || start == 0) {
+                name = part
+                has_name = part != "."
+            }
+            start = at + 1
+        }
+        at = at + 1
+    }
+    if !has_name {
+        return "azol-program"
+    }
+    return name
+}
+
+// The text form of what the code generator hands to the Mach-O writer.
+// The format is described in `code_file.azl`.
+fn a_code_text_macos(g: AGen, data: str, ident: str) -> str {
+    let imports = art_imports()
+    var text = "azol-code 1\ntarget aarch64-macos\nident " + ident + "\nentry " + str(g.entry) + "\nimports " + str(imports.len()) + "\n"
+    for name in imports {
+        text = text + name + "\n"
+    }
+    text = text + "code " + str(g.words.len() * 4) + "\n"
+    hex_lines(mut text, a_words_to_bytes(g.words))
+    text = text + "data " + str(data.len()) + "\n"
+    hex_lines(mut text, data.bytes())
+    text = text + "relocs " + str(g.relocs.len()) + "\n"
+    for reloc in g.relocs {
+        match reloc {
+            Import(at, import) => text = text + "i " + str(at) + " " + str(import) + "\n"
+            Data(at, offset, register) => text = text + "d " + str(at) + " " + str(offset) + " " + str(register) + "\n"
+        }
+    }
+    return text + "end\n"
+}
+
+// The macOS executable of a program, ready for `write_file`.
+fn a_build_macos(g: AGen, data: str, ident: str) -> str {
+    let code = CodeFile {
+        target: "aarch64-macos",
+        entry: g.entry,
+        code: a_words_to_bytes(g.words),
+        data: data.bytes(),
+        ident: ident,
+        imports: art_imports(),
+        relocs: g.relocs,
+        base: 0,
+        text_offset: 0,
+        start: 0,
+        memory: 0,
+        memory_size: 0,
+        entries: [],
+        calls: [],
+        refs: [],
+    }
+    return bytes_to_text(build_macho(code))
+}
+
+// The 26-bit field of `b` and `bl`: the distance from the instruction at
+// file offset `from` to the one at `to`, in instructions.
+fn a_branch_distance(from: i64, to: i64) -> i64 {
+    let distance = to - from
+    if distance < 0 - 134217728 || distance >= 134217728 {
+        eprint("error: the program is too large for a direct call")
+        exit(1)
+    }
+    return (distance >> 2) & 0x03FFFFFF
+}
+
+// The Linux executable of a program, ready for `write_file`. The few
+// instructions that depend on final addresses are filled in in `g.words`,
+// in place. `data` is the runtime's text followed by the program's
+// string literals; `library` is the content of
+// `runtime/linux_arm64/runtime.bin`.
+fn a_build_linux(g: mut AGen, data: str, library: str) -> str {
+    // ARM64 Linux systems use pages of 4, 16 or 64 KiB. Pieces aligned
+    // for the largest load on all of them.
+    let page = 65536
+    let jump = ALR_TEXT_OFFSET + library.len()
+    let code_at = jump + 4
+    let data_at = code_at + g.words.len() * 4
+    let file_size = data_at + data.len()
+    // The library's memory is at a fixed address above the program.
+    if ALR_BASE + file_size > ALR_MEMORY {
+        eprint("error: the program is too large for this executable layout")
+        exit(1)
+    }
+
+    var head: List[i64] = [0x7F, 'E', 'L', 'F', 2, 1, 1, 0] // 64-bit, little-endian, version 1, System V
+    put64(mut head, 0)
+    put16(mut head, 2) // an executable at fixed addresses
+    put16(mut head, 183) // ARM64
+    put32(mut head, 1)
+    put64(mut head, ALR_BASE + ALR_TEXT_OFFSET + ALR_START) // where the process starts
+    put64(mut head, 64) // program headers follow this header
+    put64(mut head, 0) // no section headers
+    put32(mut head, 0)
+    put16(mut head, 64)
+    put16(mut head, 56)
+    put16(mut head, 3)
+    put16(mut head, 64) // size a section header would have
+    put16(mut head, 0)
+    put16(mut head, 0)
+
+    // Code and constant data, then the library's memory, then a note
+    // that the stack holds no code. The memory has nothing in the file;
+    // its offset only has to agree with its address within a page.
+    a_program_header(mut head, pt_load(), pf_r() | pf_x(), ALR_BASE, file_size, file_size, page)
+    a_program_header(mut head, pt_load(), pf_r() | pf_w(), ALR_MEMORY, 0, ALR_MEMORY_SIZE, page)
+    a_program_header(mut head, pt_gnu_stack(), pf_r() | pf_w(), 0, 0, 0, 16)
+    pad_to(mut head, ALR_TEXT_OFFSET, 0)
+    var text = bytes_to_text(head)
+    text = text + library
+
+    // The library calls this spot; from here the program's `main` is a
+    // fixed distance away.
+    var start: List[i64] = []
+    put32(mut start, 0x14000000 | a_branch_distance(jump, code_at + g.entry * 4)) // b main
+    append_bytes(mut text, start)
+
+    let offsets = alr_import_offsets()
+    for reloc in g.relocs {
+        match reloc {
+            Import(at, import) => {
+                // The generator left room for the three instructions
+                // macOS needs. A direct call takes one.
+                let from = code_at + at * 4
+                let target = ALR_TEXT_OFFSET + offsets[import]
+                g.words[at] = 0x94000000 | a_branch_distance(from, target) // bl
+                g.words[at + 1] = 0xD503201F // nop
+                g.words[at + 2] = 0xD503201F
+            }
+            Data(at, offset, register) => {
+                let pc = ALR_BASE + code_at + at * 4
+                let target = ALR_BASE + data_at + offset
+                g.words[at] = adrp(register, pc, target)
+                g.words[at + 1] = 0x91000000 | (target & 0xFFF) << 10 | register << 5 | register // add reg, reg, #lo12
+            }
+        }
+    }
+    append_bytes(mut text, a_words_to_bytes(g.words))
+    text = text + data
+    return text
+}
+
+// One program header: its kind and flags, where the piece is mapped (it
+// starts at offset 0 of the file), how much of it is in the file and in
+// memory, and its alignment.
+fn a_program_header(out: mut List[i64], kind: i64, flags: i64, address: i64, file_size: i64, memory_size: i64, align: i64) {
+    put32(mut out, kind)
+    put32(mut out, flags)
+    put64(mut out, 0)
+    put64(mut out, address) // virtual address
+    put64(mut out, address) // physical address, unused
+    put64(mut out, file_size)
+    put64(mut out, memory_size)
+    put64(mut out, align)
+}
