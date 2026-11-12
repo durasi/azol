@@ -76,25 +76,25 @@ Tools: azol 0.1.0, rustc 1.99.1 (58cf8f9c3 2026-10-13), v22.17.0.
 
 |  | azoL | Rust (`-O`) | Rust (unoptimized) | JavaScript (Node.js) |
 |---|---|---|---|---|
-| `fib40`: function calls (recursive `fib(40)`) | **0.24 s** | 0.14 s | 0.38 s | 0.46 s |
-| `loops`: nested loops and arithmetic | **0.016 s** | 0.018 s | 0.064 s | 0.042 s |
-| `sort`: quicksort of 2 million numbers | **0.13 s** | 0.11 s | 0.29 s | 0.27 s |
-| `sieve`: prime sieve up to 20 million | **0.14 s** | 0.045 s | 0.20 s | 0.31 s |
-| `particles`: list of structs updated in place | **0.23 s** | 0.040 s | 0.93 s | 0.17 s |
-| `tree`: building and walking trees | **0.10 s** | 0.055 s | 0.11 s | 0.38 s |
-| `append`: building long strings | **0.025 s** | 0.020 s | 0.064 s | 0.11 s |
-| `words`: splitting and joining text | **0.040 s** | 0.026 s | 0.087 s | 0.11 s |
+| `fib40`: function calls (recursive `fib(40)`) | **0.24 s** | 0.14 s | 0.36 s | 0.46 s |
+| `loops`: nested loops and arithmetic | **0.016 s** | 0.018 s | 0.065 s | 0.043 s |
+| `sort`: quicksort of 2 million numbers | **0.12 s** | 0.11 s | 0.30 s | 0.27 s |
+| `sieve`: prime sieve up to 20 million | **0.16 s** | 0.047 s | 0.23 s | 0.34 s |
+| `particles`: list of structs updated in place | **0.11 s** | 0.056 s | 1.13 s | 0.21 s |
+| `tree`: building and walking trees | **0.12 s** | 0.062 s | 0.13 s | 0.52 s |
+| `append`: building long strings | **0.037 s** | 0.028 s | 0.088 s | 0.15 s |
+| `words`: splitting and joining text | **0.047 s** | 0.035 s | 0.11 s | 0.13 s |
 
 **Build time** of the same 44,004-line program
 
 |  | Time |
 |---|---|
-| azoL, source to executable | **0.010 s** |
-| Rust, type checking only (`--emit=metadata`) | 0.70 s |
-| Rust, unoptimized build | 1.32 s |
-| Rust, optimized build (`-O`) | 9.50 s |
+| azoL, source to executable | **0.040 s** |
+| Rust, type checking only (`--emit=metadata`) | 1.05 s |
+| Rust, unoptimized build | 1.77 s |
+| Rust, optimized build (`-O`) | 12.53 s |
 | JavaScript, syntax check only (`node --check`) | 0.024 s |
-| JavaScript, load and run (nothing to build) | 0.049 s |
+| JavaScript, load and run (nothing to build) | 0.048 s |
 
 **Executable size** of a small program (`fib40`)
 
@@ -105,11 +105,11 @@ Tools: azol 0.1.0, rustc 1.99.1 (58cf8f9c3 2026-10-13), v22.17.0.
 | Rust (unoptimized) | 461 KB |
 | JavaScript | needs Node.js installed |
 
-Build: azoL is 70 times faster than Rust's type checking alone, 130 times faster than an unoptimized Rust build and 950 times faster than an optimized one.
+Build: azoL is 26 times faster than Rust's type checking alone, 44 times faster than an unoptimized Rust build and 310 times faster than an optimized one.
 
-Node.js checks the syntax of the JavaScript version in 2.4 times azoL's whole build time.
+Node.js checks the syntax of the JavaScript version in 0.6 times azoL's whole build time.
 
-Run: azoL is faster than unoptimized Rust in 8 of 8 and faster than Node.js in 7 of 8. It is slower than optimized Rust in 7 of 8; the largest gaps are `particles` (5.8 times) and `sieve` (3.1 times).
+Run: azoL is faster than unoptimized Rust in 8 of 8 and faster than Node.js in 8 of 8. It is slower than optimized Rust in 7 of 8; the largest gaps are `sieve` (3.3 times) and `particles` (2.0 times).
 <!-- bench:end -->
 
 **Reading these fairly.**
@@ -371,18 +371,35 @@ The compiler is written in azoL: about 20,000 lines in [`compiler/`](compiler/) 
 
 ## Roadmap
 
-What is not done, in the order planned. Each links to its design.
+What is not done, in the order planned. Finished work is not listed here; it is in the sections above and in the history.
 
-1. **`azol build -O`: as fast as optimized Rust.** An optimiser of our own, written in azoL, with no outside dependency ([docs/design/optimizer.md](docs/design/optimizer.md)). Its intermediate form, the first passes and the back ends for x86-64 and ARM64 exist under [`compiler/opt/`](compiler/opt/) and are proven against the default builds; still to come are the remaining passes (value numbering, loop work, inlining, unrolling, copy elision, vectorising), the `-O` flag itself, and the gate that defines the claim: the 28 programs of [`bench/suite/`](bench/suite/) at a geometric mean of 1.00 or better against `rustc -O`, none worse than 1.10. The default build stays a single fast pass.
-2. **Shorter code, second half**: `if` and `match` as values, patterns inside patterns, and about thirty library functions ([docs/design/concise.md](docs/design/concise.md)).
-3. **Floating-point numbers**: `f64` ([docs/design/floats.md](docs/design/floats.md)).
-4. **Methods and traits**: methods on your own types, `==`, ordering and hashing for any type, bounded generics, `Map[K, V]` and `Set[T]` ([docs/design/traits.md](docs/design/traits.md)).
-5. **Function values and closures**, and the library functions that take them ([docs/design/closures.md](docs/design/closures.md)).
-6. **Threads and channels** without data races ([docs/design/threads.md](docs/design/threads.md)).
-7. **Packages**: modules, `import`, dependencies without a central server, `test` blocks ([docs/design/packages.md](docs/design/packages.md)).
-8. **More for AI agents**: `azol guide`, a named error with a fix for every habit from another language, `azol fix` ([docs/design/agents.md](docs/design/agents.md)).
-9. **What replacing an old system needs**: calling C, more integer types, standard input, processes, directories, dates, JSON, CSV, stack traces with source lines ([docs/design/legacy.md](docs/design/legacy.md)).
-10. **ARM64 Linux on real hardware.**
+**Speed: `azol build -O`, as fast as optimized Rust** ([design](docs/design/optimizer.md), [findings](docs/design/optimizer-findings.md))
+
+1. The optimising path end to end on all three targets, then the `-O` flag in `azol build`.
+2. The programs still far from `rustc -O`: text scanning, lists of structs, the library sort, maps.
+3. The remaining passes: unrolling, copy elision, string building, vectorising.
+4. Packed lists and structs, a faster allocator, an internal calling convention.
+5. `-O` compile speed.
+6. The gate that defines the claim: the 28 programs of [`bench/suite/`](bench/suite/) at a geometric mean of 1.00 or better against `rustc -O`, none worse than 1.10, on Apple M5 and on x86-64. Today, in instructions on x86-64: 1.29.
+
+**Language**
+
+7. Shorter code, second half: `if` and `match` as values, patterns inside patterns, about thirty library functions ([design](docs/design/concise.md)).
+8. Floating-point numbers: `f64` ([design](docs/design/floats.md)).
+9. Methods and traits: methods on your own types, `==`, ordering and hashing for any type, bounded generics, `Map[K, V]` and `Set[T]` ([design](docs/design/traits.md)).
+10. Function values and closures, and the library functions that take them ([design](docs/design/closures.md)).
+11. Threads and channels without data races ([design](docs/design/threads.md)).
+12. Packages: modules, `import`, dependencies without a central server, `test` blocks ([design](docs/design/packages.md)).
+
+**For AI agents and for replacing old systems**
+
+13. `azol guide`, a named error with a fix for every habit from another language, `azol fix` ([design](docs/design/agents.md)).
+14. Calling C, more integer types, standard input, processes, directories, dates, JSON, CSV, stack traces with source lines ([design](docs/design/legacy.md)).
+
+**Before the first release**
+
+15. ARM64 Linux on real hardware.
+16. The numbers above measured again on an idle machine, with `-O`.
 
 ## Name
 
