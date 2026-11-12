@@ -1,0 +1,39 @@
+; The bounds check of `xs[i]` a second time: same comparison with the same length, and the only way here is the first check's good side. The way to the `trap` is not taken.
+fn pair(p0: ptr [param 0 read], p1: i64) -> i64 {
+b0:
+    v0 = load i64, p0, 8  [param 0]
+    v1 = ult p1, v0
+    br v1, b1, b9
+b1:
+    v2 = load ptr, p0, 0  [param 0]
+    v3 = gep v2, p1, 8, 0
+    v4 = load i64, v3, 0  [buf(param 0)]
+    v5 = load i64, p0, 8  [param 0]
+    v6 = ult p1, v5
+    br v6, b2, b9
+b2:
+    v7 = load ptr, p0, 0  [param 0]
+    v8 = gep v7, p1, 8, 0
+    v9 = load i64, v8, 0  [buf(param 0)]
+    v10 = add v4, v9
+    ret v10
+b9:
+    trap index
+}
+
+fn main(p0: i64) -> i64 {
+    frames 24
+b0:
+    v0 = frame 0
+    v1 = callrt alloc(32)
+    store ptr, v0, 0, v1  [frame 0]
+    store i64, v0, 8, 4  [frame 0]
+    store i64, v0, 16, 4  [frame 0]
+    store i64, v1, 0, 10  [buf(frame 0)]
+    store i64, v1, 8, 20  [buf(frame 0)]
+    store i64, v1, 16, 30  [buf(frame 0)]
+    store i64, v1, 24, 40  [buf(frame 0)]
+    v2 = call pair(v0, p0) -> i64
+    callrt drop(v0)
+    ret v2
+}

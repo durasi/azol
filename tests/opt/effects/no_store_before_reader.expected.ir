@@ -1,0 +1,18 @@
+fn sum(p0: ptr [param 0 read], p1: i64) -> i64 {
+b0:
+    v0 = load i64, p0, 0  [param 0]
+    v1 = add v0, p1
+    ret v1
+}
+
+fn main(p0: i64) -> i64 {
+    frames 16
+b0:
+    v0 = frame 0
+    store i64, v0, 0, 1  [frame 0]
+    v4 = call sum(v0, p0) -> i64
+    store i64, v0, 0, 2  [frame 0]
+    v1 = load i64, v0, 0  [frame 0]
+    v3 = add v1, v4
+    ret v3
+}

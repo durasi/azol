@@ -1421,3 +1421,313 @@ of a walk), not here.
   counting hook, which gives the same numbers as the checking emulator
   (compared on `loops`), not from hardware counters. An instruction
   count says nothing about how a real processor likes the code.
+
+## The passes effects and gvn
+
+`compiler/opt/pass_effects.azl` and `compiler/opt/pass_gvn.azl`, both
+passes on the whole module, in the order as
+
+    simplify, sroa, simplify, effects, gvn, simplify, dce, dse, dce, simplify
+
+### What a summary holds
+
+For every `ptr` parameter the five bits of `param_fx`, now worked out
+from the body instead of taken from the declaration: the lowering
+stage writes what the language allows (`read`, or everything for a
+`mut` parameter and for the space of a result), and `effects` takes
+away what the function and the functions it calls never do. A bit is
+never added. The bits mean: `read` and `write`, the bytes the
+parameter points to; `writebuf`, a buffer those bytes own, at any
+depth; `resize`, a buffer may be somewhere else or of another size
+afterwards; `free`, one may be gone. For the function as a whole four
+more bits, which have no place in the intermediate form and live in
+the table `fx_summaries` gives: it may stop the program (a `trap`, a
+routine that can run out of memory, `exit`), change the allocator's
+state, print or write a file, or not come back (a loop, a cycle of
+calls, `exit`).
+
+Every function starts with nothing and bits are added round after
+round until a round adds none: the smallest answer that agrees with
+every body, which is what lets `quicksort`, calling itself, come out
+as `read writebuf`. Where an address comes from is followed through
+`gep`s to a parameter, a `frame`, new memory, or a `load` whose region
+starts at a parameter (then it is inside a buffer the parameter owns,
+M3, and a callee's `write` is a `writebuf` here). Anything else is an
+address the pass cannot name, and what is done through it counts for
+every parameter the language lets change. One rule is there only for
+safety: a store to a buffer under a local's name through an address
+that cannot be named counts as `writebuf` for every such parameter (a
+buffer moved out of a parameter and back would be written that way;
+the lowering stage copies instead, but nothing in the form says so).
+
+On the compiler 400 of the 578 parameters that were declared with
+every bit lose some: 650 parameters are `read`, 173 `read write
+writebuf resize`, 97 `write` alone (results), 178 keep everything. On
+`big.azl` all 4,000.
+
+### Who uses them
+
+- **sroa**: nothing changed. `sroa_param_is_stable` and
+  `sroa_arg_writes` read `param_fx`, which is now the summary.
+- **gvn**: below.
+- **dce** (`pass_dce.azl`, one function added at the end,
+  `ir_dce_calls`): a call whose results nothing uses goes when the
+  callee only reads through its parameters and has none of the four
+  bits.
+- **dse** (`pass_dse.azl`): `ir_dse` is now `ir_dse_with(f,
+  fx_no_calls())`; `ds_private_objects`, `ds_frames` and `ds_walk` take
+  the callees' summaries as one more argument, and the new `ds_call`
+  makes a call a reader of a frame object from the address it is given
+  on, when the callee's parameter says `read`. So an object whose
+  address only goes to calls is followed over the whole function
+  instead of block by block. With no summaries the pass does exactly
+  what it did.
+
+The last two need the table, which a pass on one function does not
+have, so `effects` runs them itself, on the functions that call
+anything. On the compiler that removes 27 stores and no call (the
+front end leaves no call without a use); it is there for what inlining
+will leave.
+
+### gvn: the rules
+
+One walk over the dominator tree with a table that grows on the way
+down and is undone on the way up.
+
+1. An instruction that only computes, when the same operation with the
+   same operands is above it: arithmetic, comparisons, `gep`, `frame`,
+   constants. Operands that do not care about their order match either
+   way; the instructions are left in the form `simplify` gave them.
+2. A `load`, when what memory holds there is known from an earlier
+   `load` or `store` of the same bytes (same address value, same
+   constant offset through `gep`s with a constant index, same width).
+   A stored constant reaches the load too.
+3. A `br` on a condition that is known because the only way into the
+   block, or into one that dominates it, is one side of a `br` on the
+   same condition. With 1 and 2 this is the second bounds check of
+   `xs[i]`: same comparison, same length, and the way to the `trap` is
+   not taken. A check is removed, never moved, so the rule of section
+   3.5 about what lies between two checks does not come into it.
+4. A `br` on `eq x, K` or `ne x, K` below the true side of `eq x, C`:
+   the arms of a `match`.
+
+What ends what is known about memory:
+
+- A store through the same address value: the bytes it overlaps, and
+  nothing else, whatever the regions say.
+- A store through another address: everything in the same region. For
+  an entry in a buffer also a store to any other buffer, unless the
+  entry's buffer belongs to a parameter; and a store to a region that
+  owns the buffer.
+- A call: `write`, `resize` or `free` through an address made from a
+  `frame` or a parameter ends what is known of that object; any of the
+  four ends what is known of its buffers and of every buffer of a
+  local. A callee that only reads ends nothing. An address the pass
+  cannot name, given to a callee that may write through it, ends
+  everything except read-only data.
+- Between a block and its dominator: the stores and calls of every
+  block on a way from one to the other, looked for backwards from the
+  block (256 blocks at most, then everything is forgotten).
+
+Why buffers of locals are not told apart by region: `sroa` makes a
+local list's header three values, and after that a buffer goes from
+one local to another without a single store. `buf(frame 2)` and
+`buf(frame 3)` can then be the same memory at different times, with
+nothing in between to say so. A parameter's header stays in memory,
+so a buffer cannot leave a parameter without a store to it, and that
+store ends the entry. This is the reason for the one loss in `soa`
+below. It is also why `dse` treats all buffers as one.
+
+### Deliberately not done
+
+- Nothing is moved: a load or a check that is the same on every trip
+  round a loop stays in the loop (`licm`), and where two ways into a
+  block bring two different values no block parameter is put in (no
+  partial redundancy).
+- No `store` is removed, also not one that stores what is there.
+- A store narrower than eight bytes is not forwarded, and a load of
+  another width than the entry never matches.
+- Comparisons that imply each other (`slt i, n` and `ult i, n` for an
+  `i` that is not negative) are `range`'s and `bce`'s.
+- Only the last 64 things known about memory are looked at.
+
+### Proof (x86-64 Linux, 12 November 2026)
+
+`python3 tests/opt/run_gvn_tests.py`:
+
+- 47 hand-written cases in `tests/opt/gvn` and `tests/opt/effects`, 21
+  of them `no_` cases where a rule must not fire, each with its reason
+  in the first line: a call that may write the header, `list_push`
+  between two loads and between two checks, a store through another
+  address into the same list, two locals' buffers, a parameter's header
+  written in between, a store on one side of a branch, a store further
+  down a loop, a one-byte store, a load of another width, an address
+  that cannot be named, a condition with two ways in, the false side
+  of `eq`, operands of `sub` the other way round, the same expression
+  on two sides of a branch; for `effects` a callee that may trap, loop,
+  call itself, print, write or allocate, and a callee that reads what
+  a store wrote.
+- 3,000 random functions in 742 modules made by the script: two lists
+  read and written through their headers with and without bounds
+  checks, variables in frame memory, calls, pushes, branches, loops,
+  and the same field read on both sides of a call, a push or a store.
+  Each module prints the same before the passes and after `gvn`, after
+  `effects,gvn` and after the whole order with `--fixpoint`, always
+  with `--verify-each`; 185 of them also as native code, 58 programs
+  built for ARM64 and run in the two checking emulators.
+  `effects,gvn` leaves 44,434 of 111,885 loads.
+- The 145 programs of the lowering list through the whole order:
+  interpreted, and built by `azol-opt` with all registers and with
+  three (`--stress`), like their default builds.
+- The compiler built by `azol-opt --fixpoint --verify-each` builds
+  `examples/hello.azl` and itself into the bytes `azol` writes.
+- `tests/fuzz/fuzz.py --lower --opt`, seeds 7001 to 11383: 4,200
+  programs, 4,201 runs through the passes, interpreted and as native
+  code (`--fixpoint --verify-each --check`, also `--stress`). One
+  finding, which is not the passes': seed 9428, a program that ends
+  in `azol: stack overflow`, gave something else once in the
+  interpreted run while three other test runs were loading the two
+  processors. Run again on its own (`--only 9428`), with the build
+  before these passes and with this one, everything agrees. Nothing
+  else was found.
+- `python3 tests/opt/run_opt_tests.py`: ALL OPT TESTS PASSED;
+  `sh build.sh`: the fixed point, no seed note; `sh test.sh`: ALL
+  TESTS PASSED.
+
+Twenty-six rules were broken on purpose, one at a time (a call that
+ends nothing, a store through the same address that ends nothing,
+regions trusted for locals' buffers, the walk between blocks left out,
+a condition taken the wrong way or with two ways in, narrow stores
+forwarded, the table not undone, the rounds of `effects` stopped after
+one, traps, loops and recursion forgotten, and so on). The cases
+refuse every one; three of them only after a case was added for
+exactly that (`no_byte_then_word`, `no_header_written`, and reads
+around calls in the random modules).
+
+### Measured
+
+`python3 bench/gate.py --instructions --azol-opt <azol-opt>`,
+instructions on the small sizes, before (the order without the two
+passes) and after:
+
+| Program | azoL default | azol-opt before | azol-opt after | Rust `-O` | before / default | after / default | before / Rust | after / Rust |
+|---|---|---|---|---|---|---|---|---|
+| `append` | 46,499,388 | 45,509,389 | 45,509,389 | 28,876,748 | 0.98 | 0.98 | 1.58 | 1.58 |
+| `bfs` | 27,824,558 | 21,150,997 | 20,175,212 | 19,536,738 | 0.76 | 0.73 | 1.08 | 1.03 |
+| `bignum` | 16,720,320 | 12,544,672 | 11,364,906 | 9,138,149 | 0.75 | 0.68 | 1.37 | 1.24 |
+| `binary_trees` | 98,131,889 | 81,318,924 | 81,318,925 | 171,954,443 | 0.83 | 0.83 | 0.47 | 0.47 |
+| `bits` | 223,001,019 | 139,001,003 | 139,001,003 | 47,442,104 | 0.62 | 0.62 | 2.93 | 2.93 |
+| `crc32` | 103,161,283 | 75,897,779 | 75,897,779 | 60,740,975 | 0.74 | 0.74 | 1.25 | 1.25 |
+| `dijkstra` | 133,587,177 | 98,839,075 | 83,428,126 | 31,869,061 | 0.74 | 0.62 | 3.10 | 2.62 |
+| `dp_lcs` | 107,259,354 | 70,057,524 | 62,214,510 | 28,651,371 | 0.65 | 0.58 | 2.45 | 2.17 |
+| `fannkuch` | 164,840,557 | 167,334,500 | 143,857,362 | 106,700,727 | 1.02 | 0.87 | 1.57 | 1.35 |
+| `fib40` | 36,349,435 | 33,656,893 | 33,656,893 | 26,854,973 | 0.93 | 0.93 | 1.25 | 1.25 |
+| `json` | 76,057,789 | 67,463,748 | 66,112,503 | 67,909,124 | 0.89 | 0.87 | 0.99 | 0.97 |
+| `knapsack` | 70,810,081 | 64,133,921 | 57,514,365 | 76,174,849 | 0.91 | 0.81 | 0.84 | 0.76 |
+| `loops` | 43,536,458 | 30,363,016 | 30,363,016 | 38,222,825 | 0.70 | 0.70 | 0.79 | 0.79 |
+| `lru` | 77,599,843 | 64,631,742 | 63,844,821 | 100,614,841 | 0.83 | 0.82 | 0.64 | 0.63 |
+| `map_int` | 86,809,454 | 74,120,785 | 72,974,519 | 34,312,308 | 0.85 | 0.84 | 2.16 | 2.13 |
+| `matcher` | 99,557,762 | 79,664,938 | 79,664,938 | 80,962,384 | 0.80 | 0.80 | 0.98 | 0.98 |
+| `matmul` | 72,039,898 | 59,599,824 | 59,509,821 | 37,856,938 | 0.83 | 0.83 | 1.57 | 1.57 |
+| `particles` | 89,014,861 | 168,651,963 | 124,606,587 | 60,815,270 | 1.89 | 1.40 | 2.77 | 2.05 |
+| `prefix` | 48,525,007 | 43,723,094 | 42,724,045 | 21,530,608 | 0.90 | 0.88 | 2.03 | 1.98 |
+| `sha256` | 416,214,736 | 248,540,656 | 253,406,697 | 95,152,751 | 0.60 | 0.61 | 2.61 | 2.66 |
+| `sieve` | 69,691,579 | 63,790,802 | 63,790,802 | 49,554,538 | 0.92 | 0.92 | 1.29 | 1.29 |
+| `soa` | 93,341,623 | 123,294,537 | 84,294,537 | 23,085,052 | 1.32 | 0.90 | 5.34 | 3.65 |
+| `sort` | 64,098,134 | 55,347,623 | 51,792,283 | 50,939,112 | 0.86 | 0.81 | 1.09 | 1.02 |
+| `sort_lib` | 171,701,091 | 134,621,991 | 133,092,201 | 40,767,407 | 0.78 | 0.78 | 3.30 | 3.26 |
+| `tokenizer` | 41,699,672 | 36,255,223 | 36,466,223 | 10,023,257 | 0.87 | 0.87 | 3.62 | 3.64 |
+| `tree` | 21,364,019 | 16,973,257 | 16,973,257 | 26,699,739 | 0.79 | 0.79 | 0.64 | 0.64 |
+| `wordfreq` | 126,818,951 | 112,108,898 | 111,265,041 | 58,934,592 | 0.88 | 0.88 | 1.90 | 1.89 |
+| `words` | 49,096,060 | 43,890,710 | 43,730,714 | 18,479,005 | 0.89 | 0.89 | 2.38 | 2.37 |
+
+Geometric means: against the default build **0.853** before and **0.808** after; against `rustc -O` **1.574** before and **1.491** after (the default generator itself: 1.845).
+
+Besides the four below: `fannkuch` 1.02 to 0.87, `dijkstra` 0.74 to
+0.62, `dp_lcs`, `knapsack` and `bignum` by about a tenth each; the
+generated code was not read for these, the passes' counts say it is
+the second and third access to an element. `sha256` and `tokenizer`
+get a little worse (2% and 0.6%), probably because values that are
+shared live longer; that was not looked into.
+
+The four that were asked about, by the instructions of the hot
+function in the intermediate form (ratios are against the default
+generator):
+
+| | before | after | what is left |
+|---|---|---|---|
+| `particles`, `step` | 75 | 38 | The loop body was 12 bounds checks, 12 `gep`s, 8 loads of fields and 4 stores; it is one check, one `gep`, 4 loads and 4 stores. Left for `licm`: the length and the buffer address, read from the parameter on every trip (the parameter is `read writebuf` now, so nothing in the loop changes them). Left for `range`/`bce`: `ult i, len` under `slt i, len`. Against the default generator 1.89 before, 1.40 after; the rest is the back end's (the default generator keeps the checked element address in a register over a run of accesses, which is what this is now, and still wins). |
+| `soa`, `step` | 55 | 39 | Each of the four lists is checked and addressed once per trip instead of two or three times. One load is read again that need not be: the four lists are fields of one parameter, so their buffers are all `buf(param 0)` and a store to one ends what is known of the others. Left for `licm`: four lengths and four addresses. 1.32 before, 0.90 after. |
+| `sort`, `quicksort` | 58 | 44 | The swap was 4 checks, 4 `gep`s, 2 loads and 2 stores and is 2 stores: the two scans above it have the addresses and the values. `quicksort` is `read writebuf`, so its callers keep the list's address and length across it. Left for `bce`: the check in each scan loop. 0.86 before, 0.81 after; 1.02 of `rustc -O`. |
+| `sieve`, whole program | 72 | 72 | Nothing to find: the marking loop was already one comparison, one `gep` and one store. What is left there is `bce`'s (the comparison) and the strength of the index. |
+
+Cost, callgrind instructions of `opt-tool` less the same run with no
+pass:
+
+| | IR instructions in | `effects` | per instruction | `gvn` | per instruction | whole order before | after |
+|---|---|---|---|---|---|---|---|
+| the compiler (20,428 lines) | 71,934 | 117.8 M | 1,640 | 215.8 M | 3,000 | 921 M | 1,409 M |
+| `bench/generated/big.azl` (44,004 lines) | 145,001 | 117.1 M | 810 | 298.7 M | 2,060 | 1,363 M | 2,103 M |
+
+The whole order costs half as much again as it did (the two passes,
+one more `simplify` after `gvn`, and `dce` and `dse` running again on
+what changed). Wall clock, on a machine the other agents were loading at the time
+(best of five, the passes alone as `azol-opt build --stats` prints
+them): the compiler 289 ms before and 403 ms after, 71,000 and 51,000
+source lines a second through the passes; `big.azl` 569 ms and 723 ms,
+77,000 and 61,000. The ratios (1.39 and 1.27) are worth more than the
+numbers.
+Per instruction `gvn` is where `sroa` is (2,960), and for the same
+reason a good part of it is not the pass: each function gets its own
+tables from `filled`, which grows them by doubling. Before the tables
+were a log that is undone on the way up the tree, every block copied
+what was known about memory, and the pass cost 5,800 per instruction.
+The walk between a block and its dominator is 42 M of the 216 M on the
+compiler; `ir_cfg` and the callees' table are 32 M. The cost of
+`effects` includes the second `dse` it runs; how much of it that is
+was not measured.
+
+### Edits to files that are not these passes'
+
+- `pipeline.azl`: the two names in `pl_run_module_pass`,
+  `PL_MODULE_PASSES` and `PL_ORDER`, with `simplify` after `gvn`.
+- `pass_dce.azl`: `ir_dce_calls` added at the end; nothing else.
+- `pass_dse.azl`: `ds_call` added, one more argument for
+  `ds_private_objects`, `ds_frames` and `ds_walk`, `ir_dse_with`; the
+  three lines in `ds_private_objects` that let a frame object given to
+  a call be followed.
+- `tests/opt/run_pass_tests.py`: the two files in `PASSES`.
+  `tests/opt/run_opt_tests.py`: three lines that call
+  `run_gvn_tests.run`.
+- Nothing in `ir*.azl`.
+
+### What the next passes should know
+
+- After `effects`, `param_fx` is what the function does, not what it
+  may. A pass that adds a store or a call through a parameter has to
+  run `effects` again or put the bit back, or the verifier refuses the
+  function (it checks `read`, `write` and `writebuf`).
+- `fx_summaries(m)` gives the four whole-function bits; `fx_calls`
+  turns the table into the view of one function's callees that
+  `fx_arg_bits` and `fx_call_flags` read. `licm` needs exactly these
+  to know what a call in a loop leaves alone.
+- `gvn` leaves the header loads of a loop inside it, once. With the
+  parameter no longer `write` or `resize` they are the same on every
+  trip, and `gv_store_ends` and `gv_call` say what could change them.
+
+### Doubts
+
+- The rule for parameters' buffers rests on a buffer never leaving a
+  `mut` parameter without a store to the parameter. The lowering stage
+  copies on `var t = a` and writes the header on `a = t`; the tests
+  with such programs pass, and the case `no_header_written` holds the
+  rule from the pass's side, but the form itself does not state it.
+- An address read from a frame cell is "cannot be named" both for
+  `effects` and for `gvn`. That is safe and costs precision where a
+  pattern binds a part of a value and the address is kept in memory.
+- Removing a call of a function that reads memory assumes its loads
+  cannot stop the program, which holds for what the lowering stage
+  writes.
+- The cost. Half as much again for the whole order is more than these
+  two passes should take; reusing the tables from one function to the
+  next, and one `dse` instead of two, are the first things to do.

@@ -1,0 +1,43 @@
+; A `list_push` between two checks: the length is read again, the comparison is a new one, the second check stays.
+fn hide(p0: ptr [param 0 read write writebuf resize free]) {
+b0:
+    ret
+}
+
+fn main(p0: i64) -> i64 {
+    frames 24, 8
+b0:
+    v0 = frame 0
+    v1 = callrt alloc(32)
+    store ptr, v0, 0, v1  [frame 0]
+    store i64, v0, 8, 4  [frame 0]
+    store i64, v0, 16, 4  [frame 0]
+    store i64, v1, 0, 10  [buf(frame 0)]
+    store i64, v1, 8, 20  [buf(frame 0)]
+    store i64, v1, 16, 30  [buf(frame 0)]
+    store i64, v1, 24, 40  [buf(frame 0)]
+    call hide(v0)
+    v2 = frame 1
+    v3 = load i64, v0, 8  [frame 0]
+    v4 = ult p0, v3
+    br v4, b1, b9
+b1:
+    v5 = load ptr, v0, 0  [frame 0]
+    v6 = gep v5, p0, 8, 0
+    v7 = load i64, v6, 0  [buf(frame 0)]
+    store i64, v2, 0, v7  [frame 1]
+    callrt list_push(v0, v2, 8)
+    v8 = load i64, v0, 8  [frame 0]
+    v9 = ult p0, v8
+    br v9, b2, b9
+b2:
+    v10 = load ptr, v0, 0  [frame 0]
+    v11 = gep v10, p0, 8, 0
+    v12 = load i64, v11, 0  [buf(frame 0)]
+    v13 = add v7, v12
+    v14 = add v13, v8
+    callrt drop(v0)
+    ret v14
+b9:
+    trap index
+}

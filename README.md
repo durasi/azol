@@ -373,15 +373,16 @@ The compiler is written in azoL: about 20,000 lines in [`compiler/`](compiler/) 
 
 What is not done, in the order planned. Each links to its design.
 
-1. **Speed.** Programs: seven local improvements to the code generators that bring the benchmarks close to optimized Rust without an optimizer, then inlining ([docs/design/speed.md](docs/design/speed.md)). The compiler itself: back to the build speed of the Rust-hosted one.
-2. **Floating-point numbers**: `f64` ([docs/design/floats.md](docs/design/floats.md)).
-3. **Methods and traits**: methods on your own types, `==`, ordering and hashing for any type, bounded generics, `Map[K, V]` and `Set[T]` ([docs/design/traits.md](docs/design/traits.md)).
-4. **Function values and closures**, and the library functions that take them ([docs/design/closures.md](docs/design/closures.md)).
-5. **Threads and channels** without data races ([docs/design/threads.md](docs/design/threads.md)).
-6. **Packages**: modules, `import`, dependencies without a central server, `test` blocks ([docs/design/packages.md](docs/design/packages.md)).
-7. **More for AI agents**: `azol guide`, a named error with a fix for every habit from another language, `azol fix` ([docs/design/agents.md](docs/design/agents.md)).
-8. **What replacing an old system needs**: calling C, more integer types, standard input, processes, directories, dates, JSON, CSV, stack traces with source lines ([docs/design/legacy.md](docs/design/legacy.md)).
-9. **ARM64 Linux on real hardware.**
+1. **`azol build -O`: as fast as optimized Rust.** An optimiser of our own, written in azoL, with no outside dependency ([docs/design/optimizer.md](docs/design/optimizer.md)). Its intermediate form, the first passes and the back ends for x86-64 and ARM64 exist under [`compiler/opt/`](compiler/opt/) and are proven against the default builds; still to come are the remaining passes (value numbering, loop work, inlining, unrolling, copy elision, vectorising), the `-O` flag itself, and the gate that defines the claim: the 28 programs of [`bench/suite/`](bench/suite/) at a geometric mean of 1.00 or better against `rustc -O`, none worse than 1.10. The default build stays a single fast pass.
+2. **Shorter code, second half**: `if` and `match` as values, patterns inside patterns, and about thirty library functions ([docs/design/concise.md](docs/design/concise.md)).
+3. **Floating-point numbers**: `f64` ([docs/design/floats.md](docs/design/floats.md)).
+4. **Methods and traits**: methods on your own types, `==`, ordering and hashing for any type, bounded generics, `Map[K, V]` and `Set[T]` ([docs/design/traits.md](docs/design/traits.md)).
+5. **Function values and closures**, and the library functions that take them ([docs/design/closures.md](docs/design/closures.md)).
+6. **Threads and channels** without data races ([docs/design/threads.md](docs/design/threads.md)).
+7. **Packages**: modules, `import`, dependencies without a central server, `test` blocks ([docs/design/packages.md](docs/design/packages.md)).
+8. **More for AI agents**: `azol guide`, a named error with a fix for every habit from another language, `azol fix` ([docs/design/agents.md](docs/design/agents.md)).
+9. **What replacing an old system needs**: calling C, more integer types, standard input, processes, directories, dates, JSON, CSV, stack traces with source lines ([docs/design/legacy.md](docs/design/legacy.md)).
+10. **ARM64 Linux on real hardware.**
 
 ## Name
 

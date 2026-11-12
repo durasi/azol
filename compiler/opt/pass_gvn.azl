@@ -1,0 +1,710 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The pass `gvn` (docs/design/optimizer.md, section 5.4): what was
+// worked out once is not worked out again.
+//
+//     fn ir_gvn(f: mut IrFunc, calls: FxCalls) -> i64     how many things went
+//     fn ir_gvn_module(m: mut IrModule) -> i64
+//
+// One walk over the dominator tree, a block after the block that
+// dominates it. Four kinds of things go:
+//
+//   1. An instruction that only computes (arithmetic, a comparison, a
+//      `gep`, a `frame`, a constant) when an instruction with the same
+//      operation and the same operands is above it in the tree. The
+//      table is a hash of the operation and the operands as `simplify`
+//      left them; the two operands of an operation that does not care
+//      about their order are looked up in either order.
+//   2. A `load` when what memory holds at that address is known: an
+//      earlier `load` of the same bytes gave it, or a `store` put it
+//      there. What is known is a short list of (address, offset,
+//      width, value). An address is a value plus a constant offset,
+//      found through the `gep`s with a constant index; all `frame N`
+//      are one address.
+//   3. A `br` on a condition that is known: the only way into the
+//      block, or into a block that dominates it, is one way out of a
+//      `br` on the same condition. This is how the second bounds check
+//      of `xs[i]` goes: the comparison is the first one's (1), with
+//      the length the first one read (2), and the way to the `trap` is
+//      not taken. A check is only ever removed, never moved.
+//   4. A `br` on `eq x, K` or `ne x, K` below the true side of
+//      `eq x, C` (the arms of a `match`).
+//
+// What ends what is known about memory (`gv_store_ends`, `gv_call`):
+//
+//   - A `store` through the same address: the entries whose bytes it
+//     overlaps. This is exact whatever the regions say.
+//   - A `store` through another address, by the regions (facts M1 to
+//     M5 of the design): everything in the same region; and for an
+//     entry in a buffer, a store to a region that owns that buffer
+//     (its header may have changed hands) and a store to any other
+//     buffer, unless the entry's buffer belongs to a parameter. A
+//     buffer of a local can change owner without a trace once `sroa`
+//     has made the header a value, so two buffers of locals are told
+//     apart only by their addresses. A parameter's header stays in
+//     memory, and a buffer cannot leave it without a `store` there.
+//   - A call: by the callee's summary (`effects`) for each address it
+//     is given. `write`, `resize` or `free` ends what is known of the
+//     value the address points to; any of the four ends what is known
+//     of its buffers and of every buffer of a local. A callee that
+//     only reads ends nothing, and `quicksort`, which only writes its
+//     list's buffer, leaves the list's address and length known.
+//     `list_push` and `str_append` resize: header and buffers go.
+//   - A call given an address the pass cannot name (not made from a
+//     `frame` or a parameter) that it may write through: everything.
+//   - Between a block and the block that dominates it, every store
+//     and call of every block on a way from the one to the other
+//     (`gv_between`); a loop's own stores and calls end what the loop
+//     header would take from above.
+//
+// What it does not do: move anything (no load or check leaves a loop:
+// that is `licm`), put in a block parameter where two ways in bring
+// different values (no partial redundancy), take a `store` out
+// (`dse`), or forward a store that is narrower than eight bytes.
+
+// Added to the number of a frame object to name its address.
+const GV_FRAME_ROOT = 1099511627776
+// How many of the latest things known about memory are looked at.
+const GV_ENTRIES = 64
+// How many blocks between a block and its dominator are looked at.
+const GV_BETWEEN = 256
+
+struct Gvn {
+    calls: FxCalls
+    // What takes the place of a value: -1 for nothing.
+    leader: List[i64]
+    // The instructions that compute, by hash: `heads[h]` is the first
+    // entry of bucket `h`, `t_next` the one after. Entries are added
+    // on the way down the tree and taken off on the way up.
+    heads: List[i64]
+    mask: i64
+    t_ins: List[i64]
+    t_next: List[i64]
+    t_bucket: List[i64]
+    // Conditions: 1 for true, 0 for false, -1 for not known;
+    // `known_undo` holds a value and what it was before. And the
+    // values known to be equal to a constant: a value, then the
+    // constant, for each; the last few are looked at.
+    known: List[i64]
+    known_undo: List[i64]
+    equal: List[i64]
+    // What memory holds: entries are added on the way down the tree
+    // and taken off on the way up; one that a store or a call ends is
+    // marked, and `m_ended` remembers which, so that leaving the block
+    // brings it back. Only the last GV_ENTRIES entries are looked at.
+    m_root: List[i64]
+    m_off: List[i64]
+    m_ty: List[i64]
+    m_reg: List[i64]
+    m_val: List[i64]
+    m_live: List[bool]
+    m_ended: List[i64]
+    // How many entries are not ended.
+    alive: i64
+    // For each region the region at the bottom of its chain.
+    reg_root: List[i64]
+    // Whether a block has a store or a call.
+    writes: List[bool]
+    stamp: List[i64]
+    // The address `gv_addr` found.
+    a_root: i64
+    a_off: i64
+    removed: i64
+    folded: i64
+}
+
+fn gv_lead(g: Gvn, x: i64) -> i64 {
+    if x < 0 { return x }
+    let l = g.leader[x]
+    if l == -1 { return x }
+    return l
+}
+
+// Where the address `x` starts and how far from there it is, into
+// `a_root` and `a_off`.
+fn gv_addr(f: IrFunc, g: mut Gvn, x: i64) {
+    var cur = x
+    var total = 0
+    while true {
+        let d = su_def(f, cur)
+        if d < 0 { break }
+        let op = f.ins_op[d]
+        if op == IR_FRAME {
+            cur = GV_FRAME_ROOT + f.ins_imm[d]
+            break
+        }
+        if op != IR_GEP || !ir_is_const(f.ins_b[d]) { break }
+        total += f.ins_imm[d] + ir_const_value(f, f.ins_b[d]) * f.ins_imm2[d]
+        cur = gv_lead(g, f.ins_a[d])
+    }
+    g.a_root = cur
+    g.a_off = total
+}
+
+// ---- instructions that compute -------------------------------------------------
+
+fn gv_commutes(op: i64) -> bool {
+    return op == IR_ADD || op == IR_MUL || op == IR_AND || op == IR_OR || op == IR_XOR || op == IR_EQ || op == IR_NE || op == IR_UMULH || op == IR_SMULH
+}
+
+fn gv_key(f: IrFunc, g: Gvn, x: i64) -> i64 {
+    if x == -1 { return 0 }
+    if x < 0 { return ir_const_value(f, x) * 31 + 1 }
+    return gv_lead(g, x) * 2 + 2
+}
+
+fn gv_hash(f: IrFunc, g: Gvn, ins: i64) -> i64 {
+    let op = f.ins_op[ins]
+    let fixed = ir_fixed_operands(op)
+    var ka = 0
+    var kb = 0
+    var kc = 0
+    if fixed > 0 { ka = gv_key(f, g, f.ins_a[ins]) }
+    if fixed > 1 { kb = gv_key(f, g, f.ins_b[ins]) }
+    if fixed > 2 { kc = gv_key(f, g, f.ins_c[ins]) }
+    var h = op * 1000003 + f.ins_ty[ins] * 7919 + f.ins_imm[ins] * 131 + f.ins_imm2[ins] * 31
+    h = h + (ka + kb) * 8191 + (ka ^ kb) * 127 + kc * 524287
+    h = h ^ (h >> 17)
+    return h & g.mask
+}
+
+fn gv_same_operand(f: IrFunc, x: i64, y: i64) -> bool {
+    if x == y { return true }
+    return x < -1 && y < -1 && ir_const_value(f, x) == ir_const_value(f, y)
+}
+
+// Whether two instructions that compute give the same value.
+fn gv_same(f: IrFunc, x: i64, y: i64) -> bool {
+    let op = f.ins_op[x]
+    if op != f.ins_op[y] || f.ins_ty[x] != f.ins_ty[y] || f.ins_imm[x] != f.ins_imm[y] || f.ins_imm2[x] != f.ins_imm2[y] {
+        return false
+    }
+    if f.val_ty[f.ins_res[x]] != f.val_ty[f.ins_res[y]] { return false }
+    let fixed = ir_fixed_operands(op)
+    if fixed == 0 { return true }
+    if fixed == 1 { return gv_same_operand(f, f.ins_a[x], f.ins_a[y]) }
+    if fixed == 3 && !gv_same_operand(f, f.ins_c[x], f.ins_c[y]) { return false }
+    if gv_same_operand(f, f.ins_a[x], f.ins_a[y]) && gv_same_operand(f, f.ins_b[x], f.ins_b[y]) {
+        return true
+    }
+    return gv_commutes(op) && gv_same_operand(f, f.ins_a[x], f.ins_b[y]) && gv_same_operand(f, f.ins_b[x], f.ins_a[y])
+}
+
+// The instruction above `ins` that computes the same, or -1; then
+// `ins` is in the table for those below.
+fn gv_find(f: IrFunc, g: mut Gvn, ins: i64) -> i64 {
+    let h = gv_hash(f, g, ins)
+    var e = g.heads[h]
+    while e >= 0 {
+        if gv_same(f, ins, g.t_ins[e]) { return g.t_ins[e] }
+        e = g.t_next[e]
+    }
+    g.t_ins.push(ins)
+    g.t_next.push(g.heads[h])
+    g.t_bucket.push(h)
+    g.heads[h] = g.t_ins.len() - 1
+    return -1
+}
+
+// ---- memory --------------------------------------------------------------------------
+
+// The first entry that is looked at.
+fn gv_window(g: Gvn) -> i64 {
+    if g.m_root.len() > GV_ENTRIES { return g.m_root.len() - GV_ENTRIES }
+    return 0
+}
+
+fn gv_end(g: mut Gvn, i: i64) {
+    g.m_live[i] = false
+    g.m_ended.push(i)
+    g.alive -= 1
+}
+
+fn gv_learn(g: mut Gvn, root: i64, off: i64, ty: i64, reg: i64, val: i64) {
+    g.m_root.push(root)
+    g.m_off.push(off)
+    g.m_ty.push(ty)
+    g.m_reg.push(reg)
+    g.m_val.push(val)
+    g.m_live.push(true)
+    g.alive += 1
+}
+
+// Everything but what read-only data holds.
+fn gv_forget_all(f: IrFunc, g: mut Gvn) {
+    var i = gv_window(g)
+    while i < g.m_root.len() {
+        if g.m_live[i] && f.reg_kind[g.m_reg[i]] != IR_REGION_DATA { gv_end(mut g, i) }
+        i += 1
+    }
+}
+
+// Whether region `owner` is one of those that own the buffer `region`.
+fn gv_owns(f: IrFunc, region: i64, owner: i64) -> bool {
+    var at = region
+    while f.reg_kind[at] == IR_REGION_BUF {
+        at = f.reg_n[at]
+        if at == owner { return true }
+    }
+    return false
+}
+
+// Whether a store of `size` bytes at `root` + `off`, to region `reg`,
+// ends what entry `i` knows.
+fn gv_store_ends(f: IrFunc, g: Gvn, i: i64, root: i64, off: i64, size: i64, reg: i64) -> bool {
+    if g.m_root[i] == root {
+        return off < g.m_off[i] + ir_type_bytes(g.m_ty[i]) && g.m_off[i] < off + size
+    }
+    let known = g.m_reg[i]
+    if known == reg { return true }
+    if f.reg_kind[known] != IR_REGION_BUF { return false }
+    if f.reg_kind[reg] != IR_REGION_BUF || f.reg_kind[g.reg_root[known]] == IR_REGION_PARAM {
+        return gv_owns(f, known, reg)
+    }
+    return true
+}
+
+fn gv_store(f: IrFunc, g: mut Gvn, ins: i64) {
+    let p = gv_lead(g, f.ins_a[ins])
+    if p < 0 {
+        gv_forget_all(f, mut g)
+        return
+    }
+    gv_addr(f, mut g, p)
+    let root = g.a_root
+    let off = g.a_off + f.ins_imm[ins]
+    let size = ir_type_bytes(f.ins_ty[ins])
+    var i = gv_window(g)
+    while i < g.m_root.len() {
+        if g.m_live[i] && gv_store_ends(f, g, i, root, off, size, f.ins_reg[ins]) {
+            gv_end(mut g, i)
+        }
+        i += 1
+    }
+}
+
+// The region of that kind and number, or -1 when nothing names it.
+fn gv_region(f: IrFunc, kind: i64, n: i64) -> i64 {
+    var i = 0
+    while i < f.reg_kind.len() {
+        if f.reg_kind[i] == kind && f.reg_n[i] == n { return i }
+        i += 1
+    }
+    return -1
+}
+
+// What a call or runtime call ends.
+fn gv_call(f: IrFunc, g: mut Gvn, ins: i64) {
+    var k = 0
+    while k < f.ins_an[ins] && g.alive > 0 {
+        let x = gv_lead(g, f.args[f.ins_as[ins] + k])
+        k += 1
+        if x < 0 || f.val_ty[x] != IR_PTR { continue }
+        let bits = fx_arg_bits(g.calls, f, ins, k - 1) & FX_CHANGES
+        if bits == 0 { continue }
+        // The value the address is made from.
+        var base = x
+        var d = su_def(f, base)
+        while d >= 0 && f.ins_op[d] == IR_GEP {
+            base = gv_lead(g, f.ins_a[d])
+            d = su_def(f, base)
+        }
+        var region = 0 - 2
+        if base >= 0 && base < f.param_count {
+            region = gv_region(f, IR_REGION_PARAM, base)
+        } else if d >= 0 && f.ins_op[d] == IR_FRAME {
+            region = gv_region(f, IR_REGION_FRAME, f.ins_imm[d])
+        }
+        if region == -2 {
+            gv_forget_all(f, mut g)
+            return
+        }
+        let header = bits & (IR_FX_WRITE | IR_FX_RESIZE | IR_FX_FREE) != 0
+        var i = gv_window(g)
+        while i < g.m_root.len() {
+            let known = g.m_reg[i]
+            var ends = false
+            if known == region {
+                ends = header
+            } else if f.reg_kind[known] == IR_REGION_BUF {
+                ends = g.reg_root[known] == region || f.reg_kind[g.reg_root[known]] != IR_REGION_PARAM
+            }
+            if ends && g.m_live[i] { gv_end(mut g, i) }
+            i += 1
+        }
+    }
+}
+
+// What the stores and calls of block `b` end.
+fn gv_replay(f: IrFunc, g: mut Gvn, b: i64) {
+    var ins = f.blk_first[b]
+    while ins >= 0 && g.alive > 0 {
+        let op = f.ins_op[ins]
+        if op == IR_STORE {
+            gv_store(f, mut g, ins)
+        } else if op == IR_CALL || op == IR_CALLRT {
+            gv_call(f, mut g, ins)
+        }
+        ins = f.ins_next[ins]
+    }
+}
+
+// What is known at the start of block `b`: what was known at the end
+// of the block that dominates it (which is what is known now: the
+// blocks walked since then have been left), less what any block on a
+// way from there to here ends.
+fn gv_between(f: IrFunc, g: mut Gvn, cfg: IrCfg, b: i64) {
+    let d = cfg.idom[b]
+    if d == b || d < 0 || g.alive == 0 { return }
+    var work: List[i64] = []
+    var p = cfg.pred_s[b]
+    while p < cfg.pred_s[b] + cfg.pred_n[b] {
+        let from = cfg.pred_blk[p]
+        if from != d && g.stamp[from] != b + 1 {
+            g.stamp[from] = b + 1
+            work.push(from)
+        }
+        p += 1
+    }
+    var seen = 0
+    while work.len() > 0 && g.alive > 0 {
+        let x = work[work.len() - 1]
+        work.truncate(work.len() - 1)
+        seen += 1
+        if seen > GV_BETWEEN {
+            gv_forget_all(f, mut g)
+            return
+        }
+        if g.writes[x] { gv_replay(f, mut g, x) }
+        p = cfg.pred_s[x]
+        while p < cfg.pred_s[x] + cfg.pred_n[x] {
+            let from = cfg.pred_blk[p]
+            if from != d && g.stamp[from] != b + 1 {
+                g.stamp[from] = b + 1
+                work.push(from)
+            }
+            p += 1
+        }
+    }
+}
+
+// ---- conditions ---------------------------------------------------------------------
+
+// What the one way into block `b` says: the condition of the `br` it
+// comes from, and the value that condition compares with a constant.
+fn gv_edge_facts(f: IrFunc, g: mut Gvn, cfg: IrCfg, b: i64) {
+    if cfg.pred_n[b] != 1 { return }
+    let from = cfg.pred_blk[cfg.pred_s[b]]
+    let last = f.blk_last[from]
+    if last < 0 || f.ins_op[last] != IR_BR || f.ins_en[last] != 2 { return }
+    let first = f.ins_es[last]
+    if f.edge_blk[first] == f.edge_blk[first + 1] { return }
+    var holds = 0
+    if f.edge_blk[first] == b { holds = 1 }
+    let cond = gv_lead(g, f.ins_a[last])
+    if cond < 0 { return }
+    g.known_undo.push(cond)
+    g.known_undo.push(g.known[cond])
+    g.known[cond] = holds
+    let d = su_def(f, cond)
+    if d < 0 { return }
+    let op = f.ins_op[d]
+    if op == IR_EQ && holds == 1 || op == IR_NE && holds == 0 {
+        let x = gv_lead(g, f.ins_a[d])
+        if x >= 0 && ir_is_const(f.ins_b[d]) {
+            g.equal.push(x)
+            g.equal.push(f.ins_b[d])
+        }
+    }
+}
+
+// Which way the `br` `ins` goes when that is known: 1 for its first
+// edge, 0 for its second, -1 for not known.
+fn gv_decide(f: IrFunc, g: Gvn, ins: i64) -> i64 {
+    let cond = gv_lead(g, f.ins_a[ins])
+    if cond < 0 { return -1 }
+    if g.known[cond] >= 0 { return g.known[cond] }
+    let d = su_def(f, cond)
+    if d < 0 { return -1 }
+    let op = f.ins_op[d]
+    if op != IR_EQ && op != IR_NE { return -1 }
+    let x = gv_lead(g, f.ins_a[d])
+    if x < 0 || !ir_is_const(f.ins_b[d]) { return -1 }
+    var e = g.equal.len() - 2
+    var looked = 0
+    while e >= 0 && looked < 16 {
+        if g.equal[e] == x {
+            let same = ir_const_value(f, g.equal[e + 1]) == ir_const_value(f, f.ins_b[d])
+            if same == (op == IR_EQ) { return 1 }
+            return 0
+        }
+        e -= 2
+        looked += 1
+    }
+    return -1
+}
+
+// ---- the walk --------------------------------------------------------------------------
+
+// Every operand of `ins` that is a value that went becomes the value
+// that took its place.
+fn gv_rename(f: mut IrFunc, g: Gvn, ins: i64) {
+    let fixed = ir_fixed_operands(f.ins_op[ins])
+    if fixed > 0 {
+        let a = f.ins_a[ins]
+        if a >= 0 && g.leader[a] != -1 { f.ins_a[ins] = g.leader[a] }
+        if fixed > 1 {
+            let b = f.ins_b[ins]
+            if b >= 0 && g.leader[b] != -1 { f.ins_b[ins] = g.leader[b] }
+        }
+        if fixed > 2 {
+            let c = f.ins_c[ins]
+            if c >= 0 && g.leader[c] != -1 { f.ins_c[ins] = g.leader[c] }
+        }
+    }
+    var k = f.ins_as[ins]
+    var end = k + f.ins_an[ins]
+    while k < end {
+        let x = f.args[k]
+        if x >= 0 && g.leader[x] != -1 { f.args[k] = g.leader[x] }
+        k += 1
+    }
+    var e = f.ins_es[ins]
+    let last = e + f.ins_en[ins]
+    while e < last {
+        k = f.edge_as[e]
+        end = k + f.edge_an[e]
+        while k < end {
+            let x = f.args[k]
+            if x >= 0 && g.leader[x] != -1 { f.args[k] = g.leader[x] }
+            k += 1
+        }
+        e += 1
+    }
+}
+
+fn gv_block(f: mut IrFunc, g: mut Gvn, b: i64) {
+    var ins = f.blk_first[b]
+    while ins >= 0 {
+        let next = f.ins_next[ins]
+        let op = f.ins_op[ins]
+        if g.removed > 0 { gv_rename(mut f, g, ins) }
+        if op == IR_LOAD {
+            let p = f.ins_a[ins]
+            if p >= 0 {
+                gv_addr(f, mut g, p)
+                let root = g.a_root
+                let off = g.a_off + f.ins_imm[ins]
+                let res = f.ins_res[ins]
+                var found = false
+                var same = false
+                var i = gv_window(g)
+                while i < g.m_root.len() && !found {
+                    if g.m_live[i] && g.m_root[i] == root && g.m_off[i] == off && g.m_ty[i] == f.ins_ty[ins] {
+                        same = true
+                        let v = g.m_val[i]
+                        if v >= 0 && f.val_ty[v] == f.val_ty[res] || v < -1 && f.val_ty[res] == IR_I64 {
+                            g.leader[res] = v
+                            found = true
+                        }
+                    }
+                    i += 1
+                }
+                if found {
+                    ir_remove(mut f, ins)
+                    g.removed += 1
+                } else if !same {
+                    gv_learn(mut g, root, off, f.ins_ty[ins], f.ins_reg[ins], res)
+                }
+            }
+        } else if op == IR_STORE {
+            gv_store(f, mut g, ins)
+            let p = f.ins_a[ins]
+            let v = f.ins_b[ins]
+            let wide = ir_loaded_type(f.ins_ty[ins])
+            if p >= 0 && ir_type_bytes(f.ins_ty[ins]) == 8 && (v >= 0 && f.val_ty[v] == wide || v < -1 && wide == IR_I64) {
+                gv_addr(f, mut g, p)
+                gv_learn(mut g, g.a_root, g.a_off + f.ins_imm[ins], f.ins_ty[ins], f.ins_reg[ins], v)
+            }
+        } else if op == IR_CALL || op == IR_CALLRT {
+            gv_call(f, mut g, ins)
+        } else if op == IR_BR {
+            let way = gv_decide(f, g, ins)
+            if way >= 0 && f.ins_en[ins] == 2 {
+                su_to_jump(mut f, ins, f.ins_es[ins] + 1 - way)
+                g.folded += 1
+            }
+        } else if ir_is_pure(op) && f.ins_rn[ins] == 1 {
+            let other = gv_find(f, mut g, ins)
+            if other >= 0 {
+                g.leader[f.ins_res[ins]] = f.ins_res[other]
+                ir_remove(mut f, ins)
+                g.removed += 1
+            }
+        }
+        ins = next
+    }
+}
+
+fn ir_gvn(f: mut IrFunc, calls: FxCalls) -> i64 {
+    let cfg = ir_cfg(f)
+    let blocks = f.blk_first.len()
+    var size = 64
+    while size < f.ins_op.len() {
+        size = size * 2
+    }
+    let none = 0 - 1
+    var g = Gvn {
+        calls: calls,
+        leader: none.filled(f.val_ty.len()),
+        heads: none.filled(size),
+        mask: size - 1,
+        t_ins: [],
+        t_next: [],
+        t_bucket: [],
+        known: none.filled(f.val_ty.len()),
+        known_undo: [],
+        equal: [],
+        m_root: [],
+        m_off: [],
+        m_ty: [],
+        m_reg: [],
+        m_val: [],
+        m_live: [],
+        m_ended: [],
+        alive: 0,
+        reg_root: [],
+        writes: false.filled(blocks),
+        stamp: 0.filled(blocks),
+        a_root: 0,
+        a_off: 0,
+        removed: 0,
+        folded: 0
+    }
+    var r = 0
+    while r < f.reg_kind.len() {
+        g.reg_root.push(fx_region_root(f, r))
+        r += 1
+    }
+    for b in f.order {
+        var ins = f.blk_first[b]
+        while ins >= 0 && !g.writes[b] {
+            let op = f.ins_op[ins]
+            g.writes[b] = op == IR_STORE || op == IR_CALL || op == IR_CALLRT
+            ins = f.ins_next[ins]
+        }
+    }
+    // The blocks each block dominates directly.
+    var kid_n = 0.filled(blocks)
+    for b in cfg.rpo {
+        if cfg.idom[b] != b { kid_n[cfg.idom[b]] = kid_n[cfg.idom[b]] + 1 }
+    }
+    var kid_s = 0.filled(blocks)
+    var total = 0
+    var b = 0
+    while b < blocks {
+        kid_s[b] = total
+        total += kid_n[b]
+        kid_n[b] = 0
+        b += 1
+    }
+    var kids = 0.filled(total)
+    for x in cfg.rpo {
+        let d = cfg.idom[x]
+        if d != x {
+            kids[kid_s[d] + kid_n[d]] = x
+            kid_n[d] = kid_n[d] + 1
+        }
+    }
+    // Down the tree and up again: a block on the stack is entered; the
+    // same block with `blocks` added is left.
+    // `marks` holds, for each block that is entered and not yet left,
+    // how long the five lists were when it was entered.
+    var marks: List[i64] = []
+    var stack: List[i64] = []
+    if cfg.rpo.len() > 0 { stack.push(cfg.rpo[0]) }
+    while stack.len() > 0 {
+        let top = stack[stack.len() - 1]
+        stack.truncate(stack.len() - 1)
+        if top >= blocks {
+            let at = marks.len() - 5
+            while g.t_ins.len() > marks[at] {
+                let e = g.t_ins.len() - 1
+                g.heads[g.t_bucket[e]] = g.t_next[e]
+                g.t_ins.truncate(e)
+                g.t_next.truncate(e)
+                g.t_bucket.truncate(e)
+            }
+            while g.known_undo.len() > marks[at + 1] {
+                let e = g.known_undo.len() - 2
+                g.known[g.known_undo[e]] = g.known_undo[e + 1]
+                g.known_undo.truncate(e)
+            }
+            g.equal.truncate(marks[at + 2])
+            while g.m_ended.len() > marks[at + 4] {
+                let e = g.m_ended.len() - 1
+                g.m_live[g.m_ended[e]] = true
+                g.alive += 1
+                g.m_ended.truncate(e)
+            }
+            while g.m_root.len() > marks[at + 3] {
+                let e = g.m_root.len() - 1
+                if g.m_live[e] { g.alive -= 1 }
+                g.m_root.truncate(e)
+                g.m_off.truncate(e)
+                g.m_ty.truncate(e)
+                g.m_reg.truncate(e)
+                g.m_val.truncate(e)
+                g.m_live.truncate(e)
+            }
+            marks.truncate(at)
+            continue
+        }
+        marks.push(g.t_ins.len())
+        marks.push(g.known_undo.len())
+        marks.push(g.equal.len())
+        marks.push(g.m_root.len())
+        marks.push(g.m_ended.len())
+        gv_between(f, mut g, cfg, top)
+        gv_edge_facts(f, mut g, cfg, top)
+        gv_block(mut f, mut g, top)
+        stack.push(top + blocks)
+        var k = kid_s[top] + kid_n[top] - 1
+        while k >= kid_s[top] {
+            stack.push(kids[k])
+            k -= 1
+        }
+    }
+    if g.removed > 0 {
+        // Blocks no path reaches were not walked; they may name a
+        // value that went.
+        var at = 0
+        while at < f.order.len() {
+            let x = f.order[at]
+            at += 1
+            if cfg.rpo_at[x] >= 0 { continue }
+            var ins = f.blk_first[x]
+            while ins >= 0 {
+                gv_rename(mut f, g, ins)
+                ins = f.ins_next[ins]
+            }
+        }
+    }
+    if g.folded > 0 { su_remove_unreachable(mut f) }
+    return g.removed + g.folded
+}
+
+// Runs the pass on every function of a module, with what the
+// functions say they do to their parameters (`param_fx`, as the
+// `effects` pass left it).
+fn ir_gvn_module(m: mut IrModule) -> i64 {
+    let table = fx_declared(m)
+    var changed = 0
+    var i = 0
+    while i < m.funcs.len() {
+        let calls = fx_calls(table, m.funcs[i])
+        changed += ir_gvn(mut m.funcs[i], calls)
+        i += 1
+    }
+    return changed
+}

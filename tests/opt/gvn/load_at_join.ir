@@ -1,0 +1,28 @@
+; A load above a branch and one after the two sides meet, with no store on either side: the second goes.
+fn main(p0: i64) -> i64 {
+    frames 24
+b0:
+    v0 = frame 0
+    v1 = callrt alloc(32)
+    store ptr, v0, 0, v1  [frame 0]
+    store i64, v0, 8, 4  [frame 0]
+    store i64, v0, 16, 4  [frame 0]
+    store i64, v1, 0, 10  [buf(frame 0)]
+    store i64, v1, 8, 20  [buf(frame 0)]
+    store i64, v1, 16, 30  [buf(frame 0)]
+    store i64, v1, 24, 40  [buf(frame 0)]
+    v2 = gep v1, 1, 8, 0
+    v3 = load i64, v2, 0  [buf(frame 0)]
+    v4 = slt p0, 0
+    br v4, b1, b2
+b1:
+    v5 = add v3, 1
+    jump b3(v5)
+b2:
+    jump b3(p0)
+b3(v6: i64):
+    v7 = load i64, v2, 0  [buf(frame 0)]
+    v8 = add v6, v7
+    callrt drop(v0)
+    ret v8
+}

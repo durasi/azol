@@ -1,0 +1,15 @@
+fn checked(p0: i64) -> i64 {
+b0:
+    v0 = ult p0, 10
+    br v0, b1, b2
+b1:
+    ret p0
+b2:
+    trap index
+}
+
+fn main(p0: i64) -> i64 {
+b0:
+    v1 = call checked(p0) -> i64
+    ret p0
+}

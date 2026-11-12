@@ -74,7 +74,7 @@ fn ds_object(f: IrFunc, x: i64) -> i64 {
 // For every frame object, the first of its bits, or -1 when the object
 // cannot be followed: its address is stored, passed on or compared, or
 // something reaches into it at a place that is not a constant.
-fn ds_private_objects(f: IrFunc) -> List[i64] {
+fn ds_private_objects(f: IrFunc, calls: FxCalls) -> List[i64] {
     var private = true.filled(f.frames.len())
     for b in f.order {
         var ins = f.blk_first[b]
@@ -97,6 +97,11 @@ fn ds_private_objects(f: IrFunc) -> List[i64] {
                     fine = root >= 0 && f.ins_op[root] == IR_FRAME && at >= 0 && at + ir_type_bytes(f.ins_ty[ins]) <= f.frames[object]
                 } else if k == 1 && op == IR_GEP {
                     fine = true
+                } else if op == IR_CALL && calls.start.len() > 0 {
+                    // Given to a function whose summary is known: the
+                    // call reads the object or does not (`ds_call`).
+                    let root = su_def(f, ds_root(f, x))
+                    fine = root >= 0 && f.ins_op[root] == IR_FRAME && ds_offset(f, x) >= 0
                 }
                 if !fine { private[object] = false }
             }
@@ -138,15 +143,40 @@ fn ds_covers(f: IrFunc, ins: i64) -> bool {
     return ir_type_bytes(f.ins_ty[ins]) == 8 && (ds_offset(f, f.ins_a[ins]) + f.ins_imm[ins]) % 8 == 0
 }
 
+// What a call reads of the objects that are followed: all of an object
+// from the address it is given on, when the callee's summary says it
+// may read through that parameter. What a call writes ends nothing: it
+// may write, it need not.
+fn ds_call(f: IrFunc, first: List[i64], ins: i64, cur: mut List[i64], calls: FxCalls) {
+    var k = 0
+    while k < f.ins_an[ins] {
+        let x = f.args[f.ins_as[ins] + k]
+        k += 1
+        if x < 0 { continue }
+        let object = ds_object(f, x)
+        if object < 0 || first[object] < 0 { continue }
+        if fx_arg_bits(calls, f, ins, k - 1) & IR_FX_READ == 0 { continue }
+        var at = first[object] + ds_offset(f, x) / 8
+        let end = first[object] + (f.frames[object] + 7) / 8
+        while at < end {
+            cur[at / 64] = cur[at / 64] | 1 << at % 64
+            at += 1
+        }
+    }
+}
+
 // Goes backwards through block `b` from what is alive at its end,
 // `cur`, to what is alive at its start. With `remove`, takes out the
 // stores that write only what is not alive. Gives how many.
-fn ds_walk(f: mut IrFunc, first: List[i64], bit_of: List[i64], b: i64, cur: mut List[i64], remove: bool) -> i64 {
+fn ds_walk(f: mut IrFunc, first: List[i64], bit_of: List[i64], b: i64, cur: mut List[i64], remove: bool, calls: FxCalls) -> i64 {
     var removed = 0
     var ins = f.blk_last[b]
     while ins >= 0 {
         let before = f.ins_prev[ins]
         let bit = bit_of[ins]
+        if f.ins_op[ins] == IR_CALL && calls.start.len() > 0 {
+            ds_call(f, first, ins, mut cur, calls)
+        }
         if bit >= 0 {
             let last = ds_last_bit(f, first, ins, bit)
             if f.ins_op[ins] == IR_LOAD {
@@ -175,7 +205,7 @@ fn ds_walk(f: mut IrFunc, first: List[i64], bit_of: List[i64], b: i64, cur: mut 
     return removed
 }
 
-fn ds_frames(f: mut IrFunc, first: List[i64]) -> i64 {
+fn ds_frames(f: mut IrFunc, first: List[i64], calls: FxCalls) -> i64 {
     if f.frames.len() == 0 { return 0 }
     let bits = first[f.frames.len()]
     if bits == 0 { return 0 }
@@ -221,7 +251,7 @@ fn ds_frames(f: mut IrFunc, first: List[i64]) -> i64 {
                 }
                 e = e + 1
             }
-            ds_walk(mut f, first, bit_of, b, mut cur, false)
+            ds_walk(mut f, first, bit_of, b, mut cur, false, calls)
             w = 0
             while w < words {
                 if live_in[b * words + w] != cur[w] {
@@ -254,7 +284,7 @@ fn ds_frames(f: mut IrFunc, first: List[i64]) -> i64 {
             }
             e = e + 1
         }
-        removed = removed + ds_walk(mut f, first, bit_of, b, mut cur, true)
+        removed = removed + ds_walk(mut f, first, bit_of, b, mut cur, true, calls)
     }
     return removed
 }
@@ -361,7 +391,14 @@ fn ds_blocks(f: mut IrFunc, first: List[i64]) -> i64 {
 }
 
 fn ir_dse(f: mut IrFunc) -> i64 {
-    let first = ds_private_objects(f)
-    let frames = ds_frames(mut f, first)
+    return ir_dse_with(mut f, fx_no_calls())
+}
+
+// The pass with the summaries of the `effects` pass: `calls` says what
+// this function's callees do; with nothing in it, as `ir_dse` runs it,
+// an object whose address goes to a call is not followed.
+fn ir_dse_with(f: mut IrFunc, calls: FxCalls) -> i64 {
+    let first = ds_private_objects(f, calls)
+    let frames = ds_frames(mut f, first, calls)
     return frames + ds_blocks(mut f, first)
 }

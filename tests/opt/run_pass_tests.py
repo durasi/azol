@@ -49,7 +49,7 @@ import run_back_tests as back_tests
 
 HERE = base.HERE
 ROOT = base.ROOT
-PASSES = ["pass_simplify_util.azl", "pass_simplify.azl", "pass_dce.azl", "pass_dse.azl", "pass_sroa.azl", "pipeline.azl"]
+PASSES = ["pass_simplify_util.azl", "pass_simplify.azl", "pass_dce.azl", "pass_dse.azl", "pass_sroa.azl", "pass_effects.azl", "pass_gvn.azl", "pipeline.azl"]
 OPT_TOOL = ["ir.azl", "ir_text.azl", "ir_cfg.azl", "ir_verify.azl"] + PASSES + ["opt_tool_main.azl"]
 COMPILER = ["bytes.azl", "code_file.azl", "elf.azl", "runtime_x64.azl"]
 OPT_BUILD = (["ir.azl", "ir_text.azl", "ir_cfg.azl", "ir_verify.azl", "ir_interp.azl", "ir_lower.azl", "ir_lower_stmt.azl", "ir_lower_expr.azl"] + PASSES +

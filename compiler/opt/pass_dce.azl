@@ -406,3 +406,51 @@ fn dc_unused_objects(f: mut IrFunc) -> i64 {
     }
     return emptied
 }
+
+// With the summaries of the `effects` pass (`calls`: what this
+// function's callees do): a call of a function goes when nothing uses
+// its results and the callee only reads through its parameters, cannot
+// stop the program, leaves the allocator alone, prints nothing and is
+// known to come back. Gives how many went.
+fn ir_dce_calls(f: mut IrFunc, calls: FxCalls) -> i64 {
+    var removed = 0
+    var again = true
+    while again {
+        again = false
+        var found: List[i64] = []
+        for b in f.order {
+            var ins = f.blk_first[b]
+            while ins >= 0 {
+                if f.ins_op[ins] == IR_CALL && fx_call_flags(calls, f, ins) == 0 {
+                    var reads = true
+                    var k = 0
+                    while k < f.ins_an[ins] {
+                        let x = f.args[f.ins_as[ins] + k]
+                        if ir_operand_type(f, x) == IR_PTR && fx_arg_bits(calls, f, ins, k) & FX_CHANGES != 0 {
+                            reads = false
+                        }
+                        k += 1
+                    }
+                    if reads { found.push(ins) }
+                }
+                ins = f.ins_next[ins]
+            }
+        }
+        if found.len() == 0 { break }
+        let uses = ir_uses(f)
+        for ins in found {
+            var used = false
+            var k = 0
+            while k < f.ins_rn[ins] {
+                used = used || uses.count[f.results[f.ins_rs[ins] + k]] > 0
+                k += 1
+            }
+            if !used {
+                ir_remove(mut f, ins)
+                removed += 1
+                again = true
+            }
+        }
+    }
+    return removed
+}

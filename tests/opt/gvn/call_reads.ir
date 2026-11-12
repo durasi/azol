@@ -1,0 +1,31 @@
+; A call of a function that only reads its parameter ends nothing: header and element are not read again.
+fn peek(p0: ptr [param 0 read]) -> i64 {
+b0:
+    v0 = load i64, p0, 8  [param 0]
+    ret v0
+}
+
+fn main(p0: i64) -> i64 {
+    frames 24
+b0:
+    v0 = frame 0
+    v1 = callrt alloc(32)
+    store ptr, v0, 0, v1  [frame 0]
+    store i64, v0, 8, 4  [frame 0]
+    store i64, v0, 16, 4  [frame 0]
+    store i64, v1, 0, 10  [buf(frame 0)]
+    store i64, v1, 8, 20  [buf(frame 0)]
+    store i64, v1, 16, 30  [buf(frame 0)]
+    store i64, v1, 24, 40  [buf(frame 0)]
+    v2 = load ptr, v0, 0  [frame 0]
+    v3 = gep v2, p0, 8, 0
+    v4 = load i64, v3, 0  [buf(frame 0)]
+    v5 = call peek(v0) -> i64
+    v6 = load ptr, v0, 0  [frame 0]
+    v7 = gep v6, p0, 8, 0
+    v8 = load i64, v7, 0  [buf(frame 0)]
+    v9 = add v4, v8
+    v10 = add v9, v5
+    callrt drop(v0)
+    ret v10
+}

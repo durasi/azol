@@ -1,0 +1,11 @@
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v0 = slt p0, p1
+    br v0, b1, b2
+b1:
+    ret 1
+b2:
+    jump b4
+b4:
+    ret 3
+}

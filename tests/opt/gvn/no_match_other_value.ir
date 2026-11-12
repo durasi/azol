@@ -1,0 +1,15 @@
+; On the false side of `eq x, 2` nothing is known about `eq x, 3`.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = eq p0, 2
+    br v0, b5, b1
+b1:
+    v1 = eq p0, 3
+    br v1, b2, b3
+b2:
+    ret 30
+b3:
+    ret 20
+b5:
+    ret 0
+}

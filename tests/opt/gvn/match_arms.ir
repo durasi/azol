@@ -1,0 +1,18 @@
+; Below `eq x, 2` a branch on `eq x, 3` takes its second way and one on `ne x, 3` its first: the arms of a `match`.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = eq p0, 2
+    br v0, b1, b5
+b1:
+    v1 = eq p0, 3
+    br v1, b2, b3
+b2:
+    ret 30
+b3:
+    v2 = ne p0, 3
+    br v2, b4, b5
+b4:
+    ret 20
+b5:
+    ret 0
+}

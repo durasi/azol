@@ -1,0 +1,39 @@
+; A store to the buffer of another parameter between two loads from this one's: a `mut` parameter overlaps nothing else (M4), the second load goes.
+fn move(p0: ptr [param 0 read], p1: ptr [param 1 read writebuf], p2: i64) -> i64 {
+b0:
+    v0 = load ptr, p0, 0  [param 0]
+    v1 = load ptr, p1, 0  [param 1]
+    v2 = gep v0, p2, 8, 0
+    v3 = gep v1, p2, 8, 0
+    v4 = load i64, v2, 0  [buf(param 0)]
+    store i64, v3, 0, v4  [buf(param 1)]
+    v5 = load i64, v2, 0  [buf(param 0)]
+    v6 = add v4, v5
+    ret v6
+}
+
+fn main(p0: i64) -> i64 {
+    frames 24, 24
+b0:
+    v0 = frame 0
+    v1 = callrt alloc(32)
+    store ptr, v0, 0, v1  [frame 0]
+    store i64, v0, 8, 4  [frame 0]
+    store i64, v0, 16, 4  [frame 0]
+    store i64, v1, 0, 10  [buf(frame 0)]
+    store i64, v1, 8, 20  [buf(frame 0)]
+    store i64, v1, 16, 30  [buf(frame 0)]
+    store i64, v1, 24, 40  [buf(frame 0)]
+    v2 = frame 1
+    v3 = callrt alloc(32)
+    store ptr, v2, 0, v3  [frame 1]
+    store i64, v2, 8, 4  [frame 1]
+    store i64, v2, 16, 4  [frame 1]
+    v4 = call move(v0, v2, p0) -> i64
+    v5 = gep v3, p0, 8, 0
+    v6 = load i64, v5, 0  [buf(frame 1)]
+    v7 = add v4, v6
+    callrt drop(v0)
+    callrt drop(v2)
+    ret v7
+}

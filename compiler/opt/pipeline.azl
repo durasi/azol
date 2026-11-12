@@ -20,10 +20,10 @@
 
 // The order of the design with the passes that exist:
 //
-//     early   simplify, (sroa), (gvn), dce
+//     early   simplify, sroa, effects, gvn, dce
 //     middle  (range, gvn, licm, bce, ...), dse, dce
 //     late    simplify
-const PL_ORDER = "simplify,sroa,simplify,dce,dse,dce,simplify"
+const PL_ORDER = "simplify,sroa,simplify,effects,gvn,simplify,dce,dse,dce,simplify"
 
 // Runs one pass on one function. Gives what the pass gives, or -1 for
 // a name that is no pass.
@@ -43,11 +43,13 @@ fn pl_run_module_pass(name: str, m: mut IrModule) -> i64 {
         // Making a frame object narrower is a change too.
         return removed + (numbers.bytes_before - numbers.bytes_after) / 8
     }
+    if name == "effects" { return ir_effects_module(mut m) }
+    if name == "gvn" { return ir_gvn_module(mut m) }
     return -1
 }
 
 // The names `pl_run_module_pass` knows, with a comma after each.
-const PL_MODULE_PASSES = "sroa,"
+const PL_MODULE_PASSES = "sroa,effects,gvn,"
 
 fn pl_is_module_pass(name: str) -> bool {
     return PL_MODULE_PASSES.contains(name + ",")

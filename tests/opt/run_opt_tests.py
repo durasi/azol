@@ -904,6 +904,9 @@ def main():
     # The passes `simplify`, `dce`, `dse` and the pipeline: tests/opt/run_pass_tests.py.
     import run_pass_tests
     run_pass_tests.run(azol, folder, min(total, 3000), seed, problems)
+    # The passes `effects` and `gvn`: tests/opt/run_gvn_tests.py.
+    import run_gvn_tests
+    run_gvn_tests.run(azol, folder, min(total, 3000), seed, problems)
     # The back end for ARM64, in emulators: tests/opt/run_back_arm64_tests.py.
     import run_back_arm64_tests
     run_back_arm64_tests.run(azol, binary, folder, total, seed, problems)

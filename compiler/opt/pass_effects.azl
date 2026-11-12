@@ -1,0 +1,530 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The pass `effects` (docs/design/optimizer.md, sections 3.4 and 4):
+// what every function may do, worked out from its body and from what
+// the functions it calls do, bottom-up over the call graph.
+//
+//     fn ir_effects_module(m: mut IrModule) -> i64     how many things changed
+//     fn fx_summaries(m: IrModule) -> FxTable          the summaries alone
+//
+// A summary has two parts.
+//
+//   1. For every `ptr` parameter, the IR_FX_* bits: whether the
+//      function may read what the parameter points to, write it,
+//      write a buffer it owns, change a buffer's place or size, or
+//      free one. They go where the intermediate form keeps them, in
+//      `param_fx`: the lowering stage writes there what the language
+//      allows (`read` for a read-only parameter, everything for a
+//      `mut` one), and this pass takes away what the body never does.
+//      A bit is never added: what the language forbids stays forbidden.
+//   2. For the function as a whole, the FX_* bits below: whether it
+//      may stop the program, change the allocator's state, print or
+//      write a file, or run for ever. These have no place in the
+//      intermediate form; they live in the table `fx_summaries` gives
+//      and are worked out again by whoever needs them.
+//
+// Where the bits of a parameter come from:
+//
+//   - a `load` or `store` whose region starts at the parameter: `read`,
+//     `write` for the parameter's own bytes, `writebuf` for a buffer;
+//   - a `store` whose address is made from the parameter, or from an
+//     address read out of it, whatever region it names; and a `store`
+//     to a buffer through an address the pass cannot name, which
+//     counts for every parameter (a buffer moved out of a parameter
+//     into a local and back is written under the local's name);
+//   - an address passed on: what the callee, or the table of runtime
+//     routines, says about that argument. Passed on from inside a
+//     buffer, a callee's `write` is a `writebuf` here. An argument the
+//     pass cannot name counts for every parameter.
+//
+// Recursion: every function starts with nothing and the bits are
+// added round after round until a round adds none. That is the
+// smallest answer that agrees with every body, so `quicksort`, which
+// calls itself, is found to write its list's buffer and nothing else.
+// A function on a cycle of calls may run for ever; so may one with a
+// loop. A function the module does not hold does everything.
+//
+// Who uses the summaries:
+//
+//   sroa   reads the callees' `param_fx` at every call
+//          (`sroa_arg_writes`) and the function's own
+//          (`sroa_param_is_stable`): nothing to change there.
+//   gvn    the same bits, for what a call leaves known.
+//   dce    `ir_dce_calls`: a call whose results nothing uses goes when
+//          the callee only reads and has none of the FX_* bits.
+//   dse    `ir_dse_with`: a frame object whose address only goes to
+//          calls is followed over the whole function; a call reads it
+//          only when the callee's parameter says `read`.
+//
+// The last two need the table, which a pass on one function does not
+// have, so this pass runs them itself after it has the summaries.
+
+// The function may stop the program: a `trap`, or a runtime routine
+// that can (out of memory, `exit`).
+const FX_STOPS = 1
+// It may change the allocator's state.
+const FX_ALLOCATES = 2
+// It may print, write a file or end the program: what can be seen
+// from outside.
+const FX_OUTPUT = 4
+// It may never come back: a loop, a cycle of calls, `exit`.
+const FX_HANGS = 8
+const FX_EVERYTHING = 15
+
+// Every way of changing what a parameter points to.
+const FX_CHANGES = 30
+
+// The summaries of a module: `index` gives a function's place, its
+// parameters' IR_FX_* bits are the `count` entries of `fx` from
+// `start`, and `flags` holds its FX_* bits.
+struct FxTable {
+    index: Map[i64]
+    start: List[i64]
+    count: List[i64]
+    fx: List[i64]
+    flags: List[i64]
+}
+
+// The same for the callees of one function, by their place in its
+// `callees`; `start` is -1 for one the module does not hold. With no
+// entries at all nothing is known and every call does everything.
+struct FxCalls {
+    start: List[i64]
+    count: List[i64]
+    fx: List[i64]
+    flags: List[i64]
+}
+
+fn fx_no_calls() -> FxCalls {
+    return FxCalls { start: [], count: [], fx: [], flags: [] }
+}
+
+fn fx_calls(table: FxTable, f: IrFunc) -> FxCalls {
+    var calls = fx_no_calls()
+    for name in f.callees {
+        match table.index.get(name) {
+            Some(at) => {
+                calls.start.push(calls.fx.len())
+                calls.count.push(table.count[at])
+                calls.flags.push(table.flags[at])
+                var k = 0
+                while k < table.count[at] {
+                    calls.fx.push(table.fx[table.start[at] + k])
+                    k += 1
+                }
+            }
+            None => {
+                calls.start.push(-1)
+                calls.count.push(0)
+                calls.flags.push(FX_EVERYTHING)
+            }
+        }
+    }
+    return calls
+}
+
+// What a runtime routine does through argument `k`. `free` and
+// `realloc` take a buffer itself and not a value with a header: the
+// buffer is gone or somewhere else afterwards.
+fn fx_rt_bits(id: i64, k: i64) -> i64 {
+    if id == IR_RT_FREE || id == IR_RT_REALLOC { return IR_FX_ALL }
+    return ir_rt_arg_fx(id, k)
+}
+
+// What the call or runtime call `ins` may do through its argument `k`.
+fn fx_arg_bits(calls: FxCalls, f: IrFunc, ins: i64, k: i64) -> i64 {
+    if f.ins_op[ins] == IR_CALLRT { return fx_rt_bits(f.ins_imm[ins], k) }
+    let c = f.ins_imm[ins]
+    if c >= calls.start.len() || calls.start[c] < 0 || k >= calls.count[c] { return IR_FX_ALL }
+    return calls.fx[calls.start[c] + k]
+}
+
+// The FX_* bits of a runtime routine.
+fn fx_rt_flags(id: i64) -> i64 {
+    var flags = 0
+    if ir_rt_can_stop(id) { flags = flags | FX_STOPS }
+    if ir_rt_touches_rt(id) { flags = flags | FX_ALLOCATES }
+    if ir_rt_has_output(id) { flags = flags | FX_OUTPUT }
+    if id == IR_RT_EXIT { flags = flags | FX_HANGS }
+    return flags
+}
+
+// The FX_* bits of the call or runtime call `ins`.
+fn fx_call_flags(calls: FxCalls, f: IrFunc, ins: i64) -> i64 {
+    if f.ins_op[ins] == IR_CALLRT { return fx_rt_flags(f.ins_imm[ins]) }
+    let c = f.ins_imm[ins]
+    if c >= calls.flags.len() { return FX_EVERYTHING }
+    return calls.flags[c]
+}
+
+// The region at the bottom of a chain of `buf(...)`.
+fn fx_region_root(f: IrFunc, region: i64) -> i64 {
+    var at = region
+    while f.reg_kind[at] == IR_REGION_BUF {
+        at = f.reg_n[at]
+    }
+    return at
+}
+
+// Where an address comes from: -1 for memory no parameter reaches (a
+// frame object, new memory, data, the address of nothing), -2 for an
+// address the pass cannot name, otherwise twice the parameter, plus 1
+// when the address was read out of what the parameter points to (it
+// is inside a buffer the parameter owns: values are trees, fact M3).
+fn fx_origin(f: IrFunc, x: i64) -> i64 {
+    var cur = x
+    var steps = 0
+    while steps < 64 {
+        steps += 1
+        if cur < -1 { return -1 }
+        if cur < 0 { return -2 }
+        if cur < f.param_count { return cur * 2 }
+        let d = su_def(f, cur)
+        if d < 0 { return -2 }
+        let op = f.ins_op[d]
+        if op == IR_GEP {
+            cur = f.ins_a[d]
+            continue
+        }
+        if op == IR_FRAME || op == IR_ADDR { return -1 }
+        if op == IR_CALLRT && f.ins_imm[d] == IR_RT_ALLOC { return -1 }
+        if op == IR_LOAD {
+            let root = fx_region_root(f, f.ins_reg[d])
+            if f.reg_kind[root] == IR_REGION_PARAM { return f.reg_n[root] * 2 + 1 }
+        }
+        return -2
+    }
+    return -2
+}
+
+// What `bits`, done through an address inside a buffer, are for the
+// owner of the buffer.
+fn fx_inside(bits: i64) -> i64 {
+    var out = bits & (IR_FX_READ | IR_FX_RESIZE | IR_FX_FREE)
+    if bits & FX_CHANGES != 0 { out = out | IR_FX_WRITEBUF }
+    return out
+}
+
+// What `bits`, done through the address of the value itself, are: a
+// buffer that moves or goes leaves a changed header.
+fn fx_direct(bits: i64) -> i64 {
+    if bits & (IR_FX_RESIZE | IR_FX_FREE) != 0 { return bits | IR_FX_WRITE }
+    return bits
+}
+
+// Adds `bits`, done through an address from `origin`, to the
+// parameters of the function whose bits start at `base` of `fx`.
+// `allowed` holds what the language lets each parameter do. Gives
+// whether anything was added.
+fn fx_add(fx: mut List[i64], allowed: List[i64], base: i64, count: i64, origin: i64, bits: i64) -> bool {
+    if origin == -1 || bits == 0 { return false }
+    var changed = false
+    if origin >= 0 {
+        let k = origin / 2
+        var more = fx_direct(bits)
+        if origin % 2 == 1 { more = fx_inside(bits) }
+        let now = fx[base + k] | (more & allowed[base + k])
+        changed = now != fx[base + k]
+        fx[base + k] = now
+        return changed
+    }
+    let more = fx_direct(bits) | fx_inside(bits)
+    var k = 0
+    while k < count {
+        let now = fx[base + k] | (more & allowed[base + k])
+        if now != fx[base + k] {
+            fx[base + k] = now
+            changed = true
+        }
+        k += 1
+    }
+    return changed
+}
+
+// The calls between the functions of a module, as the rounds of
+// `fx_summaries` need them: for call `c`, who calls (`from`), who is
+// called (`to`), and for each of its `an[c]` address arguments from
+// `as[c]` where the address comes from and which parameter it is.
+struct FxGraph {
+    from: List[i64]
+    to: List[i64]
+    as: List[i64]
+    an: List[i64]
+    origin: List[i64]
+    place: List[i64]
+}
+
+// Whether some path through the function comes back to a block it
+// has been in: a walk from the entry that meets a block it is still
+// below.
+fn fx_goes_round(f: IrFunc) -> bool {
+    if f.order.len() == 0 { return false }
+    var state = 0.filled(f.blk_first.len())
+    var stack: List[i64] = [ir_entry(f)]
+    var next: List[i64] = [0 - 1]
+    state[stack[0]] = 1
+    while stack.len() > 0 {
+        let at = stack.len() - 1
+        let last = f.blk_last[stack[at]]
+        if next[at] == -1 && last >= 0 { next[at] = f.ins_es[last] }
+        if last < 0 || next[at] >= f.ins_es[last] + f.ins_en[last] {
+            state[stack[at]] = 2
+            stack.truncate(at)
+            next.truncate(at)
+            continue
+        }
+        let to = f.edge_blk[next[at]]
+        next[at] = next[at] + 1
+        if state[to] == 1 { return true }
+        if state[to] == 0 {
+            state[to] = 1
+            stack.push(to)
+            next.push(-1)
+        }
+    }
+    return false
+}
+
+// One function's own part of its summary, into `table`, and its calls
+// into `graph`.
+fn fx_scan(f: IrFunc, at: i64, table: mut FxTable, allowed: List[i64], graph: mut FxGraph) {
+    let base = table.start[at]
+    let count = f.param_count
+    var flags = 0
+    for b in f.order {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            let op = f.ins_op[ins]
+            if op == IR_LOAD || op == IR_STORE {
+                let region = f.ins_reg[ins]
+                let root = fx_region_root(f, region)
+                if f.reg_kind[root] == IR_REGION_PARAM {
+                    var bits = IR_FX_READ
+                    if op == IR_STORE {
+                        bits = IR_FX_WRITEBUF
+                        if root == region { bits = IR_FX_WRITE }
+                    }
+                    fx_add(mut table.fx, allowed, base, count, f.reg_n[root] * 2, bits)
+                } else if op == IR_STORE {
+                    // Named after something else: what the address
+                    // itself says.
+                    let origin = fx_origin(f, f.ins_a[ins])
+                    if origin >= 0 {
+                        fx_add(mut table.fx, allowed, base, count, origin, IR_FX_WRITE)
+                    } else if f.reg_kind[region] == IR_REGION_BUF {
+                        fx_add(mut table.fx, allowed, base, count, origin, IR_FX_WRITEBUF)
+                    }
+                }
+            } else if op == IR_TRAP {
+                flags = flags | FX_STOPS
+            } else if op == IR_CALLRT {
+                flags = flags | fx_rt_flags(f.ins_imm[ins])
+                var k = 0
+                while k < f.ins_an[ins] {
+                    let x = f.args[f.ins_as[ins] + k]
+                    if x >= 0 && f.val_ty[x] == IR_PTR {
+                        fx_add(mut table.fx, allowed, base, count, fx_origin(f, x), fx_rt_bits(f.ins_imm[ins], k))
+                    }
+                    k += 1
+                }
+            } else if op == IR_CALL {
+                var to = 0 - 1
+                match table.index.get(f.callees[f.ins_imm[ins]]) {
+                    Some(place) => {
+                        to = place
+                    }
+                    None => {
+                        flags = FX_EVERYTHING
+                    }
+                }
+                if to >= 0 {
+                    graph.from.push(at)
+                    graph.to.push(to)
+                    graph.as.push(graph.origin.len())
+                }
+                var given = 0
+                var k = 0
+                while k < f.ins_an[ins] {
+                    let x = f.args[f.ins_as[ins] + k]
+                    if x >= 0 && f.val_ty[x] == IR_PTR {
+                        let origin = fx_origin(f, x)
+                        if to < 0 {
+                            fx_add(mut table.fx, allowed, base, count, origin, IR_FX_ALL)
+                        } else if origin != -1 {
+                            graph.origin.push(origin)
+                            graph.place.push(k)
+                            given += 1
+                        }
+                    }
+                    k += 1
+                }
+                if to >= 0 { graph.an.push(given) }
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    if flags & FX_HANGS == 0 && fx_goes_round(f) { flags = flags | FX_HANGS }
+    table.flags[at] = flags
+}
+
+// The summaries of every function of the module. The module is not
+// changed.
+fn fx_summaries(m: IrModule) -> FxTable {
+    var table = FxTable { index: new_map(), start: [], count: [], fx: [], flags: [] }
+    var allowed: List[i64] = []
+    for at, f in m.funcs {
+        table.index.set(f.name, at)
+        table.start.push(table.fx.len())
+        table.count.push(f.param_count)
+        table.flags.push(0)
+        for bits in f.param_fx {
+            table.fx.push(0)
+            allowed.push(bits)
+        }
+    }
+    var graph = FxGraph { from: [], to: [], as: [], an: [], origin: [], place: [] }
+    var first: List[i64] = []
+    var i = 0
+    while i < m.funcs.len() {
+        first.push(graph.from.len())
+        fx_scan(m.funcs[i], i, mut table, allowed, mut graph)
+        i += 1
+    }
+    first.push(graph.from.len())
+    // A function is known to come back from its calls when every
+    // function it calls is: one on a cycle of calls never gets there.
+    var returns = false.filled(m.funcs.len())
+    var changed = true
+    while changed {
+        changed = false
+        i = m.funcs.len() - 1
+        while i >= 0 {
+            if !returns[i] {
+                var all = true
+                var c = first[i]
+                while c < first[i + 1] && all {
+                    all = returns[graph.to[c]]
+                    c += 1
+                }
+                if all {
+                    returns[i] = true
+                    changed = true
+                }
+            }
+            i -= 1
+        }
+    }
+    i = 0
+    while i < m.funcs.len() {
+        if !returns[i] { table.flags[i] = table.flags[i] | FX_HANGS }
+        i += 1
+    }
+    // What the callees do, added to the callers until nothing is added.
+    changed = true
+    while changed {
+        changed = false
+        var c = graph.from.len() - 1
+        while c >= 0 {
+            let from = graph.from[c]
+            let to = graph.to[c]
+            let flags = table.flags[from] | table.flags[to]
+            if flags != table.flags[from] {
+                table.flags[from] = flags
+                changed = true
+            }
+            var a = graph.as[c]
+            let end = a + graph.an[c]
+            while a < end {
+                var bits = IR_FX_ALL
+                if graph.place[a] < table.count[to] {
+                    bits = table.fx[table.start[to] + graph.place[a]]
+                }
+                if fx_add(mut table.fx, allowed, table.start[from], table.count[from], graph.origin[a], bits) {
+                    changed = true
+                }
+                a += 1
+            }
+            c -= 1
+        }
+    }
+    return table
+}
+
+// What the functions say of themselves as they are: the bits in
+// `param_fx`, and every FX_* bit, which nothing in a function says.
+fn fx_declared(m: IrModule) -> FxTable {
+    var table = FxTable { index: new_map(), start: [], count: [], fx: [], flags: [] }
+    for at, f in m.funcs {
+        table.index.set(f.name, at)
+        table.start.push(table.fx.len())
+        table.count.push(f.param_count)
+        table.flags.push(FX_EVERYTHING)
+        for bits in f.param_fx {
+            table.fx.push(bits)
+        }
+    }
+    return table
+}
+
+// The summaries as text, one line for every function: for the tests
+// and for looking.
+fn fx_text(m: IrModule, table: FxTable) -> str {
+    var out = ""
+    for at, f in m.funcs {
+        out = out + f.name
+        out = out + ":"
+        var k = 0
+        while k < f.param_count {
+            if f.val_ty[k] == IR_PTR {
+                out = out + " p"
+                out = out + str(k)
+                out = out + " ["
+                var words = ""
+                ir_print_fx(table.fx[table.start[at] + k], mut words)
+                out = out + words.trim()
+                out = out + "]"
+            }
+            k += 1
+        }
+        let flags = table.flags[at]
+        if flags & FX_STOPS != 0 { out = out + " stops" }
+        if flags & FX_ALLOCATES != 0 { out = out + " allocates" }
+        if flags & FX_OUTPUT != 0 { out = out + " output" }
+        if flags & FX_HANGS != 0 { out = out + " hangs" }
+        out = out + "\n"
+    }
+    return out
+}
+
+// Works out the summaries, writes the parameters' bits into the
+// functions, and runs the parts of `dce` and `dse` that need to know
+// what a call does. Gives the number of bits taken away plus the
+// instructions removed.
+fn ir_effects_module(m: mut IrModule) -> i64 {
+    let table = fx_summaries(m)
+    var changed = 0
+    var i = 0
+    while i < m.funcs.len() {
+        var k = 0
+        while k < m.funcs[i].param_count {
+            let bits = table.fx[table.start[i] + k]
+            if m.funcs[i].param_fx[k] != bits {
+                m.funcs[i].param_fx[k] = bits
+                changed += 1
+            }
+            k += 1
+        }
+        i += 1
+    }
+    i = 0
+    while i < m.funcs.len() {
+        // Only a function that calls another has anything here.
+        if m.funcs[i].callees.len() > 0 {
+            let calls = fx_calls(table, m.funcs[i])
+            changed += ir_dce_calls(mut m.funcs[i], calls)
+            if m.funcs[i].frames.len() > 0 { changed += ir_dse_with(mut m.funcs[i], calls) }
+        }
+        i += 1
+    }
+    return changed
+}
