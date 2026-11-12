@@ -1,0 +1,115 @@
+# From the tests of the first compiler: src/sema.rs, `struct_declaration_errors`.
+==== 1
+---- file a.azl (no newline at end)
+struct A {
+ b: B
+}
+struct B {
+ a: A
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0413]: struct `A` contains itself, so it would have no finite size
+ --> a.azl:1:8
+  |
+1 | struct A {
+  |        ^
+---- asserted 1:8 struct `A` contains itself, so it would have no finite size
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0413","message":"struct `A` contains itself, so it would have no finite size","file":"a.azl","line":1,"column":8,"end_line":1,"end_column":9,"source":"struct A {","rule":"A value is stored inline in its owner, so a type cannot contain itself directly; it can through a `List`."}
+{"summary":{"errors":1,"files":1}}
+==== 2
+---- file a.azl (no newline at end)
+struct A {
+ x: i64
+ x: bool
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0208]: field `x` is declared more than once
+ --> a.azl:3:2
+  |
+3 |  x: bool
+  |  ^
+---- asserted 3:2 field `x` is declared more than once
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0208","message":"field `x` is declared more than once","file":"a.azl","line":3,"column":2,"end_line":3,"end_column":3,"source":" x: bool","rule":"A name is declared once: functions, constants and variants share one namespace across all files, types another."}
+{"summary":{"errors":1,"files":1}}
+==== 3
+---- file a.azl (no newline at end)
+struct A {
+}
+struct A {
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0208]: struct `A` is defined more than once
+ --> a.azl:3:8
+  |
+3 | struct A {
+  |        ^
+---- asserted 3:8 struct `A` is defined more than once
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0208","message":"struct `A` is defined more than once","file":"a.azl","line":3,"column":8,"end_line":3,"end_column":9,"source":"struct A {","rule":"A name is declared once: functions, constants and variants share one namespace across all files, types another."}
+{"summary":{"errors":1,"files":1}}
+==== 4
+---- file a.azl (no newline at end)
+struct A {
+ x: Missing
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0203]: unknown type `Missing`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`
+ --> a.azl:2:5
+  |
+2 |  x: Missing
+  |     ^
+---- asserted 2:5 unknown type `Missing`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0203","message":"unknown type `Missing`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`","file":"a.azl","line":2,"column":5,"end_line":2,"end_column":12,"source":" x: Missing","rule":"A type is `i64`, `bool`, `str`, `List[...]`, `Option[...]`, `Result[..., ...]` or a struct or enum of the program."}
+{"summary":{"errors":1,"files":1}}
+==== 5
+---- file a.azl (no newline at end)
+struct i64 {
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0209]: `i64` is a built-in type and cannot be redefined
+ --> a.azl:1:8
+  |
+1 | struct i64 {
+  |        ^
+---- asserted 1:8 `i64` is a built-in type and cannot be redefined
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0209","message":"`i64` is a built-in type and cannot be redefined","file":"a.azl","line":1,"column":8,"end_line":1,"end_column":11,"source":"struct i64 {","rule":"The names of built-in types and functions cannot be declared again."}
+{"summary":{"errors":1,"files":1}}

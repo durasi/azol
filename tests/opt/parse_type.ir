@@ -1,0 +1,5 @@
+; parse: 2:13: expected a type
+fn main(p0: int) {
+b0:
+    ret
+}

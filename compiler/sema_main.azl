@@ -7,7 +7,7 @@
 // It writes what `azol sema-dump <file.azl>...` writes: every table the
 // checker hands to the code generators, or the problems it found, so
 // the two checkers can be compared program by program. The first
-// argument is the standard library's azoL source (`src/prelude.azl`),
+// argument is the standard library's azoL source (`lib/prelude.azl`),
 // which the Rust compiler carries inside itself. With `--time` first,
 // the work is done and nothing is printed, for measuring from outside.
 
@@ -29,6 +29,7 @@ fn main() -> i64 {
     // them is a plain offset.
     var src = ""
     var starts: List[i64] = []
+    var paths: List[str] = []
     var lens: List[i64] = []
     var at = first + 1
     while at < arguments.len() {
@@ -37,6 +38,7 @@ fn main() -> i64 {
             src = src + "\n"
         }
         starts.push(src.len())
+        paths.push(arguments[at])
         lens.push(text.len())
         src = src + text
         at = at + 1
@@ -68,6 +70,8 @@ fn main() -> i64 {
     }
 
     var c = new_checker(p, prelude_start)
+    c.file_starts = starts
+    c.file_paths = paths
     check_program(mut c, p)
     if c.errors.len() > 0 {
         var out = ""

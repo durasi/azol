@@ -1,0 +1,21 @@
+# From the tests of the first compiler: src/parser.rs, `error_two_statements_on_one_line`.
+==== 1
+---- file a.azl (no newline at end)
+fn main() {
+  let a = 1 let b = 2
+}
+---- run parse a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0107]: expected end of line but found `let`
+ --> a.azl:2:13
+  |
+2 |   let a = 1 let b = 2
+  |             ^
+---- asserted 2:13 expected end of line but found `let`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0107","message":"expected end of line but found `let`","file":"a.azl","line":2,"column":13,"end_line":2,"end_column":16,"source":"  let a = 1 let b = 2","rule":"A statement ends at the end of its line; there are no semicolons.","help":"Start a new line here."}
+{"summary":{"errors":1,"files":1}}

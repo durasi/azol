@@ -1,0 +1,9 @@
+# From the tests of the first compiler: src/lexer.rs, `empty_source`.
+==== 1
+---- file a.azl (empty)
+---- run lex a.azl
+---- exit 0
+---- stdout
+   1:1    Eof        
+---- stderr
+lexed 0 bytes, 0 lines, 1 tokens

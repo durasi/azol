@@ -156,6 +156,41 @@ fn several_files_make_one_program() {
 }
 
 #[test]
+fn embedded_files_are_found_next_to_their_source() {
+    let out_dir = std::env::temp_dir().join(format!("azol-embed-{}", std::process::id()));
+    fs::create_dir_all(&out_dir).expect("temp dir can be created");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/multi/embed");
+    let main = dir.join("main.azl");
+    let expected = expectation(&fs::read_to_string(&main).expect("program is readable"), &main);
+    let exe = out_dir.join("embed");
+    // Started in another folder: the paths do not depend on it.
+    let build = Command::new(env!("CARGO_BIN_EXE_azol"))
+        .current_dir(&out_dir)
+        .arg("build")
+        .arg(&main)
+        .arg(dir.join("parts/words.azl"))
+        .arg("-o")
+        .arg(&exe)
+        .output()
+        .expect("azol can be started");
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    if NATIVE {
+        // The program carries the files: it runs where they are not.
+        let run = Command::new(&exe).current_dir(&out_dir).output().expect("compiled program can be started");
+        assert_eq!(String::from_utf8_lossy(&run.stdout), expected.output);
+        assert_eq!(run.status.code(), Some(expected.exit));
+    }
+    // A file that is missing is an error of the program, with its place.
+    let broken = out_dir.join("broken.azl");
+    fs::write(&broken, "const TEXT = embed(\"missing.txt\")\n\nfn main() {\n    print(TEXT)\n}\n").expect("file can be written");
+    let (code, _, stderr) = azol(&["check", broken.to_str().unwrap()]);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("error[E0706]: cannot embed `missing.txt`: No such file or directory"), "{stderr}");
+    assert!(stderr.contains("broken.azl:1:14"), "{stderr}");
+    let _ = fs::remove_dir_all(&out_dir);
+}
+
+#[test]
 fn errors_name_the_file_they_are_in() {
     let out_dir = std::env::temp_dir().join(format!("azol-multi-errors-{}", std::process::id()));
     fs::create_dir_all(&out_dir).expect("temp dir can be created");

@@ -19,21 +19,40 @@ how the block is checked:
                             in the order they appear, and the options and
                             the expected output are taken from the last one
 
+    ```azol-data group=G file=F
+        Not a program: a file the programs of group G find next to their
+        sources, for `embed`. It comes before them in the document.
+
     ```azol-error
         A complete program that must NOT compile. The next fenced block
         must be ```error; every line of it must appear in what the
         compiler prints.
 
+    ```azol-check
+        A program given to `azol check`, which builds nothing. The next
+        blocks say what it must answer, exactly: ```report is what
+        `azol check example.azl` writes to standard error, and ```json is
+        what `azol check --json example.azl` writes to standard output.
+        Either may be left out. `file=F` names the file (default
+        example.azl); the check runs in the folder that holds it, so the
+        name appears in the answer as written.
+
+    ```azol-fmt
+        Source text given to `azol fmt -`. The next block must be
+        ```formatted: what the formatter writes back, exactly.
+
     ```azol-fragment
         A piece of a program, shown for its shape only. Not checked.
 
-Blocks with any other word (text, sh, json, ...) are ignored.
+Blocks with any other word (text, sh, ...) are ignored.
 
 Programs are built for x86_64-linux and run on this machine, so the
 script needs x86-64 Linux. Run it from anywhere:
 
-    cargo build --release
+    sh build.sh
     python3 docs/check_docs.py
+
+The compiler is `./azol`, or the one the environment variable AZOL names.
 """
 
 import os
@@ -52,10 +71,10 @@ FENCE = re.compile(r"^```(.*)$")
 def find_compiler():
     path = os.environ.get("AZOL")
     if path:
-        return path
-    path = os.path.join(ROOT, "target", "release", "azol")
+        return os.path.abspath(path)
+    path = os.path.join(ROOT, "azol")
     if not os.path.exists(path):
-        sys.exit("check_docs: build the compiler first: cargo build --release")
+        sys.exit("check_docs: build the compiler first: sh build.sh")
     return path
 
 
@@ -99,6 +118,7 @@ def examples_of(name):
     blocks = blocks_of(path)
     examples = []
     groups = {}
+    data = {}
     fragments = 0
     i = 0
     while i < len(blocks):
@@ -108,18 +128,25 @@ def examples_of(name):
         if kind == "azol-fragment":
             fragments += 1
             continue
-        if kind not in ("azol", "azol-error"):
-            if kind in ("output", "stderr", "error"):
+        if kind == "azol-data":
+            data.setdefault(options["group"], []).append((options["file"], text))
+            continue
+        if kind not in ("azol", "azol-error", "azol-check", "azol-fmt"):
+            if kind in ("output", "stderr", "error", "report", "formatted"):
                 sys.exit(f"check_docs: {name}:{line}: a ```{kind} block must follow a program")
             continue
         example = {
             "where": f"{name}:{line}",
             "kind": kind,
             "files": [(options.get("file", "example.azl"), text)],
+            "data": data.get(options.get("group"), []),
             "options": options,
             "output": None,
             "stderr": None,
             "error": None,
+            "report": None,
+            "json": None,
+            "formatted": None,
         }
         while i < len(blocks):
             next_kind, _ = options_of(blocks[i][1])
@@ -127,11 +154,19 @@ def examples_of(name):
                 example[next_kind] = blocks[i][2]
             elif kind == "azol-error" and next_kind == "error" and example["error"] is None:
                 example["error"] = blocks[i][2]
+            elif kind == "azol-check" and next_kind in ("report", "json") and example[next_kind] is None:
+                example[next_kind] = blocks[i][2]
+            elif kind == "azol-fmt" and next_kind == "formatted" and example["formatted"] is None:
+                example["formatted"] = blocks[i][2]
             else:
                 break
             i += 1
         if kind == "azol-error" and example["error"] is None:
             sys.exit(f"check_docs: {name}:{line}: an ```azol-error block needs an ```error block after it")
+        if kind == "azol-check" and example["report"] is None and example["json"] is None:
+            sys.exit(f"check_docs: {name}:{line}: an ```azol-check block needs a ```report or a ```json block after it")
+        if kind == "azol-fmt" and example["formatted"] is None:
+            sys.exit(f"check_docs: {name}:{line}: an ```azol-fmt block needs a ```formatted block after it")
         group = options.get("group")
         if group is None:
             examples.append(example)
@@ -147,8 +182,34 @@ def examples_of(name):
     return examples, fragments
 
 
+def check_tools(compiler, example, folder):
+    """The examples that show `azol check` and `azol fmt` themselves."""
+    file_name, text = example["files"][0]
+    complaints = []
+    if example["kind"] == "azol-fmt":
+        run = subprocess.run([compiler, "fmt", "-"], input=text, capture_output=True, text=True, errors="replace")
+        if run.returncode != 0 or run.stdout != example["formatted"]:
+            complaints.append(f"`azol fmt -` wrote\n{run.stdout}{run.stderr}--- expected\n{example['formatted']}")
+        return complaints
+    with open(os.path.join(folder, file_name), "w", encoding="utf-8") as handle:
+        handle.write(text)
+    for key, arguments, stream in (("report", ["check", file_name], "stderr"), ("json", ["check", "--json", file_name], "stdout")):
+        if example[key] is None:
+            continue
+        run = subprocess.run([compiler, *arguments], capture_output=True, text=True, errors="replace", cwd=folder)
+        got = getattr(run, stream)
+        if got != example[key]:
+            complaints.append(f"`azol {' '.join(arguments)}` wrote\n{got}--- expected\n{example[key]}")
+    return complaints
+
+
 def check(compiler, example, folder):
     """Returns a list of complaints; empty when the example is right."""
+    for file_name, text in example["data"]:
+        with open(os.path.join(folder, file_name), "w", encoding="utf-8") as handle:
+            handle.write(text)
+    if example["kind"] in ("azol-check", "azol-fmt"):
+        return check_tools(compiler, example, folder)
     paths = []
     for file_name, text in example["files"]:
         path = os.path.join(folder, file_name)
@@ -197,7 +258,8 @@ def main():
     for name in DOCUMENTS:
         examples, fragments = examples_of(name)
         programs = sum(1 for e in examples if e["kind"] == "azol")
-        errors = len(examples) - programs
+        tools = sum(1 for e in examples if e["kind"] in ("azol-check", "azol-fmt"))
+        errors = len(examples) - programs - tools
         bad = 0
         for example in examples:
             with tempfile.TemporaryDirectory(prefix="azol_docs_") as folder:
@@ -210,7 +272,7 @@ def main():
         failed += bad
         print(
             f"{name}: {len(examples)} examples checked "
-            f"({programs} must run, {errors} must fail to compile), "
+            f"({programs} must run, {errors} must fail to compile, {tools} show `check` or `fmt`), "
             f"{fragments} fragments not checked, {bad} failed"
         )
     if failed:

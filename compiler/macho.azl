@@ -70,14 +70,14 @@ fn data_const_segment() -> i64 {
 }
 
 // A name in a 16-byte field, padded with zeros.
-fn put_name16(out: mut List[i64], name: str) {
+fn put_name16(out: mut str, name: str) {
     let end = out.len() + 16
     put_text(mut out, name)
     pad_to(mut out, end, 0)
 }
 
 // A string followed by zeros, `total` bytes in all.
-fn put_padded_text(out: mut List[i64], text: str, total: i64) {
+fn put_padded_text(out: mut str, text: str, total: i64) {
     let end = out.len() + total
     put_text(mut out, text)
     pad_to(mut out, end, 0)
@@ -85,7 +85,7 @@ fn put_padded_text(out: mut List[i64], text: str, total: i64) {
 
 // A segment command, up to but not including its last field, the flags,
 // which the caller writes next. (A function takes at most eight values.)
-fn put_segment(out: mut List[i64], name: str, address: i64, size: i64, offset: i64, file_size: i64, protection: i64, sections: i64) {
+fn put_segment(out: mut str, name: str, address: i64, size: i64, offset: i64, file_size: i64, protection: i64, sections: i64) {
     put32(mut out, lc_segment_64())
     put32(mut out, 72 + 80 * sections)
     put_name16(mut out, name)
@@ -98,7 +98,7 @@ fn put_segment(out: mut List[i64], name: str, address: i64, size: i64, offset: i
     put32(mut out, sections)
 }
 
-fn put_section(out: mut List[i64], name: str, segment: str, address: i64, size: i64, offset: i64, align: i64, flags: i64) {
+fn put_section(out: mut str, name: str, segment: str, address: i64, size: i64, offset: i64, align: i64, flags: i64) {
     put_name16(mut out, name)
     put_name16(mut out, segment)
     put64(mut out, address)
@@ -124,7 +124,7 @@ fn signature_size(code_limit: i64, ident: str) -> i64 {
 // Appends the embedded signature for everything already in `out`: a
 // SuperBlob holding one CodeDirectory with a SHA-256 hash of every page
 // of the file. All fields are big-endian.
-fn put_code_signature(out: mut List[i64], ident: str, text_file_size: i64) {
+fn put_code_signature(out: mut str, ident: str, text_file_size: i64) {
     let page_size = 1 << sign_page_shift()
     let signed = out.len()
     let pages = (signed + page_size - 1) / page_size
@@ -133,7 +133,7 @@ fn put_code_signature(out: mut List[i64], ident: str, text_file_size: i64) {
     let directory_size = hash_offset + pages * 32
     let total = 20 + directory_size
 
-    var blob: List[i64] = []
+    var blob = ""
     // SuperBlob header and its single index entry.
     put32_be(mut blob, 0xFADE0CC0)
     put32_be(mut blob, total)
@@ -176,7 +176,7 @@ fn put_code_signature(out: mut List[i64], ident: str, text_file_size: i64) {
         sha256_into(mut blob, out, at, end, k)
         at = end
     }
-    put_bytes(mut out, blob)
+    put_text(mut out, blob)
 }
 
 // `adrp register, target`: the 4 KiB page of `target`, relative to `pc`.
@@ -187,7 +187,7 @@ fn adrp(register: i64, pc: i64, target: i64) -> i64 {
 
 // A number in the loader's variable-length form: seven bits per byte,
 // lowest first, the top bit set on all but the last.
-fn put_uleb(out: mut List[i64], number: i64) {
+fn put_uleb(out: mut str, number: i64) {
     var value = number
     while true {
         let byte = value & 0x7F
@@ -206,7 +206,7 @@ fn put_uleb(out: mut List[i64], number: i64) {
 // data), `__DATA_CONST` (one pointer per imported function, filled in by
 // the system loader) and `__LINKEDIT` (the loader's instructions for
 // those pointers, the symbol table and the signature).
-fn build_macho(code: CodeFile) -> List[i64] {
+fn build_macho(code: CodeFile) -> str {
     let page = macho_page()
     let base = text_vmaddr()
     let import_count = code.imports.len()
@@ -222,7 +222,7 @@ fn build_macho(code: CodeFile) -> List[i64] {
     let linkedit_off = got_off + page
 
     // Loader instructions: bind each import slot to its symbol in libSystem.
-    var bind: List[i64] = []
+    var bind = ""
     for i, name in code.imports {
         bind.push(0x70 | data_const_segment()) // set segment and offset
         put_uleb(mut bind, i * 8)
@@ -237,7 +237,8 @@ fn build_macho(code: CodeFile) -> List[i64] {
     pad_to(mut bind, align_up(bind.len(), 8), 0)
 
     // The string table starts with a space and a zero; each name follows.
-    var strtab: List[i64] = [' ', 0]
+    var strtab = " "
+    strtab.push(0)
     var name_offsets: List[i64] = []
     for name in code.imports {
         name_offsets.push(strtab.len())
@@ -254,7 +255,7 @@ fn build_macho(code: CodeFile) -> List[i64] {
     let sig_size = align_up(signature_size(sig_off, code.ident), 16)
     let linkedit_size = sig_off + sig_size - linkedit_off
 
-    var out: List[i64] = []
+    var out = ""
     // mach_header_64
     put32(mut out, 0xFEEDFACF)
     put32(mut out, 0x0100000C) // CPU_TYPE_ARM64
@@ -353,7 +354,7 @@ fn build_macho(code: CodeFile) -> List[i64] {
     // Code, then the instructions that depend on final addresses are
     // filled in where they now sit in the file.
     pad_to(mut out, code_off, 0)
-    put_bytes(mut out, code.code)
+    put_text(mut out, code.code)
     for reloc in code.relocs {
         match reloc {
             Import(at, import) => {
@@ -373,11 +374,11 @@ fn build_macho(code: CodeFile) -> List[i64] {
             }
         }
     }
-    put_bytes(mut out, code.data)
+    put_text(mut out, code.data)
 
     // The page of import slots is all zeros in the file; the loader fills it.
     pad_to(mut out, linkedit_off, 0)
-    put_bytes(mut out, bind)
+    put_text(mut out, bind)
     for name_offset in name_offsets {
         put32(mut out, name_offset)
         put8(mut out, 0x01) // undefined, external
@@ -391,7 +392,7 @@ fn build_macho(code: CodeFile) -> List[i64] {
         index = index + 1
     }
     pad_to(mut out, strtab_off, 0)
-    put_bytes(mut out, strtab)
+    put_text(mut out, strtab)
     pad_to(mut out, sig_off, 0)
 
     put_code_signature(mut out, code.ident, text_size)

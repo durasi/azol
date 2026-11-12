@@ -1,0 +1,6 @@
+// A file in another folder: its path starts there.
+const SAME = embed("../data/motto.txt")
+
+fn from_parts() -> i64 {
+    return SAME.len()
+}

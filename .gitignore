@@ -7,3 +7,5 @@
 !/bench/*.py
 !/bench/*.js
 __pycache__/
+!/bench/suite/
+/azol

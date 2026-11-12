@@ -1,0 +1,6 @@
+; verify: put: b0: store i64, p0, 0, 1  [param 0]: parameter p0 is not declared `write`
+fn put(p0: ptr [param 0 read]) {
+b0:
+    store i64, p0, 0, 1  [param 0]
+    ret
+}

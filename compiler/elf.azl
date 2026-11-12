@@ -62,7 +62,7 @@ fn pf_r() -> i64 {
     return 4
 }
 
-fn put_program_header(out: mut List[i64], kind: i64, flags: i64, offset: i64, address: i64, size: i64, align: i64) {
+fn put_program_header(out: mut str, kind: i64, flags: i64, offset: i64, address: i64, size: i64, align: i64) {
     put32(mut out, kind)
     put32(mut out, flags)
     put64(mut out, offset)
@@ -82,8 +82,8 @@ fn elf_relative(target: i64, field: i64) -> i64 {
 // The ELF header and the program headers: the first 232 bytes of the
 // file. `text_end` is where the code and constant data end in the file,
 // `memory_at` where the runtime's memory starts there.
-fn elf_headers(code: CodeFile, text_end: i64, memory_at: i64, file_size: i64) -> List[i64] {
-    var out: List[i64] = []
+fn elf_headers(code: CodeFile, text_end: i64, memory_at: i64, file_size: i64) -> str {
+    var out = ""
     // ELF header: 64-bit, little-endian, version 1, System V.
     put8(mut out, 0x7F)
     put_text(mut out, "ELF")
@@ -124,7 +124,7 @@ fn elf_memory_size(code: CodeFile) -> i64 {
 
 // Builds the complete executable for a program. `runtime` is the content
 // of `runtime/linux_x64/runtime.bin`.
-fn build_elf(code: CodeFile, runtime: str) -> List[i64] {
+fn build_elf(code: CodeFile, runtime: str) -> str {
     // Where each part sits in the file. Addresses are the base plus the
     // offset, except for the runtime's memory.
     let jump = code.text_offset + runtime.len()
@@ -148,7 +148,7 @@ fn build_elf(code: CodeFile, runtime: str) -> List[i64] {
     put32(mut out, elf_relative(code_at + code.entry, jump + 1))
     pad_to(mut out, code_at, 0xCC)
 
-    put_bytes(mut out, code.code)
+    put_text(mut out, code.code)
     for call in code.calls {
         let target = code.text_offset + code.entries[call.value]
         let field = code_at + call.field
@@ -159,20 +159,18 @@ fn build_elf(code: CodeFile, runtime: str) -> List[i64] {
         patch32(mut out, field, elf_relative(data_at + reference.value, field))
     }
     pad_to(mut out, data_at, 0xCC)
-    put_bytes(mut out, code.data)
+    put_text(mut out, code.data)
 
     pad_to(mut out, file_size, 0)
     return out
 }
 
-// The same executable as `build_elf` builds, as text ready for
-// `write_file`, for a compiler that holds the parts itself: `code` is
-// the program's machine code, whose references to the runtime and to
-// the data are filled in here, in place; `data` its string literals;
-// `info` says where the runtime sits and what the code refers to (its
-// own `code` and `data` are not used). Nothing is copied byte by byte
-// that is text already.
-fn build_elf_text(info: CodeFile, code: mut List[i64], data: str, runtime: str) -> str {
+// The same executable as `build_elf` builds, for a compiler that holds
+// the parts itself: `code` is the program's machine code, whose
+// references to the runtime and to the data are filled in here, in
+// place; `data` its string literals; `info` says where the runtime sits
+// and what the code refers to (its own `code` and `data` are not used).
+fn build_elf_text(info: CodeFile, code: mut str, data: str, runtime: str) -> str {
     let jump = info.text_offset + runtime.len()
     let code_at = jump + elf_jump_size()
     let code_end = code_at + code.len()
@@ -185,16 +183,13 @@ fn build_elf_text(info: CodeFile, code: mut List[i64], data: str, runtime: str) 
         exit(1)
     }
 
-    var head = elf_headers(info, text_end, memory_at, file_size)
-    pad_to(mut head, info.text_offset, 0)
-    var text = bytes_to_text(head)
+    var text = elf_headers(info, text_end, memory_at, file_size)
+    pad_to(mut text, info.text_offset, 0)
     text = text + runtime
 
-    var start: List[i64] = []
-    put8(mut start, 0xE9) // jmp rel32
-    put32(mut start, elf_relative(code_at + info.entry, jump + 1))
-    pad_to(mut start, elf_jump_size(), 0xCC)
-    append_bytes(mut text, start)
+    put8(mut text, 0xE9) // jmp rel32
+    put32(mut text, elf_relative(code_at + info.entry, jump + 1))
+    pad_to(mut text, code_at, 0xCC)
 
     for call in info.calls {
         let target = info.text_offset + info.entries[call.value]
@@ -205,9 +200,9 @@ fn build_elf_text(info: CodeFile, code: mut List[i64], data: str, runtime: str) 
         let field = code_at + reference.field
         patch32(mut code, reference.field, elf_relative(data_at + reference.value, field))
     }
-    append_bytes(mut text, code)
-    append_repeated(mut text, 0xCC, data_at - code_end)
+    text = text + code
+    pad_to(mut text, data_at, 0xCC)
     text = text + data
-    append_repeated(mut text, 0, file_size - text_end)
+    pad_to(mut text, file_size, 0)
     return text
 }

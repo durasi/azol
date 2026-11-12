@@ -31,7 +31,8 @@ use crate::runtime::{self, RuntimeReloc, RUNTIME, RUNTIME_DATA, RUNTIME_DATA_OFF
 use crate::sema::{
     idle_slot, Program, Shift, Ty, APPEND, BUILTIN_ARGS, BUILTIN_CHR, BUILTIN_EPRINT, BUILTIN_EXIT, BUILTIN_LEN, BUILTIN_LIST_POP,
     BUILTIN_LIST_PUSH, BUILTIN_PRINT_BOOL, BUILTIN_PRINT_I64, BUILTIN_PRINT_STR, BUILTIN_READ_FILE,
-    BUILTIN_SET_EXECUTABLE, BUILTIN_STR_FROM_BOOL, BUILTIN_STR_FROM_I64, BUILTIN_STR_SLICE, BUILTIN_VARIANT,
+    BUILTIN_CLOCK, BUILTIN_STR_IS_UTF8, BUILTIN_REMOVE_FILE, BUILTIN_RENAME_FILE, BUILTIN_SET_EXECUTABLE, BUILTIN_STR_FROM_BOOL, BUILTIN_STR_FROM_I64, BUILTIN_STR_PUSH, BUILTIN_STR_SET,
+    BUILTIN_STR_SLICE, BUILTIN_VARIANT,
     BUILTIN_WRITE_FILE, BY_REF,
     COPIED, FIRST_BUILTIN, FIRST_REGISTER, IN_PLACE, PAT_BIND, PAT_LITERAL, PAT_VARIANT, REGISTERS, VARIANT,
 };
@@ -87,6 +88,8 @@ const LE: u32 = 13;
 const HS: u32 = 2;
 /// Unsigned lower.
 const LO: u32 = 3;
+const HI: u32 = 8;
+const LS: u32 = 9;
 
 const RET: u32 = 0xD65F_03C0;
 const BRK_1: u32 = 0xD420_0020;
@@ -163,6 +166,10 @@ fn madd(rd: u32, rn: u32, rm: u32, ra: u32) -> u32 {
 }
 
 /// Frame slot `n` sits above the saved frame pointer and return address.
+/// The largest element, in slots, that `push` copies into a list
+/// with room without calling the runtime.
+const INLINE_PUSH: u32 = 8;
+
 const fn frame(slot: u32) -> u32 {
     slot + 2
 }
@@ -2238,6 +2245,9 @@ impl<'a> Gen<'a> {
             matches!(
                 target,
                 BUILTIN_PRINT_STR | BUILTIN_EPRINT | BUILTIN_READ_FILE | BUILTIN_WRITE_FILE | BUILTIN_SET_EXECUTABLE
+                    | BUILTIN_REMOVE_FILE
+                    | BUILTIN_RENAME_FILE
+                    | BUILTIN_STR_IS_UTF8
             )
         } else {
             self.prog.fns[target as usize].params[i].by_ref
@@ -2518,6 +2528,37 @@ impl<'a> Gen<'a> {
         self.frame_address(X0, tmp);
     }
 
+    /// With the addresses of two strings in x0 and x1: leaves in x0
+    /// whether the first comes before, or after, the second, as `op`
+    /// asks. The bytes are compared as numbers from 0 to 255 up to the
+    /// first difference; when one string is the start of the other, the
+    /// shorter one comes first.
+    fn string_order(&mut self, op: BinOp) {
+        self.forget();
+        self.emit(ldr(X9, X0, 0)); // the bytes of the first
+        self.emit(ldr(X10, X0, 1)); // its length
+        self.emit(ldr(X11, X1, 0)); // the bytes of the second
+        self.emit(ldr(X12, X1, 1)); // its length
+        self.emit(cmp(X10, X12));
+        self.emit(0x9A8C_3142); // csel x2, x10, x12, lo: the shorter length
+        self.emit(0xD280_0003); // mov x3, #0
+        self.emit(cmp(3, 2)); // compare: cmp x3, x2
+        self.emit(0x5400_00E2); // b.hs lengths
+        self.emit(0x3863_6924); // ldrb w4, [x9, x3]
+        self.emit(0x3863_6965); // ldrb w5, [x11, x3]
+        self.emit(0x9100_0463); // add x3, x3, #1
+        self.emit(cmp(4, 5));
+        self.emit(0x5400_0000 | ((-6i32 as u32) & 0x7_FFFF) << 5); // b.eq compare
+        self.emit(0x1400_0002); // b over
+        self.emit(cmp(X10, X12)); // lengths: every shared byte is equal
+        self.emit(cset_x0(match op {
+            BinOp::Lt => LO,
+            BinOp::LtEq => LS,
+            BinOp::Gt => HI,
+            _ => HS,
+        }));
+    }
+
     /// Generates code that leaves a scalar value in x0.
     fn value(&mut self, id: ExprId) {
         let expr = self.expr(id);
@@ -2581,6 +2622,10 @@ impl<'a> Gen<'a> {
                 self.emit(pop(X1));
                 self.emit(0xEB00_003F); // cmp x1, x0
                 self.emit(cset_x0(if op == BinOp::Eq { EQ } else { NE }));
+            }
+            Expr::Binary { op: op @ (BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq), lhs, rhs } if self.ty(lhs) == Ty::Str => {
+                self.two_addresses(lhs, rhs);
+                self.string_order(op);
             }
             Expr::Binary { op, lhs, rhs } if self.ty(lhs) == Ty::Str => {
                 // `==` and `!=` on strings compare the bytes.
@@ -2746,6 +2791,10 @@ impl<'a> Gen<'a> {
             Expr::Field { base, .. } => Some(base),
             _ => None,
         };
+        if let BUILTIN_STR_PUSH | BUILTIN_STR_SET = target {
+            let base = receiver.expect("checked: a method call names its receiver");
+            return self.byte_method(id, target, base, arg_ids);
+        }
         if let BUILTIN_LEN | BUILTIN_LIST_PUSH | BUILTIN_LIST_POP | BUILTIN_STR_SLICE = target {
             let base = receiver.expect("checked: a method call names its receiver");
             return self.list_method(id, target, base, arg_ids);
@@ -2839,7 +2888,9 @@ impl<'a> Gen<'a> {
                 self.frame_address(X8, self.prog.expr_tmp[self.sh.e(id)]);
                 self.runtime(if target == BUILTIN_CHR { runtime::CHR } else { runtime::ARGS });
             }
-            BUILTIN_READ_FILE | BUILTIN_WRITE_FILE | BUILTIN_SET_EXECUTABLE => {
+            BUILTIN_CLOCK => self.runtime(runtime::CLOCK),
+            BUILTIN_STR_IS_UTF8 => self.runtime(runtime::STR_IS_UTF8),
+            BUILTIN_READ_FILE | BUILTIN_WRITE_FILE | BUILTIN_SET_EXECUTABLE | BUILTIN_REMOVE_FILE | BUILTIN_RENAME_FILE => {
                 // The routine fills in what the `Result` holds and says
                 // which variant it is: 0 for `Ok`, 1 for `Err`.
                 let tmp = self.prog.expr_tmp[self.sh.e(id)];
@@ -2847,6 +2898,8 @@ impl<'a> Gen<'a> {
                 self.runtime(match target {
                     BUILTIN_READ_FILE => runtime::READ_FILE,
                     BUILTIN_WRITE_FILE => runtime::WRITE_FILE,
+                    BUILTIN_REMOVE_FILE => runtime::REMOVE_FILE,
+                    BUILTIN_RENAME_FILE => runtime::RENAME_FILE,
                     _ => runtime::SET_EXECUTABLE,
                 });
                 self.emit(0x9100_0400); // add x0, x0, #1: the tag
@@ -2867,6 +2920,74 @@ impl<'a> Gen<'a> {
                 self.calls.push((at, target));
             }
         }
+    }
+
+    /// `s.push(byte)` and `s.set(index, byte)` on a string. The numbers
+    /// are worked out first; the byte is stored right here when the
+    /// string owns a buffer with room, and the runtime is asked only to
+    /// give it one.
+    fn byte_method(&mut self, id: ExprId, method: u32, base: ExprId, args: &[u32]) {
+        let tmp = self.prog.expr_tmp[self.sh.e(id)];
+        for &arg in args {
+            self.value(arg);
+            self.emit(PUSH_X0);
+        }
+        self.address(base);
+        self.forget();
+        self.emit(pop(X11)); // the byte
+        if method == BUILTIN_STR_PUSH {
+            self.emit(ldr(X9, X0, 1)); // length
+            self.emit(ldr(X10, X0, 2)); // capacity
+            self.emit(cmp(X9, X10));
+            let grow = self.placeholder();
+            self.emit(ldr(X10, X0, 0)); // buffer
+            self.emit(0x3829_694B); // strb w11, [x10, x9]
+            self.emit(0x9100_0529); // add x9, x9, #1
+            self.emit(str(X9, X0, 1));
+            let done = self.placeholder();
+            self.patch_branch_if(grow, HS);
+            self.one_byte_string(tmp);
+            self.runtime(runtime::STR_APPEND);
+            self.patch_jump(done);
+        } else {
+            self.emit(pop(X9)); // the index
+            self.emit(ldr(X10, X0, 1)); // length
+            self.emit(cmp(X9, X10));
+            self.emit(0x5400_0043); // b.lo +2: an unsigned compare also rejects negatives
+            self.runtime(runtime::INDEX_FAIL);
+            self.emit(ldr(X10, X0, 2)); // capacity
+            let owned = self.placeholder();
+            // The bytes live in the executable: adding one byte makes
+            // the runtime copy them into a buffer the string owns, and
+            // the length is then put back.
+            self.emit(str(X9, FP, frame(tmp + 4)));
+            self.emit(str(X0, FP, frame(tmp + 5)));
+            self.one_byte_string(tmp);
+            self.runtime(runtime::STR_APPEND);
+            self.emit(ldr(X0, FP, frame(tmp + 5)));
+            self.emit(ldr(X9, FP, frame(tmp + 4)));
+            self.emit(ldr(X11, FP, frame(tmp)));
+            self.emit(ldr(X10, X0, 1));
+            self.emit(0xD100_054A); // sub x10, x10, #1
+            self.emit(str(X10, X0, 1));
+            self.patch_cbz_reg(owned, true, X10);
+            self.emit(ldr(X10, X0, 0)); // buffer
+            self.emit(0x3829_694B); // strb w11, [x10, x9]
+        }
+        self.forget();
+    }
+
+    /// Makes the byte in x11 a string of one byte in the frame slots
+    /// from `tmp` (the byte, then pointer, length and capacity 0) and
+    /// leaves its address in x1. x0 is kept.
+    fn one_byte_string(&mut self, tmp: u32) {
+        self.emit(str(X11, FP, frame(tmp)));
+        self.frame_address(X9, tmp);
+        self.emit(str(X9, FP, frame(tmp + 1)));
+        self.mov_imm(X9, 1);
+        self.emit(str(X9, FP, frame(tmp + 2)));
+        self.emit(str(XZR, FP, frame(tmp + 3)));
+        self.frame_address(X1, tmp + 1);
     }
 
     fn list_method(&mut self, id: ExprId, method: u32, base: ExprId, args: &[u32]) {
@@ -2971,6 +3092,25 @@ impl<'a> Gen<'a> {
                     self.emit(ldr(X10, X0, 0)); // buffer
                     self.emit(ldr(X11, FP, frame(tmp)));
                     self.emit(str_scaled(X11, X10, X9));
+                    self.emit(0x9100_0529); // add x9, x9, #1
+                    self.emit(str(X9, X0, 1));
+                    done = Some(self.placeholder());
+                    self.patch_branch_if(grow, HS);
+                } else if elem_size <= INLINE_PUSH {
+                    // A small struct, enum, string or list is copied in
+                    // the same way, slot by slot.
+                    self.forget();
+                    self.emit(ldr(X9, X0, 1)); // length
+                    self.emit(ldr(X10, X0, 2)); // capacity
+                    self.emit(cmp(X9, X10));
+                    let grow = self.placeholder();
+                    self.emit(ldr(X10, X0, 0)); // buffer
+                    self.mov_imm(X11, elem_size as i64 * 8);
+                    self.emit(0x9B0B_292B); // madd x11, x9, x11, x10
+                    for slot in 0..elem_size {
+                        self.emit(ldr(X12, FP, frame(tmp + slot)));
+                        self.emit(str(X12, X11, slot));
+                    }
                     self.emit(0x9100_0529); // add x9, x9, #1
                     self.emit(str(X9, X0, 1));
                     done = Some(self.placeholder());

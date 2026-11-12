@@ -1,0 +1,14 @@
+; run: main 1
+; out: => 10, 3, true
+; run: main 0
+; out: => 20, 4, false
+fn main(p0: i64) -> i64, i64, bool {
+b0:
+    v0 = ne p0, 0
+    v1 = iconst 10
+    v2 = select v0, v1, 20
+    v3 = select v0, 3, 4
+    v4 = bconst 0
+    v5 = select v0, v0, v4
+    ret v2, v3, v5
+}

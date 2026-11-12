@@ -25,21 +25,19 @@ names, so that every path they print is the same. Left out of the
 comparison:
 
 - the times in the lines `built ...`, `checked ...`, `lexed ...` and
-  `parsed ...`: azol-self has no clock and prints zeros;
+  `parsed ...`, which differ from run to run;
 - a build that names no target on a machine that is Linux on ARM64,
   where the Rust compiler builds for macOS and azol-self for that
   machine (this script runs on x86-64 Linux, where both agree);
-- `sema-dump` (the tool `azol-sema` does that) and azol-self's own
-  `build --map`;
-- source files that are not valid UTF-8, which only the Rust compiler
-  refuses to read.
+- azol-self's own `build --map`.
 
     python3 compiler/check_cli.py           everything
     python3 compiler/check_cli.py --quick   without bench/generated/big.azl and
                                             with a third of the damaged programs
 
 `azol-self` is built for x86-64 Linux and run directly, so this script
-needs such a machine. Build the Rust compiler first: cargo build --release
+needs such a machine. The compiler it compares with is the oracle: `--oracle <path>`, or see
+compiler/oracle.py for the one taken when none is given.
 """
 import glob, os, platform, re, shutil, subprocess, sys, tempfile
 
@@ -48,7 +46,9 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 import check_front, check_sema, check_self  # noqa: E402  (the programs come from them)
 
-AZOL = os.path.join(ROOT, "target", "release", "azol")
+import oracle  # noqa: E402
+
+AZOL = oracle.path()
 BIG = os.path.join(ROOT, "bench", "generated", "big.azl")
 
 TIMES = [
@@ -130,7 +130,7 @@ EXTRA = {
 
 # Command lines that are not understood, or that ask for something that is not there.
 USAGE = [
-    [], ["help"], ["--help"], ["--version", "x"], ["version"], ["lex"], ["lex", "a", "b"], ["lex", "--time"], ["lex", "--time", "a", "b"],
+    [], ["sema-dump"], ["sema-dump", "missing.azl"], ["sema-dump", "a.azl", "missing.azl"], ["help"], ["--help"], ["--version", "x"], ["version"], ["lex"], ["lex", "a", "b"], ["lex", "--time"], ["lex", "--time", "a", "b"],
     ["parse"], ["parse", "--fast", "a.azl"], ["build"], ["check"], ["build", "-o"], ["build", "-o", "out"], ["build", "a.azl", "-o"],
     ["build", "a.azl", "--fast"], ["check", "--json"], ["check", "-"], ["build", "a.azl", "--target"],
     ["build", "a.azl", "--target", "riscv"], ["build", "--target", "riscv", "a.azl"], ["build", "a.azl", "--emit-code"],
@@ -274,7 +274,7 @@ def main():
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         sys.exit("check_cli.py runs azol-self directly and so needs x86-64 Linux")
     if not os.path.exists(AZOL):
-        sys.exit("build the compiler first: cargo build --release")
+        sys.exit(oracle.missing())
     work = tempfile.mkdtemp(prefix="azol-check-cli-")
     try:
         return check(work, "--quick" in sys.argv[1:])
@@ -283,8 +283,8 @@ def main():
 
 
 def check(work, quick):
-    for generator in ["gen_runtime_azl.py", "gen_tables_azl.py"]:
-        stale = run([sys.executable, os.path.join(HERE, generator), "--check"])
+    for generator in oracle.generators():
+        stale = run([sys.executable, generator, "--check"])
         if stale.returncode != 0:
             sys.exit(stale.stderr.decode().strip())
     tool = os.path.join(work, "azol-self")
@@ -322,20 +322,41 @@ def check(work, quick):
         expect(f"wrong program for {target}", USAGE_FILES, [["check", "--target", target, "a.azl"], ["build", "--target", target, "wrong.azl"],
                                                                ["check", "--json", "--target", target, "wrong.azl"]])
 
+    # Source files that are not UTF-8 are refused by every command, and
+    # the files after one are not looked at.
+    good = "fn main() {\n    print(1)\n}\n"
+    for shown, bad in [("a stray byte", b"fn main() {\n    print(\"\xff\")\n}\n"), ("a cut sequence", b"// \xe2\x82\nfn main() {\n}\n"),
+                       ("an overlong form", b"// \xc0\x80\nfn main() {\n}\n"), ("a surrogate", b"// \xed\xa0\x80\nfn main() {\n}\n"),
+                       ("too large a number", b"// \xf4\x90\x80\x80\nfn main() {\n}\n")]:
+        expect("not UTF-8: " + shown, [("bad.azl", bad), ("good.azl", good)],
+               [["check", "bad.azl"], ["check", "--json", "bad.azl"], ["build", "bad.azl"], ["build", "good.azl", "bad.azl", "-o", "out"],
+                ["check", "bad.azl", "good.azl"], ["lex", "bad.azl"], ["parse", "bad.azl"], ["parse", "--time", "bad.azl"],
+                ["fmt", "--check", "bad.azl", "good.azl"], ["fmt", "bad.azl", "good.azl"], ["fmt", "-"]], stdin=bad)
+    # Text in every length of UTF-8 sequence is fine.
+    expect("UTF-8 of every length", [("in.azl", "// \u00e7 \u20ac \U0001f600 \ud7ff \ue000 \U0010ffff\n" + good)],
+           [["check", "in.azl"], ["build", "in.azl"], ["lex", "in.azl"], ["parse", "in.azl"], ["fmt", "--check", "in.azl"]])
+
+    # An executable is written afresh: over an earlier one, over a file
+    # that cannot be run, and not over a folder.
+    expect("writing over what is there", [("in.azl", good), ("other.azl", "fn main() {\n    print(2)\n}\n"), ("plain", "text"), ("folder/keep", "")],
+           [["build", "in.azl", "-o", "out"], ["build", "other.azl", "-o", "out"], ["build", "in.azl", "-o", "plain"],
+            ["build", "in.azl", "-o", "folder"], ["build", "in.azl", "-o", "missing/out"],
+            ["build", "--target", "aarch64-macos", "in.azl", "-o", "out"], ["build", "--target", "aarch64-linux", "other.azl", "-o", "out"]])
+
     # Every source file of the repository: as it is, and made ugly.
     files = []
     for pattern in ["tests/programs/*.azl", "tests/multi/*/*.azl", "tests/format/*.azl", "examples/*.azl", "bench/*.azl", "compiler/*.azl",
-                    "src/prelude.azl"]:
+                    "lib/prelude.azl"]:
         files += sorted(glob.glob(os.path.join(ROOT, pattern)))
     if len(files) < 100:
         sys.exit("only %d source files found" % len(files))
     for path in files:
         shown = os.path.relpath(path, ROOT)
         text = open(path, "rb").read()
-        commands = [["check", "in.azl"], ["check", "--json", "in.azl"], ["parse", "in.azl"], ["fmt", "--check", "in.azl", "ugly.azl"],
+        commands = [["check", "in.azl"], ["check", "--json", "in.azl"], ["sema-dump", "in.azl"], ["parse", "in.azl"], ["fmt", "--check", "in.azl", "ugly.azl"],
                     ["fmt", "-"], ["fmt", "in.azl", "ugly.azl"], ["fmt", "--check", "in.azl", "ugly.azl"]]
         if len(text) < 200000:
-            commands.insert(2, ["lex", "in.azl"])
+            commands.insert(3, ["lex", "in.azl"])
         if "/programs/" in shown or "/examples/" in shown or shown.startswith("examples"):
             commands += [["build", "--json", "in.azl"], ["build", "in.azl", "--emit-code", "code.txt", "-o", "out"],
                          ["build", "--target", "aarch64-macos", "in.azl", "--emit-code", "code_macos.txt", "-o", "out_macos"],
@@ -347,7 +368,7 @@ def check(work, quick):
     for paths in check_self.SETS:
         names = ["%d_%s" % (at, os.path.basename(path)) for at, path in enumerate(paths)]
         texts = [open(os.path.join(ROOT, path), "rb").read() for path in paths]
-        expect(" + ".join(paths), list(zip(names, texts)), [["check"] + names, ["check", "--json"] + names, ["build", "--json", "-o", "out"] + names,
+        expect(" + ".join(paths), list(zip(names, texts)), [["check"] + names, ["check", "--json"] + names, ["sema-dump"] + names, ["build", "--json", "-o", "out"] + names,
                                                            ["fmt", "--check"] + names])
 
     # Programs with several mistakes, and mistakes with fixes.
@@ -364,10 +385,10 @@ def check(work, quick):
     wrong += [("corner " + name, text) for name, text in check_sema.CORNERS.items()]
     wrong += [("damaged " + name, text) for name, text in damaged_programs(quick)]
     for shown, text in wrong:
-        commands = [["check", "in.azl"], ["check", "--json", "in.azl"], ["parse", "in.azl"], ["fmt", "--check", "in.azl"], ["fmt", "-"],
+        commands = [["check", "in.azl"], ["check", "--json", "in.azl"], ["sema-dump", "in.azl"], ["parse", "in.azl"], ["fmt", "--check", "in.azl"], ["fmt", "-"],
                     ["fmt", "in.azl"]]
         if len(text) < 200000:
-            commands.insert(2, ["lex", "in.azl"])
+            commands.insert(3, ["lex", "in.azl"])
         expect(shown, [("in.azl", text)], commands, stdin=text.encode("utf-8"))
 
     if not quick:

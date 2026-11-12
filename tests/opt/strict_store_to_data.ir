@@ -1,0 +1,18 @@
+; A store through a parameter that turns out to point into the data.
+; run:
+; err: ir-interp: a store to the read-only data
+; exit: 3
+data "abcdefgh"
+
+fn put(p0: ptr [param 0 write]) {
+b0:
+    store i64, p0, 0, 1  [param 0]
+    ret
+}
+
+fn main() {
+b0:
+    v0 = addr @data+0
+    call put(v0)
+    ret
+}

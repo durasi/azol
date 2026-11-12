@@ -1,0 +1,46 @@
+// bignum: a large factorial with a list of limbs.
+// Algorithm: multiply a number kept as base-1,000,000,000 limbs by 2, 3,
+// ... n, carrying as it goes.
+// Sizes: 24,000!; small: 2,000!.
+// Output: the number of limbs and the sum of the decimal digits.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+const BASE = 1000000000
+
+fn main() {
+    let n = size(24000, 2000)
+    var limbs = [1]
+    var factor = 2
+    while factor <= n {
+        var carry = 0
+        var i = 0
+        while i < limbs.len() {
+            let product = limbs[i] * factor + carry
+            limbs[i] = product % BASE
+            carry = product / BASE
+            i = i + 1
+        }
+        while carry > 0 {
+            limbs.push(carry % BASE)
+            carry = carry / BASE
+        }
+        factor = factor + 1
+    }
+    var digits = 0
+    for limb in limbs {
+        var rest = limb
+        while rest > 0 {
+            digits = digits + rest % 10
+            rest = rest / 10
+        }
+    }
+    print(str(limbs.len()) + " " + str(digits))
+}

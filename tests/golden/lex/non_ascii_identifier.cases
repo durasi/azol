@@ -1,0 +1,14 @@
+# From the tests of the first compiler: src/lexer.rs, `non_ascii_identifier`.
+==== 1
+---- file a.azl (no newline at end)
+let sayı = 1
+---- run lex a.azl
+---- exit 0
+---- stdout
+   1:1    Let        let
+   1:5    Ident      sayı
+   1:10   Assign     =
+   1:12   Int        1
+   1:13   Eof        
+---- stderr
+lexed 13 bytes, 1 lines, 5 tokens

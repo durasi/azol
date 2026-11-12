@@ -1,0 +1,90 @@
+# From the tests of the first compiler: src/sema.rs, `library_names_and_the_programs_own`.
+==== 1
+---- file a.azl
+struct Map {
+ n: i64
+}
+fn main() {
+
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0209]: `Map` is a type of the standard library; choose another name
+ --> a.azl:1:8
+  |
+1 | struct Map {
+  |        ^
+---- asserted 1:8 `Map` is a type of the standard library; choose another name
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0209","message":"`Map` is a type of the standard library; choose another name","file":"a.azl","line":1,"column":8,"end_line":1,"end_column":11,"source":"struct Map {","rule":"The names of built-in types and functions cannot be declared again."}
+{"summary":{"errors":1,"files":1}}
+==== 2
+---- file a.azl
+enum Map {
+ A
+}
+fn main() {
+
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0209]: `Map` is a type of the standard library; choose another name
+ --> a.azl:1:6
+  |
+1 | enum Map {
+  |      ^
+---- asserted 1:6 `Map` is a type of the standard library; choose another name
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0209","message":"`Map` is a type of the standard library; choose another name","file":"a.azl","line":1,"column":6,"end_line":1,"end_column":9,"source":"enum Map {","rule":"The names of built-in types and functions cannot be declared again."}
+{"summary":{"errors":1,"files":1}}
+==== 3
+---- file a.azl
+
+fn main() {
+let m = new_map()
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0601]: cannot tell what `V` is in this call to `new_map`: no argument settles it; store the result in a variable with a type
+ --> a.azl:3:9
+  |
+3 | let m = new_map()
+  |         ^
+---- asserted 3:9 cannot tell what `V` is in this call to `new_map`: no argument settles it; store the result in a variable with a type
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0601","message":"cannot tell what `V` is in this call to `new_map`: no argument settles it; store the result in a variable with a type","file":"a.azl","line":3,"column":9,"end_line":3,"end_column":16,"source":"let m = new_map()","rule":"The type arguments of a generic type or function come from the values given or from the type expected at that place; when neither settles them they must be written.","help":"Give the variable a type."}
+{"summary":{"errors":1,"files":1}}
+==== 4
+---- file a.azl
+
+fn main() {
+var m: Map[i64] = new_map()
+map_set(mut m, "a", 1)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0202]: unknown function `map_set`
+ --> a.azl:4:1
+  |
+4 | map_set(mut m, "a", 1)
+  | ^
+---- asserted 4:1 unknown function `map_set`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0202","message":"unknown function `map_set`","file":"a.azl","line":4,"column":1,"end_line":4,"end_column":8,"source":"map_set(mut m, \"a\", 1)","rule":"Only functions of the program and the built-in functions can be called."}
+{"summary":{"errors":1,"files":1}}

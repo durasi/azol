@@ -1,0 +1,33 @@
+; An index check as the lowering stage writes it: one unsigned
+; comparison catches both a negative index and one past the end.
+; run: main 2
+; out: before
+; out: => 30
+; run: main 3
+; out: before
+; err: azol: index out of range
+; exit: 1
+; run: main -1
+; out: before
+; err: azol: index out of range
+; exit: 1
+data "before"
+
+fn main(p0: i64) -> i64 {
+    frames 24
+b0:
+    v0 = frame 0
+    store i64, v0, 0, 10  [frame 0]
+    store i64, v0, 8, 20  [frame 0]
+    store i64, v0, 16, 30  [frame 0]
+    v1 = addr @data+0
+    callrt print_str(v1, 6)
+    v2 = ult p0, 3
+    br v2, b1, b2
+b1:
+    v3 = gep v0, p0, 8, 0
+    v4 = load i64, v3, 0  [frame 0]
+    ret v4
+b2:
+    trap index
+}

@@ -1,0 +1,1259 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The text form of the intermediate form: a printer and a parser. A
+// test of a pass is a file in this form, and a failure is read in it.
+//
+//     data "ab\x00"
+//
+//     fn sum(p0: ptr [param 0 read]) -> i64 {
+//         frames 16
+//     b0:
+//         v0 = load ptr, p0, 0  [param 0]
+//         v1 = load i64, p0, 8  [param 0]
+//         jump b1(0, 0)
+//     b1(v2: i64, v3: i64):
+//         v4 = slt v2, v1
+//         br v4, b2, b3
+//     b2:
+//         v5 = gep v0, v2, 8, 0
+//         v6 = load i64, v5, 0  [buf(param 0)]
+//         v7 = add v3, v6
+//         v8 = add v2, 1
+//         jump b1(v8, v7)
+//     b3:
+//         ret v3
+//     }
+//
+// The printer writes exactly one form, the canonical one: four spaces
+// before an instruction, `, ` between operands, two spaces before a
+// region, one empty line between functions. Printing what the parser
+// read from canonical text gives the same text back, byte for byte:
+// the numbers of values and blocks are kept, with gaps where there are
+// gaps. The parser also takes any amount of spaces and tabs, empty
+// lines, and comments from `;` to the end of a line.
+//
+// Lines the design's section 3.9 does not show, because it has no
+// example that needs them:
+//
+//     data "..."              the read-only data that `addr @data+N` is
+//                             an address in; \" \\ and \xHH are escapes
+//         frames 16, 8        first line of a function: the sizes in
+//                             bytes of frame objects 0, 1, ...
+//     v1, v2 = call f(v0) -> i64, ptr
+//                             a call says the types of its results,
+//                             since the function may be in another file
+//     v1 = callrt alloc(64)   a runtime routine's types are in a table
+//     switch v0, 1 -> b1, 2 -> b2(v3), default b3
+
+// ---- printing ---------------------------------------------------------------
+
+fn ir_print_value(f: IrFunc, v: i64, out: mut str) {
+    if v < f.param_count {
+        out = out + "p"
+        out = out + str(v)
+    } else {
+        out = out + "v"
+        out = out + str(v - f.param_count)
+    }
+}
+
+fn ir_print_operand(f: IrFunc, x: i64, out: mut str) {
+    if x < -1 {
+        out = out + str(ir_const_value(f, x))
+    } else if x < 0 {
+        out = out + "?"
+    } else {
+        ir_print_value(f, x, mut out)
+    }
+}
+
+fn ir_print_region(f: IrFunc, region: i64, out: mut str) {
+    let kind = f.reg_kind[region]
+    if kind == IR_REGION_FRAME {
+        out = out + "frame "
+        out = out + str(f.reg_n[region])
+    } else if kind == IR_REGION_BUF {
+        out = out + "buf("
+        ir_print_region(f, f.reg_n[region], mut out)
+        out = out + ")"
+    } else if kind == IR_REGION_PARAM {
+        out = out + "param "
+        out = out + str(f.reg_n[region])
+    } else if kind == IR_REGION_RET {
+        out = out + "ret"
+    } else if kind == IR_REGION_DATA {
+        out = out + "data"
+    } else {
+        out = out + "rt"
+    }
+}
+
+fn ir_print_edge(f: IrFunc, e: i64, out: mut str) {
+    out = out + "b"
+    out = out + str(f.edge_blk[e])
+    if f.edge_an[e] > 0 {
+        out = out + "("
+        var k = 0
+        while k < f.edge_an[e] {
+            if k > 0 {
+                out = out + ", "
+            }
+            ir_print_operand(f, f.args[f.edge_as[e] + k], mut out)
+            k = k + 1
+        }
+        out = out + ")"
+    }
+}
+
+fn ir_print_args(f: IrFunc, ins: i64, out: mut str) {
+    var k = 0
+    while k < f.ins_an[ins] {
+        if k > 0 {
+            out = out + ", "
+        }
+        ir_print_operand(f, f.args[f.ins_as[ins] + k], mut out)
+        k = k + 1
+    }
+}
+
+fn ir_print_instruction(f: IrFunc, ins: i64, out: mut str) {
+    let op = f.ins_op[ins]
+    out = out + "    "
+    var k = 0
+    while k < f.ins_rn[ins] {
+        if k > 0 {
+            out = out + ", "
+        }
+        ir_print_value(f, f.results[f.ins_rs[ins] + k], mut out)
+        k = k + 1
+    }
+    if f.ins_rn[ins] > 0 {
+        out = out + " = "
+    }
+    out = out + ir_op_name(op)
+    if op == IR_ICONST || op == IR_BCONST || op == IR_FRAME {
+        out = out + " "
+        out = out + str(f.ins_imm[ins])
+    } else if op == IR_ADDR {
+        out = out + " @data+"
+        out = out + str(f.ins_imm[ins])
+    } else if ir_is_binary(op) {
+        out = out + " "
+        ir_print_operand(f, f.ins_a[ins], mut out)
+        out = out + ", "
+        ir_print_operand(f, f.ins_b[ins], mut out)
+    } else if ir_is_unary(op) {
+        out = out + " "
+        ir_print_operand(f, f.ins_a[ins], mut out)
+    } else if op == IR_SELECT {
+        out = out + " "
+        ir_print_operand(f, f.ins_a[ins], mut out)
+        out = out + ", "
+        ir_print_operand(f, f.ins_b[ins], mut out)
+        out = out + ", "
+        ir_print_operand(f, f.ins_c[ins], mut out)
+    } else if op == IR_LOAD {
+        out = out + " "
+        out = out + ir_type_name(f.ins_ty[ins])
+        out = out + ", "
+        ir_print_operand(f, f.ins_a[ins], mut out)
+        out = out + ", "
+        out = out + str(f.ins_imm[ins])
+        out = out + "  ["
+        ir_print_region(f, f.ins_reg[ins], mut out)
+        out = out + "]"
+    } else if op == IR_STORE {
+        out = out + " "
+        out = out + ir_type_name(f.ins_ty[ins])
+        out = out + ", "
+        ir_print_operand(f, f.ins_a[ins], mut out)
+        out = out + ", "
+        out = out + str(f.ins_imm[ins])
+        out = out + ", "
+        ir_print_operand(f, f.ins_b[ins], mut out)
+        out = out + "  ["
+        ir_print_region(f, f.ins_reg[ins], mut out)
+        out = out + "]"
+    } else if op == IR_GEP {
+        out = out + " "
+        ir_print_operand(f, f.ins_a[ins], mut out)
+        out = out + ", "
+        ir_print_operand(f, f.ins_b[ins], mut out)
+        out = out + ", "
+        out = out + str(f.ins_imm2[ins])
+        out = out + ", "
+        out = out + str(f.ins_imm[ins])
+    } else if op == IR_CALL {
+        out = out + " "
+        out = out + f.callees[f.ins_imm[ins]]
+        out = out + "("
+        ir_print_args(f, ins, mut out)
+        out = out + ")"
+        k = 0
+        while k < f.ins_rn[ins] {
+            if k == 0 {
+                out = out + " -> "
+            } else {
+                out = out + ", "
+            }
+            out = out + ir_type_name(f.val_ty[f.results[f.ins_rs[ins] + k]])
+            k = k + 1
+        }
+    } else if op == IR_CALLRT {
+        out = out + " "
+        out = out + ir_rt_name(f.ins_imm[ins])
+        out = out + "("
+        ir_print_args(f, ins, mut out)
+        out = out + ")"
+    } else if op == IR_JUMP {
+        out = out + " "
+        ir_print_edge(f, f.ins_es[ins], mut out)
+    } else if op == IR_BR {
+        out = out + " "
+        ir_print_operand(f, f.ins_a[ins], mut out)
+        out = out + ", "
+        ir_print_edge(f, f.ins_es[ins], mut out)
+        out = out + ", "
+        ir_print_edge(f, f.ins_es[ins] + 1, mut out)
+    } else if op == IR_SWITCH {
+        out = out + " "
+        ir_print_operand(f, f.ins_a[ins], mut out)
+        var e = f.ins_es[ins]
+        let last = e + f.ins_en[ins] - 1
+        while e < last {
+            out = out + ", "
+            out = out + str(f.edge_key[e])
+            out = out + " -> "
+            ir_print_edge(f, e, mut out)
+            e = e + 1
+        }
+        out = out + ", default "
+        ir_print_edge(f, last, mut out)
+    } else if op == IR_RET {
+        if f.ins_an[ins] > 0 {
+            out = out + " "
+            ir_print_args(f, ins, mut out)
+        }
+    } else if op == IR_TRAP {
+        out = out + " "
+        out = out + ir_trap_name(f.ins_imm[ins])
+    }
+    out = out + "\n"
+}
+
+fn ir_print_fx(fx: i64, out: mut str) {
+    if fx & IR_FX_READ != 0 {
+        out = out + " read"
+    }
+    if fx & IR_FX_WRITE != 0 {
+        out = out + " write"
+    }
+    if fx & IR_FX_WRITEBUF != 0 {
+        out = out + " writebuf"
+    }
+    if fx & IR_FX_RESIZE != 0 {
+        out = out + " resize"
+    }
+    if fx & IR_FX_FREE != 0 {
+        out = out + " free"
+    }
+}
+
+fn ir_print_func(f: IrFunc, out: mut str) {
+    out = out + "fn "
+    out = out + f.name
+    out = out + "("
+    var k = 0
+    while k < f.param_count {
+        if k > 0 {
+            out = out + ", "
+        }
+        out = out + "p"
+        out = out + str(k)
+        out = out + ": "
+        out = out + ir_type_name(f.val_ty[k])
+        if f.val_ty[k] == IR_PTR {
+            out = out + " [param "
+            out = out + str(k)
+            ir_print_fx(f.param_fx[k], mut out)
+            out = out + "]"
+        }
+        k = k + 1
+    }
+    out = out + ")"
+    k = 0
+    while k < f.ret_ty.len() {
+        if k == 0 {
+            out = out + " -> "
+        } else {
+            out = out + ", "
+        }
+        out = out + ir_type_name(f.ret_ty[k])
+        k = k + 1
+    }
+    out = out + " {\n"
+    if f.frames.len() > 0 {
+        out = out + "    frames "
+        k = 0
+        while k < f.frames.len() {
+            if k > 0 {
+                out = out + ", "
+            }
+            out = out + str(f.frames[k])
+            k = k + 1
+        }
+        out = out + "\n"
+    }
+    for b in f.order {
+        out = out + "b"
+        out = out + str(b)
+        if f.blk_pn[b] > 0 {
+            out = out + "("
+            k = 0
+            while k < f.blk_pn[b] {
+                if k > 0 {
+                    out = out + ", "
+                }
+                let v = f.bparams[f.blk_ps[b] + k]
+                ir_print_value(f, v, mut out)
+                out = out + ": "
+                out = out + ir_type_name(f.val_ty[v])
+                k = k + 1
+            }
+            out = out + ")"
+        }
+        out = out + ":\n"
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            ir_print_instruction(f, ins, mut out)
+            ins = f.ins_next[ins]
+        }
+    }
+    out = out + "}\n"
+}
+
+fn ir_print_data(data: str, out: mut str) {
+    let digits = "0123456789abcdef"
+    out = out + "data \""
+    var i = 0
+    while i < data.len() {
+        let c = data[i]
+        if c == '"' || c == '\\' {
+            out.push('\\')
+            out.push(c)
+        } else if c >= 32 && c < 127 {
+            out.push(c)
+        } else {
+            out = out + "\\x"
+            out.push(digits[c >> 4])
+            out.push(digits[c & 15])
+        }
+        i = i + 1
+    }
+    out = out + "\"\n"
+}
+
+fn ir_print_module(m: IrModule) -> str {
+    var out = ""
+    if m.data.len() > 0 {
+        ir_print_data(m.data, mut out)
+        out = out + "\n"
+    }
+    var i = 0
+    while i < m.funcs.len() {
+        if i > 0 {
+            out = out + "\n"
+        }
+        ir_print_func(m.funcs[i], mut out)
+        i = i + 1
+    }
+    return out
+}
+
+// ---- parsing --------------------------------------------------------------------
+
+struct IrParser {
+    src: str
+    pos: i64
+    // The first mistake found: what it is and where.
+    failed: bool
+    message: str
+    error_at: i64
+    // Operation names to their numbers.
+    ops: Map[i64]
+    // The block instructions are being added to, or -1.
+    block: i64
+    // Where the line being read starts, after its spaces.
+    line_at: i64
+}
+
+// A mistake in the text, with the line and the column it is at, both
+// counted from 1. `message` is empty when there is none.
+struct IrParseError {
+    message: str
+    line: i64
+    column: i64
+}
+
+// The largest number a value or a block may have in the text.
+const IR_MAX_NAME = 16000000
+
+fn irp_fail(p: mut IrParser, message: str) {
+    if !p.failed {
+        p.failed = true
+        p.message = message
+        p.error_at = p.pos
+    }
+}
+
+// The byte at the current position; 0 at the end.
+fn irp_peek(p: IrParser) -> i64 {
+    if p.pos >= p.src.len() {
+        return 0
+    }
+    return p.src[p.pos]
+}
+
+fn irp_spaces(p: mut IrParser) {
+    while p.pos < p.src.len() && (p.src[p.pos] == ' ' || p.src[p.pos] == '\t' || p.src[p.pos] == '\r') {
+        p.pos = p.pos + 1
+    }
+}
+
+// Whether nothing but a comment is left on the line.
+fn irp_at_end_of_line(p: mut IrParser) -> bool {
+    irp_spaces(mut p)
+    let c = irp_peek(p)
+    return c == 0 || c == '\n' || c == ';'
+}
+
+// Moves past the end of the current line.
+fn irp_next_line(p: mut IrParser) {
+    while p.pos < p.src.len() && p.src[p.pos] != '\n' {
+        p.pos = p.pos + 1
+    }
+    if p.pos < p.src.len() {
+        p.pos = p.pos + 1
+    }
+}
+
+// Moves to the first thing that is not space, a line end or a comment.
+fn irp_skip_empty_lines(p: mut IrParser) {
+    while p.pos < p.src.len() && irp_at_end_of_line(mut p) {
+        irp_next_line(mut p)
+    }
+}
+
+fn irp_is_word_byte(c: i64) -> bool {
+    return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '.' || c == '$'
+}
+
+// A run of letters, digits, `_`, `.` and `$`; empty when there is none.
+fn irp_word(p: mut IrParser) -> str {
+    irp_spaces(mut p)
+    let start = p.pos
+    while p.pos < p.src.len() && irp_is_word_byte(p.src[p.pos]) {
+        p.pos = p.pos + 1
+    }
+    return p.src.slice(start, p.pos)
+}
+
+fn irp_accept(p: mut IrParser, c: i64) -> bool {
+    irp_spaces(mut p)
+    if !p.failed && irp_peek(p) == c {
+        p.pos = p.pos + 1
+        return true
+    }
+    return false
+}
+
+fn irp_expect(p: mut IrParser, c: i64) {
+    if !irp_accept(mut p, c) {
+        irp_fail(mut p, "expected `" + chr(c) + "`")
+    }
+}
+
+fn irp_int(p: mut IrParser) -> i64 {
+    irp_spaces(mut p)
+    var negative = false
+    var at = p.pos
+    if at < p.src.len() && p.src[at] == '-' {
+        negative = true
+        at = at + 1
+    }
+    if at >= p.src.len() || p.src[at] < '0' || p.src[at] > '9' {
+        irp_fail(mut p, "expected a number")
+        return 0
+    }
+    var n = 0
+    while at < p.src.len() && p.src[at] >= '0' && p.src[at] <= '9' {
+        n = n * 10 + (p.src[at] - '0')
+        at = at + 1
+    }
+    p.pos = at
+    if negative {
+        return 0 - n
+    }
+    return n
+}
+
+// The number after a one-letter prefix, as in `v12` or `b3`; -1 when
+// the text here is not that.
+fn irp_numbered(p: mut IrParser, prefix: i64) -> i64 {
+    irp_spaces(mut p)
+    var at = p.pos
+    if at + 1 >= p.src.len() || p.src[at] != prefix || p.src[at + 1] < '0' || p.src[at + 1] > '9' {
+        return -1
+    }
+    at = at + 1
+    var n = 0
+    while at < p.src.len() && p.src[at] >= '0' && p.src[at] <= '9' {
+        n = n * 10 + (p.src[at] - '0')
+        if n > IR_MAX_NAME {
+            irp_fail(mut p, "the number is too large")
+            return -1
+        }
+        at = at + 1
+    }
+    if at < p.src.len() && irp_is_word_byte(p.src[at]) {
+        return -1
+    }
+    p.pos = at
+    return n
+}
+
+// Makes room for value `v`.
+fn irp_ensure_value(f: mut IrFunc, v: i64) {
+    while f.val_ty.len() <= v {
+        f.val_ty.push(-1)
+        f.val_ins.push(-1)
+        f.val_blk.push(-1)
+    }
+}
+
+// Makes room for block `b`; it does not exist until its line is read.
+fn irp_ensure_block(f: mut IrFunc, b: i64) {
+    while f.blk_first.len() <= b {
+        f.blk_first.push(-1)
+        f.blk_last.push(-1)
+        f.blk_ps.push(0)
+        f.blk_pn.push(0)
+        f.blk_live.push(false)
+    }
+}
+
+// A value by its name, `pN` or `vN`; -1 when the text is not a name.
+fn irp_value(p: mut IrParser, f: mut IrFunc) -> i64 {
+    irp_spaces(mut p)
+    let at = p.pos
+    var n = irp_numbered(mut p, 'p')
+    if n >= 0 {
+        if n >= f.param_count {
+            p.pos = at
+            irp_fail(mut p, "the function has no parameter p" + str(n))
+            return -1
+        }
+        return n
+    }
+    n = irp_numbered(mut p, 'v')
+    if n < 0 {
+        return -1
+    }
+    irp_ensure_value(mut f, f.param_count + n)
+    return f.param_count + n
+}
+
+// A value or a number.
+fn irp_operand(p: mut IrParser, f: mut IrFunc) -> i64 {
+    let v = irp_value(mut p, mut f)
+    if v >= 0 || p.failed {
+        return v
+    }
+    irp_spaces(mut p)
+    let c = irp_peek(p)
+    if c == '-' || c >= '0' && c <= '9' {
+        let n = irp_int(mut p)
+        return ir_const(mut f, n)
+    }
+    irp_fail(mut p, "expected a value or a number")
+    return -1
+}
+
+fn irp_type(p: mut IrParser) -> i64 {
+    let word = irp_word(mut p)
+    var ty = 0
+    while ty < IR_TYPE_COUNT {
+        if ir_type_name(ty) == word {
+            return ty
+        }
+        ty = ty + 1
+    }
+    p.pos = p.pos - word.len()
+    irp_fail(mut p, "expected a type")
+    return IR_I64
+}
+
+// A type a value can have: not one of the widths.
+fn irp_value_type(p: mut IrParser) -> i64 {
+    let ty = irp_type(mut p)
+    if ty > IR_PTR {
+        p.pos = p.pos - ir_type_name(ty).len()
+        irp_fail(mut p, "`" + ir_type_name(ty) + "` is only the width of a `load` or a `store`")
+        return IR_I64
+    }
+    return ty
+}
+
+fn irp_block(p: mut IrParser, f: mut IrFunc) -> i64 {
+    let b = irp_numbered(mut p, 'b')
+    if b < 0 {
+        irp_fail(mut p, "expected a block")
+        return 0
+    }
+    irp_ensure_block(mut f, b)
+    return b
+}
+
+// `bN` or `bN(arguments)`, as one more way out of `ins`.
+fn irp_edge(p: mut IrParser, f: mut IrFunc, ins: i64, key: i64) {
+    let target = irp_block(mut p, mut f)
+    let e = ir_add_edge(mut f, ins, target, key)
+    if irp_accept(mut p, '(') {
+        if irp_accept(mut p, ')') {
+            return
+        }
+        while !p.failed {
+            let x = irp_operand(mut p, mut f)
+            ir_add_edge_arg(mut f, e, x)
+            if !irp_accept(mut p, ',') {
+                break
+            }
+        }
+        irp_expect(mut p, ')')
+    }
+}
+
+// What stands between the brackets of a region.
+fn irp_region(p: mut IrParser, f: mut IrFunc) -> i64 {
+    let word = irp_word(mut p)
+    if word == "frame" {
+        let n = irp_int(mut p)
+        return ir_region(mut f, IR_REGION_FRAME, n)
+    }
+    if word == "param" {
+        let n = irp_int(mut p)
+        return ir_region(mut f, IR_REGION_PARAM, n)
+    }
+    if word == "buf" {
+        irp_expect(mut p, '(')
+        let inner = irp_region(mut p, mut f)
+        irp_expect(mut p, ')')
+        return ir_region(mut f, IR_REGION_BUF, inner)
+    }
+    if word == "ret" {
+        return ir_region(mut f, IR_REGION_RET, 0)
+    }
+    if word == "data" {
+        return ir_region(mut f, IR_REGION_DATA, 0)
+    }
+    if word == "rt" {
+        return ir_region(mut f, IR_REGION_RT, 0)
+    }
+    p.pos = p.pos - word.len()
+    irp_fail(mut p, "expected a region: `frame N`, `buf(...)`, `param N`, `ret`, `data` or `rt`")
+    return 0
+}
+
+// `(arguments)` of a call.
+fn irp_call_args(p: mut IrParser, f: mut IrFunc, ins: i64) {
+    irp_expect(mut p, '(')
+    if irp_accept(mut p, ')') {
+        return
+    }
+    while !p.failed {
+        let x = irp_operand(mut p, mut f)
+        ir_add_arg(mut f, ins, x)
+        if !irp_accept(mut p, ',') {
+            break
+        }
+    }
+    irp_expect(mut p, ')')
+}
+
+// Makes `v`, which the line names before `=`, a result of `ins`.
+fn irp_define(p: mut IrParser, f: mut IrFunc, ins: i64, v: i64, ty: i64) {
+    if v < f.param_count {
+        p.pos = p.line_at
+        irp_fail(mut p, "p" + str(v) + " is a parameter and cannot be defined again")
+        return
+    }
+    if f.val_ty[v] != -1 {
+        p.pos = p.line_at
+        irp_fail(mut p, "v" + str(v - f.param_count) + " is defined twice")
+        return
+    }
+    f.val_ty[v] = ty
+    ir_add_result_value(mut f, ins, v)
+}
+
+// One instruction line. `names` are the values before the `=`.
+fn irp_instruction(p: mut IrParser, f: mut IrFunc, names: List[i64]) {
+    let word_at = p.pos
+    let word = irp_word(mut p)
+    var op = IR_NONE
+    match p.ops.get(word) {
+        Some(found) => op = found
+        None => {}
+    }
+    if op == IR_NONE {
+        p.pos = word_at
+        irp_spaces(mut p)
+        irp_fail(mut p, "unknown instruction `" + word + "`")
+        return
+    }
+    if p.block < 0 {
+        p.pos = word_at
+        irp_spaces(mut p)
+        irp_fail(mut p, "an instruction must be inside a block")
+        return
+    }
+    let ins = ir_make(mut f, op, IR_I64, -1, -1, -1, 0)
+    var single = true
+    if op == IR_ICONST || op == IR_FRAME {
+        f.ins_imm[ins] = irp_int(mut p)
+    } else if op == IR_BCONST {
+        let at = p.pos
+        f.ins_imm[ins] = irp_int(mut p)
+        if !p.failed && f.ins_imm[ins] != 0 && f.ins_imm[ins] != 1 {
+            p.pos = at
+            irp_spaces(mut p)
+            irp_fail(mut p, "`bconst` takes 0 or 1")
+        }
+    } else if op == IR_ADDR {
+        irp_expect(mut p, '@')
+        let at = p.pos
+        if irp_word(mut p) != "data" {
+            p.pos = at
+            irp_fail(mut p, "expected `@data+N`")
+        }
+        irp_expect(mut p, '+')
+        f.ins_imm[ins] = irp_int(mut p)
+    } else if ir_is_binary(op) {
+        f.ins_a[ins] = irp_operand(mut p, mut f)
+        irp_expect(mut p, ',')
+        f.ins_b[ins] = irp_operand(mut p, mut f)
+    } else if ir_is_unary(op) {
+        f.ins_a[ins] = irp_operand(mut p, mut f)
+    } else if op == IR_SELECT {
+        f.ins_a[ins] = irp_operand(mut p, mut f)
+        irp_expect(mut p, ',')
+        f.ins_b[ins] = irp_operand(mut p, mut f)
+        irp_expect(mut p, ',')
+        f.ins_c[ins] = irp_operand(mut p, mut f)
+    } else if op == IR_LOAD || op == IR_STORE {
+        f.ins_ty[ins] = irp_type(mut p)
+        irp_expect(mut p, ',')
+        f.ins_a[ins] = irp_operand(mut p, mut f)
+        irp_expect(mut p, ',')
+        f.ins_imm[ins] = irp_int(mut p)
+        if op == IR_STORE {
+            irp_expect(mut p, ',')
+            f.ins_b[ins] = irp_operand(mut p, mut f)
+            single = false
+        }
+        irp_spaces(mut p)
+        if irp_peek(p) != '[' {
+            irp_fail(mut p, "a `" + word + "` needs a region, such as `[frame 0]`")
+        }
+        irp_expect(mut p, '[')
+        f.ins_reg[ins] = irp_region(mut p, mut f)
+        irp_expect(mut p, ']')
+    } else if op == IR_GEP {
+        f.ins_a[ins] = irp_operand(mut p, mut f)
+        irp_expect(mut p, ',')
+        f.ins_b[ins] = irp_operand(mut p, mut f)
+        irp_expect(mut p, ',')
+        f.ins_imm2[ins] = irp_int(mut p)
+        irp_expect(mut p, ',')
+        f.ins_imm[ins] = irp_int(mut p)
+    } else if op == IR_CALL {
+        single = false
+        let name = irp_word(mut p)
+        if name.len() == 0 {
+            irp_fail(mut p, "expected the name of a function")
+        }
+        f.ins_imm[ins] = ir_callee(mut f, name)
+        irp_call_args(mut p, mut f, ins)
+        var count = 0
+        irp_spaces(mut p)
+        let arrow_at = p.pos
+        if irp_accept(mut p, '-') {
+            irp_expect(mut p, '>')
+            while !p.failed {
+                let ty = irp_value_type(mut p)
+                if count < names.len() {
+                    irp_define(mut p, mut f, ins, names[count], ty)
+                }
+                count = count + 1
+                if !irp_accept(mut p, ',') {
+                    break
+                }
+            }
+        }
+        if !p.failed && count != names.len() {
+            p.pos = arrow_at
+            irp_fail(mut p, "the call names " + str(names.len()) + " results and " + str(count) + " result types")
+        }
+    } else if op == IR_CALLRT {
+        single = false
+        let name_at = p.pos
+        let name = irp_word(mut p)
+        var routine = 0
+        while routine < IR_RT_COUNT && ir_rt_name(routine) != name {
+            routine = routine + 1
+        }
+        if routine == IR_RT_COUNT {
+            p.pos = name_at
+            irp_spaces(mut p)
+            irp_fail(mut p, "unknown runtime routine `" + name + "`")
+            return
+        }
+        f.ins_imm[ins] = routine
+        irp_call_args(mut p, mut f, ins)
+        let results = ir_rt_results(routine)
+        if !p.failed && results.len() != names.len() {
+            p.pos = name_at
+            irp_spaces(mut p)
+            irp_fail(mut p, "`" + name + "` gives " + str(results.len()) + " results, not " + str(names.len()))
+        }
+        var k = 0
+        while !p.failed && k < results.len() {
+            irp_define(mut p, mut f, ins, names[k], ir_letter_type(results[k]))
+            k = k + 1
+        }
+    } else if op == IR_JUMP {
+        single = false
+        irp_edge(mut p, mut f, ins, 0)
+    } else if op == IR_BR {
+        single = false
+        f.ins_a[ins] = irp_operand(mut p, mut f)
+        irp_expect(mut p, ',')
+        irp_edge(mut p, mut f, ins, 0)
+        irp_expect(mut p, ',')
+        irp_edge(mut p, mut f, ins, 0)
+    } else if op == IR_SWITCH {
+        single = false
+        f.ins_a[ins] = irp_operand(mut p, mut f)
+        var done = false
+        while !p.failed && !done {
+            irp_expect(mut p, ',')
+            irp_spaces(mut p)
+            if irp_peek(p) == 'd' {
+                let at = p.pos
+                if irp_word(mut p) != "default" {
+                    p.pos = at
+                    irp_fail(mut p, "expected a case or `default`")
+                }
+                irp_edge(mut p, mut f, ins, 0)
+                done = true
+            } else {
+                let key = irp_int(mut p)
+                irp_expect(mut p, '-')
+                irp_expect(mut p, '>')
+                irp_edge(mut p, mut f, ins, key)
+            }
+        }
+    } else if op == IR_RET {
+        single = false
+        if !irp_at_end_of_line(mut p) {
+            while !p.failed {
+                let x = irp_operand(mut p, mut f)
+                ir_add_arg(mut f, ins, x)
+                if !irp_accept(mut p, ',') {
+                    break
+                }
+            }
+        }
+    } else if op == IR_TRAP {
+        single = false
+        let kind_at = p.pos
+        let kind_name = irp_word(mut p)
+        var kind = 0
+        while kind < IR_TRAP_COUNT && ir_trap_name(kind) != kind_name {
+            kind = kind + 1
+        }
+        if kind == IR_TRAP_COUNT {
+            p.pos = kind_at
+            irp_spaces(mut p)
+            irp_fail(mut p, "unknown kind of stop `" + kind_name + "`")
+        }
+        f.ins_imm[ins] = kind
+    }
+    if p.failed {
+        return
+    }
+    if single {
+        if names.len() != 1 {
+            p.pos = word_at
+            irp_spaces(mut p)
+            irp_fail(mut p, "`" + word + "` gives one result; write `vN = " + word + " ...`")
+            return
+        }
+        var ty = ir_result_type(f, op, f.ins_ty[ins], f.ins_a[ins], f.ins_b[ins])
+        if op == IR_SELECT {
+            ty = ir_result_type(f, op, IR_I64, f.ins_b[ins], f.ins_c[ins])
+        }
+        if op != IR_LOAD {
+            f.ins_ty[ins] = ty
+        }
+        irp_define(mut p, mut f, ins, names[0], ty)
+    } else if names.len() > 0 && op != IR_CALL && op != IR_CALLRT {
+        p.pos = word_at
+        irp_spaces(mut p)
+        irp_fail(mut p, "`" + word + "` gives no result")
+        return
+    }
+    if !irp_at_end_of_line(mut p) {
+        irp_fail(mut p, "expected the end of the line")
+        return
+    }
+    ir_link_end(mut f, p.block, ins)
+}
+
+// `bN:` or `bN(vA: type, ...):`.
+fn irp_block_line(p: mut IrParser, f: mut IrFunc) {
+    let at = p.pos
+    let b = irp_block(mut p, mut f)
+    if p.failed {
+        return
+    }
+    if f.blk_live[b] {
+        p.pos = at
+        irp_spaces(mut p)
+        irp_fail(mut p, "b" + str(b) + " is defined twice")
+        return
+    }
+    f.blk_live[b] = true
+    f.blk_ps[b] = f.bparams.len()
+    f.order.push(b)
+    p.block = b
+    if irp_accept(mut p, '(') {
+        while !p.failed {
+            let name_at = p.pos
+            let v = irp_value(mut p, mut f)
+            if v < 0 {
+                irp_fail(mut p, "expected a value name")
+                return
+            }
+            irp_expect(mut p, ':')
+            let ty = irp_value_type(mut p)
+            if p.failed {
+                return
+            }
+            if v < f.param_count || f.val_ty[v] != -1 {
+                p.pos = name_at
+                irp_spaces(mut p)
+                irp_fail(mut p, "this value is defined twice")
+                return
+            }
+            f.val_ty[v] = ty
+            f.val_blk[v] = b
+            f.bparams.push(v)
+            f.blk_pn[b] = f.blk_pn[b] + 1
+            if !irp_accept(mut p, ',') {
+                break
+            }
+        }
+        irp_expect(mut p, ')')
+    }
+    irp_expect(mut p, ':')
+    if !p.failed && !irp_at_end_of_line(mut p) {
+        irp_fail(mut p, "expected the end of the line")
+    }
+}
+
+// `and`, `or`, `xor` and `select` take their type from their operands,
+// and an operand may be defined further down in the text. This settles
+// those types once every value is known.
+fn irp_settle_types(f: mut IrFunc) {
+    var changed = true
+    var rounds = 0
+    while changed && rounds < 64 {
+        changed = false
+        rounds = rounds + 1
+        var ins = 0
+        while ins < f.ins_op.len() {
+            let op = f.ins_op[ins]
+            if (op == IR_AND || op == IR_OR || op == IR_XOR || op == IR_SELECT) && f.ins_res[ins] >= 0 {
+                var ty = ir_result_type(f, op, IR_I64, f.ins_a[ins], f.ins_b[ins])
+                if op == IR_SELECT {
+                    ty = ir_result_type(f, op, IR_I64, f.ins_b[ins], f.ins_c[ins])
+                }
+                if ty >= 0 && ty != f.val_ty[f.ins_res[ins]] {
+                    f.val_ty[f.ins_res[ins]] = ty
+                    f.ins_ty[ins] = ty
+                    changed = true
+                }
+            }
+            ins = ins + 1
+        }
+    }
+}
+
+// From `fn` to the closing `}`.
+fn irp_function(p: mut IrParser) -> IrFunc {
+    var f = ir_new_func("")
+    let word = irp_word(mut p)
+    if word != "fn" {
+        p.pos = p.pos - word.len()
+        irp_fail(mut p, "expected `fn` or `data`")
+        return f
+    }
+    f.name = irp_word(mut p)
+    if f.name.len() == 0 {
+        irp_fail(mut p, "expected the name of the function")
+        return f
+    }
+    irp_expect(mut p, '(')
+    if !irp_accept(mut p, ')') {
+        while !p.failed {
+            let at = p.pos
+            let n = irp_numbered(mut p, 'p')
+            if n != f.param_count {
+                p.pos = at
+                irp_spaces(mut p)
+                irp_fail(mut p, "expected parameter p" + str(f.param_count))
+                return f
+            }
+            irp_expect(mut p, ':')
+            let ty = irp_value_type(mut p)
+            var fx = 0
+            if irp_accept(mut p, '[') {
+                let note_at = p.pos
+                let kind = irp_word(mut p)
+                var number = -1
+                if kind == "param" {
+                    number = irp_int(mut p)
+                }
+                if !p.failed && (number != n || ty != IR_PTR) {
+                    p.pos = note_at
+                    irp_spaces(mut p)
+                    irp_fail(mut p, "only a `ptr` parameter has a note, and it starts with `param " + str(n) + "`")
+                    return f
+                }
+                while !p.failed && !irp_accept(mut p, ']') {
+                    let fx_at = p.pos
+                    let effect = irp_word(mut p)
+                    if effect == "read" {
+                        fx = fx | IR_FX_READ
+                    } else if effect == "write" {
+                        fx = fx | IR_FX_WRITE
+                    } else if effect == "writebuf" {
+                        fx = fx | IR_FX_WRITEBUF
+                    } else if effect == "resize" {
+                        fx = fx | IR_FX_RESIZE
+                    } else if effect == "free" {
+                        fx = fx | IR_FX_FREE
+                    } else {
+                        p.pos = fx_at
+                        irp_spaces(mut p)
+                        irp_fail(mut p, "expected `read`, `write`, `writebuf`, `resize`, `free` or `]`")
+                    }
+                }
+            }
+            if p.failed {
+                return f
+            }
+            ir_add_param(mut f, ty, fx)
+            if !irp_accept(mut p, ',') {
+                break
+            }
+        }
+        irp_expect(mut p, ')')
+    }
+    if irp_accept(mut p, '-') {
+        irp_expect(mut p, '>')
+        while !p.failed {
+            f.ret_ty.push(irp_value_type(mut p))
+            if !irp_accept(mut p, ',') {
+                break
+            }
+        }
+    }
+    irp_expect(mut p, '{')
+    if !p.failed && !irp_at_end_of_line(mut p) {
+        irp_fail(mut p, "expected the end of the line")
+    }
+    p.block = -1
+    var first = true
+    while !p.failed {
+        irp_next_line(mut p)
+        irp_skip_empty_lines(mut p)
+        if p.pos >= p.src.len() {
+            irp_fail(mut p, "the function has no closing `}`")
+            return f
+        }
+        if irp_peek(p) == '}' {
+            // Every block a jump names must have been read by now.
+            var e = 0
+            while e < f.edge_blk.len() {
+                if !f.blk_live[f.edge_blk[e]] {
+                    irp_fail(mut p, "b" + str(f.edge_blk[e]) + " is used in `" + f.name + "` but never defined")
+                    return f
+                }
+                e = e + 1
+            }
+            p.pos = p.pos + 1
+            if !irp_at_end_of_line(mut p) {
+                irp_fail(mut p, "expected the end of the line")
+            }
+            break
+        }
+        let at = p.pos
+        p.line_at = at
+        if first && irp_word(mut p) == "frames" {
+            while !p.failed {
+                let bytes = irp_int(mut p)
+                if !p.failed && bytes <= 0 {
+                    irp_fail(mut p, "a frame object has at least one byte")
+                }
+                f.frames.push(bytes)
+                if !irp_accept(mut p, ',') {
+                    break
+                }
+            }
+            if !p.failed && !irp_at_end_of_line(mut p) {
+                irp_fail(mut p, "expected the end of the line")
+            }
+            first = false
+            continue
+        }
+        first = false
+        p.pos = at
+        if irp_peek(p) == 'b' && p.pos + 1 < p.src.len() && p.src[p.pos + 1] >= '0' && p.src[p.pos + 1] <= '9' {
+            irp_block_line(mut p, mut f)
+            continue
+        }
+        // Values before `=`, if the line has them.
+        var names: List[i64] = []
+        let v = irp_value(mut p, mut f)
+        if v >= 0 {
+            names.push(v)
+            while !p.failed && irp_accept(mut p, ',') {
+                let more = irp_value(mut p, mut f)
+                if more < 0 {
+                    irp_fail(mut p, "expected a value name")
+                }
+                names.push(more)
+            }
+            irp_expect(mut p, '=')
+        }
+        if !p.failed {
+            irp_instruction(mut p, mut f, names)
+        }
+    }
+    if p.failed {
+        return f
+    }
+    if f.order.len() == 0 {
+        irp_fail(mut p, "the function `" + f.name + "` has no block")
+        return f
+    }
+    irp_settle_types(mut f)
+    irp_next_line(mut p)
+    return f
+}
+
+// `data "..."`.
+fn irp_data(p: mut IrParser) -> str {
+    var data = ""
+    irp_expect(mut p, '"')
+    while !p.failed {
+        let c = irp_peek(p)
+        if c == 0 || c == '\n' {
+            irp_fail(mut p, "the data has no closing `\"`")
+        } else if c == '"' {
+            p.pos = p.pos + 1
+            break
+        } else if c == '\\' {
+            let next = p.src.slice(p.pos + 1, (p.pos + 2).min(p.src.len()))
+            if next == "\"" || next == "\\" {
+                data.push(next[0])
+                p.pos = p.pos + 2
+            } else if next == "x" && p.pos + 3 < p.src.len() {
+                match p.src.slice(p.pos + 2, p.pos + 4).parse_hex() {
+                    Some(byte) => data.push(byte)
+                    None => irp_fail(mut p, "expected two hexadecimal digits after `\\x`")
+                }
+                p.pos = p.pos + 4
+            } else {
+                irp_fail(mut p, "unknown escape; the escapes are `\\\"`, `\\\\` and `\\xHH`")
+            }
+        } else {
+            data.push(c)
+            p.pos = p.pos + 1
+        }
+    }
+    if !p.failed && !irp_at_end_of_line(mut p) {
+        irp_fail(mut p, "expected the end of the line")
+    }
+    irp_next_line(mut p)
+    return data
+}
+
+fn ir_new_parser(src: str) -> IrParser {
+    var ops: Map[i64] = new_map()
+    var op = 1
+    while op < IR_OP_COUNT {
+        ops.set(ir_op_name(op), op)
+        op = op + 1
+    }
+    return IrParser { src: src, pos: 0, failed: false, message: "", error_at: 0, ops: ops, block: -1, line_at: 0 }
+}
+
+// Reads a whole file of the text form into `m`. The result's message is
+// empty when the text is right.
+fn ir_parse_module(src: str, m: mut IrModule) -> IrParseError {
+    var p = ir_new_parser(src)
+    var seen_data = false
+    irp_skip_empty_lines(mut p)
+    while !p.failed && p.pos < p.src.len() {
+        let at = p.pos
+        if irp_word(mut p) == "data" {
+            if seen_data {
+                p.pos = at
+                irp_fail(mut p, "there can be only one `data` line")
+            }
+            seen_data = true
+            m.data = irp_data(mut p)
+        } else {
+            p.pos = at
+            let f = irp_function(mut p)
+            if !p.failed && ir_find_func(m, f.name) >= 0 {
+                p.pos = at
+                irp_fail(mut p, "the function `" + f.name + "` is defined twice")
+            }
+            // Not `ir_add_func`: pushing here, as the last use of `f`,
+            // moves the function instead of copying it.
+            m.index.set(f.name, m.funcs.len())
+            m.funcs.push(f)
+        }
+        irp_skip_empty_lines(mut p)
+    }
+    if !p.failed {
+        return IrParseError { message: "", line: 0, column: 0 }
+    }
+    var line = 1
+    var column = 1
+    var i = 0
+    while i < p.error_at && i < p.src.len() {
+        if p.src[i] == '\n' {
+            line = line + 1
+            column = 1
+        } else {
+            column = column + 1
+        }
+        i = i + 1
+    }
+    return IrParseError { message: p.message, line: line, column: column }
+}

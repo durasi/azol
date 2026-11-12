@@ -200,7 +200,7 @@
       "patterns": [
         {
           "name": "support.function.builtin.azol",
-          "match": "(?<![A-Za-z0-9_])(?:print|eprint|str|chr|args|read_file|write_file|set_executable|exit)(?![A-Za-z0-9_])(?=\\s*\\()"
+          "match": "(?<![A-Za-z0-9_])(?:print|eprint|str|chr|args|read_file|write_file|set_executable|remove_file|rename_file|clock|embed|exit)(?![A-Za-z0-9_])(?=\\s*\\()"
         },
         {
           "match": "(\\.)((?:[a-z_]|[^\\x00-\\x7F])(?:[A-Za-z0-9_]|[^\\x00-\\x7F])*)(?=\\s*\\()",

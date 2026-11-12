@@ -1,0 +1,127 @@
+# From the tests of the first compiler: src/sema.rs, `strings_and_nested_lists_are_accepted`.
+==== 1
+---- file a.azl (no newline at end)
+fn main() {
+let a = "x" + "y"
+let b = a + str(1) + str(true)
+if a == b || a != "xy" {
+print(a.len())
+}
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 7 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 8921522191e3acfb35eeb22de57f5f9014072e983beda271250c732b68ba7636
+x86_64-linux 9ba2583068586f0bb6dd119e22f09f43ee148b5dd699f0c7ab3684805b834da6
+aarch64-linux 33d224be37229bb757511084c446a720c901d7c6f3638dad8a4e3b018c06e105
+==== 2
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+var grid = [[1, 2], [3]]
+grid.push([4])
+grid[0].push(5)
+grid[1][0] = 6
+let row = grid.pop()
+for line in grid {
+for x in line {
+print(x + row.len())
+}
+}
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 29 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 5173eea1ac04ee7c67de46c4170a30d90478d6510c631a5c2011592b508b035d
+x86_64-linux 03bf5d16fd3c8de23f9669a26849ee23648adc75f3de4537f7a105c7a633e637
+aarch64-linux 51d2acd029092cf99de8710b0a5229abfcd611f5f21631937466f049235df89b
+==== 3
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+var bags = [Bag { items: [1], name: "a" }]
+bags[0].items.push(2)
+bags.push(bags[0])
+var names: List[str] = []
+for b in bags {
+names.push(b.name + "!")
+}
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 26 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 48423a348e0e7bd02057c1205095caa917aa685e173e9af01cf07e5396e16a19
+x86_64-linux 655c7e0452b55b041f604f9587dbdddd0c144eee46dcd351e78b5b234a33f1f9
+aarch64-linux fa3f2a53721d3273ddded35209a2d199bd328f7bb5af466350fc74516b78b045
+==== 4
+---- file a.azl (no newline at end)
+struct Node {
+ value: i64
+ children: List[Node]
+}
+fn size(n: Node) -> i64 {
+ var total = 1
+ for child in n.children {
+ total = total + size(child)
+ }
+ return total
+}
+fn main() {
+ let leaf = Node { value: 1, children: [] }
+ let root = Node { value: 0, children: [leaf, leaf] }
+ print(size(root))
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 16 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 3c5d8dd00da8276f84b17ee70cb62f308a5bc88af61ff8b82f39191a85a8e34f
+x86_64-linux 598edb56ce7950637ca72432541a9434e1c562301ae520533f85730b677fc6ef
+aarch64-linux a79e321ddc09d453507ce675b3bc71c636f950e9ce03407fd067870cc3500148

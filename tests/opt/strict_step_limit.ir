@@ -1,0 +1,9 @@
+; run: main --steps 1000
+; err: ir-interp: more than 1000 instructions were run
+; exit: 3
+fn main() {
+b0:
+    jump b1
+b1:
+    jump b1
+}

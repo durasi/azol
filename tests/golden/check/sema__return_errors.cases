@@ -1,0 +1,24 @@
+# From the tests of the first compiler: src/sema.rs, `return_errors`.
+==== 1
+---- file a.azl (no newline at end)
+fn f(a: i64) -> i64 {
+ if a > 0 {
+ return 1
+ } else if a < 0 {
+ return 2
+ } else {
+ return 3
+ }
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 11 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos c086135704e106a378cbc499aabc61e3601ccb90ff8fe981fed5442edd4576b1
+x86_64-linux 09fb09d918b36f993fba84460639db0c7203b49043fe2ff3921dcdf4cabdd238
+aarch64-linux e23226beefe628a0e2edc52b4e486550fd8e0cde68b977a52fb46cdc6fbc042c

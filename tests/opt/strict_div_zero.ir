@@ -1,0 +1,12 @@
+; A division by zero that no check guards is a mistake of whoever wrote
+; the function, and the interpreter says so.
+; run: main 5 0
+; err: ir-interp: `sdiv` by zero: the check before it is missing
+; exit: 3
+; run: main 5 2
+; out: => 2
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v0 = sdiv p0, p1
+    ret v0
+}

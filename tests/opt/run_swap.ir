@@ -1,0 +1,16 @@
+; All arguments of a jump are read before any parameter is set: the
+; two values change places on every round. Three rounds from (1, 2).
+; run:
+; out: => 2, 1
+fn main() -> i64, i64 {
+b0:
+    jump b1(1, 2, 0)
+b1(v0: i64, v1: i64, v2: i64):
+    v3 = slt v2, 3
+    br v3, b2, b3
+b2:
+    v4 = add v2, 1
+    jump b1(v1, v0, v4)
+b3:
+    ret v0, v1
+}

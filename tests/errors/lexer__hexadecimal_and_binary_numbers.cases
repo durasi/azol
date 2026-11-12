@@ -1,0 +1,131 @@
+# From the tests of the first compiler: src/lexer.rs, `hexadecimal_and_binary_numbers`.
+==== 1
+---- file a.azl (no newline at end)
+0x
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0105]: a hexadecimal number is `0x` followed by the digits 0-9 and a-f, as in `0x1F`
+ --> a.azl:1:1
+  |
+1 | 0x
+  | ^
+---- asserted 1:1 a hexadecimal number is `0x` followed by the digits 0-9 and a-f, as in `0x1F`
+==== 2
+---- file a.azl (no newline at end)
+0b
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0105]: a binary number is `0b` followed by the digits 0 and 1, as in `0b1010`
+ --> a.azl:1:1
+  |
+1 | 0b
+  | ^
+---- asserted 1:1 a binary number is `0b` followed by the digits 0 and 1, as in `0b1010`
+==== 3
+---- file a.azl (no newline at end)
+0x_
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0105]: a hexadecimal number is `0x` followed by the digits 0-9 and a-f, as in `0x1F`
+ --> a.azl:1:1
+  |
+1 | 0x_
+  | ^
+---- asserted 1:1 a hexadecimal number is `0x` followed by the digits 0-9 and a-f, as in `0x1F`
+==== 4
+---- file a.azl (no newline at end)
+0xG
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0105]: a hexadecimal number is `0x` followed by the digits 0-9 and a-f, as in `0x1F`
+ --> a.azl:1:1
+  |
+1 | 0xG
+  | ^
+---- asserted 1:1 a hexadecimal number is `0x` followed by the digits 0-9 and a-f, as in `0x1F`
+==== 5
+---- file a.azl (no newline at end)
+0b2
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0105]: a binary number is `0b` followed by the digits 0 and 1, as in `0b1010`
+ --> a.azl:1:1
+  |
+1 | 0b2
+  | ^
+---- asserted 1:1 a binary number is `0b` followed by the digits 0 and 1, as in `0b1010`
+==== 6
+---- file a.azl (no newline at end)
+0b102
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0105]: a binary number is `0b` followed by the digits 0 and 1, as in `0b1010`
+ --> a.azl:1:1
+  |
+1 | 0b102
+  | ^
+---- asserted 1:1 a binary number is `0b` followed by the digits 0 and 1, as in `0b1010`
+==== 7
+---- file a.azl (no newline at end)
+0x1Fz
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0105]: a hexadecimal number is `0x` followed by the digits 0-9 and a-f, as in `0x1F`
+ --> a.azl:1:1
+  |
+1 | 0x1Fz
+  | ^
+---- asserted 1:1 a hexadecimal number is `0x` followed by the digits 0-9 and a-f, as in `0x1F`
+==== 8
+---- file a.azl (no newline at end)
+0b1_x
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0105]: a binary number is `0b` followed by the digits 0 and 1, as in `0b1010`
+ --> a.azl:1:1
+  |
+1 | 0b1_x
+  | ^
+---- asserted 1:1 a binary number is `0b` followed by the digits 0 and 1, as in `0b1010`
+==== 9
+---- file a.azl (no newline at end)
+0b12
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0105]: a binary number is `0b` followed by the digits 0 and 1, as in `0b1010`
+ --> a.azl:1:1
+  |
+1 | 0b12
+  | ^
+---- asserted 1:1 a binary number is `0b` followed by the digits 0 and 1, as in `0b1010`
+==== 10
+---- file a.azl (no newline at end)
+0xZ
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0105]: a hexadecimal number is `0x` followed by the digits 0-9 and a-f, as in `0x1F`
+ --> a.azl:1:1
+  |
+1 | 0xZ
+  | ^
+---- asserted 1:1 a hexadecimal number is `0x` followed by the digits 0-9 and a-f, as in `0x1F`

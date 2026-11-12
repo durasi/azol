@@ -1,0 +1,18 @@
+# From the tests of the first compiler: src/x64.rs, `records_runtime_calls_and_text_references`.
+==== 1
+---- file a.azl
+fn main() {
+    print("hi")
+    print(1 + 2)
+}
+
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 5 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 1766a8688ce156ab729797d69f0ee9e9e64b72a0f0a97db685b00bd008598094
+x86_64-linux 0349bbcdc9cd38d0dd320d96062dc5b618027464056c703a2e77233975bec98a
+aarch64-linux 735c394a60cd438202365f723856d13c58861c91d56ce7affbbdaaaa0440186b

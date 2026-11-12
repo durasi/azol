@@ -1,0 +1,356 @@
+# From the tests of the first compiler: src/sema.rs, `enum_value_errors`.
+==== 1
+---- file a.azl (no newline at end)
+fn main() {
+let x = None
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0601]: cannot tell which `Option` this is; give the variable a type, as in `let x: Option[i64] = ...`
+ --> a.azl:2:9
+  |
+2 | let x = None
+  |         ^
+---- asserted 2:9 cannot tell which `Option` this is; give the variable a type, as in `let x: Option[i64] = ...`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0601","message":"cannot tell which `Option` this is; give the variable a type, as in `let x: Option[i64] = ...`","file":"a.azl","line":2,"column":9,"end_line":2,"end_column":13,"source":"let x = None","rule":"The type arguments of a generic type or function come from the values given or from the type expected at that place; when neither settles them they must be written.","help":"Give the variable a type."}
+{"summary":{"errors":1,"files":1}}
+==== 2
+---- file a.azl (no newline at end)
+fn main() {
+let x = Ok(1)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0601]: cannot tell which `Result` this is; give the variable a type, as in `let x: Result[i64, i64] = ...`
+ --> a.azl:2:9
+  |
+2 | let x = Ok(1)
+  |         ^
+---- asserted 2:9 cannot tell which `Result` this is; give the variable a type, as in `let x: Result[i64, i64] = ...`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0601","message":"cannot tell which `Result` this is; give the variable a type, as in `let x: Result[i64, i64] = ...`","file":"a.azl","line":2,"column":9,"end_line":2,"end_column":11,"source":"let x = Ok(1)","rule":"The type arguments of a generic type or function come from the values given or from the type expected at that place; when neither settles them they must be written.","help":"Give the variable a type."}
+{"summary":{"errors":1,"files":1}}
+==== 3
+---- file a.azl (no newline at end)
+fn main() {
+let x: Option[i64] = Some("a")
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: argument 1 of `Some` needs `i64` but this is `str`
+ --> a.azl:2:27
+  |
+2 | let x: Option[i64] = Some("a")
+  |                           ^
+---- asserted 2:27 argument 1 of `Some` needs `i64` but this is `str`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"argument 1 of `Some` needs `i64` but this is `str`","file":"a.azl","line":2,"column":27,"end_line":2,"end_column":30,"source":"let x: Option[i64] = Some(\"a\")","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 4
+---- file a.azl (no newline at end)
+fn main() {
+let x: Option[i64] = Ok(1)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0601]: cannot tell which `Result` this is; give the variable a type, as in `let x: Result[i64, i64] = ...`
+ --> a.azl:2:22
+  |
+2 | let x: Option[i64] = Ok(1)
+  |                      ^
+---- asserted 2:22 cannot tell which `Result` this is; give the variable a type, as in `let x: Result[i64, i64] = ...`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0601","message":"cannot tell which `Result` this is; give the variable a type, as in `let x: Result[i64, i64] = ...`","file":"a.azl","line":2,"column":22,"end_line":2,"end_column":24,"source":"let x: Option[i64] = Ok(1)","rule":"The type arguments of a generic type or function come from the values given or from the type expected at that place; when neither settles them they must be written.","help":"Give the variable a type."}
+{"summary":{"errors":1,"files":1}}
+==== 5
+---- file a.azl (no newline at end)
+fn main() {
+let x: Option[bool] = Some(1)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: argument 1 of `Some` needs `bool` but this is `i64`
+ --> a.azl:2:28
+  |
+2 | let x: Option[bool] = Some(1)
+  |                            ^
+---- asserted 2:28 argument 1 of `Some` needs `bool` but this is `i64`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"argument 1 of `Some` needs `bool` but this is `i64`","file":"a.azl","line":2,"column":28,"end_line":2,"end_column":29,"source":"let x: Option[bool] = Some(1)","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 6
+---- file a.azl (no newline at end)
+fn main() {
+let x: Option[str] = Some(1 > 2)
+let y: Option[i64] = x
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: argument 1 of `Some` needs `str` but this is `bool`
+ --> a.azl:2:27
+  |
+2 | let x: Option[str] = Some(1 > 2)
+  |                           ^
+---- asserted 2:27 argument 1 of `Some` needs `str` but this is `bool`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"argument 1 of `Some` needs `str` but this is `bool`","file":"a.azl","line":2,"column":27,"end_line":2,"end_column":32,"source":"let x: Option[str] = Some(1 > 2)","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 7
+---- file a.azl (no newline at end)
+fn main() {
+let x = Some(1)
+let y: Option[bool] = x
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0301]: expected `Option[bool]` but this is `Option[i64]`
+ --> a.azl:3:23
+  |
+3 | let y: Option[bool] = x
+  |                       ^
+---- asserted 3:23 expected `Option[bool]` but this is `Option[i64]`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0301","message":"expected `Option[bool]` but this is `Option[i64]`","file":"a.azl","line":3,"column":23,"end_line":3,"end_column":24,"source":"let y: Option[bool] = x","rule":"A value stored in a variable or a place has exactly the type of that variable or place; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 8
+---- file a.azl (no newline at end)
+fn main() {
+let x = Some(1, 2)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0309]: `Some` holds 1 value but 2 were given
+ --> a.azl:2:9
+  |
+2 | let x = Some(1, 2)
+  |         ^
+---- asserted 2:9 `Some` holds 1 value but 2 were given
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0309","message":"`Some` holds 1 value but 2 were given","file":"a.azl","line":2,"column":9,"end_line":2,"end_column":13,"source":"let x = Some(1, 2)","rule":"A call gives exactly one argument for each parameter, and a variant exactly one value for each of its fields."}
+{"summary":{"errors":1,"files":1}}
+==== 9
+---- file a.azl (no newline at end)
+fn main() {
+let x = Some
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0312]: `Some` holds 1 value; write `Some(...)`
+ --> a.azl:2:9
+  |
+2 | let x = Some
+  |         ^
+---- asserted 2:9 `Some` holds 1 value; write `Some(...)`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0312","message":"`Some` holds 1 value; write `Some(...)`","file":"a.azl","line":2,"column":9,"end_line":2,"end_column":13,"source":"let x = Some","rule":"A variant is written with one value for each of its fields in `(...)`, and without parentheses when it has none."}
+{"summary":{"errors":1,"files":1}}
+==== 10
+---- file a.azl (no newline at end)
+fn main() {
+let x: Option[i64] = None()
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0312]: `None` holds no value; write it without `()`
+ --> a.azl:2:22
+  |
+2 | let x: Option[i64] = None()
+  |                      ^
+---- asserted 2:22 `None` holds no value; write it without `()`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0312","message":"`None` holds no value; write it without `()`","file":"a.azl","line":2,"column":22,"end_line":2,"end_column":26,"source":"let x: Option[i64] = None()","rule":"A variant is written with one value for each of its fields in `(...)`, and without parentheses when it has none.","fix":{"file":"a.azl","line":2,"column":26,"end_line":2,"end_column":28,"replacement":""}}
+{"summary":{"errors":1,"files":1}}
+==== 11
+---- file a.azl (no newline at end)
+fn main() {
+let x = Some(print(1))
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0310]: this expression has no value to store
+ --> a.azl:2:14
+  |
+2 | let x = Some(print(1))
+  |              ^
+---- asserted 2:14 this expression has no value to store
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0310","message":"this expression has no value to store","file":"a.azl","line":2,"column":14,"end_line":2,"end_column":19,"source":"let x = Some(print(1))","rule":"A call to a function that returns nothing has no value and cannot be stored, passed, compared or matched on."}
+{"summary":{"errors":1,"files":1}}
+==== 12
+---- file a.azl (no newline at end)
+fn main() {
+let x = Some(1)
+if x == x {
+}
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0311]: `==` works only on enums whose variants hold no values; use `match` for `Option[i64]`
+ --> a.azl:3:4
+  |
+3 | if x == x {
+  |    ^
+---- asserted 3:4 `==` works only on enums whose variants hold no values; use `match` for `Option[i64]`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0311","message":"`==` works only on enums whose variants hold no values; use `match` for `Option[i64]`","file":"a.azl","line":3,"column":4,"end_line":3,"end_column":5,"source":"if x == x {","rule":"`==` and `!=` compare numbers, `bool`s, strings and enums whose variants hold no values."}
+{"summary":{"errors":1,"files":1}}
+==== 13
+---- file a.azl (no newline at end)
+fn main() {
+let x = Some(1)
+print(x.value)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0206]: `Option[i64]` has no fields; use `match` to look inside it
+ --> a.azl:3:9
+  |
+3 | print(x.value)
+  |         ^
+---- asserted 3:9 `Option[i64]` has no fields; use `match` to look inside it
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0206","message":"`Option[i64]` has no fields; use `match` to look inside it","file":"a.azl","line":3,"column":9,"end_line":3,"end_column":14,"source":"print(x.value)","rule":"Only structs have fields, and only the ones they declare."}
+{"summary":{"errors":1,"files":1}}
+==== 14
+---- file a.azl (no newline at end)
+fn main() {
+let x = Some(1)
+print(x)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0308]: `print` takes an `i64`, a `bool` or a `str` but this is `Option[i64]`
+ --> a.azl:3:7
+  |
+3 | print(x)
+  |       ^
+---- asserted 3:7 `print` takes an `i64`, a `bool` or a `str` but this is `Option[i64]`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0308","message":"`print` takes an `i64`, a `bool` or a `str` but this is `Option[i64]`","file":"a.azl","line":3,"column":7,"end_line":3,"end_column":8,"source":"print(x)","rule":"`print` and `str` work on numbers, `bool`s and (for `print`) strings only."}
+{"summary":{"errors":1,"files":1}}
+==== 15
+---- file a.azl (no newline at end)
+enum E {
+ A
+}
+fn main() {
+ let e = E
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0210]: `E` is an enum; create a value with one of its variants
+ --> a.azl:5:10
+  |
+5 |  let e = E
+  |          ^
+---- asserted 5:10 `E` is an enum; create a value with one of its variants
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0210","message":"`E` is an enum; create a value with one of its variants","file":"a.azl","line":5,"column":10,"end_line":5,"end_column":11,"source":" let e = E","rule":"Functions are called, structs are built with `{ ... }`, enums through their variants; none of them is a value by itself."}
+{"summary":{"errors":1,"files":1}}
+==== 16
+---- file a.azl (no newline at end)
+enum Pair[T] {
+ Two(T, T)
+}
+fn main() {
+ let p = Two(1, true)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: argument 2 of `Two` needs `i64` but this is `bool`
+ --> a.azl:5:17
+  |
+5 |  let p = Two(1, true)
+  |                 ^
+---- asserted 5:17 argument 2 of `Two` needs `i64` but this is `bool`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"argument 2 of `Two` needs `i64` but this is `bool`","file":"a.azl","line":5,"column":17,"end_line":5,"end_column":21,"source":" let p = Two(1, true)","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 17
+---- file a.azl (no newline at end)
+enum Bag[T] {
+ Full(List[T])
+}
+fn main() {
+ let b = Full(1)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: argument 1 of `Full` needs `List[T]` but this is `i64`
+ --> a.azl:5:15
+  |
+5 |  let b = Full(1)
+  |               ^
+---- asserted 5:15 argument 1 of `Full` needs `List[T]` but this is `i64`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"argument 1 of `Full` needs `List[T]` but this is `i64`","file":"a.azl","line":5,"column":15,"end_line":5,"end_column":16,"source":" let b = Full(1)","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}

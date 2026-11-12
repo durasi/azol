@@ -1,0 +1,5 @@
+; parse: 4:10: unknown kind of stop `overflow`
+fn main() {
+b0:
+    trap overflow
+}

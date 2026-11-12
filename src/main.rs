@@ -374,7 +374,7 @@ fn run_parse(path: &str, time_only: bool) -> ExitCode {
 }
 
 /// The part of the standard library that is written in azoL.
-const PRELUDE: &str = include_str!("prelude.azl");
+const PRELUDE: &str = include_str!("../lib/prelude.azl");
 
 /// Reads the files of a program into one text. All source files, and
 /// after them the standard library's source, follow each other in it,
@@ -488,7 +488,9 @@ fn run_build(arguments: &BuildArguments, check_only: bool) -> ExitCode {
     };
     let parsed = started.elapsed().as_secs_f64();
 
-    let program = match sema::check_with_prelude(&ast, &src, prelude_start as u32) {
+    // Where each file starts, for `embed`, which reads next to its source.
+    let file_starts: Vec<(u32, &str)> = files.iter().map(|file| (file.start as u32, file.path)).collect();
+    let program = match sema::check_with_files(&ast, &src, prelude_start as u32, &file_starts) {
         Ok(program) => program,
         Err(errors) => {
             if let Some(err) = errors.iter().find(|err| err.offset as usize >= prelude_start) {

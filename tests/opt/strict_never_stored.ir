@@ -1,0 +1,13 @@
+; Bytes of a new block or a frame object mean nothing until they are
+; stored; reading them is a mistake.
+; run:
+; err: ir-interp: a load of bytes that were never stored
+; exit: 3
+fn main() -> i64 {
+    frames 16
+b0:
+    v0 = frame 0
+    store i64, v0, 0, 1  [frame 0]
+    v1 = load i64, v0, 8  [frame 0]
+    ret v1
+}

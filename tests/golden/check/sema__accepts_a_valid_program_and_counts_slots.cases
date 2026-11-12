@@ -1,0 +1,20 @@
+# From the tests of the first compiler: src/sema.rs, `accepts_a_valid_program_and_counts_slots`.
+==== 1
+---- file a.azl (no newline at end)
+fn add(a: i64, b: i64) -> i64 {
+ let c = a + b
+ return c
+}
+fn main() -> i64 {
+ return add(1, 2)
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 7 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos a4d07ab9a79bc9ec56e18e7c126ab38378ddf17666e99849ecfb50d9b7dea54a
+x86_64-linux 2d678d237af27626e5088be1c76618219f6309790731d25d8a9ae951cf84021b
+aarch64-linux 6e00505b5d09d7338b45e6af13ca1a39105d32c50479c61c146bf15a37a9ca17

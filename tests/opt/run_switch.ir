@@ -1,0 +1,21 @@
+; run: main 1
+; out: => 100
+; run: main 2
+; out: => 202
+; run: main -3
+; out: => 300
+; run: main 99
+; out: => -1
+fn main(p0: i64) -> i64 {
+b0:
+    switch p0, 1 -> b1, 2 -> b2(p0), -3 -> b3, default b4
+b1:
+    ret 100
+b2(v0: i64):
+    v1 = add v0, 200
+    ret v1
+b3:
+    ret 300
+b4:
+    ret -1
+}

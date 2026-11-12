@@ -1,0 +1,32 @@
+# From the tests of the first compiler: src/format.rs, `empty_and_comment_only_files`.
+==== 1
+---- stdin (empty)
+---- run fmt -
+---- exit 0
+---- stdout (empty)
+---- stderr (empty)
+==== 2
+---- stdin
+
+
+  
+---- run fmt -
+---- exit 0
+---- stdout (empty)
+---- stderr (empty)
+==== 3
+---- stdin (no newline at end)
+  // only a comment  
+---- run fmt -
+---- exit 0
+---- stdout
+// only a comment
+---- stderr (empty)
+==== 4
+---- stdin
+// only a comment
+---- run fmt -
+---- exit 0
+---- stdout
+// only a comment
+---- stderr (empty)

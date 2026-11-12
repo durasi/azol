@@ -1,0 +1,8 @@
+; verify: main: b0: v0 = addr @data+9: the address is outside the data, which has 3 bytes
+data "abc"
+
+fn main() -> ptr {
+b0:
+    v0 = addr @data+9
+    ret v0
+}

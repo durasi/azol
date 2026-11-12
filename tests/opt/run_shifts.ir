@@ -1,0 +1,20 @@
+; Shifts use the low six bits of the count: 64 is 0 and 65 is 1.
+; run: main 1 0
+; out: => 1, 1, 1
+; run: main 1 63
+; out: => -9223372036854775808, 0, 0
+; run: main -8 1
+; out: => -16, -4, 9223372036854775804
+; run: main -8 64
+; out: => -8, -8, -8
+; run: main -8 65
+; out: => -16, -4, 9223372036854775804
+; run: main -1 63
+; out: => -9223372036854775808, -1, 1
+fn main(p0: i64, p1: i64) -> i64, i64, i64 {
+b0:
+    v0 = shl p0, p1
+    v1 = sar p0, p1
+    v2 = shr p0, p1
+    ret v0, v1, v2
+}

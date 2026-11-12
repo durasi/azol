@@ -1,0 +1,221 @@
+# From the tests of the first compiler: src/sema.rs, `list_programs_that_are_accepted`.
+==== 1
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+var xs = [1, 2, 3]
+xs.push(4)
+xs[0] = xs[1] + xs.len()
+let last = xs.pop()
+print(last)
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 24 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 7669b8795c8d221f4230348e00eafa0c941c8cf40591868bf84ddc793a7c7150
+x86_64-linux c048631b2f1ac572b60572bbf16e85e7f96bb102b2ddc38127388af86246b4fa
+aarch64-linux 90556f149fa84ad2d023dd2bd7ee5d54d5f701e82964a10a378599b03e4612ad
+==== 2
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+var xs: List[i64] = []
+xs = []
+xs = make()
+grow(mut xs)
+print(total(xs) + total([]) + total(make()))
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 24 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos efa41d2b25dcdb1c64c774b74eac05396a9fe36360722f8f490d56833f683b00
+x86_64-linux 7ad4ff0c105bc406d53a3307ea57a9562ddbcc6b5acdd74ccb521fb19a67c5ea
+aarch64-linux 465a495945aa8d6680e8c2b784e21ce7a7b6f3e74dcb68a10d41289bfaa16d9f
+==== 3
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+let ps = [Point { x: 1, y: 2 }]
+print(ps[0].x)
+for i, p in ps {
+print(i + p.y)
+}
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 24 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 26c95c5417a6eaf330d7e671a63c91065c33b98e2fc60c4856b508da098485e8
+x86_64-linux a28a7af2bde3472117c5444c54da0b04f3c86c7ac1ca4b092e0fa8b184dc2134
+aarch64-linux ad3c8a0d448ed365d1b57e02ebc4a78e71ce8d18148c5b00703a641a597edc7a
+==== 4
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+var b = Bag { items: [1], name: "a" }
+b.items.push(2)
+b.items[0] = 5
+let c = b
+for x in c.items {
+b.items.push(x)
+}
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 26 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 3210601cfb26e9b605fdd657d3e4cedb55f42f5998c6ec0250b5742616229308
+x86_64-linux 6ec7048dc4cbb442cb5bfbb5f32cac884f0ace5243970a645fbe990320ea84f4
+aarch64-linux 9f3997069465dd9ea2ca183a535dca1158cec832ed5473a448a0fb317a637395
+==== 5
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+let names = ["a", "b"]
+let flags = [true, false]
+for n in names {
+print(n)
+}
+for f in flags {
+print(f)
+}
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 27 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 781b1ad0d4c3f7cc943bb7cfd017064b16b7e0b01bb8902e6a731fd89642fc4f
+x86_64-linux 433a04901e68bb342998fc6ef847207cd4c682fde581d3632fcf638e471804cc
+aarch64-linux 71021bf9908d088daf394b4c39a2725cecd5050554e5861802af0ce9f04364b6
+==== 6
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+var xs = [1]
+xs.push(xs[0])
+xs.push(xs.len())
+xs.push(xs.pop())
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 23 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 9a0479ed11d537021082b63c323ee349e66cb46437815e573d81ea51a74e3b8b
+x86_64-linux ab76fd9c35c142b94fc42441b452cab3864671d0e6c9d234f3b3f1629e3fb958
+aarch64-linux 7313bcc4329b48efbddbf25338b978ba78ec8c2b73d150b0a57c6959fa3a5a52

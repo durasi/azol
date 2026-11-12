@@ -1,0 +1,93 @@
+# From the tests of the first compiler: src/format.rs, `minus_is_unary_or_binary_by_what_stands_before_it`.
+==== 1
+---- stdin
+const A = 1-2
+---- run fmt -
+---- exit 0
+---- stdout
+const A = 1 - 2
+---- stderr (empty)
+==== 2
+---- stdin
+const A = 1 - 2
+---- run fmt -
+---- exit 0
+---- stdout
+const A = 1 - 2
+---- stderr (empty)
+==== 3
+---- stdin
+const A = - 2
+---- run fmt -
+---- exit 0
+---- stdout
+const A = -2
+---- stderr (empty)
+==== 4
+---- stdin
+const A = -2
+---- run fmt -
+---- exit 0
+---- stdout
+const A = -2
+---- stderr (empty)
+==== 5
+---- stdin
+const A = f( - 2 , a - - 1 )[ - 1 ]-1
+---- run fmt -
+---- exit 0
+---- stdout
+const A = f(-2, a - -1)[-1] - 1
+---- stderr (empty)
+==== 6
+---- stdin
+const A = f(-2, a - -1)[-1] - 1
+---- run fmt -
+---- exit 0
+---- stdout
+const A = f(-2, a - -1)[-1] - 1
+---- stderr (empty)
+==== 7
+---- stdin
+const A = ! ! a
+---- run fmt -
+---- exit 0
+---- stdout
+const A = !!a
+---- stderr (empty)
+==== 8
+---- stdin
+const A = !!a
+---- run fmt -
+---- exit 0
+---- stdout
+const A = !!a
+---- stderr (empty)
+==== 9
+---- stdin
+fn f() {
+    g()
+    - 1
+}
+---- run fmt -
+---- exit 0
+---- stdout
+fn f() {
+    g()
+    -1
+}
+---- stderr (empty)
+==== 10
+---- stdin
+fn f() {
+    g()
+    -1
+}
+---- run fmt -
+---- exit 0
+---- stdout
+fn f() {
+    g()
+    -1
+}
+---- stderr (empty)

@@ -1,0 +1,6 @@
+; verify: get: b0: v0 = load i64, p0, 0  [param 0]: parameter p0 is not declared `read`
+fn get(p0: ptr [param 0 write]) -> i64 {
+b0:
+    v0 = load i64, p0, 0  [param 0]
+    ret v0
+}

@@ -1,0 +1,6 @@
+; parse: 4:10: unknown instruction `plus`
+fn main() -> i64 {
+b0:
+    v0 = plus 1, 2
+    ret v0
+}

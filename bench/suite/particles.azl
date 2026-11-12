@@ -1,0 +1,81 @@
+// particles: an array of structs updated in place.
+// Algorithm: every round moves each particle by its velocity and bounces
+// it off the walls; an energy sum is sampled every 500 rounds.
+// Sizes: 2,000 particles, 200,000 rounds; small: 200 particles, 20,000 rounds.
+// Output: the sampled energies plus the final energy.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+struct Particle {
+    x: i64
+    y: i64
+    vx: i64
+    vy: i64
+}
+
+const WIDTH = 100000
+const HEIGHT = 60000
+
+fn step(ps: mut List[Particle]) {
+    var i = 0
+    while i < ps.len() {
+        var x = ps[i].x + ps[i].vx
+        var y = ps[i].y + ps[i].vy
+        if x < 0 || x > WIDTH {
+            ps[i].vx = 0 - ps[i].vx
+            x = x + 2 * ps[i].vx
+        }
+        if y < 0 || y > HEIGHT {
+            ps[i].vy = 0 - ps[i].vy
+            y = y + 2 * ps[i].vy
+        }
+        ps[i].x = x
+        ps[i].y = y
+        i = i + 1
+    }
+}
+
+fn energy(ps: List[Particle]) -> i64 {
+    var total = 0
+    for p in ps {
+        total = total + p.x * 3 + p.y * 5 + p.vx * p.vx + p.vy * p.vy
+    }
+    return total
+}
+
+fn main() {
+    let count = size(2000, 200)
+    let rounds = size(200000, 20000)
+    var ps: List[Particle] = []
+    var seed = 7
+    var n = 0
+    while n < count {
+        seed = seed * 48271 % 2147483647
+        let x = seed % WIDTH
+        seed = seed * 48271 % 2147483647
+        let y = seed % HEIGHT
+        seed = seed * 48271 % 2147483647
+        let vx = seed % 201 - 100
+        seed = seed * 48271 % 2147483647
+        let vy = seed % 201 - 100
+        ps.push(Particle { x: x, y: y, vx: vx, vy: vy })
+        n = n + 1
+    }
+    var round = 0
+    var total = 0
+    while round < rounds {
+        step(mut ps)
+        if round % 500 == 0 {
+            total = total + energy(ps) % 1000003
+        }
+        round = round + 1
+    }
+    print(total + energy(ps))
+}

@@ -1,0 +1,28 @@
+; Dominators through a chain with a shortcut: b4 is reached from b1
+; (the shortcut) and from b3, so b1 is the closest block every path to
+; it goes through. A value defined in b1 is alive until its use in b5.
+; cfg:
+; out: fn main
+; out:   order: b0 b1 b2 b3 b4 b5
+; out:   idom: b0=b0 b1=b0 b2=b1 b3=b2 b4=b1 b5=b4
+; out:   live b0: in p0 | out p0
+; out:   live b1: in p0 | out p0 v0
+; out:   live b2: in p0 v0 | out v0
+; out:   live b3: in v0 | out v0
+; out:   live b4: in v0 | out v0
+; out:   live b5: in v0 | out -
+fn main(p0: bool) -> i64 {
+b0:
+    jump b1
+b1:
+    v0 = iconst 9
+    br p0, b2, b4
+b2:
+    br p0, b3, b3
+b3:
+    jump b4
+b4:
+    jump b5
+b5:
+    ret v0
+}

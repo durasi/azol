@@ -1,0 +1,19 @@
+; The text need not list a block after the blocks that dominate it:
+; b1 uses v0, which b2 defines, and b2 comes first on every path.
+; The type of v3 is known only once v1 and v2, further down, are read.
+; run: main 5
+; out: => 6, true
+; run: main -5
+; out: => -4, false
+fn main(p0: i64) -> i64, bool {
+b0:
+    jump b2
+b1:
+    v3 = xor v1, v2
+    ret v0, v3
+b2:
+    v0 = add p0, 1
+    v1 = sgt p0, 0
+    v2 = bconst 0
+    jump b1
+}

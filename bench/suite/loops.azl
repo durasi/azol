@@ -1,0 +1,34 @@
+// loops: integer arithmetic in nested loops.
+// Algorithm: for every pair (i, j) below the size, add a term chosen by
+// the remainder of i * j.
+// Sizes: 20000 x 20000; small: 1500 x 1500.
+// Output: the total.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+fn main() {
+    let n = size(20000, 1500)
+    var total = 0
+    var i = 0
+    while i < n {
+        var j = 0
+        while j < n {
+            let product = i * j
+            if product % 7 == 3 {
+                total = total + product % 11
+            } else {
+                total = total + 1
+            }
+            j = j + 1
+        }
+        i = i + 1
+    }
+    print(total)
+}

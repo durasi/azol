@@ -1,0 +1,10 @@
+; parse: 7:1: the function `f` is defined twice
+fn f() {
+b0:
+    ret
+}
+
+fn f() {
+b0:
+    ret
+}

@@ -1,0 +1,6 @@
+; parse: 4:12: unknown runtime routine `shout`
+fn main() {
+b0:
+    callrt shout(1)
+    ret
+}

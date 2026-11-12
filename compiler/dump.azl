@@ -196,9 +196,9 @@ fn dump_stmt(ast: Ast, src: str, id: i64, depth: i64, out: mut str) {
             out = out + "\n"
             dump_block(ast, src, body, depth + 1, mut out)
         }
-        StmtFor(has_index, index, item, iter, body) => {
+        StmtFor(index, item, iter, body) => {
             out = out + "for "
-            if has_index {
+            if index.len > 0 {
                 dump_span(src, index, mut out)
                 out = out + ", "
             }

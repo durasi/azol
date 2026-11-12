@@ -1,0 +1,56 @@
+// bits: population count, bit reversal and a xorshift generator.
+// Algorithm: step a 64-bit xorshift generator; add the number of set bits
+// and fold in the reversed low 32 bits.
+// azoL has no built-in for counting or reversing bits and its `>>` keeps
+// the sign, so the azoL version writes them out with masks; Rust uses
+// `count_ones` and `reverse_bits`.
+// Sizes: 80,000,000 steps; small: 1,000,000.
+// Output: the bit total and the folded value.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+// `x >> n` as if `x` had no sign.
+fn shift_right(x: i64, n: i64) -> i64 {
+    return (x >> n) & ((1 << (64 - n)) - 1)
+}
+
+fn count_ones(x: i64) -> i64 {
+    var v = x - (shift_right(x, 1) & 0x5555555555555555)
+    v = (v & 0x3333333333333333) + (shift_right(v, 2) & 0x3333333333333333)
+    v = (v + shift_right(v, 4)) & 0x0F0F0F0F0F0F0F0F
+    return shift_right(v * 0x0101010101010101, 56)
+}
+
+// The low 32 bits of `x`, reversed.
+fn reverse32(x: i64) -> i64 {
+    var v = x & 0xFFFFFFFF
+    v = (v >> 1 & 0x55555555) | (v & 0x55555555) << 1
+    v = (v >> 2 & 0x33333333) | (v & 0x33333333) << 2
+    v = (v >> 4 & 0x0F0F0F0F) | (v & 0x0F0F0F0F) << 4
+    v = (v >> 8 & 0x00FF00FF) | (v & 0x00FF00FF) << 8
+    return (v >> 16) | (v & 0xFFFF) << 16
+}
+
+fn main() {
+    let steps = size(80000000, 1000000)
+    var x = 88172645463325252
+    var ones = 0
+    var folded = 0
+    var n = 0
+    while n < steps {
+        x = x ^ x << 13
+        x = x ^ shift_right(x, 7)
+        x = x ^ x << 17
+        ones = ones + count_ones(x)
+        folded = folded ^ reverse32(x)
+        n = n + 1
+    }
+    print(str(ones) + " " + str(folded))
+}

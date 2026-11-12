@@ -1,0 +1,115 @@
+// lru: a least-recently-used cache: a map plus an order list.
+// Algorithm: a map from key to slot and a doubly linked list threaded
+// through index lists; one `put` for every three `get`s, keys skewed toward
+// small numbers.
+// Sizes: 3,000,000 operations, capacity 1,024; small: 100,000 operations.
+// Output: hits, the sum of found values modulo 1000, entries held.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+struct Lru {
+    slots: Map[i64]
+    keys: List[str]
+    values: List[i64]
+    before: List[i64]
+    after: List[i64]
+    newest: i64
+    oldest: i64
+    capacity: i64
+}
+
+fn unlink(c: mut Lru, i: i64) {
+    let b = c.before[i]
+    let a = c.after[i]
+    if b >= 0 {
+        c.after[b] = a
+    } else {
+        c.newest = a
+    }
+    if a >= 0 {
+        c.before[a] = b
+    } else {
+        c.oldest = b
+    }
+}
+
+fn link_newest(c: mut Lru, i: i64) {
+    c.before[i] = -1
+    c.after[i] = c.newest
+    if c.newest >= 0 {
+        c.before[c.newest] = i
+    } else {
+        c.oldest = i
+    }
+    c.newest = i
+}
+
+fn get(c: mut Lru, key: str) -> i64 {
+    match c.slots.get(key) {
+        Some(i) => {
+            unlink(mut c, i)
+            link_newest(mut c, i)
+            return c.values[i]
+        }
+        None => return -1
+    }
+}
+
+fn put(c: mut Lru, key: str, value: i64) {
+    match c.slots.get(key) {
+        Some(i) => {
+            c.values[i] = value
+            unlink(mut c, i)
+            link_newest(mut c, i)
+            return
+        }
+        None => {}
+    }
+    var i = c.keys.len()
+    if i < c.capacity {
+        c.keys.push(key)
+        c.values.push(value)
+        c.before.push(-1)
+        c.after.push(-1)
+    } else {
+        i = c.oldest
+        let evicted = c.keys[i]
+        c.slots.remove(evicted)
+        unlink(mut c, i)
+        c.keys[i] = key
+        c.values[i] = value
+    }
+    c.slots.set(key, i)
+    link_newest(mut c, i)
+}
+
+fn main() {
+    let count = size(3000000, 100000)
+    var c = Lru { slots: new_map(), keys: [], values: [], before: [], after: [], newest: -1, oldest: -1, capacity: 1024 }
+    var seed = 29
+    var hits = 0
+    var total = 0
+    var n = 0
+    while n < count {
+        seed = seed * 48271 % 2147483647
+        let key = "k" + str(seed % 64 * (seed / 64 % 64))
+        if n % 4 == 0 {
+            put(mut c, key, n)
+        } else {
+            let found = get(mut c, key)
+            if found >= 0 {
+                hits = hits + 1
+                total = total + found % 1000
+            }
+        }
+        n = n + 1
+    }
+    print(str(hits) + " " + str(total) + " " + str(c.keys.len()))
+}

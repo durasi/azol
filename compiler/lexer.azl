@@ -120,11 +120,17 @@ fn keyword_kind(src: str, start: i64, len: i64) -> i64 {
 // Splits `src` into tokens, which are added to `tokens`, ending with a
 // `TOK_EOF` token. Returns what went wrong, if anything did.
 fn lex(src: str, tokens: mut Tokens) -> Option[LexError] {
-    let n = src.len()
-    if n > MAX_SOURCE_BYTES {
-        return lex_failure("source file is larger than 4 GiB", 0)
+    return lex_part(src, 0, src.len(), mut tokens)
+}
+
+// The same for the bytes of `src` from `from` up to `n` only, as if they
+// were a text of their own. Positions, also the one of a mistake, are
+// those in `src`.
+fn lex_part(src: str, from: i64, n: i64, tokens: mut Tokens) -> Option[LexError] {
+    if n - from > MAX_SOURCE_BYTES {
+        return lex_failure("source file is larger than 4 GiB", from)
     }
-    var i = 0
+    var i = from
     while i < n {
         let start = i
         let b = src[i]

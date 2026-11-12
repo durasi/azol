@@ -139,7 +139,7 @@ fn x_stmt_inner(g: mut Gen, c: Checker, p: Parser, id: i64) {
             x_patch_from(mut g, exits)
             x_patch_breaks(mut g)
         }
-        StmtFor(has_index, _, _, iter, body) => x_for_stmt(mut g, c, p, id, has_index, iter, body)
+        StmtFor(index, _, iter, body) => x_for_stmt(mut g, c, p, id, index.len > 0, iter, body)
         StmtBreak => {
             let live = g.loop_live[g.loop_live.len() - 1]
             x_drop_live_from(mut g, c, live)
@@ -1634,6 +1634,15 @@ fn x_value(g: mut Gen, c: Checker, p: Parser, id: i64) {
             g.code.push(0xC0)
             return
         }
+        if ty == TY_STR && (op == OP_LT || op == OP_LE || op == OP_GT || op == OP_GE) {
+            x_address(mut g, c, p, lhs)
+            x_push(mut g)
+            x_address(mut g, c, p, rhs)
+            x_mov(mut g, RSI, RAX)
+            x_pop(mut g, RDI)
+            x_string_order(mut g, op)
+            return
+        }
         if ty == TY_STR {
             // `==` and `!=` on strings compare the bytes.
             x_address(mut g, c, p, lhs)
@@ -2091,7 +2100,8 @@ fn x_load_simple_arg(g: mut Gen, c: Checker, arg: i64, by_ref: bool, reg: i64) {
 fn x_arg_by_ref(c: Checker, target: i64, i: i64) -> bool {
     if target >= FIRST_BUILTIN {
         return target == BUILTIN_PRINT_STR || target == BUILTIN_EPRINT || target == BUILTIN_READ_FILE ||
-            target == BUILTIN_WRITE_FILE || target == BUILTIN_SET_EXECUTABLE
+            target == BUILTIN_WRITE_FILE || target == BUILTIN_SET_EXECUTABLE || target == BUILTIN_REMOVE_FILE ||
+            target == BUILTIN_RENAME_FILE || target == BUILTIN_STR_IS_UTF8
     }
     return c.fns[target].param_by_ref[i]
 }
@@ -2107,6 +2117,10 @@ fn x_call(g: mut Gen, c: Checker, p: Parser, id: i64) {
     var receiver = -1
     if g.kinds[callee] == K_FIELD {
         receiver = g.ea[callee]
+    }
+    if target == BUILTIN_STR_PUSH || target == BUILTIN_STR_SET {
+        x_byte_method(mut g, c, p, id, target, receiver)
+        return
     }
     if target == BUILTIN_LEN || target == BUILTIN_LIST_PUSH || target == BUILTIN_LIST_POP || target == BUILTIN_STR_SLICE {
         x_list_method(mut g, c, p, id, target, receiver)
@@ -2194,7 +2208,12 @@ fn x_call(g: mut Gen, c: Checker, p: Parser, id: i64) {
         x_runtime(mut g, RT_EPRINT_STR)
     } else if target == BUILTIN_EXIT {
         x_runtime(mut g, RT_EXIT)
-    } else if target == BUILTIN_READ_FILE || target == BUILTIN_WRITE_FILE || target == BUILTIN_SET_EXECUTABLE {
+    } else if target == BUILTIN_CLOCK {
+        x_runtime(mut g, RT_CLOCK)
+    } else if target == BUILTIN_STR_IS_UTF8 {
+        x_runtime(mut g, RT_STR_IS_UTF8)
+    } else if target == BUILTIN_READ_FILE || target == BUILTIN_WRITE_FILE || target == BUILTIN_SET_EXECUTABLE ||
+        target == BUILTIN_REMOVE_FILE || target == BUILTIN_RENAME_FILE {
         // The routine fills in what the `Result` holds and says which
         // variant it is: 0 for `Ok`, 1 for `Err`.
         x_frame_address(mut g, x_arg(count), tmp + 1)
@@ -2202,6 +2221,10 @@ fn x_call(g: mut Gen, c: Checker, p: Parser, id: i64) {
             x_runtime(mut g, RT_READ_FILE)
         } else if target == BUILTIN_WRITE_FILE {
             x_runtime(mut g, RT_WRITE_FILE)
+        } else if target == BUILTIN_REMOVE_FILE {
+            x_runtime(mut g, RT_REMOVE_FILE)
+        } else if target == BUILTIN_RENAME_FILE {
+            x_runtime(mut g, RT_RENAME_FILE)
         } else {
             x_runtime(mut g, RT_SET_EXECUTABLE)
         }
@@ -2220,6 +2243,136 @@ fn x_call(g: mut Gen, c: Checker, p: Parser, id: i64) {
             x_runtime(mut g, RT_ARGS)
         }
     }
+}
+
+// With the addresses of two strings in rdi and rsi: leaves in rax
+// whether the first comes before, or after, the second, as `op` asks.
+// The bytes are compared as numbers from 0 to 255 up to the first
+// difference; when one string is the start of the other, the shorter
+// one comes first.
+fn x_string_order(g: mut Gen, op: i64) {
+    x_forget(mut g)
+    // the bytes of the first
+    x_load_mem(mut g, R8, RDI, 0)
+    // its length
+    x_load_mem(mut g, RCX, RDI, 8)
+    // the bytes of the second
+    x_load_mem(mut g, R9, RSI, 0)
+    // its length
+    x_load_mem(mut g, RDX, RSI, 8)
+    x_mov(mut g, R10, RCX)
+    x_op(mut g, X_CMP, RDX, R10)
+    // cmovb r10, rdx: the shorter length
+    for byte in [0x4C, 0x0F, 0x42, 0xD2] {
+        g.code.push(byte)
+    }
+    x_op(mut g, X_XOR, RAX, RAX)
+    var cc = CC_AE
+    if op == OP_LT {
+        cc = CC_B
+    } else if op == OP_LE {
+        cc = CC_BE
+    } else if op == OP_GT {
+        cc = CC_A
+    }
+    // compare: cmp rax, r10; jae lengths; movzx edi, byte [r8 + rax];
+    // movzx esi, byte [r9 + rax]; inc rax; cmp edi, esi; je compare;
+    // jmp over; lengths: cmp rcx, rdx; set al
+    let code = [0x4C, 0x39, 0xD0, 0x73, 0x13, 0x41, 0x0F, 0xB6, 0x3C, 0x00, 0x41, 0x0F, 0xB6, 0x34, 0x01, 0x48, 0xFF, 0xC0, 0x39,
+        0xF7, 0x74, 0xEA, 0xEB, 0x03, 0x48, 0x39, 0xD1, 0x0F, 0x90, 0xC0]
+    for at, byte in code {
+        if at == 28 {
+            g.code.push(byte | cc)
+        } else {
+            g.code.push(byte)
+        }
+    }
+    // movzx eax, al
+    for byte in [0x0F, 0xB6, 0xC0] {
+        g.code.push(byte)
+    }
+}
+
+// `s.push(byte)` and `s.set(index, byte)` on a string. The numbers are
+// worked out first; the byte is stored right here when the string owns
+// a buffer with room, and the runtime is asked only to give it one.
+fn x_byte_method(g: mut Gen, c: Checker, p: Parser, id: i64, method: i64, base: i64) {
+    let args_start = g.eb[id]
+    let args_len = g.ec[id]
+    let tmp = c.expr_tmp[g.sh_e + id]
+    var i = 0
+    while i < args_len {
+        x_value(mut g, c, p, p.ast.lists[args_start + i])
+        x_push(mut g)
+        i = i + 1
+    }
+    x_address(mut g, c, p, base)
+    x_forget(mut g)
+    x_mov(mut g, RDI, RAX)
+    // the byte
+    x_pop(mut g, RDX)
+    if method == BUILTIN_STR_PUSH {
+        // length
+        x_load_mem(mut g, R8, RDI, 8)
+        // capacity
+        x_cmp_mem(mut g, R8, RDI, 16)
+        let grow = x_jump_if(mut g, CC_AE)
+        // buffer
+        x_load_mem(mut g, R9, RDI, 0)
+        x_store_byte_index(mut g, R9, R8, RDX)
+        x_op_mem_imm(mut g, ADD_I, RDI, 8, 1)
+        let done = x_jump(mut g)
+        x_patch(mut g, grow)
+        x_one_byte_string(mut g, tmp)
+        x_runtime(mut g, RT_STR_APPEND)
+        x_patch(mut g, done)
+    } else {
+        // the index
+        x_pop(mut g, R8)
+        // length
+        x_cmp_mem(mut g, R8, RDI, 8)
+        // unsigned: also rejects negatives
+        x_runtime_unless(mut g, CC_B, RT_INDEX_FAIL)
+        // capacity
+        x_op_mem_imm(mut g, CMP_I, RDI, 16, 0)
+        let owned = x_jump_if(mut g, CC_NE)
+        // The bytes live in the executable: adding one byte makes the
+        // runtime copy them into a buffer the string owns, and the
+        // length is then put back.
+        x_store_slot(mut g, tmp + 4, R8)
+        x_store_slot(mut g, tmp + 5, RDI)
+        x_one_byte_string(mut g, tmp)
+        x_runtime(mut g, RT_STR_APPEND)
+        x_load(mut g, RDI, tmp + 5)
+        x_load(mut g, R8, tmp + 4)
+        x_load(mut g, RDX, tmp)
+        x_op_mem_imm(mut g, SUB_I, RDI, 8, 1)
+        x_patch(mut g, owned)
+        // buffer
+        x_load_mem(mut g, R9, RDI, 0)
+        x_store_byte_index(mut g, R9, R8, RDX)
+    }
+    x_forget(mut g)
+}
+
+// Makes the byte in rdx a string of one byte in the frame slots from
+// `tmp` (the byte, then pointer, length and capacity 0) and leaves its
+// address in rsi. rdi is kept.
+fn x_one_byte_string(g: mut Gen, tmp: i64) {
+    x_store_slot(mut g, tmp, RDX)
+    x_frame_address(mut g, RSI, tmp)
+    x_store_slot(mut g, tmp + 1, RSI)
+    let disp = x_disp(g, tmp + 2)
+    x_store_imm(mut g, RBP, disp, 1)
+    x_zero_slot(mut g, tmp + 3)
+    x_frame_address(mut g, RSI, tmp + 1)
+}
+
+// `mov byte [base + index], low byte of src`
+fn x_store_byte_index(g: mut Gen, base: i64, index: i64, src: i64) {
+    x_rex_index(mut g, src, index, base)
+    g.code.push(0x88)
+    x_mem_index(mut g, src, base, index, 0, 0)
 }
 
 fn x_list_method(g: mut Gen, c: Checker, p: Parser, id: i64, method: i64, base: i64) {
@@ -2292,6 +2445,30 @@ fn x_list_method(g: mut Gen, c: Checker, p: Parser, id: i64, method: i64, base: 
             x_store_slot(mut g, tmp, RAX)
         }
         x_address(mut g, c, p, base)
+        if elem >= 3 && elem_size <= INLINE_PUSH {
+            // A small struct, enum, string or list is copied into a
+            // list with room right here, slot by slot.
+            x_forget(mut g)
+            // length
+            x_load_mem(mut g, R8, RAX, 8)
+            // capacity
+            x_cmp_mem(mut g, R8, RAX, 16)
+            let full = x_jump_if(mut g, CC_AE)
+            x_imul_imm(mut g, R8, R8, elem_size * 8)
+            // buffer
+            x_load_mem(mut g, R9, RAX, 0)
+            // where the element goes
+            x_op(mut g, X_ADD, R8, R9)
+            var slot = 0
+            while slot < elem_size {
+                x_load(mut g, R9, tmp + slot)
+                x_store_mem(mut g, R8, slot * 8, R9)
+                slot = slot + 1
+            }
+            x_op_mem_imm(mut g, ADD_I, RAX, 8, 1)
+            done = x_jump(mut g)
+            x_patch(mut g, full)
+        }
         x_mov(mut g, RDI, RAX)
         x_frame_address(mut g, RSI, tmp)
         x_mov_imm(mut g, RDX, elem_size * 8)

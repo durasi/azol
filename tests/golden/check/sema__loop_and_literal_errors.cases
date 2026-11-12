@@ -1,0 +1,16 @@
+# From the tests of the first compiler: src/sema.rs, `loop_and_literal_errors`.
+==== 1
+---- file a.azl (no newline at end)
+fn main() {
+let a = 9_223_372_036_854_775_807
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 3 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos d1dd3e4abf7e44192eb80114ae6a2b08b044e850929181dc453b5711e33d540f
+x86_64-linux ab685204a7d1d7bcb793c10611508b26b8bc54606cf1b320ddba49958d707e9e
+aarch64-linux 2922c9ada908cf58546e153822582d1627205b3b076ceade6a10da66b4c35073

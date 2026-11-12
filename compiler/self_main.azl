@@ -1,32 +1,26 @@
 // Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
 
-// azol-self: the azoL compiler written in azoL.
+// The azoL compiler: its command line, and the build from source text
+// to an executable. The stages it calls are in the other files that
+// `compiler/SOURCES` lists; `build.sh` builds them all into `azol`.
+// Built by itself, the compiler produces itself again.
 //
-// It takes the command lines the compiler written in Rust takes
-// (`src/main.rs`) and answers them the same way: the same text on
-// standard output and standard error, the same exit code, the same
-// files. `compiler/check_cli.py` and `compiler/check_self.py` verify
-// that. Built by itself, it produces itself again.
-//
-// What differs, on purpose:
+// It answers every command line as the first azoL compiler, which was
+// written in Rust, did: the same text on standard output and standard
+// error, the same exit code, the same files. `compiler/check_cli.py` and
+// `compiler/check_self.py` verify that against the compiler before a
+// change. Two things were added on purpose:
 //
 // - Which machine it runs on, and so which target it builds for when
 //   none is named, is not found out but said when it is built: by the
 //   one of `host_x86_64_linux.azl`, `host_aarch64_macos.azl` and
 //   `host_aarch64_linux.azl` that is compiled with the other sources.
-//   (The Rust compiler has no such choice for Linux on ARM64 and builds
-//   for macOS there.)
-// - It writes an executable over the file that is there, where the Rust
-//   compiler removes that file first.
-// - It has no clock, so the times in the lines `built ...`,
-//   `checked ...`, `lexed ...` and `parsed ...` are zero.
 // - `build --map <path>` also writes where each function of the program
 //   starts in memory, one `address name` line each, for reading a
-//   profile of the executable (for `x86_64-linux` only). `sema-dump` is not here; the tool
-//   `azol-sema` does that.
+//   profile of the executable (for `x86_64-linux` only).
 //
-// The standard library's source and the runtimes' machine code, which
-// the Rust compiler carries inside itself, are in `embedded.azl` and
+// The standard library's source and the runtimes' machine code are
+// embedded when the compiler is built: see `embedded.azl` and
 // `runtime_arm64.azl`.
 
 const TARGET_AARCH64_MACOS = 0
@@ -39,7 +33,7 @@ fn usage() -> i64 {
 }
 
 // What the system says about a failed file operation, with the number
-// of the error after it, as the Rust compiler prints it.
+// of the error after it, as the first compiler printed it.
 fn os_error(text: str) -> str {
     let texts = ["Operation not permitted", "No such file or directory", "Interrupted system call", "Input/output error",
         "No such device or address", "Bad file descriptor", "Resource temporarily unavailable", "Cannot allocate memory",
@@ -56,17 +50,76 @@ fn os_error(text: str) -> str {
     return text
 }
 
-// The text of a source file. When it cannot be read, says so and sets
-// `failed`.
+// What is said about a source file whose bytes are not UTF-8.
+const NOT_UTF8 = "stream did not contain valid UTF-8"
+
+// The text of a source file. When it cannot be read, or is not UTF-8,
+// says so and sets `failed`.
 fn read_source(path: str, failed: mut bool) -> str {
     match read_file(path) {
-        Ok(text) => return text
+        Ok(text) => {
+            if text.is_utf8() {
+                return text
+            }
+            eprint("error: cannot read '" + path + "': " + NOT_UTF8)
+        }
+        Err(why) => eprint("error: cannot read '" + path + "': " + os_error(why))
+    }
+    failed = true
+    return ""
+}
+
+// Nanoseconds as milliseconds with three decimals: `12.345`.
+fn millis(ns: i64) -> str {
+    let micros = (ns + 500) / 1000
+    let rest = micros % 1000
+    var digits = str(rest)
+    if rest < 10 {
+        digits = "00" + digits
+    } else if rest < 100 {
+        digits = "0" + digits
+    }
+    return str(micros / 1000) + "." + digits
+}
+
+// How fast `bytes` of source in `lines` lines went by in `ns`
+// nanoseconds.
+fn speed(bytes: i64, lines: i64, ns: i64) -> str {
+    if ns <= 0 {
+        return "too fast to measure"
+    }
+    let megabytes = (bytes * 1000000000 / 1048576 + ns / 2) / ns
+    let tenths = (lines * 10000 + ns / 2) / ns
+    return str(megabytes) + " MB/s, " + str(tenths / 10) + "." + str(tenths % 10) + " million lines/s"
+}
+
+// Writes a fresh executable. An existing one is removed first: macOS
+// caches code signatures per file and rejects one rewritten in place.
+// Says so when it cannot.
+fn write_executable(path: str, image: str) -> bool {
+    var problem = ""
+    match remove_file(path) {
+        Ok(_) => {}
         Err(why) => {
-            eprint("error: cannot read '" + path + "': " + os_error(why))
-            failed = true
-            return ""
+            if why != "No such file or directory" {
+                problem = why
+            }
         }
     }
+    if problem.len() == 0 {
+        match write_file(path, image) {
+            Ok(_) => {}
+            Err(why) => problem = why
+        }
+    }
+    if problem.len() == 0 {
+        match set_executable(path) {
+            Ok(_) => return true
+            Err(why) => problem = why
+        }
+    }
+    eprint("error: cannot write '" + path + "': " + os_error(problem))
+    return false
 }
 
 // How many lines the bytes `from..to` of `text` are: a last line counts
@@ -124,7 +177,10 @@ fn run_lex(path: str, time_only: bool) -> i64 {
         return 1
     }
     var tokens = new_tokens()
-    match lex(src, mut tokens) {
+    let started = clock()
+    let found = lex(src, mut tokens)
+    let elapsed = clock() - started
+    match found {
         Some(problem) => {
             report_coded(path, src, problem.offset, problem.message)
             return 1
@@ -134,8 +190,9 @@ fn run_lex(path: str, time_only: bool) -> i64 {
     if !time_only {
         print(token_listing(src, tokens))
     }
-    eprint("lexed " + str(src.len()) + " bytes, " + str(count_lines(src, 0, src.len())) + " lines, " + str(tokens.kinds.len()) +
-            " tokens in 0.000 ms (too fast to measure)")
+    let lines = count_lines(src, 0, src.len())
+    eprint("lexed " + str(src.len()) + " bytes, " + str(lines) + " lines, " + str(tokens.kinds.len()) + " tokens in " +
+            millis(elapsed) + " ms (" + speed(src.len(), lines, elapsed) + ")")
     return 0
 }
 
@@ -146,6 +203,7 @@ fn run_parse(path: str, time_only: bool) -> i64 {
         return 1
     }
     var p = new_parser(src)
+    let started = clock()
     match lex(p.src, mut p.tokens) {
         Some(problem) => {
             report_coded(path, src, problem.offset, problem.message)
@@ -153,11 +211,13 @@ fn run_parse(path: str, time_only: bool) -> i64 {
         }
         None => {}
     }
+    let lexed = clock() - started
     parse_tokens(mut p)
     if p.failed {
         report_coded(path, src, p.error.offset, p.error.message)
         return 1
     }
+    let total = clock() - started
     if !time_only {
         let text = dump_ast(p.ast, p.src)
         // `print` ends the line itself.
@@ -165,8 +225,9 @@ fn run_parse(path: str, time_only: bool) -> i64 {
             print(text.slice(0, text.len() - 1))
         }
     }
-    eprint("parsed " + str(count_lines(src, 0, src.len())) + " lines into " + str(ast_node_count(p.ast)) +
-            " nodes in 0.000 ms (lex 0.000 ms + parse 0.000 ms; too fast to measure)")
+    let lines = count_lines(src, 0, src.len())
+    eprint("parsed " + str(lines) + " lines into " + str(ast_node_count(p.ast)) + " nodes in " + millis(total) + " ms (lex " +
+            millis(lexed) + " ms + parse " + millis(total - lexed) + " ms; " + speed(src.len(), lines, total) + ")")
     return 0
 }
 
@@ -178,6 +239,10 @@ fn run_fmt(arguments: List[str], first: i64) -> i64 {
         var src = ""
         match read_file("/dev/stdin") {
             Ok(text) => {
+                if !text.is_utf8() {
+                    eprint("error: cannot read standard input: " + NOT_UTF8)
+                    return 1
+                }
                 src = text
             }
             Err(why) => {
@@ -344,13 +409,17 @@ fn show(found: List[Diagnostic], files: List[SourceFile], src: str, json: bool) 
 }
 
 // Adds bytes as lines of hexadecimal digits, 32 bytes to a line.
-fn hex_lines(out: mut str, bytes: List[i64]) {
+fn hex_lines(out: mut str, bytes: str) {
     let digits = "0123456789abcdef"
-    for index, byte in bytes {
-        out = out + digits.slice(byte >> 4, (byte >> 4) + 1) + digits.slice(byte & 15, (byte & 15) + 1)
+    var index = 0
+    while index < bytes.len() {
+        let byte = bytes[index]
+        out.push(digits[byte >> 4])
+        out.push(digits[byte & 15])
         if index % 32 == 31 {
-            out = out + "\n"
+            out.push('\n')
         }
+        index = index + 1
     }
     if bytes.len() % 32 != 0 {
         out = out + "\n"
@@ -371,7 +440,7 @@ fn code_text(g: Gen, c: Checker) -> str {
     text = text + "code " + str(g.code.len()) + "\n"
     hex_lines(mut text, g.code)
     text = text + "data " + str(c.data.len()) + "\n"
-    hex_lines(mut text, c.data.bytes())
+    hex_lines(mut text, c.data)
     text = text + "calls " + str(g.runtime_calls.len()) + "\n"
     for call in g.runtime_calls {
         text = text + str(call.field) + " " + str(call.value) + "\n"
@@ -417,35 +486,116 @@ fn write_or_say(path: str, text: str) -> bool {
     }
 }
 
+// Reads the source files into `src`, one after the other with a line
+// end between them, and notes in `files` where each one is. When a file
+// cannot be read, returns the system's reason: the file is then the
+// path at position `files.len()`. Nothing is copied that does not have
+// to be: the first file's text is taken over as it is.
+fn read_sources(paths: List[str], files: mut List[SourceFile], src: mut str) -> Result[i64, str] {
+    let first = read_file(paths[0])?
+    if !first.is_utf8() {
+        return Err(NOT_UTF8)
+    }
+    files.push(SourceFile { path: paths[0], start: 0, len: first.len() })
+    src = first
+    var i = 1
+    while i < paths.len() {
+        let text = read_file(paths[i])?
+        if !text.is_utf8() {
+            return Err(NOT_UTF8)
+        }
+        src = src + "\n"
+        files.push(SourceFile { path: paths[i], start: src.len(), len: text.len() })
+        src = src + text
+        i = i + 1
+    }
+    return Ok(i)
+}
+
+// `sema-dump`: every table the checker hands to the code generators, as
+// text, or the problems it found as `syntax <offset> <message>` and
+// `error <offset> <expr> <message>` lines. It is how a changed checker is
+// compared with the one before it; see `compiler/check_sema.py`.
+fn run_sema_dump(paths: List[str]) -> i64 {
+    var src = ""
+    var files: List[SourceFile] = []
+    match read_sources(paths, mut files, mut src) {
+        Ok(count) => {}
+        Err(why) => {
+            eprint("error: cannot read '" + paths[files.len()] + "': " + os_error(why))
+            return 1
+        }
+    }
+    let prelude_start = src.len() + 1
+    src = src + "\n"
+    src = src + PRELUDE
+    var p = new_parser("")
+    p.src = src
+    var problems: List[str] = []
+    for file in files {
+        let problem = parse_part(mut p, file.start, file.len)
+        if problem.message.len() > 0 {
+            problems.push("syntax " + str(problem.offset) + " " + problem.message)
+            let text = p.src
+            p = new_parser("")
+            p.src = text
+        }
+    }
+    if problems.len() > 0 {
+        print(problems.join("\n"))
+        return 1
+    }
+    let problem = parse_part(mut p, prelude_start, PRELUDE.len())
+    if problem.message.len() > 0 {
+        eprint("error: the standard library does not parse: " + problem.message)
+        return 1
+    }
+    var c = new_checker(p, prelude_start)
+    for file in files {
+        c.file_starts.push(file.start)
+        c.file_paths.push(file.path)
+    }
+    check_program(mut c, p)
+    if c.errors.len() > 0 {
+        var out = ""
+        for error in c.errors {
+            out = out + "error " + str(error.offset) + " "
+            if error.expr < 0 {
+                out = out + "-"
+            } else {
+                out = out + str(error.expr)
+            }
+            out = out + " " + error.message + "\n"
+        }
+        print(out.slice(0, out.len() - 1))
+        return 1
+    }
+    let text = dump_program(c)
+    print(text.slice(0, text.len() - 1))
+    return 0
+}
+
 fn run_build(arguments: BuildArguments, check_only: bool) -> i64 {
     let paths = arguments.paths
     let json = arguments.json
+    let started = clock()
 
     // All source files, and after them the standard library's source,
     // follow each other in one text, so that every position in any of
     // them is a plain offset.
     var src = ""
     var files: List[SourceFile] = []
-    for path in paths {
-        var failed = false
-        let text = read_source(path, mut failed)
-        if failed {
+    match read_sources(paths, mut files, mut src) {
+        Ok(count) => {}
+        Err(why) => {
+            eprint("error: cannot read '" + paths[files.len()] + "': " + os_error(why))
             return 1
-        }
-        let len = text.len()
-        if files.len() == 0 {
-            // The first file's text is taken over as it is.
-            src = text
-            files.push(SourceFile { path: path, start: 0, len: len })
-        } else {
-            src = src + "\n"
-            files.push(SourceFile { path: path, start: src.len(), len: len })
-            src = src + text
         }
     }
     let prelude_start = src.len() + 1
     src = src + "\n"
     src = src + PRELUDE
+    let read = clock() - started
 
     // Each file is lexed and parsed on its own: a mistake at the end of
     // one file is never reported inside the next, and every file with a
@@ -475,7 +625,14 @@ fn run_build(arguments: BuildArguments, check_only: bool) -> i64 {
         return 1
     }
 
+    let parsed = clock() - started
+
     var c = new_checker(p, prelude_start)
+    // Where each file starts, for `embed`, which reads next to its source.
+    for file in files {
+        c.file_starts.push(file.start)
+        c.file_paths.push(file.path)
+    }
     check_program(mut c, p)
     if c.errors.len() > 0 {
         for error in c.errors {
@@ -487,6 +644,7 @@ fn run_build(arguments: BuildArguments, check_only: bool) -> i64 {
         show(diagnose(c.errors, files, p.src, p.ast, true), files, p.src, json)
         return 1
     }
+    let checked = clock() - started
     if check_only {
         if json {
             print(json_summary(0, files.len()))
@@ -499,7 +657,7 @@ fn run_build(arguments: BuildArguments, check_only: bool) -> i64 {
             if files.len() == 1 {
                 many = ""
             }
-            eprint("checked " + str(lines) + " lines in " + str(files.len()) + " file" + many + ": no errors (0.000 ms)")
+            eprint("checked " + str(lines) + " lines in " + str(files.len()) + " file" + many + ": no errors (" + millis(checked) + " ms)")
         }
         return 0
     }
@@ -510,12 +668,13 @@ fn run_build(arguments: BuildArguments, check_only: bool) -> i64 {
         return 1
     }
     if arguments.target != TARGET_X86_64_LINUX {
-        return build_arm64(arguments, c, p, files.len())
+        return build_arm64(arguments, c, p, files.len(), [started, read, parsed, checked])
     }
 
     var g = x_new_gen()
     x_generate(mut g, c, p)
     let code_bytes = g.code.len()
+    let generated = clock() - started
     if arguments.emit_code.len() > 0 {
         if !write_or_say(arguments.emit_code, code_text(g, c)) {
             return 1
@@ -525,8 +684,8 @@ fn run_build(arguments: BuildArguments, check_only: bool) -> i64 {
     let info = CodeFile {
         target: "x86_64-linux",
         entry: g.fn_starts[c.main],
-        code: [],
-        data: [],
+        code: "",
+        data: "",
         ident: "",
         imports: [],
         relocs: [],
@@ -540,16 +699,11 @@ fn run_build(arguments: BuildArguments, check_only: bool) -> i64 {
         refs: g.data_refs,
     }
     let image = build_elf_text(info, mut g.code, c.data, runtime)
-    if !write_or_say(out, image) {
+    let linked = clock() - started
+    if !write_executable(out, image) {
         return 1
     }
-    match set_executable(out) {
-        Ok(_) => {}
-        Err(why) => {
-            eprint("error: cannot write '" + out + "': " + os_error(why))
-            return 1
-        }
-    }
+    let total = clock() - started
     if arguments.map.len() > 0 {
         if !write_or_say(arguments.map, function_map(g, c, p)) {
             return 1
@@ -558,14 +712,25 @@ fn run_build(arguments: BuildArguments, check_only: bool) -> i64 {
     if json {
         print(json_summary(0, files.len()))
     }
-    eprint("built " + out + " (" + str(code_bytes) + " bytes of code) in 0.000 ms (read 0.000, parse 0.000, check 0.000, " +
-            "codegen 0.000, link 0.000, write 0.000)")
+    say_built(out, code_bytes, [read, parsed, checked, generated, linked, total])
     return 0
+}
+
+// The line that ends a build: what was written and how long each stage
+// took. `at` holds the nanoseconds from the start to the end of
+// reading, parsing, checking, generating code, linking and writing.
+fn say_built(out: str, code_bytes: i64, at: List[i64]) {
+    eprint("built " + out + " (" + str(code_bytes) + " bytes of code) in " + millis(at[5]) + " ms (read " + millis(at[0]) +
+            ", parse " + millis(at[1] - at[0]) + ", check " + millis(at[2] - at[1]) + ", codegen " + millis(at[3] - at[2]) +
+            ", link " + millis(at[4] - at[3]) + ", write " + millis(at[5] - at[4]) + ")")
 }
 
 // The rest of a build for macOS or Linux on ARM64, once the program has
 // been checked: machine code, then the file format the system loads.
-fn build_arm64(arguments: BuildArguments, c: Checker, p: Parser, file_count: i64) -> i64 {
+// `times` holds when the build started and how long after that reading,
+// parsing and checking ended.
+fn build_arm64(arguments: BuildArguments, c: Checker, p: Parser, file_count: i64, times: List[i64]) -> i64 {
+    let started = times[0]
     let out = arguments.out
     let macos = arguments.target == TARGET_AARCH64_MACOS
     if !macos && arguments.emit_code.len() > 0 {
@@ -579,8 +744,10 @@ fn build_arm64(arguments: BuildArguments, c: Checker, p: Parser, file_count: i64
     var data = embedded_runtime_data()
     data = data + c.data
     var image = ""
+    var generated = clock() - started
     if macos {
         a_start_through_runtime(mut g)
+        generated = clock() - started
         let ident = a_ident(out)
         if arguments.emit_code.len() > 0 {
             if !write_or_say(arguments.emit_code, a_code_text_macos(g, data, ident)) {
@@ -591,21 +758,15 @@ fn build_arm64(arguments: BuildArguments, c: Checker, p: Parser, file_count: i64
     } else {
         image = a_build_linux(mut g, data, embedded_runtime_arm64())
     }
-    if !write_or_say(out, image) {
+    let linked = clock() - started
+    if !write_executable(out, image) {
         return 1
     }
-    match set_executable(out) {
-        Ok(_) => {}
-        Err(why) => {
-            eprint("error: cannot write '" + out + "': " + os_error(why))
-            return 1
-        }
-    }
+    let total = clock() - started
     if arguments.json {
         print(json_summary(0, file_count))
     }
-    eprint("built " + out + " (" + str(code_bytes) + " bytes of code) in 0.000 ms (read 0.000, parse 0.000, check 0.000, " +
-            "codegen 0.000, link 0.000, write 0.000)")
+    say_built(out, code_bytes, [times[1], times[2], times[3], generated, linked, total])
     return 0
 }
 
@@ -640,6 +801,19 @@ fn main() -> i64 {
     }
     if command == "fmt" {
         return run_fmt(arguments, 2)
+    }
+    if command == "sema-dump" {
+        // For comparing checkers; not part of the usage text.
+        if count < 2 {
+            return usage()
+        }
+        var paths: List[str] = []
+        var at = 2
+        while at < arguments.len() {
+            paths.push(arguments[at])
+            at = at + 1
+        }
+        return run_sema_dump(paths)
     }
     if command == "build" || command == "check" {
         let found = build_arguments(arguments, 2)

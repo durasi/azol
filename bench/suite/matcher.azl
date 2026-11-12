@@ -1,0 +1,72 @@
+// matcher: glob matching with backtracking.
+// Algorithm: patterns with `?` (any one byte) and `*` (any run of bytes),
+// matched by trying every length for each star; every pattern against
+// every text.
+// Sizes: 200,000 texts of 12 to 27 letters over `abcd`, 12 patterns; small: 6,000 texts.
+// Output: the number of matches.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+fn matches(pattern: str, from_pattern: i64, text: str, from_text: i64) -> bool {
+    var p = from_pattern
+    var t = from_text
+    while p < pattern.len() {
+        let c = pattern[p]
+        if c == 42 {
+            var k = t
+            while k <= text.len() {
+                if matches(pattern, p + 1, text, k) {
+                    return true
+                }
+                k = k + 1
+            }
+            return false
+        }
+        if t >= text.len() {
+            return false
+        }
+        if c != 63 && c != text[t] {
+            return false
+        }
+        p = p + 1
+        t = t + 1
+    }
+    return t == text.len()
+}
+
+fn main() {
+    let count = size(200000, 6000)
+    let patterns = ["a*b*c*d", "*abc*", "?b*d?", "a*a*a*a*b", "*d", "c???*", "*a?c*d*", "b*", "*cc*dd*", "??*??*??", "*abcd*abcd*", "d*c*b*a"]
+    var texts: List[str] = []
+    var seed = 89
+    var n = 0
+    while n < count {
+        seed = seed * 48271 % 2147483647
+        let length = 12 + seed % 16
+        var text = ""
+        var i = 0
+        while i < length {
+            seed = seed * 48271 % 2147483647
+            text.push(97 + seed % 4)
+            i = i + 1
+        }
+        texts.push(text)
+        n = n + 1
+    }
+    var found = 0
+    for pattern in patterns {
+        for text in texts {
+            if matches(pattern, 0, text, 0) {
+                found = found + 1
+            }
+        }
+    }
+    print(found)
+}

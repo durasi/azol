@@ -1,0 +1,47 @@
+# From the tests of the first compiler: src/lexer.rs, `bit_operators`.
+==== 1
+---- file a.azl (no newline at end)
+a & b | c ^ d << 1 >> 2 && e || f <= g >= h < i > j
+---- run lex a.azl
+---- exit 0
+---- stdout
+   1:1    Ident      a
+   1:3    Amp        &
+   1:5    Ident      b
+   1:7    Pipe       |
+   1:9    Ident      c
+   1:11   Caret      ^
+   1:13   Ident      d
+   1:15   Shl        <<
+   1:18   Int        1
+   1:20   Shr        >>
+   1:23   Int        2
+   1:25   AndAnd     &&
+   1:28   Ident      e
+   1:30   OrOr       ||
+   1:33   Ident      f
+   1:35   LtEq       <=
+   1:38   Ident      g
+   1:40   GtEq       >=
+   1:43   Ident      h
+   1:45   Lt         <
+   1:47   Ident      i
+   1:49   Gt         >
+   1:51   Ident      j
+   1:52   Eof        
+---- stderr
+lexed 51 bytes, 1 lines, 24 tokens
+==== 2
+---- file a.azl (no newline at end)
+a<<b>>c
+---- run lex a.azl
+---- exit 0
+---- stdout
+   1:1    Ident      a
+   1:2    Shl        <<
+   1:4    Ident      b
+   1:5    Shr        >>
+   1:7    Ident      c
+   1:8    Eof        
+---- stderr
+lexed 7 bytes, 1 lines, 6 tokens

@@ -1,0 +1,29 @@
+# From the tests of the first compiler: src/parser.rs, `for_loops`.
+==== 1
+---- file a.azl (no newline at end)
+fn t() {
+for x in xs {
+}
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  for x in xs
+---- stderr
+parsed 4 lines into 3 nodes
+==== 2
+---- file a.azl (no newline at end)
+fn t() {
+for i, x in items(a) {
+print(i)
+}
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  for i, x in (call items a)
+    (call print i)
+---- stderr
+parsed 5 lines into 9 nodes

@@ -1,0 +1,25 @@
+# From the tests of the first compiler: src/parser.rs, `else_if_chain_and_else_on_next_line`.
+==== 1
+---- file a.azl (no newline at end)
+fn t() {
+if a {
+b()
+} else if c {
+d()
+}
+else {
+continue
+}
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  if a
+    (call b)
+  else if c
+    (call d)
+  else
+    continue
+---- stderr
+parsed 10 lines into 12 nodes

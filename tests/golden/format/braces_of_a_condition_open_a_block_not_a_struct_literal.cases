@@ -1,0 +1,85 @@
+# From the tests of the first compiler: src/format.rs, `braces_of_a_condition_open_a_block_not_a_struct_literal`.
+==== 1
+---- stdin
+fn f() { if a == b { g() } }
+---- run fmt -
+---- exit 0
+---- stdout
+fn f() {
+    if a == b {
+        g()
+    }
+}
+---- stderr (empty)
+==== 2
+---- stdin
+fn f() {
+    if a == b {
+        g()
+    }
+}
+---- run fmt -
+---- exit 0
+---- stdout
+fn f() {
+    if a == b {
+        g()
+    }
+}
+---- stderr (empty)
+==== 3
+---- stdin
+fn f() { if a == (P { x: 1 }) { g(P { x: 2 }) } }
+---- run fmt -
+---- exit 0
+---- stdout
+fn f() {
+    if a == (P { x: 1 }) {
+        g(P { x: 2 })
+    }
+}
+---- stderr (empty)
+==== 4
+---- stdin
+fn f() {
+    if a == (P { x: 1 }) {
+        g(P { x: 2 })
+    }
+}
+---- run fmt -
+---- exit 0
+---- stdout
+fn f() {
+    if a == (P { x: 1 }) {
+        g(P { x: 2 })
+    }
+}
+---- stderr (empty)
+==== 5
+---- stdin
+fn f() { for i, x in xs { g(P { v: x }) } }
+---- run fmt -
+---- exit 0
+---- stdout
+fn f() {
+    for i, x in xs {
+        g(P { v: x })
+    }
+}
+---- stderr (empty)
+==== 6
+---- stdin
+fn f() {
+    for i, x in xs {
+        g(P { v: x })
+    }
+}
+---- run fmt -
+---- exit 0
+---- stdout
+fn f() {
+    for i, x in xs {
+        g(P { v: x })
+    }
+}
+---- stderr (empty)

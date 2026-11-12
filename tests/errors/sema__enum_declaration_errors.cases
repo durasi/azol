@@ -1,0 +1,513 @@
+# From the tests of the first compiler: src/sema.rs, `enum_declaration_errors`.
+==== 1
+---- file a.azl (no newline at end)
+enum T {
+ Leaf
+ Node(T)
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0413]: enum `T` contains itself, so it would have no finite size; put the inner value in a `List`
+ --> a.azl:1:6
+  |
+1 | enum T {
+  |      ^
+---- asserted 1:6 enum `T` contains itself, so it would have no finite size; put the inner value in a `List`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0413","message":"enum `T` contains itself, so it would have no finite size; put the inner value in a `List`","file":"a.azl","line":1,"column":6,"end_line":1,"end_column":7,"source":"enum T {","rule":"A value is stored inline in its owner, so a type cannot contain itself directly; it can through a `List`."}
+{"summary":{"errors":1,"files":1}}
+==== 2
+---- file a.azl (no newline at end)
+struct S {
+ o: Option[S]
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0413]: struct `S` contains itself, so it would have no finite size
+ --> a.azl:1:8
+  |
+1 | struct S {
+  |        ^
+---- asserted 1:8 struct `S` contains itself, so it would have no finite size
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0413","message":"struct `S` contains itself, so it would have no finite size","file":"a.azl","line":1,"column":8,"end_line":1,"end_column":9,"source":"struct S {","rule":"A value is stored inline in its owner, so a type cannot contain itself directly; it can through a `List`."}
+{"summary":{"errors":1,"files":1}}
+==== 3
+---- file a.azl (no newline at end)
+enum E[T] {
+ A(E[List[T]])
+ B
+}
+fn main() {
+ let e: E[i64] = B
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0603]: this type nests enums too deeply
+ --> a.azl:6:9
+  |
+6 |  let e: E[i64] = B
+  |         ^
+---- asserted 6:9 this type nests enums too deeply
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0603","message":"this type nests enums too deeply","file":"a.azl","line":6,"column":9,"end_line":6,"end_column":10,"source":" let e: E[i64] = B","rule":"A generic function or type is compiled once per set of types it is used with, so that set must be finite."}
+{"summary":{"errors":1,"files":1}}
+==== 4
+---- file a.azl (no newline at end)
+enum E {
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0212]: enum `E` has no variants
+ --> a.azl:1:6
+  |
+1 | enum E {
+  |      ^
+---- asserted 1:6 enum `E` has no variants
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0212","message":"enum `E` has no variants","file":"a.azl","line":1,"column":6,"end_line":1,"end_column":7,"source":"enum E {","rule":"An enum declares at least one variant."}
+{"summary":{"errors":1,"files":1}}
+==== 5
+---- file a.azl (no newline at end)
+enum E {
+ A
+}
+enum E {
+ B
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0208]: enum `E` is defined more than once
+ --> a.azl:4:6
+  |
+4 | enum E {
+  |      ^
+---- asserted 4:6 enum `E` is defined more than once
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0208","message":"enum `E` is defined more than once","file":"a.azl","line":4,"column":6,"end_line":4,"end_column":7,"source":"enum E {","rule":"A name is declared once: functions, constants and variants share one namespace across all files, types another."}
+{"summary":{"errors":1,"files":1}}
+==== 6
+---- file a.azl (no newline at end)
+enum E {
+ A
+ A
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0208]: variant `A` is declared more than once
+ --> a.azl:3:2
+  |
+3 |  A
+  |  ^
+---- asserted 3:2 variant `A` is declared more than once
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0208","message":"variant `A` is declared more than once","file":"a.azl","line":3,"column":2,"end_line":3,"end_column":3,"source":" A","rule":"A name is declared once: functions, constants and variants share one namespace across all files, types another."}
+{"summary":{"errors":1,"files":1}}
+==== 7
+---- file a.azl (no newline at end)
+enum E {
+ A
+}
+enum F {
+ A
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0208]: variant `A` already belongs to `E`; variant names must differ across enums
+ --> a.azl:5:2
+  |
+5 |  A
+  |  ^
+---- asserted 5:2 variant `A` already belongs to `E`; variant names must differ across enums
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0208","message":"variant `A` already belongs to `E`; variant names must differ across enums","file":"a.azl","line":5,"column":2,"end_line":5,"end_column":3,"source":" A","rule":"A name is declared once: functions, constants and variants share one namespace across all files, types another."}
+{"summary":{"errors":1,"files":1}}
+==== 8
+---- file a.azl (no newline at end)
+enum E {
+ Some
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0208]: variant `Some` already belongs to `Option`; variant names must differ across enums
+ --> a.azl:2:2
+  |
+2 |  Some
+  |  ^
+---- asserted 2:2 variant `Some` already belongs to `Option`; variant names must differ across enums
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0208","message":"variant `Some` already belongs to `Option`; variant names must differ across enums","file":"a.azl","line":2,"column":2,"end_line":2,"end_column":6,"source":" Some","rule":"A name is declared once: functions, constants and variants share one namespace across all files, types another."}
+{"summary":{"errors":1,"files":1}}
+==== 9
+---- file a.azl (no newline at end)
+enum Option {
+ A
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0209]: `Option` is built in and cannot be redefined
+ --> a.azl:1:6
+  |
+1 | enum Option {
+  |      ^
+---- asserted 1:6 `Option` is built in and cannot be redefined
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0209","message":"`Option` is built in and cannot be redefined","file":"a.azl","line":1,"column":6,"end_line":1,"end_column":12,"source":"enum Option {","rule":"The names of built-in types and functions cannot be declared again."}
+{"summary":{"errors":1,"files":1}}
+==== 10
+---- file a.azl (no newline at end)
+struct Result {
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0209]: `Result` is built in and cannot be redefined
+ --> a.azl:1:8
+  |
+1 | struct Result {
+  |        ^
+---- asserted 1:8 `Result` is built in and cannot be redefined
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0209","message":"`Result` is built in and cannot be redefined","file":"a.azl","line":1,"column":8,"end_line":1,"end_column":14,"source":"struct Result {","rule":"The names of built-in types and functions cannot be declared again."}
+{"summary":{"errors":1,"files":1}}
+==== 11
+---- file a.azl (no newline at end)
+struct E {
+}
+enum E {
+ A
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0208]: `E` is already defined as a struct
+ --> a.azl:3:6
+  |
+3 | enum E {
+  |      ^
+---- asserted 3:6 `E` is already defined as a struct
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0208","message":"`E` is already defined as a struct","file":"a.azl","line":3,"column":6,"end_line":3,"end_column":7,"source":"enum E {","rule":"A name is declared once: functions, constants and variants share one namespace across all files, types another."}
+{"summary":{"errors":1,"files":1}}
+==== 12
+---- file a.azl (no newline at end)
+enum E {
+ A
+}
+struct E {
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0208]: `E` is already defined as an enum
+ --> a.azl:4:8
+  |
+4 | struct E {
+  |        ^
+---- asserted 4:8 `E` is already defined as an enum
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0208","message":"`E` is already defined as an enum","file":"a.azl","line":4,"column":8,"end_line":4,"end_column":9,"source":"struct E {","rule":"A name is declared once: functions, constants and variants share one namespace across all files, types another."}
+{"summary":{"errors":1,"files":1}}
+==== 13
+---- file a.azl (no newline at end)
+enum E[T, T] {
+ A(T)
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0208]: type parameter `T` is declared more than once
+ --> a.azl:1:11
+  |
+1 | enum E[T, T] {
+  |           ^
+---- asserted 1:11 type parameter `T` is declared more than once
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0208","message":"type parameter `T` is declared more than once","file":"a.azl","line":1,"column":11,"end_line":1,"end_column":12,"source":"enum E[T, T] {","rule":"A name is declared once: functions, constants and variants share one namespace across all files, types another."}
+{"summary":{"errors":1,"files":1}}
+==== 14
+---- file a.azl (no newline at end)
+enum E[T] {
+ A(T[i64])
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0602]: `T` is a type parameter and takes no type arguments
+ --> a.azl:2:4
+  |
+2 |  A(T[i64])
+  |    ^
+---- asserted 2:4 `T` is a type parameter and takes no type arguments
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0602","message":"`T` is a type parameter and takes no type arguments","file":"a.azl","line":2,"column":4,"end_line":2,"end_column":5,"source":" A(T[i64])","rule":"A generic type is written with exactly as many type arguments as it declares type parameters, and other types with none."}
+{"summary":{"errors":1,"files":1}}
+==== 15
+---- file a.azl (no newline at end)
+enum E {
+ A(Missing)
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0203]: unknown type `Missing`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`
+ --> a.azl:2:4
+  |
+2 |  A(Missing)
+  |    ^
+---- asserted 2:4 unknown type `Missing`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0203","message":"unknown type `Missing`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`","file":"a.azl","line":2,"column":4,"end_line":2,"end_column":11,"source":" A(Missing)","rule":"A type is `i64`, `bool`, `str`, `List[...]`, `Option[...]`, `Result[..., ...]` or a struct or enum of the program."}
+{"summary":{"errors":1,"files":1}}
+==== 16
+---- file a.azl (no newline at end)
+fn f(o: Option) {
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0602]: `Option` takes 1 type argument, as in `Option[i64]`
+ --> a.azl:1:9
+  |
+1 | fn f(o: Option) {
+  |         ^
+---- asserted 1:9 `Option` takes 1 type argument, as in `Option[i64]`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0602","message":"`Option` takes 1 type argument, as in `Option[i64]`","file":"a.azl","line":1,"column":9,"end_line":1,"end_column":15,"source":"fn f(o: Option) {","rule":"A generic type is written with exactly as many type arguments as it declares type parameters, and other types with none."}
+{"summary":{"errors":1,"files":1}}
+==== 17
+---- file a.azl (no newline at end)
+fn f(o: Result[i64]) {
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0602]: `Result` takes 2 type arguments, as in `Result[i64, i64]`
+ --> a.azl:1:9
+  |
+1 | fn f(o: Result[i64]) {
+  |         ^
+---- asserted 1:9 `Result` takes 2 type arguments, as in `Result[i64, i64]`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0602","message":"`Result` takes 2 type arguments, as in `Result[i64, i64]`","file":"a.azl","line":1,"column":9,"end_line":1,"end_column":15,"source":"fn f(o: Result[i64]) {","rule":"A generic type is written with exactly as many type arguments as it declares type parameters, and other types with none."}
+{"summary":{"errors":1,"files":1}}
+==== 18
+---- file a.azl (no newline at end)
+enum E {
+ A
+}
+fn f(e: E[i64]) {
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0602]: `E` takes no type arguments
+ --> a.azl:4:9
+  |
+4 | fn f(e: E[i64]) {
+  |         ^
+---- asserted 4:9 `E` takes no type arguments
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0602","message":"`E` takes no type arguments","file":"a.azl","line":4,"column":9,"end_line":4,"end_column":10,"source":"fn f(e: E[i64]) {","rule":"A generic type is written with exactly as many type arguments as it declares type parameters, and other types with none."}
+{"summary":{"errors":1,"files":1}}
+==== 19
+---- file a.azl (no newline at end)
+fn f(a: i64[bool]) {
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0602]: `i64` takes no type arguments
+ --> a.azl:1:9
+  |
+1 | fn f(a: i64[bool]) {
+  |         ^
+---- asserted 1:9 `i64` takes no type arguments
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0602","message":"`i64` takes no type arguments","file":"a.azl","line":1,"column":9,"end_line":1,"end_column":12,"source":"fn f(a: i64[bool]) {","rule":"A generic type is written with exactly as many type arguments as it declares type parameters, and other types with none."}
+{"summary":{"errors":1,"files":1}}
+==== 20
+---- file a.azl (no newline at end)
+fn Some() {
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0208]: `Some` is already a variant of `Option`
+ --> a.azl:1:4
+  |
+1 | fn Some() {
+  |    ^
+---- asserted 1:4 `Some` is already a variant of `Option`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0208","message":"`Some` is already a variant of `Option`","file":"a.azl","line":1,"column":4,"end_line":1,"end_column":8,"source":"fn Some() {","rule":"A name is declared once: functions, constants and variants share one namespace across all files, types another."}
+{"summary":{"errors":1,"files":1}}
+==== 21
+---- file a.azl (no newline at end)
+fn main() {
+let None = 1
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0211]: `None` is a variant of `Option` and cannot be used as a variable name
+ --> a.azl:2:5
+  |
+2 | let None = 1
+  |     ^
+---- asserted 2:5 `None` is a variant of `Option` and cannot be used as a variable name
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0211","message":"`None` is a variant of `Option` and cannot be used as a variable name","file":"a.azl","line":2,"column":5,"end_line":2,"end_column":9,"source":"let None = 1","rule":"A variable or parameter cannot have the name of a variant or a constant, so that a name means the same everywhere."}
+{"summary":{"errors":1,"files":1}}
+==== 22
+---- file a.azl (no newline at end)
+fn f(Ok: i64) {
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0211]: `Ok` is a variant of `Result` and cannot be used as a variable name
+ --> a.azl:1:6
+  |
+1 | fn f(Ok: i64) {
+  |      ^
+---- asserted 1:6 `Ok` is a variant of `Result` and cannot be used as a variable name
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0211","message":"`Ok` is a variant of `Result` and cannot be used as a variable name","file":"a.azl","line":1,"column":6,"end_line":1,"end_column":8,"source":"fn f(Ok: i64) {","rule":"A variable or parameter cannot have the name of a variant or a constant, so that a name means the same everywhere."}
+{"summary":{"errors":1,"files":1}}
+==== 23
+---- file a.azl (no newline at end)
+fn main() {
+for Err in [1] {
+}
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0211]: `Err` is a variant of `Result` and cannot be used as a variable name
+ --> a.azl:2:5
+  |
+2 | for Err in [1] {
+  |     ^
+---- asserted 2:5 `Err` is a variant of `Result` and cannot be used as a variable name
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0211","message":"`Err` is a variant of `Result` and cannot be used as a variable name","file":"a.azl","line":2,"column":5,"end_line":2,"end_column":8,"source":"for Err in [1] {","rule":"A variable or parameter cannot have the name of a variant or a constant, so that a name means the same everywhere."}
+{"summary":{"errors":1,"files":1}}

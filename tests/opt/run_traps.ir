@@ -1,0 +1,44 @@
+; Every kind of stop, with the words the runtimes use.
+; run: main 0
+; err: azol: index out of range
+; exit: 1
+; run: main 1
+; err: azol: division by zero
+; exit: 1
+; run: main 2
+; err: azol: pop from an empty list
+; exit: 1
+; run: main 3
+; err: azol: slice out of range
+; exit: 1
+; run: main 4
+; err: azol: chr needs a number from 0 to 255
+; exit: 1
+; run: main 5
+; err: azol: out of memory
+; exit: 1
+; run: main 6
+; err: azol: internal error: a check that was removed has fired
+; exit: 1
+; run: main 7
+; out: => 7
+fn main(p0: i64) -> i64 {
+b0:
+    switch p0, 0 -> b1, 1 -> b2, 2 -> b3, 3 -> b4, 4 -> b5, 5 -> b6, 6 -> b7, default b8
+b1:
+    trap index
+b2:
+    trap divide
+b3:
+    trap pop
+b4:
+    trap slice
+b5:
+    trap chr
+b6:
+    trap memory
+b7:
+    trap internal
+b8:
+    ret p0
+}

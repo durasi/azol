@@ -1,0 +1,67 @@
+# From the tests of the first compiler: src/sema.rs, `library_methods`.
+==== 1
+---- file a.azl
+
+fn main() {
+let s = " a,b "
+let t: str = s.trim()
+let p: List[str] = t.split(",")
+let j: str = p.join("-")
+let f: Option[i64] = s.find("a")
+let n: Option[i64] = "12".to_i64()
+let b: bool = s.contains("a") && s.starts_with(" ") && s.ends_with(" ")
+let l: List[str] = (s + s).lines()
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 11 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos fd9980495cb96e7c6493e8ca7a4079520e760c7aff1ca9054eb2f7826f04c657
+x86_64-linux 6f81794bbda7fa7ea962d42ac277b91b813d05079ae29344ff399d32fde2b94d
+aarch64-linux c1203abfb3e4996c8e9d78bc2a30ec2d5c4dc52c6e0b28bc85a2de6afd78b561
+==== 2
+---- file a.azl
+
+fn main() {
+let xs = [1]
+let a: bool = xs.contains(1)
+let b: Option[i64] = xs.first()
+let c: List[i64] = xs.reversed()
+let d: Option[str] = ["a"].last()
+let e: List[List[i64]] = [xs].reversed()
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 9 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos e887cb65fbc900123d648e52319924d91a79e7b22f59c65a8da36a4f21e9e499
+x86_64-linux af4677935b504a0b1eac320ffb84ce335caaa9685e5985d8c456a826a6b9830f
+aarch64-linux 3783e0f7e14b18d21331f3703c8cc74d48e1830c219274409238aa0d765ce400
+==== 3
+---- file a.azl
+fn str_find(a: i64) -> i64 {
+ return a
+}
+fn find(a: i64) -> i64 {
+ return str_find(a)
+}
+fn main() {
+ let n = find(1)
+ let at = "abc".find("c")
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 10 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos a613de7eda71d905b138ec178769dd6f7aaa7a41da9a093c9b8e0069c33b843c
+x86_64-linux c364c34e36d7194769581f914b0c26c2992022917733955e6812425e86524d35
+aarch64-linux 299c93997726488306fa1db573be83478bc73e845c5c5ac4ac79fd57498b3296

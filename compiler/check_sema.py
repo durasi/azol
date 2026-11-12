@@ -8,7 +8,7 @@ expression, statement and pattern), or the same problems at the same
 places, and give the same exit code.
 
 It is run on every .azl file of tests/programs, examples, bench, this
-folder and src/prelude.azl, each as a program of its own; on the programs
+folder and lib/prelude.azl, each as a program of its own; on the programs
 of several files (tests/multi and the tools in this folder); on
 bench/generated/big.azl; on deliberately wrong programs, one or more for
 every message the checker can give; and on right programs damaged at
@@ -21,15 +21,19 @@ The list of messages comes from `azol explain`, so a message added to the
 Rust checker without a program here that reaches it fails this check.
 
 `azol-sema` is built for x86-64 Linux and run directly, so this script
-needs such a machine. Build the Rust compiler first: cargo build --release
+needs such a machine. The compiler it compares with is the oracle: `--oracle <path>`, or see
+compiler/oracle.py for the one taken when none is given.
 """
 import glob, os, platform, re, shutil, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-AZOL = os.path.join(ROOT, "target", "release", "azol")
+sys.path.insert(0, HERE)
+import oracle  # noqa: E402
+
+AZOL = oracle.path()
 BIG = os.path.join(ROOT, "bench", "generated", "big.azl")
-PRELUDE = os.path.join(ROOT, "src", "prelude.azl")
+PRELUDE = os.path.join(ROOT, "lib", "prelude.azl")
 FRONT = ["driver.azl", "token.azl", "lexer.azl", "ast.azl", "parser.azl"]
 SOURCES = ["sema_main.azl"] + FRONT + ["sema.azl", "sema_fn.azl", "sema_dump.azl"]
 
@@ -40,6 +44,8 @@ SETS = [
     ["tests/multi/broken/main.azl", "tests/multi/broken/helper.azl"],
     ["tests/multi/broken/main.azl", "tests/multi/broken/helper.azl", "tests/multi/broken/after.azl"],
     ["tests/multi/broken/unclosed_main.azl", "tests/multi/broken/unclosed.azl", "tests/multi/broken/after.azl"],
+    ["tests/multi/embed/main.azl", "tests/multi/embed/parts/words.azl"],
+    ["tests/multi/embed/parts/words.azl", "tests/multi/embed/main.azl"],
     ["compiler/" + name for name in SOURCES],
     ["compiler/" + name for name in ["front_main.azl"] + FRONT + ["dump.azl"]],
     ["compiler/" + name for name in ["link_main.azl", "bytes.azl", "sha256.azl", "code_file.azl", "macho.azl", "elf.azl"]],
@@ -403,9 +409,58 @@ BROKEN = {
     "receiver_wrong_count": M("var xs = [1]\nxs.extend()"),
     "receiver_wrong_argument": M("var xs = [1]\nxs.extend(\"a\")"),
     "exit_is_not_a_return": "fn f(n: i64) -> i64 {\n    if n > 0 {\n        return n\n    }\n    eprint(\"no\")\n}\n" + M(""),
+    # ---- bytes of a string, and strings in order ----
+    "order_str_number": M("let a = \"x\" < 1"),
+    "order_number_str": M("let a = 1 <= \"x\""),
+    "order_lists": M("let a = [1] < [2]"),
+    "order_bools": M("let a = true >= false"),
+    "order_changed_between": "fn grow(s: mut str) -> str {\n    s.push(1)\n    return s\n}\n" + M("var s = \"a\"\nlet a = s > grow(mut s)"),
+    "byte_let": M("let s = \"x\"\ns.push(1)"),
+    "byte_set_let": M("let s = \"x\"\ns.set(0, 1)"),
+    "byte_count": M("var s = \"x\"\ns.set(1)"),
+    "byte_push_count": M("var s = \"x\"\ns.push()"),
+    "byte_str": M("var s = \"x\"\ns.push(\"y\")"),
+    "byte_set_index_str": M("var s = \"x\"\ns.set(\"0\", 1)"),
+    "byte_set_value_bool": M("var s = \"x\"\ns.set(0, true)"),
+    "byte_temporary": M("\"x\".push(1)"),
+    "byte_parameter": "fn f(s: str) {\n    s.set(0, 1)\n}\n" + M(""),
+    "byte_in_loop": M("var s = \"ab\"\nfor b in s.bytes() {\ns.push(b)\n}\nvar ss = [\"a\"]\nfor t in ss {\nss[0].push(1)\n}"),
+    "byte_in_match": M("var o = Some(\"a\")\nmatch o {\nSome(t) => t.push(1)\nNone => {}\n}"),
+    "byte_matched": "struct BW {\n    o: Option[i64]\n    s: str\n}\n" + M("var w = BW { o: Some(1), s: \"a\" }\nmatch w {\n_ => w.s.set(0, 1)\n}"),
+    "byte_as_value": M("var s = \"a\"\nlet n = s.push(1)"),
+    "byte_constant": "const K = \"a\"\n" + M("K.push(1)"),
+    "byte_too_many_slots": M("var s = \"\"\n" + "\n".join("s.push(%d)" % (i % 250) for i in range(400))),
     # ---- several at once ----
     "three_functions": "fn a() {\n    print(x)\n}\nfn b() -> i64 {\n}\n" + M("let y = 1\ny = 2"),
     "same_place_twice": "fn f[T](x: T) {\n    print(y)\n}\n" + M("f(1)\nf(true)\nprint(z)"),
+    # ---- the newest built-ins ----
+    "embed_outside": M("print(embed(\"a.txt\"))"),
+    "embed_in_let": M("let text = embed(\"a.txt\")"),
+    "embed_no_argument": "const A = embed()\n" + M(""),
+    "embed_two_arguments": "const A = embed(\"a\", \"b\")\n" + M(""),
+    "embed_number": "const A = embed(7)\n" + M(""),
+    "embed_bool_joined": "const A = \"x\" + embed(true)\n" + M(""),
+    "embed_missing": "const A = embed(\"/azol_no_such_folder/a\")\n" + M("print(A)"),
+    "embed_missing_relative": "const A = embed(\"azol_no_such_file.txt\")\n" + M("print(A)"),
+    "embed_folder": "const A = embed(\"/\")\n" + M("print(A)"),
+    "embed_itself": "const A = embed(B)\nconst B = embed(A)\n" + M(""),
+    "embed_not_constant": "const A = embed(name)\n" + M(""),
+    "embed_redefined": "fn embed() {\n}\n" + M(""),
+    "embed_typed": "const A: i64 = embed(\"/azol_no_such_folder/a\")\n" + M(""),
+    "const_other_call": "const A = len(\"a\")\n" + M(""),
+    "is_utf8_argument": M("let ok = \"a\".is_utf8(1)"),
+    "is_utf8_type": M("let n: i64 = \"a\".is_utf8()"),
+    "is_utf8_list": M("let ok = [1].is_utf8()"),
+    "clock_argument": M("clock(1)"),
+    "clock_type": M("let s: str = clock()"),
+    "clock_redefined": "fn clock() {\n}\n" + M(""),
+    "remove_file_none": M("remove_file()"),
+    "remove_file_number": M("remove_file(7)"),
+    "remove_file_redefined": "fn remove_file() {\n}\n" + M(""),
+    "rename_file_one": M("rename_file(\"a\")"),
+    "rename_file_number": M("rename_file(\"a\", 7)"),
+    "rename_file_type": M("let r: Result[str, str] = rename_file(\"a\", \"b\")"),
+    "rename_file_redefined": "fn rename_file() {\n}\n" + M(""),
 }
 
 # Right programs for corners that tests/programs does not reach.
@@ -430,6 +485,11 @@ CORNERS.update({
     "library": "fn new_map() -> i64 {\n    return 7\n}\nfn f(xs: mut List[i64]) {\n    xs.truncate(0)\n}\nstruct H {\n    xs: List[i64]\n}\nfn leave(n: i64) -> i64 {\n    if n > 0 {\n        return n\n    }\n    exit(2)\n}\n"
                + M("let n: i64 = new_map()\nvar xs = [1]\nxs.extend([2, 3])\nxs.insert(0, 9)\nxs.truncate(2)\nlet r = xs.remove_at(0)\nf(mut xs)\nvar h = H { xs: [1] }\nh.xs.extend(xs)\nvar hs = [h]\nhs[0].xs.insert(0, r)\nprint(n + r + hs[0].xs.len() + leave(1))\nlet a = 3.min(4)\nlet b = [3, 4].min()\nlet c = \"\".is_empty()\nlet d = [1].is_empty()\nprint(a)\nprint(c == d)\nlet e = xs.len() + xs.remove_at(0)\nlet ys = [xs.first(), Some(xs.remove_at(0))]\nprint(e + ys.len())"),
     "library_map": "fn new_map[T](x: T) -> T {\n    return x\n}\n" + M("let n: i64 = new_map(1)\nprint(n)"),
+    "bytes": "struct Buf {\n    name: str\n    data: str\n}\nfn fill(s: mut str, n: i64) {\n    var i = 0\n    while i < n {\n        s.push('a' + i)\n        i = i + 1\n    }\n}\n"
+             + M("var s = \"\"\nfill(mut s, 5)\ns.set(0, 'Z')\ns.set(s.len() - 1, s[0] + 1)\nprint(s)\nvar lit = \"abc\"\nlit.set(1, 'x')\nlit.push('!')\nprint(lit)\nvar b = Buf { name: \"n\", data: \"\" }\nb.data.push(300)\nb.data.push_u32(0x04030201)\nb.data.set_u32(1, 7)\nprint(b.data.len() + b.data[0] + b.data.u32_at(1))\nvar bs = [b]\nbs[0].data.push(1)\nbs[0].name.set(0, 'm')\nprint(bs[0].name)\nvar t = \"\"\nt.push_u16(0x4142)\nt.push_u64(0x4847464544434241)\nprint(t + str(t.u16_at(0)) + str(t.u64_at(2)))\nlet zeros = 0.filled(3)\nlet rows = [\"a\"].filled(2)\nprint(zeros.len() + rows.len())"),
+    "order": "struct Named {\n    name: str\n}\nfn f(a: str, b: str) -> bool {\n    return a < b\n}\n"
+             + M("let words = [\"b\", \"a\", \"ab\", \"\", \"B\"]\nfor x in words {\nfor y in words {\nif x < y {\nprint(x + \"<\" + y)\n}\nif x >= y && !(x > y) {\nprint(x + \"=\" + y)\n}\nlet le = x <= y\nprint(le)\n}\n}\nlet n = Named { name: \"k\" }\nvar count = 0\nwhile n.name + \"a\" > n.name && count < 2 {\ncount = count + 1\n}\nprint(f(n.name, words[0]) || \"x\" + \"y\" <= \"xy\")\nvar big = [Named { name: \"z\" }]\nbig.push(n)\nbig.push(Named { name: \"q\" })\nprint(big[0].name > big[1].name)\nvar pairs: List[List[str]] = []\npairs.push(words)\nvar opts = [Some(\"a\")]\nopts.push(None)\nopts.push(Some(n.name))\nprint(pairs.len() + opts.len())"),
+    "system": M("let t: i64 = clock()\nlet d = clock() - t\nclock()\nlet r: Result[i64, str] = remove_file(\"/azol_no_such_folder/a\")\nremove_file(\"/azol_no\" + \"_such\")\nmatch rename_file(\"/azol_no_such_folder/a\", \"/azol_no_such_folder/b\") {\nOk(n) => print(n)\nErr(why) => print(why)\n}\nlet s = \"a\"\nlet ok: bool = s.is_utf8()\nif (s + \"b\").is_utf8() && !chr(200).is_utf8() && d >= 0 {\nprint(ok)\n}"),
     "map": M("var m: Map[i64] = new_map()\nm.set(\"a\", 1)\nm.set(\"b\", 2)\nlet gone = m.remove(\"a\")\nprint(m.len())\nprint(m.has(\"b\"))\nmatch m.get(\"b\") {\nSome(v) => print(v)\nNone => print(0)\n}\nfor k in m.keys() {\nprint(k)\n}\nvar w: Map[List[str]] = new_map()\nw.set(\"k\", [\"v\"])\nprint(w.len())"),
 })
 
@@ -517,7 +577,7 @@ def main():
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         sys.exit("check_sema.py runs azol-sema directly and so needs x86-64 Linux")
     if not os.path.exists(AZOL):
-        sys.exit("build the compiler first: cargo build --release")
+        sys.exit(oracle.missing())
     work = tempfile.mkdtemp(prefix="azol-check-sema-")
     try:
         return check(work, "--quick" in sys.argv[1:])
@@ -540,7 +600,7 @@ def check(work, quick):
 
     groups = []
     files = []
-    for pattern in ["tests/programs/*.azl", "tests/multi/*/*.azl", "examples/*.azl", "bench/*.azl", "compiler/*.azl", "src/prelude.azl"]:
+    for pattern in ["tests/programs/*.azl", "tests/multi/*/*.azl", "examples/*.azl", "bench/*.azl", "compiler/*.azl", "lib/prelude.azl"]:
         files += sorted(glob.glob(os.path.join(ROOT, pattern)))
     if not files:
         sys.exit("no programs found")

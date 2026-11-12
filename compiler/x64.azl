@@ -45,9 +45,14 @@ const R12 = 12
 // out in that order.
 const VARIABLE_REGISTERS = 5
 
+// The largest element, in slots, that `push` copies into a list with
+// room without calling the runtime.
+const INLINE_PUSH = 8
+
 // Condition codes, as used in `jcc` and `setcc`.
 const CC_B = 0x2
 const CC_AE = 0x3
+const CC_BE = 0x6
 const CC_A = 0x7
 const CC_E = 0x4
 const CC_NE = 0x5
@@ -120,7 +125,7 @@ const OP_SHL = 16
 const OP_SHR = 17
 
 // The first of the call resolutions that stand for built-ins.
-const FIRST_BUILTIN = 4294967279
+const FIRST_BUILTIN = 4294967273
 
 // How many index checks are remembered at a time.
 const KNOWN = 4
@@ -163,7 +168,7 @@ struct XPath {
 }
 
 struct Gen {
-    code: List[i64]
+    code: str
     // The tree as numbers, per expression.
     kinds: List[i64]
     ea: List[i64]
@@ -480,7 +485,7 @@ fn x_read_tree(g: mut Gen, p: Parser) {
 
 fn x_new_gen() -> Gen {
     return Gen {
-        code: [],
+        code: "",
         kinds: [],
         ea: [],
         eb: [],
@@ -1071,10 +1076,10 @@ fn x_jump(g: mut Gen) -> i64 {
 // Completes the jump or call whose field is at `at` to go to `target`.
 fn x_patch_to(g: mut Gen, at: i64, target: i64) {
     let delta = target - (at + 4)
-    g.code[at] = delta & 0xFF
-    g.code[at + 1] = (delta >> 8) & 0xFF
-    g.code[at + 2] = (delta >> 16) & 0xFF
-    g.code[at + 3] = (delta >> 24) & 0xFF
+    g.code.set(at, delta)
+    g.code.set(at + 1, delta >> 8)
+    g.code.set(at + 2, delta >> 16)
+    g.code.set(at + 3, delta >> 24)
 }
 
 // Completes the jump whose field is at `at` to come here.
@@ -1309,10 +1314,10 @@ fn x_function_body(g: mut Gen, c: Checker, p: Parser, index: i64, body: IdRange)
     // Waiting operands lie below the slots, 16 bytes at a time to keep
     // the stack pointer a multiple of 16.
     let frame = g.frame_bytes + (g.waiting_most + 1) / 2 * 16
-    g.code[frame_field] = frame & 0xFF
-    g.code[frame_field + 1] = (frame >> 8) & 0xFF
-    g.code[frame_field + 2] = (frame >> 16) & 0xFF
-    g.code[frame_field + 3] = (frame >> 24) & 0xFF
+    g.code.set(frame_field, frame)
+    g.code.set(frame_field + 1, frame >> 8)
+    g.code.set(frame_field + 2, frame >> 16)
+    g.code.set(frame_field + 3, frame >> 24)
 }
 
 // Takes the next frame slot for an operand that waits while a call may
@@ -1361,7 +1366,7 @@ fn x_has_loop(p: Parser, body: IdRange) -> bool {
 fn x_stmt_has_loop(p: Parser, id: i64) -> bool {
     match p.ast.stmts[id] {
         StmtWhile(_, _) => return true
-        StmtFor(_, _, _, _, _) => return true
+        StmtFor(_, _, _, _) => return true
         StmtIf(_, then_block, else_branch) => {
             if x_has_loop(p, then_block) {
                 return true

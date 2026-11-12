@@ -738,8 +738,93 @@ fn ck_const_eval(c: mut Checker, p: Parser, id: i64) -> ConstValue {
                 _ => return nothing
             }
         }
+        ExprCall(callee, args) => {
+            if is_embed(p, callee) {
+                return ck_embed(mut c, p, id, args)
+            }
+            ck_err(pos, "a constant must be made of literals and other constants", mut c)
+            return nothing
+        }
         _ => {
             ck_err(pos, "a constant must be made of literals and other constants", mut c)
+            return nothing
+        }
+    }
+}
+
+// Whether `callee` is the name `embed`, the one call a constant may
+// contain.
+fn is_embed(p: Parser, callee: i64) -> bool {
+    match p.ast.exprs[callee] {
+        ExprIdent(name) => return span_is(p.src, name, "embed")
+        _ => return false
+    }
+}
+
+// The most bytes of text a program may hold with an embedded file.
+const MAX_EMBED = 1073741824
+
+// The path of the file `name` stands for, written in the source file
+// `here`: next to that file, unless `name` starts at the root.
+fn embed_path(here: str, name: str) -> str {
+    if name.len() > 0 && name[0] == 47 {
+        return name
+    }
+    var cut = here.len() - 1
+    while cut >= 0 && here[cut] != 47 {
+        cut = cut - 1
+    }
+    if cut < 0 {
+        return name
+    }
+    return here.slice(0, cut + 1) + name
+}
+
+// `embed("path")` in a constant: the bytes of that file, read now, as a
+// string constant. The path is relative to the folder of the source
+// file the call is written in.
+fn ck_embed(c: mut Checker, p: Parser, id: i64, args: IdRange) -> ConstValue {
+    let pos = p.ast.expr_pos[id]
+    let nothing = ConstValue { kind: CV_BOOL, value: 0 }
+    if args.len != 1 {
+        ck_err(pos, "`embed` takes 1 argument but " + str(args.len) + " were given", mut c)
+        return nothing
+    }
+    let arg = p.ast.lists[args.start]
+    let value = ck_const_eval(mut c, p, arg)
+    if c.failed {
+        return nothing
+    }
+    if value.kind != CV_STR {
+        ck_const_wrong(mut c, p, arg, "argument 1 of `embed`", TY_STR, value)
+        return nothing
+    }
+    let name = c.data.slice(c.string_offsets[value.value], c.string_offsets[value.value] + c.string_lens[value.value])
+    // The file this call is written in is the last one that starts at
+    // or before it.
+    var here = ""
+    var i = c.file_starts.len() - 1
+    while i >= 0 {
+        if c.file_starts[i] <= pos {
+            here = c.file_paths[i]
+            break
+        }
+        i = i - 1
+    }
+    match read_file(embed_path(here, name)) {
+        Ok(bytes) => {
+            let offset = c.data.len()
+            if bytes.len() + offset > MAX_EMBED {
+                ck_err(pos, "cannot embed `" + name + "`: the file is too large for now", mut c)
+                return nothing
+            }
+            c.data = c.data + bytes
+            c.string_offsets.push(offset)
+            c.string_lens.push(bytes.len())
+            return ConstValue { kind: CV_STR, value: c.string_offsets.len() - 1 }
+        }
+        Err(why) => {
+            ck_err(pos, "cannot embed `" + name + "`: " + why, mut c)
             return nothing
         }
     }
@@ -1109,7 +1194,7 @@ fn ck_stmt(c: mut Checker, p: Parser, id: i64) {
             }
             c.loop_depth = c.loop_depth - 1
         }
-        StmtFor(has_index, index, item, iter, body) => ck_for(mut c, p, id, has_index, index, item, iter, body)
+        StmtFor(index, item, iter, body) => ck_for(mut c, p, id, index.len > 0, index, item, iter, body)
         StmtBreak => ck_outside_loop(mut c, p.ast.stmt_pos[id])
         StmtContinue => ck_outside_loop(mut c, p.ast.stmt_pos[id])
         StmtMatch(scrutinee, arms) => ck_match_stmt(mut c, p, id, scrutinee, arms)
@@ -2300,14 +2385,29 @@ fn ck_binary(c: mut Checker, p: Parser, id: i64, op: BinOp, lhs: i64, rhs: i64) 
         ck_expect(mut c, p, rhs, left, W_OPERATOR, id, 0)
         return TY_BOOL
     }
+    if op == BinLt || op == BinLtEq || op == BinGt || op == BinGtEq {
+        // Strings are ordered byte by byte; a string that another one
+        // starts with comes first.
+        let left = ck_expr_hint(mut c, p, lhs, TY_I64)
+        if c.failed {
+            return TY_UNIT
+        }
+        if left == TY_STR {
+            ck_string_operands(mut c, p, id, lhs, rhs)
+            return TY_BOOL
+        }
+        if left != TY_I64 {
+            ck_expect_failed(mut c, p, lhs, TY_I64, left, W_OPERATOR, id, 0)
+            return TY_UNIT
+        }
+        ck_expect(mut c, p, rhs, TY_I64, W_OPERATOR, id, 0)
+        return TY_BOOL
+    }
     ck_expect(mut c, p, lhs, TY_I64, W_OPERATOR, id, 0)
     if c.failed {
         return TY_UNIT
     }
     ck_expect(mut c, p, rhs, TY_I64, W_OPERATOR, id, 0)
-    if op == BinLt || op == BinLtEq || op == BinGt || op == BinGtEq {
-        return TY_BOOL
-    }
     return TY_I64
 }
 
@@ -2756,6 +2856,10 @@ fn ck_call(c: mut Checker, p: Parser, id: i64, callee: i64, args: IdRange, hint:
 // The built-in functions that talk to the system.
 fn ck_builtin(c: mut Checker, p: Parser, id: i64, sym: i64, args: IdRange) -> i64 {
     let pos = p.ast.expr_pos[id]
+    if sym == SYM_EMBED {
+        ck_err(pos, "`embed` works only in a constant: write `const NAME = embed(\"file\")` and use the constant", mut c)
+        return TY_UNIT
+    }
     var first = TY_STR
     var count = 1
     var target = BUILTIN_EPRINT
@@ -2775,6 +2879,14 @@ fn ck_builtin(c: mut Checker, p: Parser, id: i64, sym: i64, args: IdRange) -> i6
         target = BUILTIN_WRITE_FILE
     } else if sym == SYM_SET_EXECUTABLE {
         target = BUILTIN_SET_EXECUTABLE
+    } else if sym == SYM_REMOVE_FILE {
+        target = BUILTIN_REMOVE_FILE
+    } else if sym == SYM_RENAME_FILE {
+        count = 2
+        target = BUILTIN_RENAME_FILE
+    } else if sym == SYM_CLOCK {
+        count = 0
+        target = BUILTIN_CLOCK
     }
     if args.len != count {
         ck_err(pos, "`" + sym_text(c, sym) + "` takes " + str(count) + " argument" + plural(count) + " but " + str(args.len) +
@@ -2797,6 +2909,10 @@ fn ck_builtin(c: mut Checker, p: Parser, id: i64, sym: i64, args: IdRange) -> i6
     if target == BUILTIN_EPRINT || target == BUILTIN_EXIT {
         return TY_UNIT
     }
+    if target == BUILTIN_CLOCK {
+        // A number: nothing to keep in a temporary.
+        return TY_I64
+    }
     var ty = TY_STR
     if target == BUILTIN_ARGS {
         ty = ck_list_of(mut c, TY_STR)
@@ -2804,8 +2920,8 @@ fn ck_builtin(c: mut Checker, p: Parser, id: i64, sym: i64, args: IdRange) -> i6
         // The text of the file, or what the system says went wrong.
         ty = ck_instance(mut c, RESULT_TEMPLATE, [TY_STR, TY_STR], pos)
     } else if target != BUILTIN_CHR {
-        // The number of bytes written (0 for `set_executable`), or what
-        // went wrong.
+        // The number of bytes written (0 for `set_executable`,
+        // `remove_file` and `rename_file`), or what went wrong.
         ty = ck_instance(mut c, RESULT_TEMPLATE, [TY_I64, TY_STR], pos)
     }
     if c.failed {
@@ -3363,6 +3479,60 @@ fn ck_library_method(c: mut Checker, p: Parser, id: i64, base: i64, name: Span, 
     return TY_UNIT
 }
 
+// `s.push(byte)` and `s.set(index, byte)`: a string used as a buffer of
+// bytes. Both change the string where it is, so it must be a variable
+// that can change, like the list of a `push`. The byte is the low eight
+// bits of the number.
+fn ck_byte_method(c: mut Checker, p: Parser, id: i64, base: i64, sym: i64, args: IdRange) -> i64 {
+    let pos = p.ast.expr_pos[id]
+    var expected = 2
+    if sym == SYM_PUSH {
+        expected = 1
+    }
+    if args.len != expected {
+        ck_wrong_count(mut c, pos, sym, expected, args.len)
+        return TY_UNIT
+    }
+    let place = ck_place(c, p, base)
+    if !place.ok {
+        ck_err(pos, "`" + sym_text(c, sym) + "` changes its receiver, so it needs a variable or a part of a variable", mut c)
+        return TY_UNIT
+    }
+    if !place.mutable {
+        ck_err(pos, "cannot change `" + ck_root_name(p, base) + "`: " + read_only(place), mut c)
+        ck_var_fix(mut c, p, place, base)
+        return TY_UNIT
+    }
+    // The numbers are computed before the string is looked at.
+    c.late.push(base)
+    var i = 0
+    while i < args.len {
+        ck_expect(mut c, p, p.ast.lists[args.start + i], TY_I64, W_ARGUMENT, i + 1, sym)
+        if c.failed {
+            return TY_UNIT
+        }
+        i = i + 1
+    }
+    c.late.pop()
+    ck_check_change(mut c, p, base, place)
+    if c.failed {
+        return TY_UNIT
+    }
+    // Room for what the runtime needs when the string has to get a
+    // buffer of its own or a larger one.
+    let slot = ck_alloc(mut c, 6, pos)
+    if c.failed {
+        return TY_UNIT
+    }
+    c.expr_tmp[c.sh_e + id] = slot
+    if sym == SYM_PUSH {
+        c.expr_res[c.sh_e + id] = BUILTIN_STR_PUSH
+    } else {
+        c.expr_res[c.sh_e + id] = BUILTIN_STR_SET
+    }
+    return TY_UNIT
+}
+
 // A call written `value.name(...)`.
 fn ck_method(c: mut Checker, p: Parser, id: i64, base: i64, name: Span, args: IdRange) -> i64 {
     let pos = p.ast.expr_pos[id]
@@ -3401,6 +3571,17 @@ fn ck_method(c: mut Checker, p: Parser, id: i64, base: i64, name: Span, args: Id
             c.expr_tmp[c.sh_e + id] = slot
             c.expr_res[c.sh_e + id] = BUILTIN_STR_SLICE
             return TY_STR
+        }
+        if sym == SYM_PUSH || sym == SYM_SET {
+            return ck_byte_method(mut c, p, id, base, sym, args)
+        }
+        if sym == SYM_IS_UTF8 {
+            if args.len != 0 {
+                ck_wrong_count(mut c, pos, sym, 0, args.len)
+                return TY_UNIT
+            }
+            c.expr_res[c.sh_e + id] = BUILTIN_STR_IS_UTF8
+            return TY_BOOL
         }
         return ck_library_method(mut c, p, id, base, name, args)
     }
@@ -3490,7 +3671,7 @@ fn new_checker(p: Parser, prelude_start: i64) -> Checker {
     var names = new_names()
     let builtin = ["i64", "bool", "str", "List", "Option", "Result", "Some", "None", "Ok", "Err", "T", "E", "main", "print",
         "eprint", "chr", "args", "read_file", "write_file", "set_executable", "exit", "len", "slice", "push", "pop", "`-`",
-        "`!`", "an index", "this list's element", "`push`"]
+        "`!`", "an index", "this list's element", "`push`", "set", "remove_file", "rename_file", "clock", "embed", "is_utf8"]
     for text in builtin {
         names_intern(mut names, text, 0, text.len())
     }
@@ -3500,6 +3681,8 @@ fn new_checker(p: Parser, prelude_start: i64) -> Checker {
     return Checker {
         names: names,
         prelude_start: prelude_start,
+        file_starts: [],
+        file_paths: [],
         failed: false,
         error: SemaError { message: "", offset: 0, expr: -1, fix: no_fix() },
         errors: [],

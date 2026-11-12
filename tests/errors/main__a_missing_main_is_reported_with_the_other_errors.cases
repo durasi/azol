@@ -1,0 +1,30 @@
+# From the tests of the first compiler: src/main.rs, `a_missing_main_is_reported_with_the_other_errors`.
+==== 1
+---- file a.azl
+fn f() {
+    g()
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0315","message":"the program has no `main` function","file":"a.azl","line":1,"column":1,"end_line":1,"end_column":3,"source":"fn f() {","rule":"A program has exactly one `fn main()`, without parameters, returning nothing or the exit code as `i64`."}
+{"severity":"error","code":"E0202","message":"unknown function `g`","file":"a.azl","line":2,"column":5,"end_line":2,"end_column":6,"source":"    g()","rule":"Only functions of the program and the built-in functions can be called."}
+{"summary":{"errors":2,"files":1}}
+---- reports E0315 1:1, E0202 2:5
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0315]: the program has no `main` function
+ --> a.azl:1:1
+  |
+1 | fn f() {
+  | ^
+
+error[E0202]: unknown function `g`
+ --> a.azl:2:5
+  |
+2 |     g()
+  |     ^
+
+found 2 errors

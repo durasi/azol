@@ -1,0 +1,67 @@
+// spectral: the spectral norm of an infinite matrix's corner.
+// Algorithm: ten rounds of the power method with the matrix
+// A[i][j] = 1 / ((i + j)(i + j + 1) / 2 + i + 1), multiplying by A and by
+// its transpose without storing it.
+// Sizes: n = 2,200; small: n = 250.
+// Output: the norm times 1,000,000,000 and rounded.
+// NOT YET COMPILABLE: azoL has no `f64` yet. This file is the program as it
+// will be written once docs/design/floats.md is implemented; the gate skips
+// it until then. Rename it to `spectral.azl` when it builds.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+fn entry(i: i64, j: i64) -> f64 {
+    return 1.0 / ((i + j) * (i + j + 1) / 2 + i + 1).to_f64()
+}
+
+fn times(v: List[f64], out: mut List[f64], transposed: bool) {
+    var i = 0
+    while i < v.len() {
+        var sum = 0.0
+        var j = 0
+        while j < v.len() {
+            if transposed {
+                sum = sum + entry(j, i) * v[j]
+            } else {
+                sum = sum + entry(i, j) * v[j]
+            }
+            j = j + 1
+        }
+        out[i] = sum
+        i = i + 1
+    }
+}
+
+fn main() {
+    let n = size(2200, 250)
+    var u = 1.0.filled(n)
+    var v = 0.0.filled(n)
+    var held = 0.0.filled(n)
+    var round = 0
+    while round < 10 {
+        times(u, mut held, false)
+        times(held, mut v, true)
+        times(v, mut held, false)
+        times(held, mut u, true)
+        round = round + 1
+    }
+    var uv = 0.0
+    var vv = 0.0
+    var i = 0
+    while i < n {
+        uv = uv + u[i] * v[i]
+        vv = vv + v[i] * v[i]
+        i = i + 1
+    }
+    match ((uv / vv).sqrt() * 1000000000.0).round().to_i64() {
+        Some(scaled) => print(scaled)
+        None => print(0)
+    }
+}

@@ -14,7 +14,7 @@
 /// The imports the library provides, in the order of their offsets below.
 /// It must be `IMPORTS` in `runtime.rs`, which a test checks.
 #[allow(dead_code)]
-pub const IMPORT_NAMES: [&str; 19] = ["_write", "_exit", "_malloc", "_realloc", "_free", "_memcpy", "_memcmp", "_open", "_read", "_close", "___error", "_strerror", "_strlen", "__NSGetArgc", "__NSGetArgv", "_chmod", "_sigaltstack", "_sigaction", "__exit"];
+pub const IMPORT_NAMES: [&str; 22] = ["_write", "_exit", "_malloc", "_realloc", "_free", "_memcpy", "_memcmp", "_open", "_read", "_close", "___error", "_strerror", "_strlen", "__NSGetArgc", "__NSGetArgv", "_chmod", "_sigaltstack", "_sigaction", "__exit", "_unlink", "_rename", "_clock_gettime_nsec_np"];
 
 /// Address the executable file is mapped at.
 pub const BASE: u64 = 0x400000;
@@ -22,9 +22,9 @@ pub const BASE: u64 = 0x400000;
 pub const TEXT_OFFSET: u64 = 0x100;
 /// The library's code and constant data. The program's code goes right
 /// after it, starting with a jump to the program's `main`.
-pub const TEXT: &[u8; 6000] = include_bytes!("../runtime/linux_arm64/runtime.bin");
+pub const TEXT: &[u8; 6176] = include_bytes!("../runtime/linux_arm64/runtime.bin");
 /// Offset in `TEXT` of the function that stands in for each import.
-pub const IMPORT_OFFSETS: [u32; 19] = [548, 596, 648, 936, 2076, 2156, 3036, 0, 3208, 3256, 3312, 3324, 4556, 4580, 4592, 4604, 4664, 4696, 4708];
+pub const IMPORT_OFFSETS: [u32; 22] = [548, 596, 648, 936, 2076, 2156, 3036, 0, 3208, 3256, 3312, 3324, 4556, 4580, 4592, 4604, 4840, 4872, 4884, 4664, 4724, 4784];
 /// Offset in `TEXT` of the code the system starts the process at.
 pub const START: u32 = 16;
 /// Address and size of the library's writable memory, which must start

@@ -1,0 +1,509 @@
+# The command line. The first cases are what `build_arguments_accept_several_files_in_any_order`
+# of src/main.rs required of the arguments of `build`; the rest is how the tool answers other
+# command lines.
+==== files, `-o` and `--target` in any order
+---- file a.azl
+fn main() {
+    print(twice(one()))
+}
+---- file b.azl
+fn twice(n: i64) -> i64 {
+    return n * 2
+}
+---- file c.azl
+fn one() -> i64 {
+    return 1
+}
+---- run build a.azl -o out b.azl --target x86_64-linux c.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+built out (83 bytes of code)
+---- exists out
+---- missing a
+==== `--json` anywhere
+---- file one.azl
+fn main() {
+    print(1)
+}
+---- run build --json one.azl
+---- exit 0
+---- stdout
+{"summary":{"errors":0,"files":1}}
+---- exists one
+==== `--emit-code` writes the code file as well
+---- file one.azl
+fn main() {
+    print(1)
+}
+---- run build one.azl --target x86_64-linux --emit-code one.code
+---- exit 0
+---- stdout (empty)
+---- stderr
+built one (25 bytes of code)
+---- exists one.code
+---- exists one
+==== `--emit-code` without a path
+---- file one.azl
+fn main() {
+    print(1)
+}
+---- run build one.azl --emit-code
+---- exit 2
+---- stdout (empty)
+---- stderr
+azoL compiler (early development)
+
+Usage:
+    azol lex <file.azl>              Print the tokens of a source file
+    azol lex --time <file.azl>       Lex the file and report the speed only
+    azol parse <file.azl>            Print the syntax tree of a source file
+    azol parse --time <file.azl>     Lex and parse the file and report the speed only
+    azol build <file.azl>            Compile to an executable next to the source file
+    azol build <file.azl> -o <out>   Compile to the given output path
+    azol build <a.azl> <b.azl> ...   Compile several files as one program; the
+                                     executable is named after the first
+    azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
+                                     `aarch64-linux`
+                                     instead of the machine the compiler runs on
+    azol check <a.azl> <b.azl> ...   Report every independent error of a program
+                                     without writing an executable
+    azol check --json ...            Report errors as one JSON object per line on
+    azol build --json ...            standard output, with exact positions, the
+                                     rule that was broken and, when the repair is
+                                     mechanical, the edit that makes it
+    azol explain                     List the error codes with their rules
+    azol explain <code>              Explain one error code, as in `azol explain E0401`
+    azol fmt <files...>              Rewrite source files in the canonical layout
+    azol fmt --check <files...>      Change nothing; list the files that are not
+                                     formatted and exit with 1 if there are any
+    azol fmt -                       Format standard input to standard output
+    azol --version                   Print the version
+==== `build` without files
+---- run build
+---- exit 2
+---- stdout (empty)
+---- stderr
+azoL compiler (early development)
+
+Usage:
+    azol lex <file.azl>              Print the tokens of a source file
+    azol lex --time <file.azl>       Lex the file and report the speed only
+    azol parse <file.azl>            Print the syntax tree of a source file
+    azol parse --time <file.azl>     Lex and parse the file and report the speed only
+    azol build <file.azl>            Compile to an executable next to the source file
+    azol build <file.azl> -o <out>   Compile to the given output path
+    azol build <a.azl> <b.azl> ...   Compile several files as one program; the
+                                     executable is named after the first
+    azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
+                                     `aarch64-linux`
+                                     instead of the machine the compiler runs on
+    azol check <a.azl> <b.azl> ...   Report every independent error of a program
+                                     without writing an executable
+    azol check --json ...            Report errors as one JSON object per line on
+    azol build --json ...            standard output, with exact positions, the
+                                     rule that was broken and, when the repair is
+                                     mechanical, the edit that makes it
+    azol explain                     List the error codes with their rules
+    azol explain <code>              Explain one error code, as in `azol explain E0401`
+    azol fmt <files...>              Rewrite source files in the canonical layout
+    azol fmt --check <files...>      Change nothing; list the files that are not
+                                     formatted and exit with 1 if there are any
+    azol fmt -                       Format standard input to standard output
+    azol --version                   Print the version
+==== `-o` without a source file
+---- run build -o out
+---- exit 2
+---- stdout (empty)
+---- stderr
+azoL compiler (early development)
+
+Usage:
+    azol lex <file.azl>              Print the tokens of a source file
+    azol lex --time <file.azl>       Lex the file and report the speed only
+    azol parse <file.azl>            Print the syntax tree of a source file
+    azol parse --time <file.azl>     Lex and parse the file and report the speed only
+    azol build <file.azl>            Compile to an executable next to the source file
+    azol build <file.azl> -o <out>   Compile to the given output path
+    azol build <a.azl> <b.azl> ...   Compile several files as one program; the
+                                     executable is named after the first
+    azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
+                                     `aarch64-linux`
+                                     instead of the machine the compiler runs on
+    azol check <a.azl> <b.azl> ...   Report every independent error of a program
+                                     without writing an executable
+    azol check --json ...            Report errors as one JSON object per line on
+    azol build --json ...            standard output, with exact positions, the
+                                     rule that was broken and, when the repair is
+                                     mechanical, the edit that makes it
+    azol explain                     List the error codes with their rules
+    azol explain <code>              Explain one error code, as in `azol explain E0401`
+    azol fmt <files...>              Rewrite source files in the canonical layout
+    azol fmt --check <files...>      Change nothing; list the files that are not
+                                     formatted and exit with 1 if there are any
+    azol fmt -                       Format standard input to standard output
+    azol --version                   Print the version
+==== `-o` without a path
+---- file one.azl
+fn main() {
+    print(1)
+}
+---- run build one.azl -o
+---- exit 2
+---- stdout (empty)
+---- stderr
+azoL compiler (early development)
+
+Usage:
+    azol lex <file.azl>              Print the tokens of a source file
+    azol lex --time <file.azl>       Lex the file and report the speed only
+    azol parse <file.azl>            Print the syntax tree of a source file
+    azol parse --time <file.azl>     Lex and parse the file and report the speed only
+    azol build <file.azl>            Compile to an executable next to the source file
+    azol build <file.azl> -o <out>   Compile to the given output path
+    azol build <a.azl> <b.azl> ...   Compile several files as one program; the
+                                     executable is named after the first
+    azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
+                                     `aarch64-linux`
+                                     instead of the machine the compiler runs on
+    azol check <a.azl> <b.azl> ...   Report every independent error of a program
+                                     without writing an executable
+    azol check --json ...            Report errors as one JSON object per line on
+    azol build --json ...            standard output, with exact positions, the
+                                     rule that was broken and, when the repair is
+                                     mechanical, the edit that makes it
+    azol explain                     List the error codes with their rules
+    azol explain <code>              Explain one error code, as in `azol explain E0401`
+    azol fmt <files...>              Rewrite source files in the canonical layout
+    azol fmt --check <files...>      Change nothing; list the files that are not
+                                     formatted and exit with 1 if there are any
+    azol fmt -                       Format standard input to standard output
+    azol --version                   Print the version
+==== an unknown option
+---- file one.azl
+fn main() {
+    print(1)
+}
+---- run build one.azl --fast
+---- exit 2
+---- stdout (empty)
+---- stderr
+azoL compiler (early development)
+
+Usage:
+    azol lex <file.azl>              Print the tokens of a source file
+    azol lex --time <file.azl>       Lex the file and report the speed only
+    azol parse <file.azl>            Print the syntax tree of a source file
+    azol parse --time <file.azl>     Lex and parse the file and report the speed only
+    azol build <file.azl>            Compile to an executable next to the source file
+    azol build <file.azl> -o <out>   Compile to the given output path
+    azol build <a.azl> <b.azl> ...   Compile several files as one program; the
+                                     executable is named after the first
+    azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
+                                     `aarch64-linux`
+                                     instead of the machine the compiler runs on
+    azol check <a.azl> <b.azl> ...   Report every independent error of a program
+                                     without writing an executable
+    azol check --json ...            Report errors as one JSON object per line on
+    azol build --json ...            standard output, with exact positions, the
+                                     rule that was broken and, when the repair is
+                                     mechanical, the edit that makes it
+    azol explain                     List the error codes with their rules
+    azol explain <code>              Explain one error code, as in `azol explain E0401`
+    azol fmt <files...>              Rewrite source files in the canonical layout
+    azol fmt --check <files...>      Change nothing; list the files that are not
+                                     formatted and exit with 1 if there are any
+    azol fmt -                       Format standard input to standard output
+    azol --version                   Print the version
+==== `--target` without a name
+---- file one.azl
+fn main() {
+    print(1)
+}
+---- run build one.azl --target
+---- exit 2
+---- stdout (empty)
+---- stderr
+azoL compiler (early development)
+
+Usage:
+    azol lex <file.azl>              Print the tokens of a source file
+    azol lex --time <file.azl>       Lex the file and report the speed only
+    azol parse <file.azl>            Print the syntax tree of a source file
+    azol parse --time <file.azl>     Lex and parse the file and report the speed only
+    azol build <file.azl>            Compile to an executable next to the source file
+    azol build <file.azl> -o <out>   Compile to the given output path
+    azol build <a.azl> <b.azl> ...   Compile several files as one program; the
+                                     executable is named after the first
+    azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
+                                     `aarch64-linux`
+                                     instead of the machine the compiler runs on
+    azol check <a.azl> <b.azl> ...   Report every independent error of a program
+                                     without writing an executable
+    azol check --json ...            Report errors as one JSON object per line on
+    azol build --json ...            standard output, with exact positions, the
+                                     rule that was broken and, when the repair is
+                                     mechanical, the edit that makes it
+    azol explain                     List the error codes with their rules
+    azol explain <code>              Explain one error code, as in `azol explain E0401`
+    azol fmt <files...>              Rewrite source files in the canonical layout
+    azol fmt --check <files...>      Change nothing; list the files that are not
+                                     formatted and exit with 1 if there are any
+    azol fmt -                       Format standard input to standard output
+    azol --version                   Print the version
+==== an unknown target
+---- file one.azl
+fn main() {
+    print(1)
+}
+---- run build one.azl --target riscv
+---- exit 2
+---- stdout (empty)
+---- stderr
+error: unknown target 'riscv'; the targets are `aarch64-macos`, `x86_64-linux` and `aarch64-linux`
+azoL compiler (early development)
+
+Usage:
+    azol lex <file.azl>              Print the tokens of a source file
+    azol lex --time <file.azl>       Lex the file and report the speed only
+    azol parse <file.azl>            Print the syntax tree of a source file
+    azol parse --time <file.azl>     Lex and parse the file and report the speed only
+    azol build <file.azl>            Compile to an executable next to the source file
+    azol build <file.azl> -o <out>   Compile to the given output path
+    azol build <a.azl> <b.azl> ...   Compile several files as one program; the
+                                     executable is named after the first
+    azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
+                                     `aarch64-linux`
+                                     instead of the machine the compiler runs on
+    azol check <a.azl> <b.azl> ...   Report every independent error of a program
+                                     without writing an executable
+    azol check --json ...            Report errors as one JSON object per line on
+    azol build --json ...            standard output, with exact positions, the
+                                     rule that was broken and, when the repair is
+                                     mechanical, the edit that makes it
+    azol explain                     List the error codes with their rules
+    azol explain <code>              Explain one error code, as in `azol explain E0401`
+    azol fmt <files...>              Rewrite source files in the canonical layout
+    azol fmt --check <files...>      Change nothing; list the files that are not
+                                     formatted and exit with 1 if there are any
+    azol fmt -                       Format standard input to standard output
+    azol --version                   Print the version
+---- missing one
+==== no arguments
+---- run
+---- exit 2
+---- stdout (empty)
+---- stderr
+azoL compiler (early development)
+
+Usage:
+    azol lex <file.azl>              Print the tokens of a source file
+    azol lex --time <file.azl>       Lex the file and report the speed only
+    azol parse <file.azl>            Print the syntax tree of a source file
+    azol parse --time <file.azl>     Lex and parse the file and report the speed only
+    azol build <file.azl>            Compile to an executable next to the source file
+    azol build <file.azl> -o <out>   Compile to the given output path
+    azol build <a.azl> <b.azl> ...   Compile several files as one program; the
+                                     executable is named after the first
+    azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
+                                     `aarch64-linux`
+                                     instead of the machine the compiler runs on
+    azol check <a.azl> <b.azl> ...   Report every independent error of a program
+                                     without writing an executable
+    azol check --json ...            Report errors as one JSON object per line on
+    azol build --json ...            standard output, with exact positions, the
+                                     rule that was broken and, when the repair is
+                                     mechanical, the edit that makes it
+    azol explain                     List the error codes with their rules
+    azol explain <code>              Explain one error code, as in `azol explain E0401`
+    azol fmt <files...>              Rewrite source files in the canonical layout
+    azol fmt --check <files...>      Change nothing; list the files that are not
+                                     formatted and exit with 1 if there are any
+    azol fmt -                       Format standard input to standard output
+    azol --version                   Print the version
+==== an unknown command
+---- run bogus
+---- exit 2
+---- stdout (empty)
+---- stderr
+azoL compiler (early development)
+
+Usage:
+    azol lex <file.azl>              Print the tokens of a source file
+    azol lex --time <file.azl>       Lex the file and report the speed only
+    azol parse <file.azl>            Print the syntax tree of a source file
+    azol parse --time <file.azl>     Lex and parse the file and report the speed only
+    azol build <file.azl>            Compile to an executable next to the source file
+    azol build <file.azl> -o <out>   Compile to the given output path
+    azol build <a.azl> <b.azl> ...   Compile several files as one program; the
+                                     executable is named after the first
+    azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
+                                     `aarch64-linux`
+                                     instead of the machine the compiler runs on
+    azol check <a.azl> <b.azl> ...   Report every independent error of a program
+                                     without writing an executable
+    azol check --json ...            Report errors as one JSON object per line on
+    azol build --json ...            standard output, with exact positions, the
+                                     rule that was broken and, when the repair is
+                                     mechanical, the edit that makes it
+    azol explain                     List the error codes with their rules
+    azol explain <code>              Explain one error code, as in `azol explain E0401`
+    azol fmt <files...>              Rewrite source files in the canonical layout
+    azol fmt --check <files...>      Change nothing; list the files that are not
+                                     formatted and exit with 1 if there are any
+    azol fmt -                       Format standard input to standard output
+    azol --version                   Print the version
+==== `check` without files
+---- run check
+---- exit 2
+---- stdout (empty)
+---- stderr
+azoL compiler (early development)
+
+Usage:
+    azol lex <file.azl>              Print the tokens of a source file
+    azol lex --time <file.azl>       Lex the file and report the speed only
+    azol parse <file.azl>            Print the syntax tree of a source file
+    azol parse --time <file.azl>     Lex and parse the file and report the speed only
+    azol build <file.azl>            Compile to an executable next to the source file
+    azol build <file.azl> -o <out>   Compile to the given output path
+    azol build <a.azl> <b.azl> ...   Compile several files as one program; the
+                                     executable is named after the first
+    azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
+                                     `aarch64-linux`
+                                     instead of the machine the compiler runs on
+    azol check <a.azl> <b.azl> ...   Report every independent error of a program
+                                     without writing an executable
+    azol check --json ...            Report errors as one JSON object per line on
+    azol build --json ...            standard output, with exact positions, the
+                                     rule that was broken and, when the repair is
+                                     mechanical, the edit that makes it
+    azol explain                     List the error codes with their rules
+    azol explain <code>              Explain one error code, as in `azol explain E0401`
+    azol fmt <files...>              Rewrite source files in the canonical layout
+    azol fmt --check <files...>      Change nothing; list the files that are not
+                                     formatted and exit with 1 if there are any
+    azol fmt -                       Format standard input to standard output
+    azol --version                   Print the version
+==== `lex` without a file
+---- run lex
+---- exit 2
+---- stdout (empty)
+---- stderr
+azoL compiler (early development)
+
+Usage:
+    azol lex <file.azl>              Print the tokens of a source file
+    azol lex --time <file.azl>       Lex the file and report the speed only
+    azol parse <file.azl>            Print the syntax tree of a source file
+    azol parse --time <file.azl>     Lex and parse the file and report the speed only
+    azol build <file.azl>            Compile to an executable next to the source file
+    azol build <file.azl> -o <out>   Compile to the given output path
+    azol build <a.azl> <b.azl> ...   Compile several files as one program; the
+                                     executable is named after the first
+    azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
+                                     `aarch64-linux`
+                                     instead of the machine the compiler runs on
+    azol check <a.azl> <b.azl> ...   Report every independent error of a program
+                                     without writing an executable
+    azol check --json ...            Report errors as one JSON object per line on
+    azol build --json ...            standard output, with exact positions, the
+                                     rule that was broken and, when the repair is
+                                     mechanical, the edit that makes it
+    azol explain                     List the error codes with their rules
+    azol explain <code>              Explain one error code, as in `azol explain E0401`
+    azol fmt <files...>              Rewrite source files in the canonical layout
+    azol fmt --check <files...>      Change nothing; list the files that are not
+                                     formatted and exit with 1 if there are any
+    azol fmt -                       Format standard input to standard output
+    azol --version                   Print the version
+==== `parse` with two files
+---- file one.azl
+fn main() {
+    print(1)
+}
+---- run parse one.azl one.azl
+---- exit 2
+---- stdout (empty)
+---- stderr
+azoL compiler (early development)
+
+Usage:
+    azol lex <file.azl>              Print the tokens of a source file
+    azol lex --time <file.azl>       Lex the file and report the speed only
+    azol parse <file.azl>            Print the syntax tree of a source file
+    azol parse --time <file.azl>     Lex and parse the file and report the speed only
+    azol build <file.azl>            Compile to an executable next to the source file
+    azol build <file.azl> -o <out>   Compile to the given output path
+    azol build <a.azl> <b.azl> ...   Compile several files as one program; the
+                                     executable is named after the first
+    azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
+                                     `aarch64-linux`
+                                     instead of the machine the compiler runs on
+    azol check <a.azl> <b.azl> ...   Report every independent error of a program
+                                     without writing an executable
+    azol check --json ...            Report errors as one JSON object per line on
+    azol build --json ...            standard output, with exact positions, the
+                                     rule that was broken and, when the repair is
+                                     mechanical, the edit that makes it
+    azol explain                     List the error codes with their rules
+    azol explain <code>              Explain one error code, as in `azol explain E0401`
+    azol fmt <files...>              Rewrite source files in the canonical layout
+    azol fmt --check <files...>      Change nothing; list the files that are not
+                                     formatted and exit with 1 if there are any
+    azol fmt -                       Format standard input to standard output
+    azol --version                   Print the version
+==== `--version`
+---- run --version
+---- exit 0
+---- stdout
+azol 0.1.0
+---- stderr (empty)
+==== a file that does not exist
+---- run build missing.azl
+---- exit 1
+---- stdout (empty)
+---- contains cannot read 'missing.azl'
+---- missing missing
+==== `check` of a file that does not exist
+---- run check missing.azl
+---- exit 1
+---- stdout (empty)
+---- contains cannot read 'missing.azl'
+==== `lex --time` prints the speed only
+---- file one.azl
+fn main() {
+    print(1)
+}
+---- run lex --time one.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+lexed 27 bytes, 3 lines, 14 tokens
+==== `parse --time` prints the speed only
+---- file one.azl
+fn main() {
+    print(1)
+}
+---- run parse --time one.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+parsed 3 lines into 5 nodes
+==== `build` says what it built (a fixed target, so the size is the same on every machine)
+---- file one.azl
+fn main() {
+    print(1)
+}
+---- run build --target x86_64-linux one.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+built one (25 bytes of code)
+---- exists one
+==== `explain` with a code that is not one
+---- run explain nonsense
+---- exit 1
+---- stdout (empty)
+---- stderr
+error: there is no error code 'nonsense'; `azol explain` lists them all

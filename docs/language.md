@@ -207,17 +207,18 @@ there are no floating-point numbers yet; the only number type is `i64`
 |---|---|
 | `i64` | 64-bit signed integers. The only number type. |
 | `bool` | `true` and `false`. |
-| `str` | A sequence of bytes. Usually UTF-8 text, but nothing checks that. |
+| `str` | A sequence of bytes. Usually UTF-8 text, but nothing checks that unless you ask with `is_utf8()`. |
 | `List[T]` | A growable sequence of `T`, for any type `T`. |
 | a struct | Named fields. |
 | an enum | One of several variants; a variant may carry values. |
 | `Option[T]` | Built-in enum: `Some(T)` or `None`. |
 | `Result[T, E]` | Built-in enum: `Ok(T)` or `Err(E)`. |
+| `Map[V]` | The library's map from `str` keys to values of type `V` ([10.4](#104-map)). |
 
 Type arguments are written in square brackets: `List[i64]`,
 `Option[List[str]]`, `Result[i64, str]`, `Pair[i64, str]`.
 
-There are no other built-in types. An unknown name gives:
+There are no other types to start from. An unknown name gives:
 
 ```azol-error
 fn main() {
@@ -229,9 +230,10 @@ fn main() {
 unknown type `u8`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`
 ```
 
-There are no conversions between types except the functions `str(...)` and
-`chr(...)` and the method `to_i64()`. A condition must be `bool`; an `i64`
-is not accepted there.
+Nothing is converted silently. The conversions are the functions
+`str(...)` and `chr(...)` and the methods `to_i64()`, `parse_hex()`,
+`to_hex()`, `bytes()` and `to_str()` of section 10. A condition must be
+`bool`; an `i64` is not accepted there.
 
 ## 4. Declarations
 
@@ -536,6 +538,8 @@ A constant is an `i64`, a `bool` or a `str`, computed while compiling.
 - A string constant is a string literal, another string constant, or
   several of them joined with `+`: `const LOUD = GREETING + "!"`. No other
   operator works on strings in a constant.
+- `embed("path")` is a string constant too: the bytes of that file, read
+  while compiling and stored in the executable. See below.
 - Constants may be declared in any order and may use each other. A cycle is
   an error. Division by zero in a constant is an error.
 - A constant is visible in every function and every file. It can be used as
@@ -574,6 +578,57 @@ fn main() {
 
 ```error
 constant `A` is defined in terms of itself
+```
+
+**Embedding a file.** `embed("path")` stands for the contents of a file as
+they are when the program is compiled; the program does not need the file
+when it runs. It is allowed only in the value of a constant, alone or joined
+to other strings with `+`. The path is a constant string, relative to the
+folder of the source file that contains the call (an absolute path is used
+as it is). Any bytes are accepted, not only text.
+
+```azol-data group=embed file=motto.txt
+The rust remover.
+```
+
+```azol group=embed file=main.azl
+const MOTTO = embed("motto.txt")
+const SHOUT = "azoL: " + embed("motto.txt")
+
+fn main() {
+    print(MOTTO.len())
+    print(SHOUT.trim())
+}
+```
+
+```output
+18
+azoL: The rust remover.
+```
+
+A file that cannot be read is an error of the program, found while
+compiling:
+
+```azol-error
+const TABLE = embed("no_such_file.txt")
+
+fn main() {
+    print(TABLE)
+}
+```
+
+```error
+cannot embed `no_such_file.txt`: No such file or directory
+```
+
+```azol-error
+fn main() {
+    print(embed("motto.txt"))
+}
+```
+
+```error
+`embed` works only in a constant: write `const NAME = embed("file")` and use the constant
 ```
 
 ## 5. Statements
@@ -957,7 +1012,10 @@ Notes:
   ([section 14](#14-what-stops-a-program-at-run-time)).
 - A shift uses the low 6 bits of its count: `x << 64` is `x`, `x << 65` is
   `x << 1`. `>>` keeps the sign.
-- `<`, `<=`, `>`, `>=` work on `i64` only.
+- `<`, `<=`, `>`, `>=` work on two `i64` and on two `str`. Strings are
+  compared byte by byte, each byte as a number from 0 to 255, up to the
+  first difference; a string that another one starts with comes first.
+  So `"Zebra" < "apple"` and `"ab" < "abc"` are both `true`.
 - `==` and `!=` work on two `i64`, two `bool`, two `str` (same bytes), and
   two values of an enum none of whose variants carries a value. They do not
   work on structs, lists or other enums, including `Option` and `Result`.
@@ -1158,6 +1216,54 @@ one
 no space
 ```
 
+`value?` may also stand alone as a statement, when only the early return
+matters, and anywhere an expression may: in a condition, an argument, an
+index, the list of a `for`, the value of a `match`.
+
+```azol
+fn positive(n: i64) -> Result[i64, str] {
+    if n <= 0 {
+        return Err("not positive: " + str(n))
+    }
+    return Ok(n)
+}
+
+fn area(sides: List[i64]) -> Result[i64, str] {
+    positive(sides.len() - 1)?
+    var product = 1
+    var i = 0
+    while i < sides.len() {
+        product = product * sides[i] * positive(sides[i])? / sides[i]
+        i = i + 1
+    }
+    if positive(product)? > 100 {
+        return Err("too large")
+    }
+    return Ok(product)
+}
+
+fn show(result: Result[i64, str]) {
+    match result {
+        Ok(n) => print(n)
+        Err(why) => print(why)
+    }
+}
+
+fn main() {
+    show(area([3, 4]))
+    show(area([3, -4]))
+    show(area([3]))
+    show(area([30, 40]))
+}
+```
+
+```output
+12
+not positive: -4
+not positive: 0
+too large
+```
+
 A value taken out of a temporary, as in `let text = read_file(path)?`, is
 moved, not copied. Out of a variable it is copied, and the variable keeps
 its value.
@@ -1281,7 +1387,8 @@ methods on their own types. Write a plain function that takes the value as
 its first parameter.
 
 Some methods change the value they are called on: `push`, `pop`, `extend`,
-`truncate`, `insert` and `remove_at` of a list, `set` and `remove` of a
+`truncate`, `insert` and `remove_at` of a list, `push`, `set` and their
+relatives of a `str`, `set` and `remove` of a
 `Map`. No `mut` is written for the receiver, but it must be a place that
 can change, and it follows the exclusivity rules (section 13) exactly as
 if it were passed as a `mut` argument: `xs.extend(xs)` is rejected, and so
@@ -1310,6 +1417,10 @@ cannot change `xs`: declare it with `var` to make it changeable
 | `read_file(path: str) -> Result[str, str]` | The whole file, or the reason it could not be read. |
 | `write_file(path: str, text: str) -> Result[i64, str]` | Replaces or creates the file. `Ok` holds the number of bytes written. |
 | `set_executable(path: str) -> Result[i64, str]` | Marks the file as a program that can be run. `Ok` holds 0. |
+| `remove_file(path: str) -> Result[i64, str]` | Deletes the file. `Ok` holds 0. |
+| `rename_file(from: str, to: str) -> Result[i64, str]` | Gives the file `from` the name `to`. A file that already has that name is replaced. `Ok` holds 0. |
+| `clock() -> i64` | Nanoseconds on a clock that only moves forward. The number itself means nothing; the difference of two readings is the time between them. |
+| `embed(path: str)` | Only in a constant: the contents of a file, read while compiling. See [4.5](#45-constants). |
 | `exit(code: i64)` | Ends the program now with this exit code. |
 
 These names cannot be redefined. Output is written when `print` is called;
@@ -1359,6 +1470,43 @@ this goes to standard error
 The checker runs this example with the arguments `one two` and expects
 exit code 4. The file is written to the folder the program is started in.
 
+Writing a file under another name and renaming it puts the new contents in
+place in one step, so a reader never sees half a file; `clock` times it:
+
+```azol
+fn save(path: str, text: str) -> Result[i64, str] {
+    let draft = path + ".tmp"
+    let bytes = write_file(draft, text)?
+    rename_file(draft, path)?
+    return Ok(bytes)
+}
+
+fn main() {
+    let started = clock()
+    match save("report.txt", "done\n") {
+        Ok(bytes) => print(bytes)
+        Err(why) => print("cannot save: " + why)
+    }
+    let nanoseconds = clock() - started
+    print(str(nanoseconds >= 0))
+    match remove_file("report.txt") {
+        Ok(_) => print("removed")
+        Err(why) => print(why)
+    }
+    match remove_file("report.txt") {
+        Ok(_) => print("removed")
+        Err(why) => print(why)
+    }
+}
+```
+
+```output
+5
+true
+removed
+No such file or directory
+```
+
 ## 10. Library methods
 
 ### 10.1 Lists
@@ -1389,6 +1537,7 @@ exit code 4. The file is written to the folder the program is started in.
 | `xs.truncate(n)` | nothing | Keeps the first `n` items; nothing when `n` is below zero. Changes `xs`. |
 | `xs.insert(at, item)` | nothing | Puts `item` at position `at` and moves the later items up. `at` may be `xs.len()`; stops the program outside 0 to `xs.len()`. Changes `xs`. |
 | `xs.remove_at(at)` | `T` | Takes the item at `at` out and returns it; the later items move down. Stops the program when `at` is out of range. Changes `xs`. |
+| `value.filled(n)` | `List[T]` | A new list of `n` copies of `value`, which may be of any type: `0.filled(256)` is a table of zeros. Empty when `n` is zero or less. |
 
 ```azol
 fn main() {
@@ -1480,7 +1629,13 @@ Positions and lengths count bytes.
 | Method | Result | Meaning |
 |---|---|---|
 | `s.len()` | `i64` | Number of bytes. |
-| `s[i]` | `i64` | Byte `i`. Read-only. |
+| `s[i]` | `i64` | Byte `i`, a number from 0 to 255. Stops the program outside 0 to `s.len() - 1`. To change a byte use `set`. |
+| `s.push(byte)` | nothing | Adds one byte at the end: the low 8 bits of the number. Changes `s`. |
+| `s.set(i, byte)` | nothing | Replaces byte `i` by the low 8 bits of the number. Stops the program outside 0 to `s.len() - 1`. Changes `s`. |
+| `s.push_u16(n)`, `s.push_u32(n)`, `s.push_u64(n)` | nothing | Adds the low 2, 4 or 8 bytes of `n`, lowest byte first. Changes `s`. |
+| `s.set_u32(i, n)` | nothing | Replaces the 4 bytes from `i` by the low 4 bytes of `n`, lowest first. Changes `s`. |
+| `s.u16_at(i)`, `s.u32_at(i)`, `s.u64_at(i)` | `i64` | The number in the 2, 4 or 8 bytes from `i`, lowest byte first. The first two are never negative. |
+| `s.is_utf8()` | `bool` | Whether the bytes are well-formed UTF-8. `read_file` gives back whatever bytes the file holds; this tells whether they are text. |
 | `s.slice(from, to)` | `str` | Bytes `from` up to but not including `to`. Stops the program unless 0 <= `from` <= `to` <= `s.len()`. |
 | `s.find(part)` | `Option[i64]` | Where `part` first occurs. |
 | `s.contains(part)` | `bool` | Whether `part` occurs. |
@@ -1501,6 +1656,42 @@ Positions and lengths count bytes.
 | `s.bytes()` | `List[i64]` | The bytes, each from 0 to 255. |
 | `s.parse_hex()` | `Option[i64]` | The number written in one to sixteen hexadecimal digits; `None` for anything else. |
 | `s.hash()` | `i64` | The FNV-1a hash of the bytes. |
+
+`pad_left` and `pad_right` add whole copies of `fill`, so a fill of
+several bytes may pass `width`; an empty fill changes nothing.
+`index_of_from` counts a `start` below zero as zero. An empty `part` is
+found at once: `find` gives 0 and `last_index_of` gives the length.
+
+```azol
+fn show(found: Option[i64]) {
+    match found {
+        Some(at) => print(at)
+        None => print("none")
+    }
+}
+
+fn main() {
+    print("7".pad_left(4, "ab"))
+    print("7".pad_right(3, "") + "|")
+    show("a-b".index_of_from("-", -5))
+    show("a-b".index_of_from("-", 2))
+    show("abc".find(""))
+    show("abc".last_index_of(""))
+    show("FFFFFFFFFFFFFFFF".parse_hex())
+    show("fg".parse_hex())
+}
+```
+
+```output
+abab7
+7|
+1
+none
+0
+3
+-1
+none
+```
 
 `to_i64` accepts no `+`, no spaces, no `_` and no `0x`. It reads the whole
 range, from `-9223372036854775808` to `9223372036854775807`, and returns
@@ -1584,6 +1775,32 @@ HELLOhello
 105
 255
 true
+```
+
+A `str` is also the buffer for binary data: file contents, machine code,
+tables of bytes. `push` and `set` are compiled into the place where they
+are written, so building a buffer byte by byte is cheap. A string whose
+bytes come from a literal gets a buffer of its own the first time it is
+changed; the literal itself never changes.
+
+```azol
+fn main() {
+    var code = ""
+    code.push(0x48)
+    code.push_u32(0)
+    code.push_u16(0xBEEF)
+    code.set_u32(1, 0x04030201)
+    print(str(code.len()) + " " + str(code[0]) + " " + str(code.u32_at(1)) + " " + str(code[5]) + " " + str(code.u16_at(5)))
+    var word = "cat"
+    word.set(0, 98)
+    word.push(115)
+    print(word + " " + str("cat" < word) + " " + str("bat" < word))
+}
+```
+
+```output
+7 72 67305985 239 48879
+bats false true
 ```
 
 ### 10.3 Numbers
@@ -2076,11 +2293,14 @@ azol build <file.azl>              compile to an executable next to the source f
 azol build <file.azl> -o <out>     compile to the given path
 azol build <a.azl> <b.azl> ...     compile several files as one program
 azol build --target <target> ...   compile for another machine
+azol build --json ...              report errors as JSON, as `check --json` does
 azol check <a.azl> <b.azl> ...     report the errors, write nothing
 azol check --json ...              the same as one JSON object per line
+azol explain                       list the error codes with their rules
 azol explain <code>                explain an error code such as E0401
 azol fmt <files...>                rewrite files in the canonical layout
 azol fmt --check <files...>        only list the files that are not formatted
+azol fmt -                         format standard input to standard output
 azol lex <file.azl>                print the tokens
 azol lex --time <file.azl>         lex and report the speed only
 azol parse <file.azl>              print the syntax tree
@@ -2094,10 +2314,9 @@ Without `-o`, the executable is named after the first source file, without
 On success `build` prints one line to standard error, of the form
 `built hello (3800 bytes of code) in 0.399 ms (...)`, and exits with 0.
 
-On an error in the program `build` prints the error to standard error and
-exits with 1. It reports the first error of every function (after a syntax
-error, only the first syntax error of each file). Every error has a stable
-code, listed in `docs/errors.md`. The form is:
+On an error in the program `build` prints the errors to standard error,
+writes no executable and exits with 1. Every error has a stable code,
+listed in `docs/errors.md`. The form is:
 
 ```text
 error[E0408]: cannot change `xs` while a loop is going through it
@@ -2113,6 +2332,140 @@ with a `^` under the place.
 
 A command line that `azol` does not understand prints the usage text and
 exits with 2.
+
+### 16.1 Which errors are reported
+
+`build` and `check` report the same errors, in this order of stages. A
+later stage runs only when the earlier ones found nothing.
+
+1. Syntax: the first syntax error of each file.
+2. Declarations: a mistake in the declarations themselves (a name declared
+   twice, an unknown type in a field or parameter, a constant defined in
+   terms of itself). The first one is reported, alone.
+3. Bodies: the first error of every function, and a missing `main`.
+
+So one run shows every function that has a mistake, but only the first
+mistake of each. Errors are sorted by file and position. When there is
+more than one, a last line says how many.
+
+### 16.2 `check`
+
+`azol check` takes the same files as `build`, reports the same errors and
+writes nothing. It exits with 1 when there are errors and 0 when there are
+none; then it prints one line such as
+`checked 3 lines in 1 file: no errors (0.230 ms)`.
+
+```azol-check
+fn total(prices: List[i64]) -> i64 {
+    let sum = 0
+    for price in prices {
+        sum = sum + price
+    }
+    return sum
+}
+
+fn main() {
+    let names = ["tea", "mug"]
+    names.push("cup")
+    print(total([450, 1200]) + names.len())
+    print(missing)
+}
+```
+
+```report
+error[E0401]: cannot change `sum`: declare it with `var` to make it changeable
+ --> example.azl:4:9
+  |
+4 |         sum = sum + price
+  |         ^
+
+error[E0401]: cannot change `names`: declare it with `var` to make it changeable
+  --> example.azl:11:5
+   |
+11 |     names.push("cup")
+   |     ^
+
+found 2 errors
+```
+
+`main` has a second mistake, the unknown name `missing`. It is reported on
+the next run, after the first one is repaired.
+
+### 16.3 `--json`: errors for tools
+
+With `--json`, `check` and `build` write the errors to standard output, one
+JSON object per line, and a last line with the totals. Nothing else is
+written to standard output. This is the form for programs and AI agents
+that repair code: every position is exact, and where the repair is
+mechanical the object carries it.
+
+```azol-check
+fn main() {
+    let count = 0
+    count = count + 1
+    print(count)
+}
+```
+
+```json
+{"severity":"error","code":"E0401","message":"cannot change `count`: declare it with `var` to make it changeable","file":"example.azl","line":3,"column":5,"end_line":3,"end_column":10,"source":"    count = count + 1","rule":"A variable declared with `let` never changes; only one declared with `var` can be assigned, grown or passed as `mut`.","help":"Declare the variable with `var` instead of `let`.","fix":{"file":"example.azl","line":2,"column":5,"end_line":2,"end_column":8,"replacement":"var"}}
+{"summary":{"errors":1,"files":1}}
+```
+
+| Field | Meaning |
+|---|---|
+| `severity` | Always `"error"`; the compiler has no warnings. |
+| `code` | The stable code of the rule, `E` and four digits. `azol explain <code>` explains it. |
+| `message` | The same sentence the text form prints. |
+| `file`, `line`, `column` | Where the mistake starts. Lines and columns start at 1; a column counts characters. |
+| `end_line`, `end_column` | Where it ends; the end is not part of it. |
+| `source` | The source line. |
+| `rule` | The rule of the language that was broken, in one sentence. |
+| `help` | What to do, in one sentence. |
+| `fix` | Only when the repair is mechanical: replace the text from `line`:`column` up to `end_line`:`end_column` of `file` with `replacement`. |
+
+Applying a `fix` removes that error. A program without errors gives the
+summary line alone, `{"summary":{"errors":0,"files":1}}`, and exit code 0.
+
+### 16.4 `explain`
+
+`azol explain` lists every code with its rule. `azol explain E0401` prints
+the rule, what to do, a wrong and a right example, and the messages that
+carry the code. `docs/errors.md` is the same text for all codes. An unknown
+code is an error and exits with 1.
+
+### 16.5 `fmt`
+
+`azol fmt` rewrites files in the one canonical layout: four spaces for each
+level, one statement on a line, spaces around binary operators and after
+commas and colons, `{` at the end of the line that opens a block, at most
+one empty line in a row. Comments stay where they are. It does not break
+long lines and it never changes what a program means.
+
+```azol-fmt
+fn  main( ){
+let total=1+2*3
+
+
+      if total>6{print( total )}
+}
+```
+
+```formatted
+fn main() {
+    let total = 1 + 2 * 3
+
+    if total > 6 {
+        print(total)
+    }
+}
+```
+
+`azol fmt --check` changes nothing: it lists the files that are not in the
+canonical layout and exits with 1 if there are any. `azol fmt -` reads
+standard input and writes the result to standard output. A file that does
+not parse is left untouched; its syntax error is reported and the exit code
+is 1.
 
 ## 17. Targets
 
@@ -2166,8 +2519,7 @@ instead.
 | Ranges, `for i in 0..n` | `while` with a counter. |
 | `for` over the bytes of a string | `while i < s.len()` and `s[i]`. |
 | `==` on structs, lists and enums that carry values | Compare fields; `match`. |
-| `<` and the other orderings on strings | Compare bytes in a loop. |
-| Changing a byte of a string | `slice` and `+`. |
+| Assigning to a byte, `s[i] = b` | `s.set(i, b)`. |
 | Global variables | Constants, and `mut` parameters. |
 | Multi-line strings, string interpolation, formatting | `+`, `str(...)` and `\n`. |
 | `print` with several arguments or without a newline | Build one string; one `print` per line. |
@@ -2227,14 +2579,13 @@ only functions can be called
 
 ```azol-error
 fn main() {
-    if "a" < "b" {
-        print("ordered")
-    }
+    var s = "abc"
+    s[0] = 65
 }
 ```
 
 ```error
-`<` needs `i64` but this is `str`
+a string cannot be changed in place
 ```
 
 ```azol-error

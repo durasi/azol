@@ -119,9 +119,11 @@ enum Stmt {
     StmtIf(i64, IdRange, ElseBranch)
     // Condition, body.
     StmtWhile(i64, IdRange)
-    // Has an index variable, its name (meaningless without one), item
-    // name, the list expression, body.
-    StmtFor(bool, Span, Span, i64, IdRange)
+    // The name of the index variable (empty, `len` 0, without one), item
+    // name, the list expression, body. Eight slots with its tag: the
+    // largest statement, and the largest value a `push` stores without
+    // calling the runtime.
+    StmtFor(Span, Span, i64, IdRange)
     // Value matched on, arms (ids into `Ast.arms`).
     StmtMatch(i64, IdRange)
     StmtBreak

@@ -1,0 +1,24 @@
+# From the tests of the first compiler: src/lexer.rs, `function_header`.
+==== 1
+---- file a.azl (no newline at end)
+fn add(a: i32, b: i32) -> i32 {
+---- run lex a.azl
+---- exit 0
+---- stdout
+   1:1    Fn         fn
+   1:4    Ident      add
+   1:7    LParen     (
+   1:8    Ident      a
+   1:9    Colon      :
+   1:11   Ident      i32
+   1:14   Comma      ,
+   1:16   Ident      b
+   1:17   Colon      :
+   1:19   Ident      i32
+   1:22   RParen     )
+   1:24   Arrow      ->
+   1:27   Ident      i32
+   1:31   LBrace     {
+   1:32   Eof        
+---- stderr
+lexed 31 bytes, 1 lines, 15 tokens

@@ -17,7 +17,8 @@
   <a href="#azol-rust-and-javascript">Comparison</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="docs/language.md">Language reference</a> ·
-  <a href="docs/for-agents.md">Briefing for AI agents</a>
+  <a href="AGENTS.md">For AI agents</a> ·
+  <a href="docs/for-agents.md">Briefing</a>
 </p>
 
 ---
@@ -141,7 +142,7 @@ Run: azoL is faster than unoptimized Rust in 8 of 8 and faster than Node.js in 7
 | **Building for another system** | Built in: `--target`, nothing to install | A target to install and a linker for it | Not applicable |
 | **Compiler output for tools and AI agents** | `check --json`: code, exact span, the rule that was broken, and the edit when the repair is mechanical | `--error-format=json`, with suggested edits marked by how safe they are to apply | No compiler; errors appear when the code runs, linters are separate tools |
 | **Formatter** | `azol fmt`, one layout, no options | `rustfmt`, ships with the toolchain | Separate tools |
-| **Written in** | Rust today; also in azoL, which already compiles itself on x86-64 Linux | Rust | Engines are written in C++ |
+| **Written in** | azoL: the compiler compiles itself. The first compiler was written in Rust | Rust | Engines are written in C++ |
 | **Targets** | Apple Silicon macOS, x86-64 Linux, ARM64 Linux | Dozens | Wherever an engine runs |
 | **Maturity** | Experimental. Do not depend on it | Stable since 2015 | In use since 1995 |
 
@@ -149,24 +150,26 @@ Rust and JavaScript can do far more than azoL can today. What azoL offers is the
 
 ## Quick start
 
-You need a Rust toolchain to build the compiler, on an Apple Silicon Mac or on x86-64 Linux.
+You need a shell and nothing else: no Rust, no C compiler, no linker, no package manager. It works on an Apple Silicon Mac and on x86-64 Linux; ARM64 Linux is built the same way but has only been run in an emulator.
 
 ```sh
 git clone https://github.com/durasi/azol
 cd azol
-cargo build --release
-./target/release/azol build examples/players.azl
+sh build.sh
+./azol build examples/players.azl
 ./examples/players
 ```
+
+`build.sh` takes the small compiler for your machine that is kept in [`bootstrap/`](bootstrap/), lets it build the compiler's azoL sources in [`compiler/`](compiler/), lets the result build them twice more, and checks that the last two are the same file. That takes well under a second and leaves `./azol`.
 
 A real command-line tool, written in azoL:
 
 ```sh
-./target/release/azol build examples/wc.azl
-./examples/wc README.md src/main.rs
+./azol build examples/wc.azl
+./examples/wc README.md lib/prelude.azl
 ```
 
-More to run: `examples/generics.azl`, `examples/bank.azl`, `examples/tree.azl`, `examples/lists.azl`, `examples/structs.azl`, `examples/fib.azl`. To repeat the measurements: `python3 bench/compare.py` (it uses `rustc` and `node` if they are installed).
+More to run: `examples/generics.azl`, `examples/bank.azl`, `examples/tree.azl`, `examples/lists.azl`, `examples/structs.azl`, `examples/fib.azl`. To run the tests: `sh test.sh` (needs Python 3). To repeat the measurements: `python3 bench/compare.py` (it uses `rustc` and `node` if they are installed).
 
 ## The language in five minutes
 
@@ -226,7 +229,7 @@ fn pop[T](stack: mut Stack[T]) -> Option[T] {
 }
 ```
 
-**A standard library written in azoL.** Text (`split`, `trim`, `replace`, `find`, `to_i64`, ...), lists (`sorted`, `reversed`, `contains`, `extend`, ...), numbers (`abs`, `pow`, `clamp`, `to_hex`, ...) and a map with text keys live in [`src/prelude.azl`](src/prelude.azl). Only what a program uses is compiled into it.
+**A standard library written in azoL.** Text (`split`, `trim`, `replace`, `find`, `to_i64`, ...), lists (`sorted`, `reversed`, `contains`, `extend`, ...), numbers (`abs`, `pow`, `clamp`, `to_hex`, ...) and a map with text keys live in [`lib/prelude.azl`](lib/prelude.azl). Only what a program uses is compiled into it.
 
 ```
 fn main() {
@@ -354,24 +357,33 @@ Five stages, each a plain pass over the previous one's output:
 
 The compiler has no dependencies, SHA-256 included. A small runtime for printing, files, growing lists and joining strings is embedded as machine code: hand-written assembly on macOS; on Linux, C without a C library, with its own memory allocator, talking to the kernel directly.
 
-**How it is tested.** Besides unit tests for every stage, each test program is executed on an emulated ARM64 CPU with a checking heap, which reports any buffer that is leaked, freed twice, used after being freed or overrun by a single byte. The x86-64 output is run natively on Linux and, linked against a checking allocator, under valgrind. A [fuzzer](tests/fuzz/) writes random programs, works out what each must print with an interpreter of its own, and compares that with what the compiled program prints on both processors.
+**How it is tested.** `sh test.sh` builds and runs every test program and compares what it prints, checks several thousand wrong programs for the exact report each must get, pins the bytes of every executable for all three targets, and lets the compiler build itself and pass the same tests again. Beyond that, each test program is executed on an emulated ARM64 CPU with a checking heap, which reports any buffer that is leaked, freed twice, used after being freed or overrun by a single byte. The x86-64 output is run natively on Linux and, linked against a checking allocator, under valgrind. A [fuzzer](tests/fuzz/) writes random programs, works out what each must print with an interpreter of its own, and compares that with what the compiled program prints on both processors.
 
 ## Self-hosting
 
-Rust is scaffolding; the goal is to remove it.
+> **Temporary note.** The Rust sources under `src/` are kept until this build is confirmed on macOS; they are not used by `build.sh`.
 
-The whole compiler also exists in azoL, in [`compiler/`](compiler/): about 15,700 lines covering the lexer, parser, checker, x86-64 code generator, both linkers, the diagnostics, the formatter and the command line. Each part is checked against the Rust one by comparing output byte for byte, over the repository's programs and thousands of deliberately broken ones.
+The compiler is written in azoL: about 20,000 lines in [`compiler/`](compiler/) for the lexer, parser, checker, the ARM64 and x86-64 code generators, the three linkers, the diagnostics, the formatter and the command line, plus the part of the standard library that is azoL in [`lib/prelude.azl`](lib/prelude.azl). It builds itself.
 
-- On x86-64 Linux the azoL-written compiler compiles itself: the compiler built by Rust, the compiler built by that one, and the compiler built by that one again are the same file, byte for byte.
-- It does not generate ARM64 code yet, so on a Mac the Rust-hosted compiler is still the one you use.
-- It is slower than the Rust-hosted compiler, about 2.6 times on the large benchmark program on x86-64 Linux. The numbers above are the Rust-hosted compiler's.
+- **Where it starts.** A compiler cannot build itself from nothing. [`bootstrap/`](bootstrap/) holds one ready-made compiler for each target, about 0.7 MB each, built from these same sources; [`bootstrap/README.md`](bootstrap/README.md) gives their hashes and how to make them again.
+- **The proof it is the same compiler.** Built by the seed, the sources produce a compiler; that compiler produces another from the same sources; the two are the same file, byte for byte, and equal to the seed. `build.sh` checks this on every build.
+- **Where that has been seen.** On x86-64 Linux natively. On macOS on an Apple Silicon Mac, with an earlier state of the sources (611,936 bytes then). For ARM64 Linux only on an emulated CPU, never on real hardware.
+- **Where it came from.** The first compiler was written in Rust. Every part of the azoL one was accepted only when its output equalled the Rust one's byte for byte, over the repository's programs and thousands of deliberately broken ones: tokens, syntax trees, the checker's tables, error reports, and whole executables for all three targets. The scripts that did that, [`compiler/check_*.py`](compiler/), now compare a changed compiler with the one before it.
+- **What it costs today.** The azoL-written compiler runs about twice as many instructions as the Rust one did for the same build (2.0 times for x86-64 Linux, 1.9 times for macOS, on the 132,000-line benchmark program, counted on x86-64 Linux). The build-time numbers above were measured with the Rust-hosted compiler; they will be measured again.
 
 ## Roadmap
 
-1. ARM64 code generation in the azoL-written compiler, so that it compiles itself on a Mac.
-2. Making the azoL-written compiler as fast as the Rust-hosted one, then removing Rust.
-3. Inlining small functions, to close more of the run-time gap to optimized Rust.
-4. `<` on text and `==` on lists.
+What is not done, in the order planned. Each links to its design.
+
+1. **Speed.** Programs: seven local improvements to the code generators that bring the benchmarks close to optimized Rust without an optimizer, then inlining ([docs/design/speed.md](docs/design/speed.md)). The compiler itself: back to the build speed of the Rust-hosted one.
+2. **Floating-point numbers**: `f64` ([docs/design/floats.md](docs/design/floats.md)).
+3. **Methods and traits**: methods on your own types, `==`, ordering and hashing for any type, bounded generics, `Map[K, V]` and `Set[T]` ([docs/design/traits.md](docs/design/traits.md)).
+4. **Function values and closures**, and the library functions that take them ([docs/design/closures.md](docs/design/closures.md)).
+5. **Threads and channels** without data races ([docs/design/threads.md](docs/design/threads.md)).
+6. **Packages**: modules, `import`, dependencies without a central server, `test` blocks ([docs/design/packages.md](docs/design/packages.md)).
+7. **More for AI agents**: `azol guide`, a named error with a fix for every habit from another language, `azol fix` ([docs/design/agents.md](docs/design/agents.md)).
+8. **What replacing an old system needs**: calling C, more integer types, standard input, processes, directories, dates, JSON, CSV, stack traces with source lines ([docs/design/legacy.md](docs/design/legacy.md)).
+9. **ARM64 Linux on real hardware.**
 
 ## Name
 

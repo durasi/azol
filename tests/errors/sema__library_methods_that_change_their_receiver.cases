@@ -1,0 +1,199 @@
+# From the tests of the first compiler: src/sema.rs, `library_methods_that_change_their_receiver`.
+==== 1
+---- file a.azl
+
+fn main() {
+let xs = [1]
+xs.extend([2])
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0401]: cannot change `xs`: declare it with `var` to make it changeable
+ --> a.azl:4:1
+  |
+4 | xs.extend([2])
+  | ^
+---- asserted 4:1 cannot change `xs`: declare it with `var` to make it changeable
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0401","message":"cannot change `xs`: declare it with `var` to make it changeable","file":"a.azl","line":4,"column":1,"end_line":4,"end_column":3,"source":"xs.extend([2])","rule":"A variable declared with `let` never changes; only one declared with `var` can be assigned, grown or passed as `mut`.","help":"Declare the variable with `var` instead of `let`.","fix":{"file":"a.azl","line":3,"column":1,"end_line":3,"end_column":4,"replacement":"var"}}
+{"summary":{"errors":1,"files":1}}
+==== 2
+---- file a.azl
+
+fn main() {
+[1].extend([2])
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0407]: `extend` changes its receiver, so it needs a variable or a part of a variable
+ --> a.azl:3:1
+  |
+3 | [1].extend([2])
+  | ^
+---- asserted 3:1 `extend` changes its receiver, so it needs a variable or a part of a variable
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0407","message":"`extend` changes its receiver, so it needs a variable or a part of a variable","file":"a.azl","line":3,"column":1,"end_line":3,"end_column":2,"source":"[1].extend([2])","rule":"Only a variable, a field of one or an element of one can be changed; a computed value has no owner to change.","help":"Store the value in a `var` first."}
+{"summary":{"errors":1,"files":1}}
+==== 3
+---- file a.azl
+
+fn main() {
+var xs = [1]
+xs.extend(xs)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0410]: `xs` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+ --> a.azl:4:11
+  |
+4 | xs.extend(xs)
+  |           ^
+---- asserted 4:11 `xs` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0410","message":"`xs` is passed twice in one call and one of the uses is `mut`; copy it into a variable first","file":"a.azl","line":4,"column":11,"end_line":4,"end_column":13,"source":"xs.extend(xs)","rule":"One call cannot receive the same data twice when one of the uses is `mut`."}
+{"summary":{"errors":1,"files":1}}
+==== 4
+---- file a.azl
+
+fn main() {
+var xs = [1]
+for x in xs {
+ xs.extend([x])
+}
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0408]: cannot change `xs` while a loop is going through it
+ --> a.azl:5:2
+  |
+5 |  xs.extend([x])
+  |  ^
+---- asserted 5:2 cannot change `xs` while a loop is going through it
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0408","message":"cannot change `xs` while a loop is going through it","file":"a.azl","line":5,"column":2,"end_line":5,"end_column":4,"source":" xs.extend([x])","rule":"A list cannot be changed while a `for` loop is going through it."}
+{"summary":{"errors":1,"files":1}}
+==== 5
+---- file a.azl
+
+fn main() {
+var xs = [1]
+xs.extend(mut [2])
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0406]: argument 1 of `extend` is not a `mut` parameter; remove `mut`
+ --> a.azl:4:11
+  |
+4 | xs.extend(mut [2])
+  |           ^
+---- asserted 4:11 argument 1 of `extend` is not a `mut` parameter; remove `mut`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0406","message":"argument 1 of `extend` is not a `mut` parameter; remove `mut`","file":"a.azl","line":4,"column":11,"end_line":4,"end_column":14,"source":"xs.extend(mut [2])","rule":"`mut` in front of a value is written only for an argument whose parameter is declared `mut`.","help":"Remove `mut`.","fix":{"file":"a.azl","line":4,"column":11,"end_line":4,"end_column":15,"replacement":""}}
+{"summary":{"errors":1,"files":1}}
+==== 6
+---- file a.azl
+fn f(xs: List[i64]) {
+ xs.truncate(0)
+}
+fn main() {
+
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0402]: cannot change `xs`: a parameter is read-only unless it is declared `mut`
+ --> a.azl:2:2
+  |
+2 |  xs.truncate(0)
+  |  ^
+---- asserted 2:2 cannot change `xs`: a parameter is read-only unless it is declared `mut`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0402","message":"cannot change `xs`: a parameter is read-only unless it is declared `mut`","file":"a.azl","line":2,"column":2,"end_line":2,"end_column":4,"source":" xs.truncate(0)","rule":"A function can change an argument only through a parameter declared `mut`, and the caller then writes `mut` too."}
+{"summary":{"errors":1,"files":1}}
+==== 7
+---- file a.azl
+
+fn main() {
+let n = 5
+n.extend([1])
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0207]: `i64` has no method `extend`
+ --> a.azl:4:3
+  |
+4 | n.extend([1])
+  |   ^
+---- asserted 4:3 `i64` has no method `extend`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0207","message":"`i64` has no method `extend`","file":"a.azl","line":4,"column":3,"end_line":4,"end_column":9,"source":"n.extend([1])","rule":"A method call needs a method that exists for the type of the value before the dot."}
+{"summary":{"errors":1,"files":1}}
+==== 8
+---- file a.azl
+
+fn main() {
+let a = true.is_empty()
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0207]: `bool` has no method `is_empty`
+ --> a.azl:3:14
+  |
+3 | let a = true.is_empty()
+  |              ^
+---- asserted 3:14 `bool` has no method `is_empty`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0207","message":"`bool` has no method `is_empty`","file":"a.azl","line":3,"column":14,"end_line":3,"end_column":22,"source":"let a = true.is_empty()","rule":"A method call needs a method that exists for the type of the value before the dot."}
+{"summary":{"errors":1,"files":1}}
+==== 9
+---- file a.azl
+
+fn main() {
+let a = 5.replace("a", "b")
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0207]: `i64` has no method `replace`
+ --> a.azl:3:11
+  |
+3 | let a = 5.replace("a", "b")
+  |           ^
+---- asserted 3:11 `i64` has no method `replace`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0207","message":"`i64` has no method `replace`","file":"a.azl","line":3,"column":11,"end_line":3,"end_column":18,"source":"let a = 5.replace(\"a\", \"b\")","rule":"A method call needs a method that exists for the type of the value before the dot."}
+{"summary":{"errors":1,"files":1}}

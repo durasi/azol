@@ -1,0 +1,8 @@
+; Only 0 and 1 fit a `bool`.
+; verify: main: b0: jump b1(2): argument 1 for b1 is `bool`
+fn main() -> bool {
+b0:
+    jump b1(2)
+b1(v0: bool):
+    ret v0
+}

@@ -36,8 +36,11 @@ enum {
     SYS_rt_sigreturn = 15,
     SYS_munmap = 11,
     SYS_mremap = 25,
+    SYS_rename = 82,
+    SYS_unlink = 87,
     SYS_chmod = 90,
     SYS_sigaltstack = 131,
+    SYS_clock_gettime = 228,
     SYS_exit_group = 231,
 };
 
@@ -413,7 +416,7 @@ static void describe(i64 error, Buf *out) {
 
 // The file name with a zero byte after it, which is how the system
 // wants it.
-static u8 *c_path(const Buf *path) {
+static __attribute__((noinline)) u8 *c_path(const Buf *path) {
     u8 *name = allocate(path->len + 1);
     copy(name, path->ptr, path->len);
     name[path->len] = 0;
@@ -495,6 +498,18 @@ EXPORT i64 rt_write_file(const Buf *path, const Buf *text, void *out) {
     return 0;
 }
 
+// What a routine that changes a file hands back: 0 and 0 in the first
+// slot of `out`, or 1 and a description of what went wrong as a string
+// in `out`. `result` is what the system call returned.
+static __attribute__((noinline)) i64 answer(i64 result, void *out) {
+    if (failed(result)) {
+        describe(-result, (Buf *)out);
+        return 1;
+    }
+    *(i64 *)out = 0;
+    return 0;
+}
+
 // Makes the file runnable: readable and runnable by all, writable by the
 // owner. Returns 0 and 0 in the first slot of `out`, or 1 and a
 // description of what went wrong as a string in `out`.
@@ -502,12 +517,92 @@ EXPORT i64 rt_set_executable(const Buf *path, void *out) {
     u8 *name = c_path(path);
     i64 result = syscall3(SYS_chmod, (i64)name, 0755, 0);
     release(name);
-    if (failed(result)) {
-        describe(-result, (Buf *)out);
-        return 1;
+    return answer(result, out);
+}
+
+// Deletes the file. Returns 0 and 0 in the first slot of `out`, or 1 and
+// a description of what went wrong as a string in `out`.
+EXPORT i64 rt_remove_file(const Buf *path, void *out) {
+    u8 *name = c_path(path);
+    i64 result = syscall3(SYS_unlink, (i64)name, 0, 0);
+    release(name);
+    return answer(result, out);
+}
+
+// Gives the file `from` the name `to`, replacing a file that already has
+// it. Returns like `rt_remove_file`.
+EXPORT i64 rt_rename_file(const Buf *from, const Buf *to, void *out) {
+    u8 *old_name = c_path(from);
+    u8 *new_name = c_path(to);
+    i64 result = syscall3(SYS_rename, (i64)old_name, (i64)new_name, 0);
+    release(new_name);
+    release(old_name);
+    return answer(result, out);
+}
+
+// Nanoseconds on a clock that only moves forward (CLOCK_MONOTONIC, 1).
+// Only differences between two readings mean anything.
+EXPORT i64 rt_clock(void) {
+    i64 time[2] = {0, 0}; // struct timespec: seconds, nanoseconds
+    syscall3(SYS_clock_gettime, 1, (i64)time, 0);
+    return time[0] * 1000000000 + time[1];
+}
+
+// A word read from any address.
+typedef u64 __attribute__((may_alias, aligned(1))) unaligned_word;
+
+// Whether the bytes of the string are well-formed UTF-8: 1 or 0.
+EXPORT i64 rt_str_is_utf8(const Buf *s) {
+    const u8 *bytes = s->ptr;
+    i64 n = s->len;
+    i64 i = 0;
+    while (i < n) {
+        // Eight plain characters at a time, while there are that many.
+        while (i + 8 <= n && (*(const unaligned_word *)(bytes + i) & 0x8080808080808080ul) == 0) {
+            i += 8;
+        }
+        if (i >= n) {
+            break;
+        }
+        u8 first = bytes[i];
+        if (first < 128) {
+            i += 1;
+            continue;
+        }
+        // How many bytes follow, and the range the next one must be in:
+        // that range is what rules out encodings longer than needed,
+        // surrogates and numbers above U+10FFFF.
+        i64 more;
+        u8 low = 0x80, high = 0xBF;
+        if (first < 0xC2) {
+            return 0;
+        } else if (first < 0xE0) {
+            more = 1;
+        } else if (first < 0xF0) {
+            more = 2;
+            if (first == 0xE0) low = 0xA0;
+            if (first == 0xED) high = 0x9F;
+        } else if (first < 0xF5) {
+            more = 3;
+            if (first == 0xF0) low = 0x90;
+            if (first == 0xF4) high = 0x8F;
+        } else {
+            return 0;
+        }
+        if (n - i <= more) {
+            return 0;
+        }
+        if (bytes[i + 1] < low || bytes[i + 1] > high) {
+            return 0;
+        }
+        for (i64 k = 2; k <= more; k++) {
+            if ((bytes[i + k] & 0xC0) != 0x80) {
+                return 0;
+            }
+        }
+        i += more + 1;
     }
-    *(i64 *)out = 0;
-    return 0;
+    return 1;
 }
 
 // ---- starting the program -------------------------------------------------

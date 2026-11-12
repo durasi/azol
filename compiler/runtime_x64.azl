@@ -2,7 +2,7 @@
 
 // The Linux x86-64 runtime as the compiler written in azoL sees it:
 // the ids of its routines, where each starts, and where the runtime
-// sits in an executable. Generated from `src/runtime_x64.rs` by
+// sits in an executable. Generated from `runtime/linux_x64/runtime.facts` by
 // `compiler/gen_runtime_azl.py`; edit neither, but the runtime's
 // source in `runtime/linux_x64`.
 
@@ -31,6 +31,10 @@ const RT_READ_FILE = 20
 const RT_WRITE_FILE = 21
 const RT_STR_APPEND = 22
 const RT_SET_EXECUTABLE = 23
+const RT_REMOVE_FILE = 24
+const RT_RENAME_FILE = 25
+const RT_CLOCK = 26
+const RT_STR_IS_UTF8 = 27
 
 // Address the executable file is mapped at.
 const RT_BASE = 4194304
@@ -38,7 +42,7 @@ const RT_BASE = 4194304
 const RT_TEXT_OFFSET = 256
 // Size of the runtime's code and constant data: the file
 // `runtime/linux_x64/runtime.bin`.
-const RT_TEXT_SIZE = 9168
+const RT_TEXT_SIZE = 9696
 // Offset in it of the code the system starts the process at.
 const RT_START = 7
 // Address and size of the runtime's writable memory.
@@ -48,5 +52,6 @@ const RT_MEMORY_SIZE = 128
 // Offset in the runtime of each routine, indexed by its id.
 fn rt_entries() -> List[i64] {
     return [800, 1040, 1312, 1632, 1712, 1728, 384, 720, 1744, 2432, 2624, 2704,
-        3088, 3152, 3472, 1440, 1568, 3536, 3808, 4400, 4704, 6064, 3872, 6576]
+        3088, 3152, 3472, 1440, 1568, 3536, 3808, 4400, 4704, 6112, 3872, 6464,
+        6656, 6800, 7008, 7088]
 }

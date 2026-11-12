@@ -1,0 +1,16 @@
+; "abc" and "abd" and "abc" again, at offsets 0, 3 and 6.
+; run:
+; out: => true, false, false, true
+data "abcabdabc"
+
+fn main() -> bool, bool, bool, bool {
+b0:
+    v0 = addr @data+0
+    v1 = addr @data+3
+    v2 = addr @data+6
+    v3 = callrt str_eq(v0, 3, v2, 3)
+    v4 = callrt str_eq(v0, 3, v1, 3)
+    v5 = callrt str_eq(v0, 3, v2, 2)
+    v6 = callrt str_eq(v0, 0, v1, 0)
+    ret v3, v4, v5, v6
+}

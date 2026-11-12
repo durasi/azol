@@ -1,0 +1,8 @@
+fn main(p0: i64) -> i64 {
+b0:
+    v2 = add 5, p0
+    jump b1(15)
+b1(v5: i64):
+    v6 = add v5, v2
+    ret v6
+}

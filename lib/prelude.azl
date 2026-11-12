@@ -1,0 +1,909 @@
+// The part of the standard library that is written in azoL. It is
+// compiled together with every program.
+//
+// A function named `type_method` here becomes the method `method` of the
+// type of its first parameter: `str_find` is what `text.find(part)` calls.
+// These names are not visible to programs as plain functions.
+//
+// A function without parameters, like `new_map`, is called by its name,
+// and a function of the program with the same name takes its place.
+// A type declared here cannot be declared again by a program.
+//
+// Only what a program uses is compiled into it. Several functions can
+// give the same method to different types (`min` of a number and `min`
+// of a list): the one whose first parameter fits the receiver is called.
+// A method whose first parameter is `mut` changes its receiver, which is
+// written plainly: `items.extend(more)`.
+
+// Where `part` first occurs in `s`, as a byte position.
+fn str_find(s: str, part: str) -> Option[i64] {
+    let n = part.len()
+    if n > s.len() {
+        return None
+    }
+    let last = s.len() - n
+    var i = 0
+    while i <= last {
+        var j = 0
+        while j < n && s[i + j] == part[j] {
+            j = j + 1
+        }
+        if j == n {
+            return Some(i)
+        }
+        i = i + 1
+    }
+    return None
+}
+
+fn str_contains(s: str, part: str) -> bool {
+    match s.find(part) {
+        Some(at) => return true
+        None => return false
+    }
+}
+
+fn str_starts_with(s: str, prefix: str) -> bool {
+    let n = prefix.len()
+    if n > s.len() {
+        return false
+    }
+    var i = 0
+    while i < n {
+        if s[i] != prefix[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+fn str_ends_with(s: str, suffix: str) -> bool {
+    let n = suffix.len()
+    if n > s.len() {
+        return false
+    }
+    let offset = s.len() - n
+    var i = 0
+    while i < n {
+        if s[offset + i] != suffix[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// `s` without the spaces, tabs and line ends at its two ends.
+fn str_trim(s: str) -> str {
+    var start = 0
+    var end = s.len()
+    while start < end {
+        let c = s[start]
+        if c != 32 && c != 9 && c != 10 && c != 13 {
+            break
+        }
+        start = start + 1
+    }
+    while end > start {
+        let c = s[end - 1]
+        if c != 32 && c != 9 && c != 10 && c != 13 {
+            break
+        }
+        end = end - 1
+    }
+    return s.slice(start, end)
+}
+
+// The pieces of `s` between occurrences of `separator`. There is always
+// at least one piece; an empty separator gives `s` whole.
+fn str_split(s: str, separator: str) -> List[str] {
+    var parts: List[str] = []
+    let n = separator.len()
+    var start = 0
+    var i = 0
+    while n > 0 && i + n <= s.len() {
+        var j = 0
+        while j < n && s[i + j] == separator[j] {
+            j = j + 1
+        }
+        if j == n {
+            parts.push(s.slice(start, i))
+            i = i + n
+            start = i
+        } else {
+            i = i + 1
+        }
+    }
+    parts.push(s.slice(start, s.len()))
+    return parts
+}
+
+// The lines of `s`, without their line ends. A final line end does not
+// start one more, empty line.
+fn str_lines(s: str) -> List[str] {
+    var lines: List[str] = []
+    var start = 0
+    var i = 0
+    while i < s.len() {
+        if s[i] == 10 {
+            var end = i
+            if end > start && s[end - 1] == 13 {
+                end = end - 1
+            }
+            lines.push(s.slice(start, end))
+            start = i + 1
+        }
+        i = i + 1
+    }
+    if start < s.len() {
+        lines.push(s.slice(start, s.len()))
+    }
+    return lines
+}
+
+// The number `s` spells in decimal digits, with an optional `-` in
+// front. `None` when it is anything else or does not fit in `i64`.
+fn str_to_i64(s: str) -> Option[i64] {
+    var i = 0
+    var negative = false
+    if s.len() > 0 && s[0] == 45 {
+        negative = true
+        i = 1
+    }
+    if i == s.len() {
+        return None
+    }
+    // Minus the number so far: below zero there is room for one more.
+    var lowest = -9223372036854775807
+    if negative {
+        lowest = lowest - 1
+    }
+    var value = 0
+    while i < s.len() {
+        let digit = s[i] - 48
+        if digit < 0 || digit > 9 {
+            return None
+        }
+        if value < (lowest + digit) / 10 {
+            return None
+        }
+        value = value * 10 - digit
+        i = i + 1
+    }
+    if negative {
+        return Some(value)
+    }
+    return Some(-value)
+}
+
+// The strings of `parts` in one string, with `separator` between them.
+fn list_join(parts: List[str], separator: str) -> str {
+    var out = ""
+    for i, part in parts {
+        if i > 0 {
+            out = out + separator
+        }
+        out = out + part
+    }
+    return out
+}
+
+// Whether some item of `items` equals `wanted`.
+fn list_contains[T](items: List[T], wanted: T) -> bool {
+    for item in items {
+        if item == wanted {
+            return true
+        }
+    }
+    return false
+}
+
+fn list_first[T](items: List[T]) -> Option[T] {
+    if items.len() == 0 {
+        return None
+    }
+    return Some(items[0])
+}
+
+fn list_last[T](items: List[T]) -> Option[T] {
+    if items.len() == 0 {
+        return None
+    }
+    return Some(items[items.len() - 1])
+}
+
+// The items of `items` in the opposite order, as a new list.
+fn list_reversed[T](items: List[T]) -> List[T] {
+    var out: List[T] = []
+    var i = items.len()
+    while i > 0 {
+        i = i - 1
+        out.push(items[i])
+    }
+    return out
+}
+
+// -1 when `s` comes before `other` in byte order, 1 when it comes
+// after, 0 when they are equal. A string comes after its own beginnings.
+fn str_compare(s: str, other: str) -> i64 {
+    var n = s.len()
+    if other.len() < n {
+        n = other.len()
+    }
+    var i = 0
+    while i < n {
+        if s[i] != other[i] {
+            if s[i] < other[i] {
+                return -1
+            }
+            return 1
+        }
+        i = i + 1
+    }
+    if s.len() < other.len() {
+        return -1
+    }
+    if s.len() > other.len() {
+        return 1
+    }
+    return 0
+}
+
+// Where `part` first occurs in `s` at byte position `start` or later.
+// A `start` below zero counts as zero.
+fn str_index_of_from(s: str, part: str, start: i64) -> Option[i64] {
+    let n = part.len()
+    var i = start
+    if i < 0 {
+        i = 0
+    }
+    // `i <= len - n` and not `i + n <= len`: a huge `start` must not wrap.
+    while i <= s.len() - n {
+        var j = 0
+        while j < n && s[i + j] == part[j] {
+            j = j + 1
+        }
+        if j == n {
+            return Some(i)
+        }
+        i = i + 1
+    }
+    return None
+}
+
+// Where `part` last occurs in `s`, as a byte position.
+fn str_last_index_of(s: str, part: str) -> Option[i64] {
+    let n = part.len()
+    var i = s.len() - n
+    while i >= 0 {
+        var j = 0
+        while j < n && s[i + j] == part[j] {
+            j = j + 1
+        }
+        if j == n {
+            return Some(i)
+        }
+        i = i - 1
+    }
+    return None
+}
+
+// `s` with every occurrence of `old` replaced by `new`, looking from
+// left to right. An empty `old` gives `s` unchanged.
+fn str_replace(s: str, old: str, new: str) -> str {
+    let n = old.len()
+    if n == 0 {
+        return s
+    }
+    var out = ""
+    var start = 0
+    var i = 0
+    while i + n <= s.len() {
+        var j = 0
+        while j < n && s[i + j] == old[j] {
+            j = j + 1
+        }
+        if j == n {
+            out = out + s.slice(start, i)
+            out = out + new
+            i = i + n
+            start = i
+        } else {
+            i = i + 1
+        }
+    }
+    out = out + s.slice(start, s.len())
+    return out
+}
+
+// `s` written `count` times in a row; the empty string when `count`
+// is zero or less.
+fn str_repeat(s: str, count: i64) -> str {
+    var out = ""
+    var i = 0
+    while i < count {
+        out = out + s
+        i = i + 1
+    }
+    return out
+}
+
+// `s` with the letters `a` to `z` turned into `A` to `Z`. Other bytes
+// stay as they are.
+fn str_to_upper(s: str) -> str {
+    var out = ""
+    var i = 0
+    while i < s.len() {
+        var c = s[i]
+        if c >= 97 && c <= 122 {
+            c = c - 32
+        }
+        out = out + chr(c)
+        i = i + 1
+    }
+    return out
+}
+
+// `s` with the letters `A` to `Z` turned into `a` to `z`. Other bytes
+// stay as they are.
+fn str_to_lower(s: str) -> str {
+    var out = ""
+    var i = 0
+    while i < s.len() {
+        var c = s[i]
+        if c >= 65 && c <= 90 {
+            c = c + 32
+        }
+        out = out + chr(c)
+        i = i + 1
+    }
+    return out
+}
+
+// `s` with copies of `fill` put in front until it is at least `width`
+// bytes long. An empty `fill` gives `s` unchanged.
+fn str_pad_left(s: str, width: i64, fill: str) -> str {
+    var front = ""
+    while fill.len() > 0 && front.len() + s.len() < width {
+        front = front + fill
+    }
+    return front + s
+}
+
+// `s` with copies of `fill` put after it until it is at least `width`
+// bytes long. An empty `fill` gives `s` unchanged.
+fn str_pad_right(s: str, width: i64, fill: str) -> str {
+    var out = s
+    while fill.len() > 0 && out.len() < width {
+        out = out + fill
+    }
+    return out
+}
+
+// The bytes of `s`, each a number from 0 to 255.
+fn str_bytes(s: str) -> List[i64] {
+    var out: List[i64] = []
+    var i = 0
+    while i < s.len() {
+        out.push(s[i])
+        i = i + 1
+    }
+    return out
+}
+
+// The number `s` spells in one to sixteen hexadecimal digits, in small
+// or capital letters; sixteen digits fill all 64 bits. `None` when it
+// is anything else.
+fn str_parse_hex(s: str) -> Option[i64] {
+    if s.len() == 0 || s.len() > 16 {
+        return None
+    }
+    var value = 0
+    var i = 0
+    while i < s.len() {
+        let c = s[i]
+        var digit = -1
+        if c >= 48 && c <= 57 {
+            digit = c - 48
+        }
+        if c >= 97 && c <= 102 {
+            digit = c - 87
+        }
+        if c >= 65 && c <= 70 {
+            digit = c - 55
+        }
+        if digit < 0 {
+            return None
+        }
+        value = (value << 4) | digit
+        i = i + 1
+    }
+    return Some(value)
+}
+
+// The string whose bytes are `bytes`. Each must be from 0 to 255;
+// the program stops with an error otherwise.
+fn list_to_str(bytes: List[i64]) -> str {
+    var out = ""
+    for byte in bytes {
+        out = out + chr(byte)
+    }
+    return out
+}
+
+// The numbers of `items` added up; zero for an empty list.
+fn list_sum(items: List[i64]) -> i64 {
+    var total = 0
+    for item in items {
+        total = total + item
+    }
+    return total
+}
+
+// Whether `s` has no bytes.
+fn str_is_empty(s: str) -> bool {
+    return s.len() == 0
+}
+
+// Whether `items` has nothing in it.
+fn list_is_empty[T](items: List[T]) -> bool {
+    return items.len() == 0
+}
+
+// The position of the first item of `items` that equals `wanted`.
+fn list_index_of[T](items: List[T], wanted: T) -> Option[i64] {
+    for i, item in items {
+        if item == wanted {
+            return Some(i)
+        }
+    }
+    return None
+}
+
+// How many items of `items` equal `wanted`.
+fn list_count[T](items: List[T], wanted: T) -> i64 {
+    var found = 0
+    for item in items {
+        if item == wanted {
+            found = found + 1
+        }
+    }
+    return found
+}
+
+// The first `count` items of `items` as a new list; all of them when
+// there are fewer, none when `count` is zero or less.
+fn list_take[T](items: List[T], count: i64) -> List[T] {
+    var out: List[T] = []
+    var i = 0
+    while i < count && i < items.len() {
+        out.push(items[i])
+        i = i + 1
+    }
+    return out
+}
+
+// The items of `items` after the first `count`, as a new list; all of
+// them when `count` is zero or less.
+fn list_skip[T](items: List[T], count: i64) -> List[T] {
+    var out: List[T] = []
+    var i = count
+    if i < 0 {
+        i = 0
+    }
+    while i < items.len() {
+        out.push(items[i])
+        i = i + 1
+    }
+    return out
+}
+
+// The smallest item of `items` by `compare`: for numbers and strings.
+// The first one when several are equal; `None` for an empty list.
+fn list_min[T](items: List[T]) -> Option[T] {
+    if items.len() == 0 {
+        return None
+    }
+    var best = 0
+    var i = 1
+    while i < items.len() {
+        if items[i].compare(items[best]) < 0 {
+            best = i
+        }
+        i = i + 1
+    }
+    return Some(items[best])
+}
+
+// The largest item of `items` by `compare`: for numbers and strings.
+// The first one when several are equal; `None` for an empty list.
+fn list_max[T](items: List[T]) -> Option[T] {
+    if items.len() == 0 {
+        return None
+    }
+    var best = 0
+    var i = 1
+    while i < items.len() {
+        if items[i].compare(items[best]) > 0 {
+            best = i
+        }
+        i = i + 1
+    }
+    return Some(items[best])
+}
+
+// The items of `items` from smallest to largest by `compare`, as a new
+// list: for numbers and strings. Equal items keep their order. It
+// merges runs of 1, 2, 4, ... items, so the work grows as n log n.
+fn list_sorted[T](items: List[T]) -> List[T] {
+    var from = items
+    let n = from.len()
+    var width = 1
+    while width < n {
+        var to: List[T] = []
+        var start = 0
+        while start < n {
+            var middle = start + width
+            if middle > n {
+                middle = n
+            }
+            var end = middle + width
+            if end > n {
+                end = n
+            }
+            var a = start
+            var b = middle
+            while a < middle && b < end {
+                if from[b].compare(from[a]) < 0 {
+                    to.push(from[b])
+                    b = b + 1
+                } else {
+                    to.push(from[a])
+                    a = a + 1
+                }
+            }
+            while a < middle {
+                to.push(from[a])
+                a = a + 1
+            }
+            while b < end {
+                to.push(from[b])
+                b = b + 1
+            }
+            start = end
+        }
+        from = to
+        width = width * 2
+    }
+    return from
+}
+
+// -1 when `n` is less than `other`, 1 when it is greater, 0 when they
+// are equal.
+fn i64_compare(n: i64, other: i64) -> i64 {
+    if n < other {
+        return -1
+    }
+    if n > other {
+        return 1
+    }
+    return 0
+}
+
+// `n` without its sign. The smallest `i64` has no positive twin and
+// stays as it is.
+fn i64_abs(n: i64) -> i64 {
+    if n < 0 {
+        return -n
+    }
+    return n
+}
+
+// The smaller of `n` and `other`.
+fn i64_min(n: i64, other: i64) -> i64 {
+    if other < n {
+        return other
+    }
+    return n
+}
+
+// The larger of `n` and `other`.
+fn i64_max(n: i64, other: i64) -> i64 {
+    if other > n {
+        return other
+    }
+    return n
+}
+
+// `n`, or `low` when it is below `low`, or `high` when it is above
+// `high`.
+fn i64_clamp(n: i64, low: i64, high: i64) -> i64 {
+    if n < low {
+        return low
+    }
+    if n > high {
+        return high
+    }
+    return n
+}
+
+// `n` multiplied by itself `exponent` times, wrapping around like all
+// arithmetic; 1 when `exponent` is zero or less.
+fn i64_pow(n: i64, exponent: i64) -> i64 {
+    var result = 1
+    var base = n
+    var left = exponent
+    while left > 0 {
+        if left & 1 == 1 {
+            result = result * base
+        }
+        base = base * base
+        left = left >> 1
+    }
+    return result
+}
+
+// The 64 bits of `n` in hexadecimal digits with small letters and no
+// zeros in front: 255 gives `ff`, -1 gives sixteen `f`.
+fn i64_to_hex(n: i64) -> str {
+    var out = ""
+    var shift = 60
+    while shift >= 0 {
+        let digit = (n >> shift) & 15
+        if digit != 0 || out.len() > 0 || shift == 0 {
+            if digit < 10 {
+                out = out + chr(48 + digit)
+            } else {
+                out = out + chr(87 + digit)
+            }
+        }
+        shift = shift - 4
+    }
+    return out
+}
+
+// Adds a copy of every item of `more` to the end of `items`.
+fn list_extend[T](items: mut List[T], more: List[T]) {
+    for item in more {
+        items.push(item)
+    }
+}
+
+// Keeps the first `count` items of `items` and drops the rest. Nothing
+// changes when the list is not longer than that; a `count` below zero
+// keeps nothing.
+fn list_truncate[T](items: mut List[T], count: i64) {
+    while items.len() > count && items.len() > 0 {
+        let dropped = items.pop()
+    }
+}
+
+// Puts `item` at position `at` of `items`, moving the items from there
+// on one place up. `at` may be the length of the list, which adds at the
+// end; the program stops with an error when it is outside 0 to length.
+fn list_insert[T](items: mut List[T], at: i64, item: T) {
+    items.push(item)
+    var i = items.len() - 1
+    while i > at {
+        items[i] = items[i - 1]
+        i = i - 1
+    }
+    items[at] = item
+}
+
+// Takes the item at position `at` out of `items` and returns it, moving
+// the items after it one place down. The program stops with an error
+// when `at` is out of range.
+fn list_remove_at[T](items: mut List[T], at: i64) -> T {
+    let out = items[at]
+    var i = at
+    while i + 1 < items.len() {
+        items[i] = items[i + 1]
+        i = i + 1
+    }
+    let dropped = items.pop()
+    return out
+}
+
+// The FNV-1a hash of the bytes of `s`; the multiplication wraps.
+fn str_hash(s: str) -> i64 {
+    var h = 0xcbf2_9ce4_8422_2325
+    var i = 0
+    while i < s.len() {
+        h = (h ^ s[i]) * 0x100_0000_01b3
+        i = i + 1
+    }
+    return h
+}
+
+// A map from text keys to values of one type: `var ages: Map[i64] =
+// new_map()`. Like every value it is copied when it is stored or passed
+// on, with all its keys and values, and the two maps are then
+// independent; `get` returns a copy of the value.
+//
+// The keys and values stand side by side in two lists with no gaps.
+// `table` is the hash table: each slot holds 0 when it was never used,
+// -1 when its key was removed, or the position of a key plus one.
+// `filled` counts the slots that are not 0.
+struct Map[V] {
+    keys: List[str]
+    values: List[V]
+    table: List[i64]
+    filled: i64
+}
+
+// A map with nothing in it.
+fn new_map[V]() -> Map[V] {
+    return Map { keys: [], values: [], table: [0, 0, 0, 0, 0, 0, 0, 0], filled: 0 }
+}
+
+// How many keys `map` has.
+fn map_len[V](map: Map[V]) -> i64 {
+    return map.keys.len()
+}
+
+// The slot of the table that holds `key`, or -1 when the map does not
+// have it. The table always has a slot that was never used, so the
+// search ends.
+fn map_slot_of[V](map: Map[V], key: str) -> i64 {
+    let mask = map.table.len() - 1
+    var slot = key.hash() & mask
+    while map.table[slot] != 0 {
+        let entry = map.table[slot]
+        if entry > 0 && map.keys[entry - 1] == key {
+            return slot
+        }
+        slot = (slot + 1) & mask
+    }
+    return -1
+}
+
+// Builds the table again for the keys the map has now, at least twice
+// as large as their number. This also forgets the removed slots.
+fn map_rebuild[V](map: mut Map[V]) {
+    var size = 8
+    while size < (map.keys.len() + 1) * 2 {
+        size = size * 2
+    }
+    var table: List[i64] = []
+    var i = 0
+    while i < size {
+        table.push(0)
+        i = i + 1
+    }
+    let mask = size - 1
+    i = 0
+    while i < map.keys.len() {
+        var slot = map.keys[i].hash() & mask
+        while table[slot] != 0 {
+            slot = (slot + 1) & mask
+        }
+        table[slot] = i + 1
+        i = i + 1
+    }
+    map.table = table
+    map.filled = map.keys.len()
+}
+
+// Makes `key` stand for `value`, in place of any value it had.
+fn map_set[V](map: mut Map[V], key: str, value: V) {
+    let found = map.slot_of(key)
+    if found >= 0 {
+        map.values[map.table[found] - 1] = value
+        return
+    }
+    // At most three quarters of the slots may be in use.
+    if (map.filled + 1) * 4 > map.table.len() * 3 {
+        map.rebuild()
+    }
+    map.keys.push(key)
+    map.values.push(value)
+    let mask = map.table.len() - 1
+    var slot = key.hash() & mask
+    while map.table[slot] != 0 {
+        slot = (slot + 1) & mask
+    }
+    map.table[slot] = map.keys.len()
+    map.filled = map.filled + 1
+}
+
+// A copy of the value of `key`, or `None` when the map does not have it.
+fn map_get[V](map: Map[V], key: str) -> Option[V] {
+    let found = map.slot_of(key)
+    if found < 0 {
+        return None
+    }
+    return Some(map.values[map.table[found] - 1])
+}
+
+// Whether the map has `key`.
+fn map_has[V](map: Map[V], key: str) -> bool {
+    return map.slot_of(key) >= 0
+}
+
+// Takes `key` and its value out; false when the map did not have it.
+// The last key moves into the freed place, so `keys` does not keep the
+// order of insertion after a removal.
+fn map_remove[V](map: mut Map[V], key: str) -> bool {
+    let found = map.slot_of(key)
+    if found < 0 {
+        return false
+    }
+    let at = map.table[found] - 1
+    map.table[found] = -1
+    let last = map.keys.len() - 1
+    if at != last {
+        let moved = map.slot_of(map.keys[last])
+        map.table[moved] = at + 1
+        map.keys[at] = map.keys[last]
+        map.values[at] = map.values[last]
+    }
+    let key_out = map.keys.pop()
+    let value_out = map.values.pop()
+    return true
+}
+
+// A copy of the keys: in the order they were set, until a removal.
+fn map_keys[V](map: Map[V]) -> List[str] {
+    return map.keys
+}
+
+// A string is also a buffer of bytes: `s.push(byte)` adds one byte and
+// `s.set(index, byte)` replaces one, both built in. The methods below
+// write and read numbers of two, four and eight bytes in it, lowest byte
+// first, as files and machine code hold them.
+
+// Adds the two low bytes of `value`, lowest first.
+fn str_push_u16(s: mut str, value: i64) {
+    s.push(value)
+    s.push(value >> 8)
+}
+
+// Adds the four low bytes of `value`, lowest first.
+fn str_push_u32(s: mut str, value: i64) {
+    s.push(value)
+    s.push(value >> 8)
+    s.push(value >> 16)
+    s.push(value >> 24)
+}
+
+// Adds the eight bytes of `value`, lowest first.
+fn str_push_u64(s: mut str, value: i64) {
+    s.push_u32(value)
+    s.push_u32(value >> 32)
+}
+
+// Replaces the four bytes from `at` by the four low bytes of `value`.
+fn str_set_u32(s: mut str, at: i64, value: i64) {
+    s.set(at, value)
+    s.set(at + 1, value >> 8)
+    s.set(at + 2, value >> 16)
+    s.set(at + 3, value >> 24)
+}
+
+// The number in the two bytes from `at`, lowest byte first.
+fn str_u16_at(s: str, at: i64) -> i64 {
+    return s[at] | s[at + 1] << 8
+}
+
+// The number in the four bytes from `at`, lowest byte first; never negative.
+fn str_u32_at(s: str, at: i64) -> i64 {
+    return s[at] | s[at + 1] << 8 | s[at + 2] << 16 | s[at + 3] << 24
+}
+
+// The number in the eight bytes from `at`, lowest byte first.
+fn str_u64_at(s: str, at: i64) -> i64 {
+    return s.u32_at(at) | s.u32_at(at + 4) << 32
+}
+
+// A list of `count` copies of `value`: `0.filled(256)` is a table of zeros.
+fn any_filled[T](value: T, count: i64) -> List[T] {
+    var items: List[T] = []
+    var i = 0
+    while i < count {
+        items.push(value)
+        i = i + 1
+    }
+    return items
+}

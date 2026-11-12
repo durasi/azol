@@ -1,0 +1,503 @@
+# From the tests of the first compiler: src/sema.rs, `generic_functions`.
+==== 1
+---- file a.azl (no newline at end)
+fn id[T](x: T) -> T {
+ return x
+}
+fn main() {
+let a = id()
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0309]: `id` takes 1 argument but 0 were given
+ --> a.azl:5:9
+  |
+5 | let a = id()
+  |         ^
+---- asserted 5:9 `id` takes 1 argument but 0 were given
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0309","message":"`id` takes 1 argument but 0 were given","file":"a.azl","line":5,"column":9,"end_line":5,"end_column":11,"source":"let a = id()","rule":"A call gives exactly one argument for each parameter, and a variant exactly one value for each of its fields."}
+{"summary":{"errors":1,"files":1}}
+==== 2
+---- file a.azl (no newline at end)
+fn id[T](x: T) -> T {
+ return x
+}
+fn main() {
+let a: bool = id(1)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0301]: expected `bool` but this is `i64`
+ --> a.azl:5:15
+  |
+5 | let a: bool = id(1)
+  |               ^
+---- asserted 5:15 expected `bool` but this is `i64`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0301","message":"expected `bool` but this is `i64`","file":"a.azl","line":5,"column":15,"end_line":5,"end_column":20,"source":"let a: bool = id(1)","rule":"A value stored in a variable or a place has exactly the type of that variable or place; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 3
+---- file a.azl (no newline at end)
+fn id[T](x: T) -> T {
+ return x
+}
+fn main() {
+let a = id(print(1))
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0310]: this expression has no value to pass
+ --> a.azl:5:12
+  |
+5 | let a = id(print(1))
+  |            ^
+---- asserted 5:12 this expression has no value to pass
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0310","message":"this expression has no value to pass","file":"a.azl","line":5,"column":12,"end_line":5,"end_column":20,"source":"let a = id(print(1))","rule":"A call to a function that returns nothing has no value and cannot be stored, passed, compared or matched on."}
+{"summary":{"errors":1,"files":1}}
+==== 4
+---- file a.azl (no newline at end)
+fn id[T](x: T) -> T {
+ return x
+}
+fn main() {
+let a = id
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0210]: `id` is a function; call it with `id(...)`
+ --> a.azl:5:9
+  |
+5 | let a = id
+  |         ^
+---- asserted 5:9 `id` is a function; call it with `id(...)`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0210","message":"`id` is a function; call it with `id(...)`","file":"a.azl","line":5,"column":9,"end_line":5,"end_column":11,"source":"let a = id","rule":"Functions are called, structs are built with `{ ... }`, enums through their variants; none of them is a value by itself."}
+{"summary":{"errors":1,"files":1}}
+==== 5
+---- file a.azl (no newline at end)
+fn same[T](a: T, b: T) {
+}
+fn main() {
+same(1, "x")
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: argument 2 of `same` needs `i64` but this is `str`
+ --> a.azl:4:9
+  |
+4 | same(1, "x")
+  |         ^
+---- asserted 4:9 argument 2 of `same` needs `i64` but this is `str`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"argument 2 of `same` needs `i64` but this is `str`","file":"a.azl","line":4,"column":9,"end_line":4,"end_column":12,"source":"same(1, \"x\")","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 6
+---- file a.azl (no newline at end)
+fn head[T](xs: List[T]) {
+}
+fn main() {
+head(1)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: argument 1 of `head` needs `List[T]` but this is `i64`
+ --> a.azl:4:6
+  |
+4 | head(1)
+  |      ^
+---- asserted 4:6 argument 1 of `head` needs `List[T]` but this is `i64`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"argument 1 of `head` needs `List[T]` but this is `i64`","file":"a.azl","line":4,"column":6,"end_line":4,"end_column":7,"source":"head(1)","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 7
+---- file a.azl (no newline at end)
+fn head[T](xs: List[T]) -> T {
+ return xs[0]
+}
+fn main() {
+let a: i64 = head(["a"])
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0301]: expected `i64` but this is `str`
+ --> a.azl:5:14
+  |
+5 | let a: i64 = head(["a"])
+  |              ^
+---- asserted 5:14 expected `i64` but this is `str`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0301","message":"expected `i64` but this is `str`","file":"a.azl","line":5,"column":14,"end_line":5,"end_column":25,"source":"let a: i64 = head([\"a\"])","rule":"A value stored in a variable or a place has exactly the type of that variable or place; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 8
+---- file a.azl (no newline at end)
+fn none[T]() -> Option[T] {
+ return None
+}
+fn main() {
+let a = none()
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0601]: cannot tell what `T` is in this call to `none`: no argument settles it; store the result in a variable with a type
+ --> a.azl:5:9
+  |
+5 | let a = none()
+  |         ^
+---- asserted 5:9 cannot tell what `T` is in this call to `none`: no argument settles it; store the result in a variable with a type
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0601","message":"cannot tell what `T` is in this call to `none`: no argument settles it; store the result in a variable with a type","file":"a.azl","line":5,"column":9,"end_line":5,"end_column":13,"source":"let a = none()","rule":"The type arguments of a generic type or function come from the values given or from the type expected at that place; when neither settles them they must be written.","help":"Give the variable a type."}
+{"summary":{"errors":1,"files":1}}
+==== 9
+---- file a.azl (no newline at end)
+fn show[T](x: T) {
+ print(x)
+}
+fn main() {
+show(1)
+show([1])
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0308]: `print` takes an `i64`, a `bool` or a `str` but this is `List[i64]` (in `show` with `T` = `List[i64]`)
+ --> a.azl:2:8
+  |
+2 |  print(x)
+  |        ^
+---- asserted 2:8 `print` takes an `i64`, a `bool` or a `str` but this is `List[i64]` (in `show` with `T` = `List[i64]`)
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0308","message":"`print` takes an `i64`, a `bool` or a `str` but this is `List[i64]` (in `show` with `T` = `List[i64]`)","file":"a.azl","line":2,"column":8,"end_line":2,"end_column":9,"source":" print(x)","rule":"`print` and `str` work on numbers, `bool`s and (for `print`) strings only."}
+{"summary":{"errors":1,"files":1}}
+==== 10
+---- file a.azl (no newline at end)
+fn two[A, B](a: A, b: B) -> A {
+ return b
+}
+fn main() {
+two(1, true)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0304]: this function returns `i64` but this is `bool` (in `two` with `A` = `i64`, `B` = `bool`)
+ --> a.azl:2:9
+  |
+2 |  return b
+  |         ^
+---- asserted 2:9 this function returns `i64` but this is `bool` (in `two` with `A` = `i64`, `B` = `bool`)
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0304","message":"this function returns `i64` but this is `bool` (in `two` with `A` = `i64`, `B` = `bool`)","file":"a.azl","line":2,"column":9,"end_line":2,"end_column":10,"source":" return b","rule":"`return` gives back a value of exactly the type the function declares after `->`, and none when it declares none."}
+{"summary":{"errors":1,"files":1}}
+==== 11
+---- file a.azl (no newline at end)
+fn grow[T](x: T) {
+ grow([x])
+}
+fn main() {
+grow(1)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0603]: `grow` is used with types that grow without end (in `grow` with `T` = `List[List[List[List[List[List[List[List[List[List[List[Li...`)
+ --> a.azl:2:2
+  |
+2 |  grow([x])
+  |  ^
+---- asserted 2:2 `grow` is used with types that grow without end (in `grow` with `T` = `List[List[List[List[List[List[List[List[List[List[List[Li...`)
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0603","message":"`grow` is used with types that grow without end (in `grow` with `T` = `List[List[List[List[List[List[List[List[List[List[List[Li...`)","file":"a.azl","line":2,"column":2,"end_line":2,"end_column":6,"source":" grow([x])","rule":"A generic function or type is compiled once per set of types it is used with, so that set must be finite."}
+{"summary":{"errors":1,"files":1}}
+==== 12
+---- file a.azl (no newline at end)
+fn add[T](xs: mut List[T], x: T) {
+ xs.push(x)
+}
+fn main() {
+var xs = [1]
+add(xs, 2)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0405]: argument 1 of `add` can be changed by the function, so it must be written `mut <variable>`
+ --> a.azl:6:5
+  |
+6 | add(xs, 2)
+  |     ^
+---- asserted 6:5 argument 1 of `add` can be changed by the function, so it must be written `mut <variable>`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0405","message":"argument 1 of `add` can be changed by the function, so it must be written `mut <variable>`","file":"a.azl","line":6,"column":5,"end_line":6,"end_column":7,"source":"add(xs, 2)","rule":"An argument for a `mut` parameter is written with `mut` in front, so that every place a variable can change is visible in the caller.","help":"Write `mut` in front of the argument.","fix":{"file":"a.azl","line":6,"column":5,"end_line":6,"end_column":5,"replacement":"mut "}}
+{"summary":{"errors":1,"files":1}}
+==== 13
+---- file a.azl (no newline at end)
+fn add[T](xs: mut List[T], x: T) {
+ xs.push(x)
+}
+fn main() {
+let xs = [1]
+add(mut xs, 2)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0401]: cannot pass `xs` as `mut`: declare it with `var` to make it changeable
+ --> a.azl:6:5
+  |
+6 | add(mut xs, 2)
+  |     ^
+---- asserted 6:5 cannot pass `xs` as `mut`: declare it with `var` to make it changeable
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0401","message":"cannot pass `xs` as `mut`: declare it with `var` to make it changeable","file":"a.azl","line":6,"column":5,"end_line":6,"end_column":8,"source":"add(mut xs, 2)","rule":"A variable declared with `let` never changes; only one declared with `var` can be assigned, grown or passed as `mut`.","help":"Declare the variable with `var` instead of `let`.","fix":{"file":"a.azl","line":5,"column":1,"end_line":5,"end_column":4,"replacement":"var"}}
+{"summary":{"errors":1,"files":1}}
+==== 14
+---- file a.azl (no newline at end)
+fn add[T](xs: mut List[T], x: T) {
+ xs.push(x)
+}
+fn main() {
+var xs = [[1]]
+add(mut xs, xs[0])
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0410]: `xs` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+ --> a.azl:6:13
+  |
+6 | add(mut xs, xs[0])
+  |             ^
+---- asserted 6:13 `xs` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0410","message":"`xs` is passed twice in one call and one of the uses is `mut`; copy it into a variable first","file":"a.azl","line":6,"column":13,"end_line":6,"end_column":18,"source":"add(mut xs, xs[0])","rule":"One call cannot receive the same data twice when one of the uses is `mut`."}
+{"summary":{"errors":1,"files":1}}
+==== 15
+---- file a.azl (no newline at end)
+fn add[T](xs: mut List[T], x: T) {
+ xs.push(x)
+}
+fn main() {
+var xs = [1]
+add(mut xs, "a")
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: argument 2 of `add` needs `i64` but this is `str`
+ --> a.azl:6:13
+  |
+6 | add(mut xs, "a")
+  |             ^
+---- asserted 6:13 argument 2 of `add` needs `i64` but this is `str`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"argument 2 of `add` needs `i64` but this is `str`","file":"a.azl","line":6,"column":13,"end_line":6,"end_column":16,"source":"add(mut xs, \"a\")","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 16
+---- file a.azl (no newline at end)
+fn add[T](xs: mut List[T], x: T) {
+ xs.push(x)
+}
+fn main() {
+var xs = [1]
+for x in xs {
+ add(mut xs, x)
+}
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0408]: cannot pass `xs` as `mut` while a loop is going through it
+ --> a.azl:7:10
+  |
+7 |  add(mut xs, x)
+  |          ^
+---- asserted 7:10 cannot pass `xs` as `mut` while a loop is going through it
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0408","message":"cannot pass `xs` as `mut` while a loop is going through it","file":"a.azl","line":7,"column":10,"end_line":7,"end_column":12,"source":" add(mut xs, x)","rule":"A list cannot be changed while a `for` loop is going through it."}
+{"summary":{"errors":1,"files":1}}
+==== 17
+---- file a.azl (no newline at end)
+fn f[T, T](x: T) {
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0208]: type parameter `T` is declared more than once
+ --> a.azl:1:9
+  |
+1 | fn f[T, T](x: T) {
+  |         ^
+---- asserted 1:9 type parameter `T` is declared more than once
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0208","message":"type parameter `T` is declared more than once","file":"a.azl","line":1,"column":9,"end_line":1,"end_column":10,"source":"fn f[T, T](x: T) {","rule":"A name is declared once: functions, constants and variants share one namespace across all files, types another."}
+{"summary":{"errors":1,"files":1}}
+==== 18
+---- file a.azl (no newline at end)
+fn main[T]() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0315]: `main` cannot have type parameters
+ --> a.azl:1:4
+  |
+1 | fn main[T]() {
+  |    ^
+---- asserted 1:4 `main` cannot have type parameters
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0315","message":"`main` cannot have type parameters","file":"a.azl","line":1,"column":4,"end_line":1,"end_column":8,"source":"fn main[T]() {","rule":"A program has exactly one `fn main()`, without parameters, returning nothing or the exit code as `i64`."}
+{"summary":{"errors":1,"files":1}}
+==== 19
+---- file a.azl (no newline at end)
+fn f[T](x: T) {
+}
+fn f(x: i64) {
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0208]: function `f` is defined more than once
+ --> a.azl:3:4
+  |
+3 | fn f(x: i64) {
+  |    ^
+---- asserted 3:4 function `f` is defined more than once
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0208","message":"function `f` is defined more than once","file":"a.azl","line":3,"column":4,"end_line":3,"end_column":5,"source":"fn f(x: i64) {","rule":"A name is declared once: functions, constants and variants share one namespace across all files, types another."}
+{"summary":{"errors":1,"files":1}}
+==== 20
+---- file a.azl (no newline at end)
+fn f(x: i64) {
+}
+fn f[T](x: T) {
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0208]: function `f` is defined more than once
+ --> a.azl:3:4
+  |
+3 | fn f[T](x: T) {
+  |    ^
+---- asserted 3:4 function `f` is defined more than once
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0208","message":"function `f` is defined more than once","file":"a.azl","line":3,"column":4,"end_line":3,"end_column":5,"source":"fn f[T](x: T) {","rule":"A name is declared once: functions, constants and variants share one namespace across all files, types another."}
+{"summary":{"errors":1,"files":1}}
+==== 21
+---- file a.azl (no newline at end)
+fn f[T](x: Missing) {
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0203]: unknown type `Missing`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`
+ --> a.azl:1:12
+  |
+1 | fn f[T](x: Missing) {
+  |            ^
+---- asserted 1:12 unknown type `Missing`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0203","message":"unknown type `Missing`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`","file":"a.azl","line":1,"column":12,"end_line":1,"end_column":19,"source":"fn f[T](x: Missing) {","rule":"A type is `i64`, `bool`, `str`, `List[...]`, `Option[...]`, `Result[..., ...]` or a struct or enum of the program."}
+{"summary":{"errors":1,"files":1}}
+==== 22
+---- file a.azl (no newline at end)
+fn print[T](x: T) {
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0209]: `print` is built in and cannot be redefined
+ --> a.azl:1:4
+  |
+1 | fn print[T](x: T) {
+  |    ^
+---- asserted 1:4 `print` is built in and cannot be redefined
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0209","message":"`print` is built in and cannot be redefined","file":"a.azl","line":1,"column":4,"end_line":1,"end_column":9,"source":"fn print[T](x: T) {","rule":"The names of built-in types and functions cannot be declared again."}
+{"summary":{"errors":1,"files":1}}

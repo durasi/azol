@@ -1,0 +1,291 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// `ir-tool`: the intermediate form from the command line, for tests and
+// for looking at what a pass did.
+//
+//     ir-tool print <file.ir>     the canonical text of the file
+//     ir-tool verify <file.ir>    `ok`, or the first rule that is broken
+//     ir-tool run <file.ir> [function [arguments...]] [--steps N]
+//                                 runs `main`, or the named function with
+//                                 whole numbers as arguments; then prints
+//                                 `=> ` and what it returned
+//     ir-tool cfg <file.ir>       order, dominators, loops and liveness
+//     ir-tool time <file.ir>      how long parsing, verifying and the
+//                                 analyses take
+//
+// Exit codes: 0; 1 for a file that is wrong (and what the file's own
+// program exits with, for `run`); 2 for a wrong command line; 3 when
+// the interpreter caught the program doing something it must not.
+//
+// Built from the files of this folder alone:
+//
+//     azol build compiler/opt/ir.azl compiler/opt/ir_text.azl compiler/opt/ir_cfg.azl \
+//         compiler/opt/ir_verify.azl compiler/opt/ir_interp.azl \
+//         compiler/opt/ir_tool_main.azl -o ir-tool
+
+fn ir_tool_usage() {
+    eprint("usage: ir-tool print|verify|cfg|time <file.ir>")
+    eprint("       ir-tool run <file.ir> [function [arguments...]] [--steps N]")
+    exit(2)
+}
+
+// Reads and parses the file, or ends the program with the mistake.
+fn ir_tool_read(path: str) -> IrModule {
+    var m = ir_new_module()
+    match read_file(path) {
+        Ok(text) => {
+            let problem = ir_parse_module(text, mut m)
+            if problem.message.len() > 0 {
+                eprint("error: " + path + ":" + str(problem.line) + ":" + str(problem.column) + ": " + problem.message)
+                exit(1)
+            }
+        }
+        Err(why) => {
+            eprint("error: cannot read '" + path + "': " + why)
+            exit(1)
+        }
+    }
+    return m
+}
+
+fn ir_tool_verify(m: IrModule) {
+    let problem = ir_verify_module(m)
+    if problem.len() > 0 {
+        eprint("error: " + problem)
+        exit(1)
+    }
+}
+
+// The names of the values whose bit is set in the `words` words of
+// `bits` from `base`; `-` when there are none.
+fn ir_tool_values(f: IrFunc, bits: List[i64], base: i64, words: i64) -> str {
+    var out = ""
+    var v = 0
+    while v < f.val_ty.len() {
+        if bits[base + (v >> 6)] >> (v & 63) & 1 != 0 {
+            if out.len() > 0 {
+                out = out + " "
+            }
+            ir_print_value(f, v, mut out)
+        }
+        v = v + 1
+    }
+    if out.len() == 0 {
+        return "-"
+    }
+    return out
+}
+
+fn ir_tool_blocks(blocks: List[i64], start: i64, count: i64) -> str {
+    var out = ""
+    var k = 0
+    while k < count {
+        if k > 0 {
+            out = out + " "
+        }
+        out = out + "b"
+        out = out + str(blocks[start + k])
+        k = k + 1
+    }
+    if count == 0 {
+        return "-"
+    }
+    return out
+}
+
+fn ir_tool_cfg(f: IrFunc) {
+    let cfg = ir_cfg(f)
+    let live = ir_liveness(f, cfg)
+    print("fn " + f.name)
+    print("  order: " + ir_tool_blocks(cfg.rpo, 0, cfg.rpo.len()))
+    var unreachable: List[i64] = []
+    for b in f.order {
+        if cfg.rpo_at[b] < 0 {
+            unreachable.push(b)
+        }
+    }
+    if unreachable.len() > 0 {
+        print("  unreachable: " + ir_tool_blocks(unreachable, 0, unreachable.len()))
+    }
+    var line = "  idom:"
+    for b in cfg.rpo {
+        line = line + " b"
+        line = line + str(b)
+        line = line + "=b"
+        line = line + str(cfg.idom[b])
+    }
+    print(line)
+    var l = 0
+    while l < cfg.loop_header.len() {
+        line = "  loop " + str(l) + ": header b" + str(cfg.loop_header[l]) + ", depth " + str(cfg.loop_depth[l]) + ", parent "
+        if cfg.loop_parent[l] < 0 {
+            line = line + "-"
+        } else {
+            line = line + str(cfg.loop_parent[l])
+        }
+        let blocks = cfg.loop_blocks.skip(cfg.loop_bs[l]).take(cfg.loop_bn[l]).sorted()
+        line = line + ", blocks "
+        line = line + ir_tool_blocks(blocks, 0, blocks.len())
+        let latches = cfg.loop_latches.skip(cfg.loop_ls[l]).take(cfg.loop_ln[l]).sorted()
+        line = line + ", latches "
+        line = line + ir_tool_blocks(latches, 0, latches.len())
+        let exits = cfg.loop_exits.skip(cfg.loop_xs[l]).take(cfg.loop_xn[l]).sorted()
+        line = line + ", exits "
+        line = line + ir_tool_blocks(exits, 0, exits.len())
+        print(line)
+        l = l + 1
+    }
+    if cfg.irreducible > 0 {
+        print("  irreducible: " + str(cfg.irreducible))
+    }
+    for b in cfg.rpo {
+        print("  live b" + str(b) + ": in " + ir_tool_values(f, live.live_in, b * live.words, live.words) + " | out " + ir_tool_values(f, live.live_out, b * live.words, live.words))
+    }
+}
+
+fn ir_tool_run(m: IrModule, rest: List[str]) {
+    var name = "main"
+    var arguments: List[i64] = []
+    var mach = irm_new(m)
+    var i = 0
+    var named = false
+    while i < rest.len() {
+        if rest[i] == "--steps" && i + 1 < rest.len() {
+            match rest[i + 1].to_i64() {
+                Some(n) => mach.step_limit = n
+                None => ir_tool_usage()
+            }
+            i = i + 2
+            continue
+        }
+        if !named {
+            name = rest[i]
+            named = true
+        } else {
+            match rest[i].to_i64() {
+                Some(n) => arguments.push(n)
+                None => ir_tool_usage()
+            }
+        }
+        i = i + 1
+    }
+    let at = ir_find_func(m, name)
+    if at < 0 {
+        eprint("error: there is no function `" + name + "`")
+        exit(1)
+    }
+    let returned = irm_run(mut mach, m, m.funcs[at], arguments)
+    if mach.failed {
+        eprint(mach.message)
+        exit(3)
+    }
+    if mach.stopped {
+        if mach.stop_message.len() > 0 {
+            eprint(mach.stop_message)
+        }
+        exit(mach.exit_code)
+    }
+    var line = "=>"
+    var k = 0
+    while k < returned.len() {
+        if k > 0 {
+            line = line + ","
+        }
+        let ty = m.funcs[at].ret_ty[k]
+        if ty == IR_BOOL {
+            line = line + " "
+            line = line + str(returned[k] != 0)
+        } else if ty == IR_PTR && returned[k] == 0 {
+            line = line + " null"
+        } else if ty == IR_PTR {
+            line = line + " ptr"
+        } else {
+            line = line + " "
+            line = line + str(returned[k])
+        }
+        k = k + 1
+    }
+    print(line)
+    let left = irm_live_blocks(mach)
+    if left > 0 {
+        eprint("ir-interp: " + str(left) + " allocated blocks were never freed")
+        exit(3)
+    }
+}
+
+fn ir_tool_time(path: str) {
+    var m = ir_new_module()
+    var text = ""
+    match read_file(path) {
+        Ok(found) => text = found
+        Err(why) => {
+            eprint("error: cannot read '" + path + "': " + why)
+            exit(1)
+        }
+    }
+    let start = clock()
+    let problem = ir_parse_module(text, mut m)
+    let parsed = clock()
+    if problem.message.len() > 0 {
+        eprint("error: " + path + ":" + str(problem.line) + ":" + str(problem.column) + ": " + problem.message)
+        exit(1)
+    }
+    ir_tool_verify(m)
+    let verified = clock()
+    var loops = 0
+    var i = 0
+    while i < m.funcs.len() {
+        let cfg = ir_cfg(m.funcs[i])
+        let live = ir_liveness(m.funcs[i], cfg)
+        loops = loops + cfg.loop_header.len() + live.words * 0
+        i = i + 1
+    }
+    let analysed = clock()
+    let out = ir_print_module(m)
+    let printed = clock()
+    var instructions = 0
+    i = 0
+    while i < m.funcs.len() {
+        instructions = instructions + m.funcs[i].ins_op.len()
+        i = i + 1
+    }
+    print(str(m.funcs.len()) + " functions, " + str(instructions) + " instructions, " + str(loops) + " loops, " + str(out.len()) + " bytes of text")
+    print("parse   " + str((parsed - start) / 1000) + " us")
+    print("verify  " + str((verified - parsed) / 1000) + " us")
+    print("cfg     " + str((analysed - verified) / 1000) + " us (dominators, loops, liveness)")
+    print("print   " + str((printed - analysed) / 1000) + " us")
+}
+
+fn main() {
+    let a = args()
+    if a.len() < 3 {
+        ir_tool_usage()
+    }
+    let command = a[1]
+    if command == "time" {
+        ir_tool_time(a[2])
+        return
+    }
+    let m = ir_tool_read(a[2])
+    if command == "print" {
+        let text = ir_print_module(m)
+        if text.len() > 0 {
+            print(text.slice(0, text.len() - 1))
+        }
+    } else if command == "verify" {
+        ir_tool_verify(m)
+        print("ok")
+    } else if command == "cfg" {
+        ir_tool_verify(m)
+        var i = 0
+        while i < m.funcs.len() {
+            ir_tool_cfg(m.funcs[i])
+            i = i + 1
+        }
+    } else if command == "run" {
+        ir_tool_verify(m)
+        ir_tool_run(m, a.skip(3))
+    } else {
+        ir_tool_usage()
+    }
+}

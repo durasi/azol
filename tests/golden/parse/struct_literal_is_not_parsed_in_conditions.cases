@@ -1,0 +1,46 @@
+# From the tests of the first compiler: src/parser.rs, `struct_literal_is_not_parsed_in_conditions`.
+==== 1
+---- file a.azl (no newline at end)
+fn t() {
+if a == b {
+return 1
+}
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  if (== a b)
+    return 1
+---- stderr
+parsed 5 lines into 7 nodes
+==== 2
+---- file a.azl (no newline at end)
+fn t() {
+if a == (P { x: 1 }) {
+return
+}
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  if (== a (new P x: 1))
+    return
+---- stderr
+parsed 5 lines into 8 nodes
+==== 3
+---- file a.azl (no newline at end)
+fn t() {
+while f(P { x: 1 }) {
+break
+}
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  while (call f (new P x: 1))
+    break
+---- stderr
+parsed 5 lines into 8 nodes

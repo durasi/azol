@@ -133,7 +133,8 @@ pub fn run(paths: &[&str]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match sema::check_with_prelude(&ast, &src, prelude_start as u32) {
+    let file_starts: Vec<(u32, &str)> = files.iter().map(|file| (file.start as u32, file.path)).collect();
+    match sema::check_with_files(&ast, &src, prelude_start as u32, &file_starts) {
         Ok(program) => {
             print!("{}", dump(&program));
             ExitCode::SUCCESS

@@ -1,0 +1,7 @@
+; parse: 5:1: b0 is defined twice
+fn main() {
+b0:
+    ret
+b0:
+    ret
+}

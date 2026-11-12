@@ -83,7 +83,8 @@ first time. It is short on purpose. The full reference is
 26. `==` works on `i64`, `bool`, `str` and enums whose variants carry
     nothing. Not on structs, lists, `Option` or `Result`. Compare fields;
     use `match`.
-27. `<` and friends work on `i64` only, not on strings.
+27. `<`, `<=`, `>`, `>=` work on `i64` and on `str` (byte order), on
+    nothing else. `a.compare(b)` gives -1, 0 or 1 for both.
 28. Assignment copies. `var b = a` gives `b` its own list or struct, at any
     depth; changing `b` never changes `a`. There is no aliasing to reason
     about. The compiler skips the copy when it cannot matter: for
@@ -95,7 +96,7 @@ first time. It is short on purpose. The full reference is
 **Text**
 
 30. A `str` is bytes. `s.len()` and `s[i]` count bytes; `s[i]` is an `i64`.
-    Strings cannot be changed in place.
+    `s[i] = b` is not allowed; `s.set(i, b)` and `s.push(b)` change a `var` string.
 31. `+` joins two strings. It does not convert: `"n = " + str(n)`.
 32. `print` takes exactly one `i64`, `bool` or `str` and adds a newline.
     There is no formatting and no interpolation.
@@ -119,6 +120,11 @@ args() -> List[str]           // args()[0] is the program
 read_file(path) -> Result[str, str]
 write_file(path, text) -> Result[i64, str]
 set_executable(path) -> Result[i64, str]
+remove_file(path) -> Result[i64, str]      // Ok(0)
+rename_file(from, to) -> Result[i64, str]  // replaces `to`; Ok(0)
+clock() -> i64                // nanoseconds, only differences mean anything
+const X = embed("file.txt")   // a file's bytes, read while compiling; only in a const;
+                              // the path is relative to the source file
 exit(code)
 
 xs.len()  xs.push(x)  xs.pop()  xs[i]  xs[i] = x
@@ -128,11 +134,14 @@ xs.is_empty()  xs.index_of(x)  xs.count(x)  xs.take(n)  xs.skip(n)
 xs.sorted()  xs.min()  xs.max()  xs.sum()  // numbers and strings; sum: List[i64]
 xs.extend(more)  xs.truncate(n)  xs.insert(at, x)  xs.remove_at(at)   // change xs
 bytes.to_str()                             // List[i64] to str
+0.filled(n)                                // a List of n copies of any value
 
 s.len()  s[i]  s.slice(from, to)  s.find(part)   // find: Option[i64]
 s.contains(part)  s.starts_with(p)  s.ends_with(p)
+s.push(byte)  s.set(i, byte)  s.push_u32(n)  s.u32_at(i)   // a str is the byte buffer; push/set change s
+a < b  a <= b  a > b  a >= b               // strings too, in byte order
 s.trim()  s.split(separator)  s.lines()  s.to_i64()   // to_i64: Option[i64]
-s.is_empty()  s.compare(t)  s.replace(old, new)  s.repeat(n)
+s.is_empty()  s.is_utf8()  s.compare(t)  s.replace(old, new)  s.repeat(n)
 s.to_upper()  s.to_lower()  s.pad_left(width, fill)  s.pad_right(width, fill)
 s.index_of_from(part, start)  s.last_index_of(part)  s.bytes()  s.parse_hex()  s.hash()
 
@@ -472,21 +481,46 @@ Go through the program once with this list.
 
 ## 5. Reading the compiler's errors
 
-`azol build file.azl` stops at the first error, prints it to standard error
-and exits with 1. On success it prints one `built ...` line to standard
-error and exits with 0.
+`azol check file.azl` builds nothing and reports the errors; `azol build`
+reports the same ones and writes no executable. Both exit with 1. One run
+shows the first error of every function, sorted by position, and a last
+line `found N errors` when there are several. After a syntax error only
+syntax errors are shown (the first of each file); after a mistake in a
+declaration, only that one. So fix what is shown and run again until
+`check` prints `no errors`.
 
-```text
-error: cannot change `xs` while a loop is going through it
- --> loop.azl:4:9
-  |
-4 |         xs.push(x)
-  |         ^
+```azol-check
+fn main() {
+    let count = 0
+    count = count + 1
+    print(count)
+}
 ```
 
-- Line 1: what is wrong. After a `;` it often says what to do.
+```report
+error[E0401]: cannot change `count`: declare it with `var` to make it changeable
+ --> example.azl:3:5
+  |
+3 |     count = count + 1
+  |     ^
+```
+
+- Line 1: the stable code, then what is wrong. After a `;` it often says
+  what to do. `azol explain E0401` gives the rule and an example.
 - Line 2: file, line, column. The column is where the `^` points.
-- There is one error per build. Fix it and build again.
+
+`azol check --json file.azl` writes the same errors to standard output,
+one JSON object per line, then a summary line. Prefer it: nothing has to
+be parsed out of text, and a `fix` can be applied as it stands.
+
+```json
+{"severity":"error","code":"E0401","message":"cannot change `count`: declare it with `var` to make it changeable","file":"example.azl","line":3,"column":5,"end_line":3,"end_column":10,"source":"    count = count + 1","rule":"A variable declared with `let` never changes; only one declared with `var` can be assigned, grown or passed as `mut`.","help":"Declare the variable with `var` instead of `let`.","fix":{"file":"example.azl","line":2,"column":5,"end_line":2,"end_column":8,"replacement":"var"}}
+{"summary":{"errors":1,"files":1}}
+```
+
+Lines and columns start at 1; `end_column` is not part of the span. A
+`fix`, present when the repair is mechanical, says: replace that span of
+`file` with `replacement`.
 
 Messages to recognize:
 
@@ -524,11 +558,5 @@ code 1: `azol: index out of range`, `azol: division by zero`,
 `azol: stack overflow`. Check `len()` before indexing, slicing and popping,
 and give every recursion a case that ends it.
 
-**Use `azol check --json <files...>` while you work.** It builds nothing and
-reports the first error of every function at once, one JSON object per line:
-a stable `code` (`E0401`), exact `line` and `column`, the `rule` that was
-broken, a `help` sentence and, when the repair is mechanical, a `fix` with
-the exact replacement text. `azol explain E0401` explains a code, and
-`docs/errors.md` lists them all. The text form puts the code in the first
-line: `error[E0401]: ...`. `azol fmt <files...>` rewrites files in the
-canonical layout, so do not spend effort on spacing.
+`azol fmt <files...>` rewrites files in the canonical layout, so do not
+spend effort on spacing. `docs/errors.md` lists every code.

@@ -1,0 +1,59 @@
+// matmul: integer matrix multiply.
+// Algorithm: the plain triple loop (row, column, inner product) on square
+// matrices kept in flat lists; the product feeds the next round.
+// Sizes: 200 x 200, 40 rounds; small: 100 x 100, 3 rounds.
+// Output: the sum of the last product.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+fn multiply(a: List[i64], b: List[i64], c: mut List[i64], n: i64) {
+    var i = 0
+    while i < n {
+        var j = 0
+        while j < n {
+            var total = 0
+            var k = 0
+            while k < n {
+                total = total + a[i * n + k] * b[k * n + j]
+                k = k + 1
+            }
+            c[i * n + j] = total
+            j = j + 1
+        }
+        i = i + 1
+    }
+}
+
+fn main() {
+    let n = size(200, 100)
+    let rounds = size(40, 3)
+    var a: List[i64] = []
+    var b: List[i64] = []
+    var seed = 13
+    var m = 0
+    while m < n * n {
+        seed = seed * 48271 % 2147483647
+        a.push(seed % 1000)
+        b.push(seed / 1000 % 1000)
+        m = m + 1
+    }
+    var c = 0.filled(n * n)
+    var round = 0
+    while round < rounds {
+        multiply(a, b, mut c, n)
+        var i = 0
+        while i < n * n {
+            a[i] = c[i] % 1000
+            i = i + 1
+        }
+        round = round + 1
+    }
+    print(c.sum())
+}

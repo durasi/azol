@@ -1,0 +1,19 @@
+# From the tests of the first compiler: src/sema.rs, `is_utf8_is_a_method_of_strings`.
+==== 1
+---- file a.azl (no newline at end)
+fn main() {
+let s = "a"
+let ok: bool = s.is_utf8()
+if (s + "b").is_utf8() && !chr(200).is_utf8() {
+}
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 6 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 2738d6a6ffa825bdae6182a62d5508cef1dfca39fc15ebf5f88f76e762536065
+x86_64-linux 9cf1125f72c11ce8a07d978949f4ce9c88dce249ba27dec6160eb0e1ddcfe47d
+aarch64-linux d4a7d1adc4d174d231a345629d91192d7fd6550cb60c2b67dd478aadb75d016c

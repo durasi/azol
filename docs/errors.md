@@ -1,6 +1,6 @@
 # azoL error codes
 
-Generated from the table in `src/diag.rs`; do not edit by hand. `azol explain <code>` prints the same text.
+Written by `azol explain --markdown` from the compiler's table of error codes; do not edit by hand. `azol explain <code>` prints the same text.
 
 Areas: E01 syntax, E02 names, E03 types, E04 ownership and exclusivity, E05 patterns, E06 generics, E07 constants, E08 limits.
 
@@ -165,7 +165,7 @@ Messages:
 
 Only functions of the program and the built-in functions can be called.
 
-The built-in functions are `print`, `eprint`, `str`, `chr`, `args`, `read_file`, `write_file`, `set_executable` and `exit`. The library's `find`, `split` and the like are methods: `text.find(part)`.
+The built-in functions are `print`, `eprint`, `str`, `chr`, `args`, `read_file`, `write_file`, `set_executable`, `remove_file`, `rename_file`, `clock` and `exit`. The library's `find`, `split` and the like are methods: `text.find(part)`.
 
 Messages:
 
@@ -948,7 +948,7 @@ Messages:
 
 The value of a constant is computed when the program is compiled: from literals, other constants and operators on numbers and `bool`s.
 
-Calls, variables, lists and structs cannot appear in a constant. A string constant is one string literal.
+Calls, variables, lists and structs cannot appear in a constant. The one exception is `embed("path")`, which stands for the contents of a file. String constants are string literals, embedded files and those joined with `+`.
 
 Messages:
 
@@ -982,6 +982,42 @@ A constant expression cannot divide by zero.
 Messages:
 
 - division by zero in a constant
+
+## E0705
+
+`embed("path")` stands for the contents of a file, read when the program is compiled; it can only be the value of a constant, or a part of one.
+
+What to do: Give the file's text a name with `const NAME = embed("path")` and use `NAME`.
+
+Wrong:
+
+    fn main() {
+        print(embed("notes.txt"))
+    }
+
+Right:
+
+    const NOTES = embed("notes.txt")
+
+    fn main() {
+        print(NOTES)
+    }
+
+To read a file while the program runs, use `read_file`.
+
+Messages:
+
+- `embed` works only in a constant: write `const NAME = embed("file")` and use the constant
+
+## E0706
+
+The file named in `embed` must be readable when the program is compiled. The path is relative to the folder of the source file that names it.
+
+The text after the colon is the system's reason, such as `No such file or directory`. `embed("data/table.txt")` in `src/main.azl` reads `src/data/table.txt`, wherever the compiler is started from.
+
+Messages:
+
+- cannot embed `...`: ...
 
 ## E0801
 

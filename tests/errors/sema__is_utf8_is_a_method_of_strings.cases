@@ -1,0 +1,41 @@
+# From the tests of the first compiler: src/sema.rs, `is_utf8_is_a_method_of_strings`.
+==== 1
+---- file a.azl (no newline at end)
+fn main() {
+let ok = "a".is_utf8(1)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0309]: `is_utf8` takes 0 arguments but 1 were given
+ --> a.azl:2:10
+  |
+2 | let ok = "a".is_utf8(1)
+  |          ^
+---- asserted 2:10 `is_utf8` takes 0 arguments but 1 were given
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0309","message":"`is_utf8` takes 0 arguments but 1 were given","file":"a.azl","line":2,"column":10,"end_line":2,"end_column":13,"source":"let ok = \"a\".is_utf8(1)","rule":"A call gives exactly one argument for each parameter, and a variant exactly one value for each of its fields."}
+{"summary":{"errors":1,"files":1}}
+==== 2
+---- file a.azl (no newline at end)
+fn main() {
+let n: i64 = "a".is_utf8()
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0301]: expected `i64` but this is `bool`
+ --> a.azl:2:14
+  |
+2 | let n: i64 = "a".is_utf8()
+  |              ^
+---- asserted 2:14 expected `i64` but this is `bool`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0301","message":"expected `i64` but this is `bool`","file":"a.azl","line":2,"column":14,"end_line":2,"end_column":27,"source":"let n: i64 = \"a\".is_utf8()","rule":"A value stored in a variable or a place has exactly the type of that variable or place; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}

@@ -37,8 +37,12 @@ pub const READ_FILE: u32 = 20;
 pub const WRITE_FILE: u32 = 21;
 pub const STR_APPEND: u32 = 22;
 pub const SET_EXECUTABLE: u32 = 23;
+pub const REMOVE_FILE: u32 = 24;
+pub const RENAME_FILE: u32 = 25;
+pub const CLOCK: u32 = 26;
+pub const STR_IS_UTF8: u32 = 27;
 /// Number of routines.
-pub const ENTRY_COUNT: usize = 24;
+pub const ENTRY_COUNT: usize = 28;
 
 /// Address the executable file is mapped at.
 pub const BASE: u64 = 0x400000;
@@ -46,9 +50,9 @@ pub const BASE: u64 = 0x400000;
 pub const TEXT_OFFSET: u64 = 0x100;
 /// The runtime's code and constant data. The program's code goes right
 /// after it, starting with a jump to the program's `main`.
-pub const TEXT: &[u8; 9168] = include_bytes!("../runtime/linux_x64/runtime.bin");
+pub const TEXT: &[u8; 9696] = include_bytes!("../runtime/linux_x64/runtime.bin");
 /// Offset in `TEXT` of each routine, indexed by its id.
-pub const ENTRIES: [u32; ENTRY_COUNT] = [800, 1040, 1312, 1632, 1712, 1728, 384, 720, 1744, 2432, 2624, 2704, 3088, 3152, 3472, 1440, 1568, 3536, 3808, 4400, 4704, 6064, 3872, 6576];
+pub const ENTRIES: [u32; ENTRY_COUNT] = [800, 1040, 1312, 1632, 1712, 1728, 384, 720, 1744, 2432, 2624, 2704, 3088, 3152, 3472, 1440, 1568, 3536, 3808, 4400, 4704, 6112, 3872, 6464, 6656, 6800, 7008, 7088];
 /// Offset in `TEXT` of the code the system starts the process at.
 pub const START: u32 = 7;
 /// Address and size of the runtime's writable memory, which must start

@@ -1,0 +1,27 @@
+; Two loops one after the other; neither is inside the other.
+; cfg:
+; out: fn main
+; out:   order: b0 b1 b2 b3 b4 b5
+; out:   idom: b0=b0 b1=b0 b2=b1 b3=b1 b4=b3 b5=b3
+; out:   loop 0: header b1, depth 1, parent -, blocks b1 b2, latches b2, exits b3
+; out:   loop 1: header b3, depth 1, parent -, blocks b3 b4, latches b4, exits b5
+; out:   live b0: in p0 | out p0
+; out:   live b1: in p0 | out p0
+; out:   live b2: in p0 | out p0
+; out:   live b3: in p0 | out p0
+; out:   live b4: in p0 | out p0
+; out:   live b5: in - | out -
+fn main(p0: bool) {
+b0:
+    jump b1
+b1:
+    br p0, b2, b3
+b2:
+    jump b1
+b3:
+    br p0, b4, b5
+b4:
+    jump b3
+b5:
+    ret
+}

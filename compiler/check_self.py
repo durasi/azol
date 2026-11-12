@@ -44,7 +44,8 @@ Mach-O files, the diagnostics and the formatter in this folder, with
 Which machine an `azol-self` runs on is said when it is built, by one of
 the files `host_*.azl` (see `self_main.azl`); `sources(target)` below
 names the right one. Stage 1 is built for x86-64 Linux and run directly,
-so this script needs such a machine. Build the Rust compiler first: cargo build --release
+so this script needs such a machine. The compiler it compares with is the oracle: `--oracle <path>`, or see
+compiler/oracle.py for the one taken when none is given.
 """
 import glob, os, platform, re, shutil, subprocess, sys, tempfile, time
 
@@ -53,24 +54,35 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 import check_front, check_sema  # noqa: E402  (the wrong programs come from them)
 
-AZOL = os.path.join(ROOT, "target", "release", "azol")
+import oracle  # noqa: E402
+
+AZOL = oracle.path()
 BIG = os.path.join(ROOT, "bench", "generated", "big.azl")
 TARGETS = ["x86_64-linux", "aarch64-macos", "aarch64-linux"]
 # The compiler's sources but for the one file that says where it runs.
-COMMON = ["self_main.azl", "driver.azl", "token.azl", "lexer.azl", "ast.azl", "parser.azl", "dump.azl", "sema.azl", "sema_fn.azl",
-          "x64.azl", "x64_gen.azl", "runtime_x64.azl", "code_file.azl", "elf.azl", "bytes.azl", "diag.azl", "diag_table.azl",
-          "embedded.azl", "format.azl", "arm64.azl", "arm64_gen.azl", "arm64_link.azl", "runtime_arm64.azl", "macho.azl",
-          "sha256.azl"]
-
-
 def sources(target):
     """The files an `azol-self` that runs on `target` is built from."""
-    return COMMON + ["host_" + target.replace("-", "_") + ".azl"]
+    return oracle.sources(target)
 
 
 # For the machine this script runs on.
 SOURCES = sources("x86_64-linux")
 SETS = check_sema.SETS + [["compiler/" + name for name in SOURCES]]
+
+
+
+def emulator_repo():
+    """The folder the checking emulator for Linux on ARM64 reads the facts
+    about the runtime from. It looks for them as a module of the first
+    compiler, `src/runtime_linux_arm64.rs`; once that is gone, it gets the
+    same text from `runtime/linux_arm64/runtime.facts` in a folder made
+    for it."""
+    if os.path.exists(os.path.join(ROOT, "src", "runtime_linux_arm64.rs")):
+        return ROOT
+    folder = tempfile.mkdtemp(prefix="azol-facts-")
+    os.makedirs(os.path.join(folder, "src"))
+    shutil.copy(os.path.join(ROOT, "runtime", "linux_arm64", "runtime.facts"), os.path.join(folder, "src", "runtime_linux_arm64.rs"))
+    return folder
 
 
 def run(command, **more):
@@ -163,7 +175,7 @@ def checked_run(host, tool, program, stage1, work):
     if host == "aarch64-macos":
         out, code, trap, balanced, errs, heap = checking.run(tool, max_insn=4_000_000_000, argv=arguments)
     else:
-        out, code, trap, balanced, errs, heap = checking.run(tool, max_insn=4_000_000_000, argv=arguments, repo=ROOT)
+        out, code, trap, balanced, errs, heap = checking.run(tool, max_insn=4_000_000_000, argv=arguments, repo=emulator_repo())
     if code != 0 or trap is not None or not balanced or heap["leaks"] or heap["violations"]:
         return f"the compiler for {host} under the checking emulator: exit {code}, trap {trap}, balanced {balanced}, heap {heap}, {errs[:200]!r}"
     want_path = os.path.join(work, "checked", "native", "program")
@@ -310,7 +322,7 @@ def main():
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         sys.exit("check_self.py runs azol-self directly and so needs x86-64 Linux")
     if not os.path.exists(AZOL):
-        sys.exit("build the compiler first: cargo build --release")
+        sys.exit(oracle.missing())
     work = tempfile.mkdtemp(prefix="azol-check-self-")
     try:
         return check(work, "--quick" in sys.argv[1:])
@@ -326,8 +338,8 @@ def write(folder, name, text):
 
 
 def check(work, quick):
-    for generator in ["gen_runtime_azl.py", "gen_tables_azl.py"]:
-        stale = run([sys.executable, os.path.join(HERE, generator), "--check"])
+    for generator in oracle.generators():
+        stale = run([sys.executable, generator, "--check"])
         if stale.returncode != 0:
             sys.exit(stale.stderr.decode().strip())
     own = [os.path.join(HERE, name) for name in SOURCES]
@@ -364,7 +376,7 @@ def check(work, quick):
     # The same executables, and the same errors.
     groups = []
     files = []
-    for pattern in ["tests/programs/*.azl", "tests/multi/*/*.azl", "examples/*.azl", "bench/*.azl", "compiler/*.azl", "src/prelude.azl"]:
+    for pattern in ["tests/programs/*.azl", "tests/multi/*/*.azl", "examples/*.azl", "bench/*.azl", "compiler/*.azl", "lib/prelude.azl"]:
         files += sorted(glob.glob(os.path.join(ROOT, pattern)))
     if not files:
         sys.exit("no programs found")

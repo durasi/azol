@@ -1,0 +1,495 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The verifier: what must hold of a function in the intermediate form
+// before and after every pass. It reports the first thing that does
+// not, as `function: block: instruction: what is wrong`, or gives an
+// empty text.
+//
+// The rules:
+//
+//   shape     The function has a block. Its first block, the entry,
+//             has no parameters. Every block has instructions, its
+//             last one is a terminator and no other one is.
+//   values    An operand that is a value exists, and its definition
+//             comes before the use on every path: earlier in the same
+//             block, or in a block that dominates the user's. An
+//             argument of an edge is used at the end of the block the
+//             edge leaves. (Blocks that cannot be reached are held to
+//             the type rules only.)
+//   types     Every operand has the type its instruction takes, and
+//             every result the type its instruction gives. A constant
+//             fits `i64`; 0 and 1 fit `bool`; 0 fits `ptr`.
+//   edges     A way out goes to a block that exists and passes as many
+//             arguments as the block has parameters, of their types.
+//             A `jump` has one way out, a `br` two, a `switch` its
+//             cases, each with a different number, and a default.
+//   memory    Every `load` and `store` names a region that makes
+//             sense: a frame object or a `ptr` parameter that exists,
+//             or the buffer of one. Nothing is stored to `data`, and
+//             only runtime routines touch `rt`. What is done through a
+//             parameter is within the effects the parameter declares:
+//             `read` to load, `write` to store to what it points to,
+//             `writebuf` to store to a buffer that it owns.
+//   stops     A `trap` is alone in its block, and the block has no
+//             parameters.
+//   calls     A runtime routine gets the arguments and gives the
+//             results its table says. A call of a function of the same
+//             module matches that function's parameters and results.
+//   returns   A `ret` gives the values the function declares.
+
+// Whether operand `x` can stand where a value of type `ty` is wanted.
+fn irv_fits(f: IrFunc, x: i64, ty: i64) -> bool {
+    if x >= 0 {
+        return f.val_ty[x] == ty
+    }
+    if x == -1 {
+        return false
+    }
+    let n = ir_const_value(f, x)
+    if ty == IR_I64 {
+        return true
+    }
+    if ty == IR_BOOL {
+        return n == 0 || n == 1
+    }
+    return n == 0
+}
+
+// `function: block: instruction: message`.
+fn irv_report(f: IrFunc, b: i64, ins: i64, message: str) -> str {
+    var out = f.name + ": "
+    if b >= 0 {
+        out = out + "b" + str(b) + ": "
+    }
+    if ins >= 0 {
+        var text = ""
+        ir_print_instruction(f, ins, mut text)
+        out = out + text.trim() + ": "
+    }
+    return out + message
+}
+
+fn irv_operand_text(f: IrFunc, x: i64) -> str {
+    var out = ""
+    ir_print_operand(f, x, mut out)
+    return out
+}
+
+// The region at the bottom of a chain of `buf(...)`.
+fn irv_root_region(f: IrFunc, region: i64) -> i64 {
+    var at = region
+    while f.reg_kind[at] == IR_REGION_BUF {
+        at = f.reg_n[at]
+    }
+    return at
+}
+
+// What is wrong with the region of a `load` or a `store`; empty when
+// nothing is.
+fn irv_region(f: IrFunc, region: i64, is_store: bool) -> str {
+    if region < 0 || region >= f.reg_kind.len() {
+        return "a `load` or a `store` needs a region"
+    }
+    let kind = f.reg_kind[region]
+    if kind == IR_REGION_RT {
+        return "only runtime routines touch the region `rt`"
+    }
+    if kind == IR_REGION_DATA && is_store {
+        return "nothing may be stored to `data`"
+    }
+    let root = irv_root_region(f, region)
+    let root_kind = f.reg_kind[root]
+    if root != region && (root_kind == IR_REGION_RT || root_kind == IR_REGION_DATA) {
+        return "`data` and `rt` own no buffers"
+    }
+    if root_kind == IR_REGION_FRAME && (f.reg_n[root] < 0 || f.reg_n[root] >= f.frames.len()) {
+        return "there is no frame object " + str(f.reg_n[root])
+    }
+    if root_kind == IR_REGION_PARAM {
+        let k = f.reg_n[root]
+        if k < 0 || k >= f.param_count || f.val_ty[k] != IR_PTR {
+            return "`param " + str(k) + "` is not a `ptr` parameter of the function"
+        }
+        let fx = f.param_fx[k]
+        if !is_store && fx & IR_FX_READ == 0 {
+            return "parameter p" + str(k) + " is not declared `read`"
+        }
+        if is_store && root == region && fx & IR_FX_WRITE == 0 {
+            return "parameter p" + str(k) + " is not declared `write`"
+        }
+        if is_store && root != region && fx & IR_FX_WRITEBUF == 0 {
+            return "parameter p" + str(k) + " is not declared `writebuf`"
+        }
+    }
+    return ""
+}
+
+// What is wrong with the operands and results of one instruction.
+fn irv_instruction(f: IrFunc, m: IrModule, ins: i64) -> str {
+    let op = f.ins_op[ins]
+    let a = f.ins_a[ins]
+    let b = f.ins_b[ins]
+    let c = f.ins_c[ins]
+    // Every operand that is a value exists.
+    let n = ir_operand_count(f, ins)
+    var k = 0
+    while k < n {
+        let x = ir_operand(f, ins, k)
+        if x == -1 {
+            return "an operand is missing"
+        }
+        if x >= 0 && (x >= f.val_ty.len() || f.val_ty[x] < 0) {
+            return irv_operand_text(f, x) + " is used but never defined"
+        }
+        k = k + 1
+    }
+    k = 0
+    while k < f.ins_rn[ins] {
+        let v = f.results[f.ins_rs[ins] + k]
+        if f.val_ins[v] != ins || f.val_ty[v] < 0 || f.val_ty[v] > IR_PTR {
+            return "the result " + irv_operand_text(f, v) + " is not a value of this instruction"
+        }
+        k = k + 1
+    }
+    var want = -1
+    if op == IR_ICONST || op == IR_FRAME || op == IR_ADDR || op == IR_BCONST {
+        want = ir_result_type(f, op, IR_I64, -1, -1)
+        if op == IR_BCONST && f.ins_imm[ins] != 0 && f.ins_imm[ins] != 1 {
+            return "`bconst` takes 0 or 1"
+        }
+        if op == IR_FRAME && (f.ins_imm[ins] < 0 || f.ins_imm[ins] >= f.frames.len()) {
+            return "there is no frame object " + str(f.ins_imm[ins])
+        }
+        if op == IR_ADDR && (f.ins_imm[ins] < 0 || f.ins_imm[ins] > m.data.len()) {
+            return "the address is outside the data, which has " + str(m.data.len()) + " bytes"
+        }
+    } else if op == IR_AND || op == IR_OR || op == IR_XOR {
+        if irv_fits(f, a, IR_I64) && irv_fits(f, b, IR_I64) {
+            want = IR_I64
+            if ir_operand_type(f, a) == IR_BOOL || ir_operand_type(f, b) == IR_BOOL {
+                want = IR_BOOL
+            }
+        } else if irv_fits(f, a, IR_BOOL) && irv_fits(f, b, IR_BOOL) {
+            want = IR_BOOL
+        } else {
+            return "`" + ir_op_name(op) + "` takes two `i64` or two `bool`"
+        }
+    } else if op == IR_EQ || op == IR_NE {
+        want = IR_BOOL
+        let both_i64 = irv_fits(f, a, IR_I64) && irv_fits(f, b, IR_I64)
+        let both_bool = irv_fits(f, a, IR_BOOL) && irv_fits(f, b, IR_BOOL)
+        let both_ptr = irv_fits(f, a, IR_PTR) && irv_fits(f, b, IR_PTR)
+        if !both_i64 && !both_bool && !both_ptr {
+            return "`" + ir_op_name(op) + "` takes two operands of the same type"
+        }
+    } else if op >= IR_ULT && op <= IR_UGE {
+        want = IR_BOOL
+        let both_i64 = irv_fits(f, a, IR_I64) && irv_fits(f, b, IR_I64)
+        let both_ptr = irv_fits(f, a, IR_PTR) && irv_fits(f, b, IR_PTR)
+        if !both_i64 && !both_ptr {
+            return "`" + ir_op_name(op) + "` takes two `i64` or two `ptr`"
+        }
+    } else if ir_is_binary(op) {
+        want = IR_I64
+        if ir_is_compare(op) {
+            want = IR_BOOL
+        }
+        if !irv_fits(f, a, IR_I64) || !irv_fits(f, b, IR_I64) {
+            return "`" + ir_op_name(op) + "` takes two `i64`"
+        }
+    } else if ir_is_unary(op) {
+        want = IR_I64
+        if !irv_fits(f, a, IR_I64) {
+            return "`" + ir_op_name(op) + "` takes an `i64`"
+        }
+    } else if op == IR_SELECT {
+        if !irv_fits(f, a, IR_BOOL) {
+            return "the first operand of `select` is a `bool`"
+        }
+        if f.ins_rn[ins] != 1 {
+            return "`select` gives one result"
+        }
+        want = f.val_ty[f.ins_res[ins]]
+        if !irv_fits(f, b, want) || !irv_fits(f, c, want) {
+            return "the two choices of a `select` and its result have the same type"
+        }
+    } else if op == IR_LOAD || op == IR_STORE {
+        if f.ins_ty[ins] < 0 || f.ins_ty[ins] >= IR_TYPE_COUNT {
+            return "unknown width"
+        }
+        if !irv_fits(f, a, IR_PTR) || ir_is_const(a) {
+            return "the address of a `" + ir_op_name(op) + "` is a `ptr` value"
+        }
+        let problem = irv_region(f, f.ins_reg[ins], op == IR_STORE)
+        if problem.len() > 0 {
+            return problem
+        }
+        if op == IR_LOAD {
+            want = ir_loaded_type(f.ins_ty[ins])
+        } else if !irv_fits(f, b, ir_loaded_type(f.ins_ty[ins])) {
+            return "the stored value is not `" + ir_type_name(ir_loaded_type(f.ins_ty[ins])) + "`"
+        }
+    } else if op == IR_GEP {
+        want = IR_PTR
+        if !irv_fits(f, a, IR_PTR) || ir_is_const(a) {
+            return "the first operand of `gep` is a `ptr` value"
+        }
+        if !irv_fits(f, b, IR_I64) {
+            return "the index of a `gep` is an `i64`"
+        }
+    } else if op == IR_CALLRT {
+        let routine = f.ins_imm[ins]
+        if routine < 0 || routine >= IR_RT_COUNT {
+            return "unknown runtime routine"
+        }
+        let takes = ir_rt_args(routine)
+        if f.ins_an[ins] != takes.len() {
+            return "`" + ir_rt_name(routine) + "` takes " + str(takes.len()) + " arguments, not " + str(f.ins_an[ins])
+        }
+        k = 0
+        while k < takes.len() {
+            if !irv_fits(f, f.args[f.ins_as[ins] + k], ir_letter_type(takes[k])) {
+                return "argument " + str(k + 1) + " of `" + ir_rt_name(routine) + "` is `" + ir_type_name(ir_letter_type(takes[k])) + "`"
+            }
+            k = k + 1
+        }
+        let gives = ir_rt_results(routine)
+        if f.ins_rn[ins] != gives.len() {
+            return "`" + ir_rt_name(routine) + "` gives " + str(gives.len()) + " results, not " + str(f.ins_rn[ins])
+        }
+        k = 0
+        while k < gives.len() {
+            if f.val_ty[f.results[f.ins_rs[ins] + k]] != ir_letter_type(gives[k]) {
+                return "result " + str(k + 1) + " of `" + ir_rt_name(routine) + "` is `" + ir_type_name(ir_letter_type(gives[k])) + "`"
+            }
+            k = k + 1
+        }
+    } else if op == IR_CALL {
+        if f.ins_imm[ins] < 0 || f.ins_imm[ins] >= f.callees.len() {
+            return "the call names no function"
+        }
+        let name = f.callees[f.ins_imm[ins]]
+        let callee = ir_find_func(m, name)
+        if callee >= 0 {
+            if f.ins_an[ins] != m.funcs[callee].param_count {
+                return "`" + name + "` takes " + str(m.funcs[callee].param_count) + " arguments, not " + str(f.ins_an[ins])
+            }
+            k = 0
+            while k < f.ins_an[ins] {
+                if !irv_fits(f, f.args[f.ins_as[ins] + k], m.funcs[callee].val_ty[k]) {
+                    return "argument " + str(k + 1) + " of `" + name + "` is `" + ir_type_name(m.funcs[callee].val_ty[k]) + "`"
+                }
+                k = k + 1
+            }
+            if f.ins_rn[ins] != m.funcs[callee].ret_ty.len() {
+                return "`" + name + "` gives " + str(m.funcs[callee].ret_ty.len()) + " results, not " + str(f.ins_rn[ins])
+            }
+            k = 0
+            while k < f.ins_rn[ins] {
+                if f.val_ty[f.results[f.ins_rs[ins] + k]] != m.funcs[callee].ret_ty[k] {
+                    return "result " + str(k + 1) + " of `" + name + "` is `" + ir_type_name(m.funcs[callee].ret_ty[k]) + "`"
+                }
+                k = k + 1
+            }
+        }
+    } else if op == IR_BR {
+        if !irv_fits(f, a, IR_BOOL) {
+            return "the condition of a `br` is a `bool`"
+        }
+        if f.ins_en[ins] != 2 {
+            return "a `br` has two ways out"
+        }
+    } else if op == IR_JUMP {
+        if f.ins_en[ins] != 1 {
+            return "a `jump` has one way out"
+        }
+    } else if op == IR_SWITCH {
+        if !irv_fits(f, a, IR_I64) {
+            return "a `switch` takes an `i64`"
+        }
+        if f.ins_en[ins] < 1 {
+            return "a `switch` needs a default"
+        }
+        var e = f.ins_es[ins]
+        let last = e + f.ins_en[ins] - 1
+        while e < last {
+            var other = e + 1
+            while other < last {
+                if f.edge_key[other] == f.edge_key[e] {
+                    return "the case " + str(f.edge_key[e]) + " is there twice"
+                }
+                other = other + 1
+            }
+            e = e + 1
+        }
+    } else if op == IR_RET {
+        if f.ins_an[ins] != f.ret_ty.len() {
+            return "the function gives " + str(f.ret_ty.len()) + " values, not " + str(f.ins_an[ins])
+        }
+        k = 0
+        while k < f.ins_an[ins] {
+            if !irv_fits(f, f.args[f.ins_as[ins] + k], f.ret_ty[k]) {
+                return "value " + str(k + 1) + " of the `ret` is `" + ir_type_name(f.ret_ty[k]) + "`"
+            }
+            k = k + 1
+        }
+    } else if op == IR_TRAP {
+        if f.ins_imm[ins] < 0 || f.ins_imm[ins] >= IR_TRAP_COUNT {
+            return "unknown kind of stop"
+        }
+    } else {
+        return "this is not an instruction"
+    }
+    if want >= 0 {
+        if f.ins_rn[ins] != 1 {
+            return "`" + ir_op_name(op) + "` gives one result"
+        }
+        if f.val_ty[f.ins_res[ins]] != want {
+            return "the result of this `" + ir_op_name(op) + "` is `" + ir_type_name(want) + "`, not `" + ir_type_name(f.val_ty[f.ins_res[ins]]) + "`"
+        }
+    } else if f.ins_rn[ins] != 0 && op != IR_CALL && op != IR_CALLRT {
+        return "`" + ir_op_name(op) + "` gives no result"
+    }
+    // The ways out.
+    var e = f.ins_es[ins]
+    let end = e + f.ins_en[ins]
+    while e < end {
+        let to = f.edge_blk[e]
+        if to < 0 || to >= f.blk_live.len() || !f.blk_live[to] {
+            return "b" + str(to) + " does not exist"
+        }
+        if f.edge_an[e] != f.blk_pn[to] {
+            return "b" + str(to) + " has " + str(f.blk_pn[to]) + " parameters and gets " + str(f.edge_an[e]) + " arguments"
+        }
+        k = 0
+        while k < f.edge_an[e] {
+            let ty = f.val_ty[f.bparams[f.blk_ps[to] + k]]
+            if !irv_fits(f, f.args[f.edge_as[e] + k], ty) {
+                return "argument " + str(k + 1) + " for b" + str(to) + " is `" + ir_type_name(ty) + "`"
+            }
+            k = k + 1
+        }
+        e = e + 1
+    }
+    return ""
+}
+
+// The first thing wrong with function `at` of the module; empty when
+// nothing is.
+fn ir_verify_func(m: IrModule, at: i64) -> str {
+    return irv_func(m.funcs[at], m)
+}
+
+fn irv_func(f: IrFunc, m: IrModule) -> str {
+    if f.order.len() == 0 {
+        return irv_report(f, -1, -1, "the function has no block")
+    }
+    if f.blk_pn[f.order[0]] != 0 {
+        return irv_report(f, f.order[0], -1, "the entry block has no parameters")
+    }
+    var k = 0
+    while k < f.param_count {
+        if f.val_ty[k] < 0 || f.val_ty[k] > IR_PTR {
+            return irv_report(f, -1, -1, "parameter p" + str(k) + " has no type")
+        }
+        if f.val_ty[k] != IR_PTR && f.param_fx[k] != 0 {
+            return irv_report(f, -1, -1, "only a `ptr` parameter has effects")
+        }
+        k = k + 1
+    }
+    // Where each instruction stands in its block, for "defined before".
+    var place = 0.filled(f.ins_op.len())
+    for b in f.order {
+        if !f.blk_live[b] {
+            return irv_report(f, b, -1, "the block is in the layout but does not exist")
+        }
+        var ins = f.blk_first[b]
+        if ins < 0 {
+            return irv_report(f, b, -1, "the block is empty")
+        }
+        var count = 0
+        while ins >= 0 {
+            count = count + 1
+            place[ins] = count
+            if f.ins_blk[ins] != b {
+                return irv_report(f, b, ins, "the instruction is chained into a block it does not belong to")
+            }
+            let is_last = f.ins_next[ins] < 0
+            if ir_is_terminator(f.ins_op[ins]) && !is_last {
+                return irv_report(f, b, ins, "a terminator must be the last instruction of its block")
+            }
+            if is_last && !ir_is_terminator(f.ins_op[ins]) {
+                return irv_report(f, b, ins, "the block does not end in a terminator")
+            }
+            if f.ins_op[ins] == IR_TRAP && (count != 1 || f.blk_pn[b] != 0) {
+                return irv_report(f, b, ins, "a `trap` is alone in its block, and the block has no parameters")
+            }
+            ins = f.ins_next[ins]
+        }
+        k = 0
+        while k < f.blk_pn[b] {
+            let v = f.bparams[f.blk_ps[b] + k]
+            if f.val_blk[v] != b || f.val_ty[v] < 0 || f.val_ty[v] > IR_PTR {
+                return irv_report(f, b, -1, "parameter " + str(k + 1) + " of the block is not a value of it")
+            }
+            k = k + 1
+        }
+    }
+    for b in f.order {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            let problem = irv_instruction(f, m, ins)
+            if problem.len() > 0 {
+                return irv_report(f, b, ins, problem)
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    // Definitions come before uses.
+    let cfg = ir_cfg(f)
+    for b in cfg.rpo {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            let n = ir_operand_count(f, ins)
+            k = 0
+            while k < n {
+                let x = ir_operand(f, ins, k)
+                k = k + 1
+                if x < f.param_count {
+                    continue
+                }
+                var from = f.val_blk[x]
+                var ok = true
+                if from >= 0 {
+                    ok = ir_dominates(cfg, from, b)
+                } else {
+                    let def = f.val_ins[x]
+                    from = f.ins_blk[def]
+                    if from == b {
+                        ok = place[def] < place[ins]
+                    } else {
+                        ok = from >= 0 && ir_dominates(cfg, from, b)
+                    }
+                }
+                if !ok {
+                    return irv_report(f, b, ins, irv_operand_text(f, x) + " is used here, but its definition does not come first on every path")
+                }
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    return ""
+}
+
+// The first thing wrong in the module; empty when nothing is.
+fn ir_verify_module(m: IrModule) -> str {
+    var at = 0
+    while at < m.funcs.len() {
+        let problem = ir_verify_func(m, at)
+        if problem.len() > 0 {
+            return problem
+        }
+        at = at + 1
+    }
+    return ""
+}

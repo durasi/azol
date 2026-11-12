@@ -159,7 +159,7 @@ pub static TABLE: &[Entry] = &[
         patterns: &["unknown function `{}`"],
         rule: "Only functions of the program and the built-in functions can be called.",
         help: "",
-        explain: "The built-in functions are `print`, `eprint`, `str`, `chr`, `args`, `read_file`, `write_file`, `set_executable` and `exit`. The library's `find`, `split` and the like are methods: `text.find(part)`.",
+        explain: "The built-in functions are `print`, `eprint`, `str`, `chr`, `args`, `read_file`, `write_file`, `set_executable`, `remove_file`, `rename_file`, `clock` and `exit`. The library's `find`, `split` and the like are methods: `text.find(part)`.",
     },
     Entry {
         code: "E0203",
@@ -628,7 +628,7 @@ pub static TABLE: &[Entry] = &[
         ],
         rule: "The value of a constant is computed when the program is compiled: from literals, other constants and operators on numbers and `bool`s.",
         help: "",
-        explain: "Calls, variables, lists and structs cannot appear in a constant. A string constant is one string literal.",
+        explain: "Calls, variables, lists and structs cannot appear in a constant. The one exception is `embed(\"path\")`, which stands for the contents of a file. String constants are string literals, embedded files and those joined with `+`.",
     },
     Entry {
         code: "E0702",
@@ -643,6 +643,20 @@ pub static TABLE: &[Entry] = &[
         rule: "A constant expression cannot divide by zero.",
         help: "",
         explain: "",
+    },
+    Entry {
+        code: "E0705",
+        patterns: &["`embed` works only in a constant: write `const NAME = embed(\"file\")` and use the constant"],
+        rule: "`embed(\"path\")` stands for the contents of a file, read when the program is compiled; it can only be the value of a constant, or a part of one.",
+        help: "Give the file's text a name with `const NAME = embed(\"path\")` and use `NAME`.",
+        explain: "Wrong:\n\n    fn main() {\n        print(embed(\"notes.txt\"))\n    }\n\nRight:\n\n    const NOTES = embed(\"notes.txt\")\n\n    fn main() {\n        print(NOTES)\n    }\n\nTo read a file while the program runs, use `read_file`.",
+    },
+    Entry {
+        code: "E0706",
+        patterns: &["cannot embed `{}`: {}"],
+        rule: "The file named in `embed` must be readable when the program is compiled. The path is relative to the folder of the source file that names it.",
+        help: "",
+        explain: "The text after the colon is the system's reason, such as `No such file or directory`. `embed(\"data/table.txt\")` in `src/main.azl` reads `src/data/table.txt`, wherever the compiler is started from.",
     },
     // ---- E03 again: the general wording for operands and arguments ------
     Entry {
@@ -757,7 +771,7 @@ pub fn list() -> String {
 /// The contents of `docs/errors.md`.
 pub fn errors_md() -> String {
     let mut text = String::from(
-        "# azoL error codes\n\nGenerated from the table in `src/diag.rs`; do not edit by hand. `azol explain <code>` prints the same text.\n\n\
+        "# azoL error codes\n\nWritten by `azol explain --markdown` from the compiler's table of error codes; do not edit by hand. `azol explain <code>` prints the same text.\n\n\
          Areas: E01 syntax, E02 names, E03 types, E04 ownership and exclusivity, E05 patterns, E06 generics, E07 constants, E08 limits.\n",
     );
     for entry in sorted() {

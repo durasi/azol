@@ -1,0 +1,30 @@
+; A loop with a `continue` and a `break`: two jumps back to the header
+; and two blocks it leaves to.
+; cfg:
+; out: fn main
+; out:   order: b0 b1 b2 b3 b4 b6 b5
+; out:   idom: b0=b0 b1=b0 b2=b1 b3=b2 b4=b3 b6=b3 b5=b1
+; out:   loop 0: header b1, depth 1, parent -, blocks b1 b2 b3 b4, latches b2 b4, exits b5 b6
+; out:   live b0: in p0 | out p0
+; out:   live b1: in p0 | out p0
+; out:   live b2: in p0 | out p0
+; out:   live b3: in p0 | out p0
+; out:   live b4: in p0 | out p0
+; out:   live b6: in - | out -
+; out:   live b5: in - | out -
+fn main(p0: bool) {
+b0:
+    jump b1
+b1:
+    br p0, b2, b5
+b2:
+    br p0, b3, b1
+b3:
+    br p0, b4, b6
+b4:
+    jump b1
+b5:
+    ret
+b6:
+    ret
+}

@@ -1,0 +1,17 @@
+; A result that a later block and a jump back use: every user is
+; changed, in whatever block it is.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = add 1, 1
+    jump b1(0, 0)
+b1(v1: i64, v2: i64):
+    v3 = slt v1, p0
+    br v3, b2, b3
+b2:
+    v4 = add v2, v0
+    v5 = add v1, 1
+    v6 = add v5, 0
+    jump b1(v6, v4)
+b3:
+    ret v2
+}

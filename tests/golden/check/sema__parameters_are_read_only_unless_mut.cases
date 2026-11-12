@@ -1,0 +1,55 @@
+# From the tests of the first compiler: src/sema.rs, `parameters_are_read_only_unless_mut`.
+==== 1
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn f(p: mut Point, n: mut i64) {
+ p.x = 1
+ n = n + 1
+}
+fn main() {
+
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 15 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos bd583f600c4b7551bd9bd503bbf5cc8dff04bfbb307c3b9319cd824860ede5b7
+x86_64-linux f2d4e131191ff0749b743be66e424c8f39c9bbfffd8561d740b604f078ca9454
+aarch64-linux 018a88daef4c220329358d22fffa59bed9b5a5070a3ee8927014b844b15bfd90
+==== 2
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn shift(p: mut Point, dx: i64) {
+ p.x = p.x + dx
+}
+fn main() {
+var p = Point { x: 1, y: 2 }
+shift(mut p, 3)
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 15 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 32a9603e58ecc6197091841b33d494240bb2ac55611cf0afbd38c5fc8eebe484
+x86_64-linux 0a2ca120dabf6efbb90848cf1b9b70d114e8a4f9ac89d32ec7b9b82ab13e0ee6
+aarch64-linux 73c464d03b02492429f7d2313947b40ddd1d71d3477acd1f4f2ee2065d5c6b94

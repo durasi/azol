@@ -1,0 +1,28 @@
+; A string that starts as a literal (capacity 0: the bytes are not its
+; own) gets its own block of at least 16 bytes at the first append.
+; "ab" + "cd" is 4 bytes with room for 16, so adding "cd" again needs no
+; new block; adding the string to itself twice more reaches 24 bytes
+; and needs one, of 32.
+; run:
+; out: abcd
+; out: abcdcd
+; out: abcdcdabcdcd
+; out: abcdcdabcdcdabcdcdabcdcd
+; out: => 4, 16, 6, 16, 12, 16, 24, 32
+data "abcd"
+
+fn main() -> i64, i64, i64, i64, i64, i64, i64, i64 {
+b0:
+    v0 = addr @data+0
+    v1 = addr @data+2
+    v2, v3, v4 = callrt str_append(v0, 2, 0, v1, 2)
+    callrt print_str(v2, v3)
+    v5, v6, v7 = callrt str_append(v2, v3, v4, v1, 2)
+    callrt print_str(v5, v6)
+    v8, v9, v10 = callrt str_append(v5, v6, v7, v5, v6)
+    callrt print_str(v8, v9)
+    v11, v12, v13 = callrt str_append(v8, v9, v10, v8, v9)
+    callrt print_str(v11, v12)
+    callrt free(v11)
+    ret v3, v4, v6, v7, v9, v10, v12, v13
+}

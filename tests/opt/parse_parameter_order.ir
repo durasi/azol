@@ -1,0 +1,5 @@
+; parse: 2:18: expected parameter p1
+fn main(p0: i64, p2: i64) {
+b0:
+    ret
+}

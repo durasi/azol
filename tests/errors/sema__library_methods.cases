@@ -1,0 +1,263 @@
+# From the tests of the first compiler: src/sema.rs, `library_methods`.
+==== 1
+---- file a.azl
+
+fn main() {
+let s = "a"
+let t = s.find()
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0309]: `find` takes 1 argument but 0 were given
+ --> a.azl:4:9
+  |
+4 | let t = s.find()
+  |         ^
+---- asserted 4:9 `find` takes 1 argument but 0 were given
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0309","message":"`find` takes 1 argument but 0 were given","file":"a.azl","line":4,"column":9,"end_line":4,"end_column":10,"source":"let t = s.find()","rule":"A call gives exactly one argument for each parameter, and a variant exactly one value for each of its fields."}
+{"summary":{"errors":1,"files":1}}
+==== 2
+---- file a.azl
+
+fn main() {
+let s = "a"
+let t = s.find(1)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: argument 1 of `find` needs `str` but this is `i64`
+ --> a.azl:4:16
+  |
+4 | let t = s.find(1)
+  |                ^
+---- asserted 4:16 argument 1 of `find` needs `str` but this is `i64`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"argument 1 of `find` needs `str` but this is `i64`","file":"a.azl","line":4,"column":16,"end_line":4,"end_column":17,"source":"let t = s.find(1)","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 3
+---- file a.azl
+
+fn main() {
+let s = "a"
+let t = s.trim(1)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0309]: `trim` takes 0 arguments but 1 were given
+ --> a.azl:4:9
+  |
+4 | let t = s.trim(1)
+  |         ^
+---- asserted 4:9 `trim` takes 0 arguments but 1 were given
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0309","message":"`trim` takes 0 arguments but 1 were given","file":"a.azl","line":4,"column":9,"end_line":4,"end_column":10,"source":"let t = s.trim(1)","rule":"A call gives exactly one argument for each parameter, and a variant exactly one value for each of its fields."}
+{"summary":{"errors":1,"files":1}}
+==== 4
+---- file a.azl
+
+fn main() {
+let xs = [1]
+let t = xs.join(",")
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0207]: `List[i64]` has no method `join`
+ --> a.azl:4:12
+  |
+4 | let t = xs.join(",")
+  |            ^
+---- asserted 4:12 `List[i64]` has no method `join`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0207","message":"`List[i64]` has no method `join`","file":"a.azl","line":4,"column":12,"end_line":4,"end_column":16,"source":"let t = xs.join(\",\")","rule":"A method call needs a method that exists for the type of the value before the dot."}
+{"summary":{"errors":1,"files":1}}
+==== 5
+---- file a.azl
+
+fn main() {
+let s = "a"
+let t = s.nothing()
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0207]: `str` has no method `nothing`
+ --> a.azl:4:11
+  |
+4 | let t = s.nothing()
+  |           ^
+---- asserted 4:11 `str` has no method `nothing`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0207","message":"`str` has no method `nothing`","file":"a.azl","line":4,"column":11,"end_line":4,"end_column":18,"source":"let t = s.nothing()","rule":"A method call needs a method that exists for the type of the value before the dot."}
+{"summary":{"errors":1,"files":1}}
+==== 6
+---- file a.azl
+
+fn main() {
+let xs = [1]
+let a = xs.contains("a")
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: argument 1 of `contains` needs `i64` but this is `str`
+ --> a.azl:4:21
+  |
+4 | let a = xs.contains("a")
+  |                     ^
+---- asserted 4:21 argument 1 of `contains` needs `i64` but this is `str`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"argument 1 of `contains` needs `i64` but this is `str`","file":"a.azl","line":4,"column":21,"end_line":4,"end_column":24,"source":"let a = xs.contains(\"a\")","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 7
+---- file a.azl
+
+fn main() {
+let xs = [1]
+let a = xs.contains()
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0309]: `contains` takes 1 argument but 0 were given
+ --> a.azl:4:9
+  |
+4 | let a = xs.contains()
+  |         ^
+---- asserted 4:9 `contains` takes 1 argument but 0 were given
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0309","message":"`contains` takes 1 argument but 0 were given","file":"a.azl","line":4,"column":9,"end_line":4,"end_column":11,"source":"let a = xs.contains()","rule":"A call gives exactly one argument for each parameter, and a variant exactly one value for each of its fields."}
+{"summary":{"errors":1,"files":1}}
+==== 8
+---- file a.azl
+
+fn main() {
+let xs = [1]
+let a = xs.first(1)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0309]: `first` takes 0 arguments but 1 were given
+ --> a.azl:4:9
+  |
+4 | let a = xs.first(1)
+  |         ^
+---- asserted 4:9 `first` takes 0 arguments but 1 were given
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0309","message":"`first` takes 0 arguments but 1 were given","file":"a.azl","line":4,"column":9,"end_line":4,"end_column":11,"source":"let a = xs.first(1)","rule":"A call gives exactly one argument for each parameter, and a variant exactly one value for each of its fields."}
+{"summary":{"errors":1,"files":1}}
+==== 9
+---- file a.azl
+
+fn main() {
+let n = 1
+let a = n.first()
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0207]: `i64` has no method `first`
+ --> a.azl:4:11
+  |
+4 | let a = n.first()
+  |           ^
+---- asserted 4:11 `i64` has no method `first`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0207","message":"`i64` has no method `first`","file":"a.azl","line":4,"column":11,"end_line":4,"end_column":16,"source":"let a = n.first()","rule":"A method call needs a method that exists for the type of the value before the dot."}
+{"summary":{"errors":1,"files":1}}
+==== 10
+---- file a.azl
+
+fn main() {
+let xs = [[1]]
+let a = xs.contains([1])
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0311]: lists cannot be compared with `==` yet (in `contains` with `T` = `List[i64]`)
+ --> a.azl:4:9
+  |
+4 | let a = xs.contains([1])
+  |         ^
+---- asserted 4:9 lists cannot be compared with `==` yet (in `contains` with `T` = `List[i64]`)
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0311","message":"lists cannot be compared with `==` yet (in `contains` with `T` = `List[i64]`)","file":"a.azl","line":4,"column":9,"end_line":4,"end_column":11,"source":"let a = xs.contains([1])","rule":"`==` and `!=` compare numbers, `bool`s, strings and enums whose variants hold no values."}
+{"summary":{"errors":1,"files":1}}
+==== 11
+---- file a.azl
+
+fn main() {
+let t = str_find("a", "a")
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0202]: unknown function `str_find`
+ --> a.azl:3:9
+  |
+3 | let t = str_find("a", "a")
+  |         ^
+---- asserted 3:9 unknown function `str_find`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0202","message":"unknown function `str_find`","file":"a.azl","line":3,"column":9,"end_line":3,"end_column":17,"source":"let t = str_find(\"a\", \"a\")","rule":"Only functions of the program and the built-in functions can be called."}
+{"summary":{"errors":1,"files":1}}
+==== 12
+---- file a.azl
+
+fn main() {
+let t = find("a", "a")
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0202]: unknown function `find`
+ --> a.azl:3:9
+  |
+3 | let t = find("a", "a")
+  |         ^
+---- asserted 3:9 unknown function `find`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0202","message":"unknown function `find`","file":"a.azl","line":3,"column":9,"end_line":3,"end_column":13,"source":"let t = find(\"a\", \"a\")","rule":"Only functions of the program and the built-in functions can be called."}
+{"summary":{"errors":1,"files":1}}

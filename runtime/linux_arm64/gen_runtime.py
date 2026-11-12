@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Compiles runtime.c and writes runtime.bin and ../../src/runtime_linux_arm64.rs.
+"""Compiles runtime.c and writes runtime.bin and runtime.facts.
+
+runtime.facts says where everything is in runtime.bin, in the notation of
+the first compiler's tables (it is also written to
+../../src/runtime_linux_arm64.rs while that compiler's sources exist).
+compiler/gen_runtime_azl.py makes compiler/runtime_arm64.azl from it and
+from ../runtime.facts.
 
 Needs clang and lld for ARM64 (for example `pip install ziglang`) and the
 `lief` Python package. Run it after editing runtime.c, runtime.ld or the
@@ -13,7 +19,7 @@ BASE = 0x400000
 TEXT_OFFSET = 0x100
 MEMORY = 0x40000000
 # The function that stands in for each import of the ARM64 code, in the
-# order of `IMPORTS` in src/runtime.rs.
+# order of `IMPORTS` in runtime/runtime.facts.
 IMPORTS = [
     ("_write", "az_write"), ("_exit", "az_exit"), ("_malloc", "az_malloc"), ("_realloc", "az_realloc"),
     ("_free", "az_free"), ("_memcpy", "memcpy"), ("_memcmp", "az_memcmp"), ("_open", "az_open"),
@@ -21,6 +27,7 @@ IMPORTS = [
     ("_strlen", "az_strlen"), ("__NSGetArgc", "az_argc"), ("__NSGetArgv", "az_argv"), ("_chmod", "az_chmod"),
     # Used only by the start of a macOS program; see `macos_only`.
     ("_sigaltstack", "az_sigaltstack"), ("_sigaction", "az_sigaction"), ("__exit", "az_exit_now"),
+    ("_unlink", "az_unlink"), ("_rename", "az_rename"), ("_clock_gettime_nsec_np", "az_clock"),
 ]
 FLAGS = [
     # General-purpose registers only: the code never touches the
@@ -31,8 +38,8 @@ FLAGS = [
 ]
 ZIG = [sys.executable, "-m", "ziglang"]
 
-declared = re.search(r"pub const IMPORTS: \[&str; \d+\] = \[(.*?)\];", open(os.path.join(HERE, "..", "..", "src", "runtime.rs")).read(), re.S)
-assert re.findall(r'"([^"]+)"', declared.group(1)) == [name for name, _ in IMPORTS], "IMPORTS in src/runtime.rs changed"
+declared = re.search(r"pub const IMPORTS: \[&str; \d+\] = \[(.*?)\];", open(os.path.join(HERE, "..", "runtime.facts")).read(), re.S)
+assert re.findall(r'"([^"]+)"', declared.group(1)) == [name for name, _ in IMPORTS], "IMPORTS in runtime/runtime.facts changed"
 
 with tempfile.TemporaryDirectory() as tmp:
     obj, elf = os.path.join(tmp, "runtime.o"), os.path.join(tmp, "runtime.elf")
@@ -101,5 +108,8 @@ pub const MEMORY_SIZE: u64 = %d;
     len(IMPORTS), ", ".join(str(offset(function)) for _, function in IMPORTS),
     offset("_start"), MEMORY, memory_size,
 )
-open(os.path.join(HERE, "..", "..", "src", "runtime_linux_arm64.rs"), "w").write(out)
-print("wrote runtime.bin (%d bytes) and src/runtime_linux_arm64.rs; writable memory %d bytes" % (len(code), memory_size))
+open(os.path.join(HERE, "runtime.facts"), "w").write(out)
+# The same text is a module of the first compiler while its sources exist.
+if os.path.isdir(os.path.join(HERE, "..", "..", "src")):
+    open(os.path.join(HERE, "..", "..", "src", "runtime_linux_arm64.rs"), "w").write(out)
+print("wrote runtime.bin (%d bytes) and runtime.facts; writable memory %d bytes; now run compiler/gen_runtime_azl.py" % (len(code), memory_size))

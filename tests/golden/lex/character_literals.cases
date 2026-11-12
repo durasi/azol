@@ -1,0 +1,19 @@
+# From the tests of the first compiler: src/lexer.rs, `character_literals`.
+==== 1
+---- file a.azl (no newline at end)
+'a' ' ' '\n' '\'' '"' '\"' '\\' '\0' '~'
+---- run lex a.azl
+---- exit 0
+---- stdout
+   1:1    Int        'a'
+   1:5    Int        ' '
+   1:9    Int        '\n'
+   1:14   Int        '\''
+   1:19   Int        '"'
+   1:23   Int        '\"'
+   1:28   Int        '\\'
+   1:33   Int        '\0'
+   1:38   Int        '~'
+   1:41   Eof        
+---- stderr
+lexed 40 bytes, 1 lines, 10 tokens

@@ -1,0 +1,19 @@
+# From the tests of the first compiler: src/parser.rs, `error_statement_outside_function`.
+==== 1
+---- file a.azl (no newline at end)
+let a = 1
+---- run parse a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0106]: expected `fn`, `struct`, `enum` or `const` but found `let`
+ --> a.azl:1:1
+  |
+1 | let a = 1
+  | ^
+---- asserted 1:1 expected `fn`, `struct`, `enum` or `const` but found `let`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0106","message":"expected `fn`, `struct`, `enum` or `const` but found `let`","file":"a.azl","line":1,"column":1,"end_line":1,"end_column":4,"source":"let a = 1","rule":"The program must follow the grammar; here something else was required."}
+{"summary":{"errors":1,"files":1}}

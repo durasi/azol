@@ -1,0 +1,82 @@
+# From the tests of the first compiler: src/sema.rs, `match_errors`.
+==== 1
+---- file a.azl (no newline at end)
+fn main() {
+var o = Some(1)
+match o {
+Some(v) => print(v)
+None => {}
+}
+o = None
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 8 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos c0151d6ca6704c9bfc4e0d1f02ade5c695c586323ba23c59aa7a02f35f90a365
+x86_64-linux 0bc1123a925135d8bfcfcfbb053f66d8285a4d1bd830a4532224d34dcb7dfd34
+aarch64-linux 1d3f534d9d8c51985b040199fb84daf44b4ea6f6e38a5129295873b730ee76b8
+==== 2
+---- file a.azl (no newline at end)
+fn id(o: Option[i64]) -> Option[i64] {
+ return o
+}
+fn main() {
+ var o = Some(1)
+ match id(o) {
+ Some(v) => o = Some(v + 1)
+ None => {}
+ }
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 10 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos e176fa2de0384ad3bf6b2d1fc79ad4ce28375610152191c6dc9d9f998c0bc90d
+x86_64-linux 1ecfaed8e732fe66d67fe31695af775aee8a58e328e0ca3e043a6db250ecbc9d
+aarch64-linux 749254af2584462a8dc8601fbdd86eff4cb6f7e44efd4a3c088bfb395656f36e
+==== 3
+---- file a.azl (no newline at end)
+fn main() {
+match 3 {
+-9223372036854775808 => {}
+9223372036854775807 => {}
+_ => {}
+}
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 7 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos d0d7c70cfb765ae4a85cc3fa713af31ebac5a4c051b38e16d45c0044a0484abb
+x86_64-linux 293ae384526c600af6c37e6551f88d64bcd83ac0e1b5280e4e12cafb6255683d
+aarch64-linux 9599fb3825e5268f7054251ee0960e1b6a4893cf13a94dd7f65e8954b70d543e
+==== 4
+---- file a.azl (no newline at end)
+fn f(o: Option[i64]) -> i64 {
+ match o {
+ Some(v) => return v
+ None => return 0
+ }
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 8 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 88df4bb7347ef6b75aaf9bf0d058dd3d5e9d8512bd37179e456639cfa53cc159
+x86_64-linux 2d3f0aa261a2832cf687cc05ac1bebeedeb08179c92ed777b0b0a95b185f317a
+aarch64-linux 7dd3c2622030444cb975089aff6115171f998ff779eff97f48192c4eec96427e

@@ -1,0 +1,42 @@
+# From the tests of the first compiler: src/sema.rs, `features_not_built_yet_are_reported_clearly`.
+==== 1
+---- file a.azl (no newline at end)
+fn main() {
+let a = 1.5
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0804]: there are no floating-point numbers yet; the only number type is `i64`
+ --> a.azl:2:9
+  |
+2 | let a = 1.5
+  |         ^
+---- asserted 2:9 there are no floating-point numbers yet; the only number type is `i64`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0804","message":"there are no floating-point numbers yet; the only number type is `i64`","file":"a.azl","line":2,"column":9,"end_line":2,"end_column":12,"source":"let a = 1.5","rule":"The only number type so far is `i64`."}
+{"summary":{"errors":1,"files":1}}
+==== 2
+---- file a.azl (no newline at end)
+fn f(a: i32) {
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0203]: unknown type `i32`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`
+ --> a.azl:1:9
+  |
+1 | fn f(a: i32) {
+  |         ^
+---- asserted 1:9 unknown type `i32`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0203","message":"unknown type `i32`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`","file":"a.azl","line":1,"column":9,"end_line":1,"end_column":12,"source":"fn f(a: i32) {","rule":"A type is `i64`, `bool`, `str`, `List[...]`, `Option[...]`, `Result[..., ...]` or a struct or enum of the program."}
+{"summary":{"errors":1,"files":1}}

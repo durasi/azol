@@ -1,0 +1,78 @@
+// expect-exit: 0
+// expect-line: true false true false
+// expect-line: false true false true
+// expect-line: true true false false
+// expect-line: false false true true
+// expect-line: true false false true
+// expect-line: true false
+// expect-line: apple banana cherry
+// expect-line: 5
+// expect-line: yes no
+// `<`, `<=`, `>` and `>=` on strings: byte by byte, as numbers from 0
+// to 255, and a string that another one starts with comes first.
+struct Entry {
+    key: str,
+    n: i64,
+}
+
+fn show(a: str, b: str) -> str {
+    return str(a < b) + " " + str(a > b) + " " + str(a <= b) + " " + str(a >= b)
+}
+
+fn smallest(items: List[str]) -> str {
+    var best = items[0]
+    for item in items {
+        if item < best {
+            best = item
+        }
+    }
+    return best
+}
+
+fn main() {
+    print(show("apple", "banana"))
+    print(show("b", "aaa"))
+    print(str("" < "a") + " " + str("ab" < "abc") + " " + str("abc" < "ab") + " " + str("" < ""))
+    print(str("" > "") + " " + str("ab" > "ab") + " " + str("ab" >= "ab") + " " + str("ab" <= "ab"))
+    // Bytes above 127 come after every ASCII letter.
+    var high = ""
+    high.push(200)
+    print(str("z" < high) + " " + str(high < "z") + " " + str(high < high) + " " + str(high + "a" > high))
+    let e = Entry { key: "mm", n: 1 }
+    let keys = ["m", "mz"]
+    print(str(keys[0] < e.key && e.key < keys[1]) + " " + str(e.key + "x" <= e.key))
+    var names = ["cherry", "apple", "banana"]
+    var sorted: List[str] = []
+    while names.len() > 0 {
+        let least = smallest(names)
+        sorted.push(least)
+        var rest: List[str] = []
+        for name in names {
+            if name != least {
+                rest.push(name)
+            }
+        }
+        names = rest
+    }
+    print(sorted.join(" "))
+    var count = 0
+    var i = 0
+    while i < 10 {
+        if str(i) < "5" {
+            count = count + 1
+        }
+        i = i + 1
+    }
+    print(str(count))
+    var answer = "no"
+    if "Zebra" < "apple" {
+        answer = "yes"
+    }
+    var other = "yes"
+    if !("a" >= "B") {
+        other = "wrong"
+    } else {
+        other = "no"
+    }
+    print(answer + " " + other)
+}

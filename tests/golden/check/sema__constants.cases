@@ -1,0 +1,143 @@
+# From the tests of the first compiler: src/sema.rs, `constants`.
+==== 1
+---- file a.azl (no newline at end)
+const B = A + 1
+const A = 1
+const MASK: i64 = (1 << 4) - 1 | 0x100 ^ 0b11 & 'a'
+const YES: bool = !false && B >= 2 || A != 1
+const NAME: str = "n"
+const Q = 7 / 2 * 3 % 5 - -1 >> 1
+const SAME = true == YES
+fn main() {
+let a: i64 = A + B * MASK
+let b: bool = YES && SAME
+let c: str = NAME + NAME
+var xs = [A, B]
+xs.push(Q)
+if A < B {
+ print(NAME)
+}
+print(A)
+print(YES)
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 19 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 915e6df465a9dc335d3d7e9b03ce6a2ba9d69d2966d7e1edfafc8dd1b566d29b
+x86_64-linux 15f727c66a5673d7b955615ab842735a160659d5c35ca5590f53a9f60d3f474c
+aarch64-linux 1ecc6cdf08e3cb6df7e15b3b136e1f5b0446a13295810ba8c1e6726358c3958a
+==== 2
+---- file a.azl (no newline at end)
+const A = 1 << 65
+const B = -9223372036854775807 - 1
+const C = B / -1
+const D = B % -1
+const E = 9223372036854775807 + 1
+const F = -8 >> 1
+const G = 0xFFFF_FFFF_FFFF_FFFF
+fn main() {
+print(A + B + C + D + E + F + G)
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 10 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 497bfea74b5c18b74ad2e2ebdc9740a7d786ce0cadfb7cb28d7c1a2b3bcf9620
+x86_64-linux bb3116976b0ecd2662e7391966e03adfb3626691259a12c183d1b0f628663fcc
+aarch64-linux 1013d4ec6e5eddc908e51dea58cd155fdc33b8bc890ebdbcc57262c8037e7b57
+==== 3
+---- file a.azl (no newline at end)
+const A = "a" + "b"
+const B = A + A + "!"
+fn main() {
+let s: str = B
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 5 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 0670adcdd4d23a2be5851f81e202fd8de974217e52661b4d4deaf82494f73188
+x86_64-linux abfffd8410b89f8fef0de4a69867300429bf01575aa4380c70019db4c39b04f3
+aarch64-linux 2b33801fc144424199dc480916fde5b4dfc676ee834f32b8881a3819465932a0
+==== 4
+---- file a.azl (no newline at end)
+fn f(n: i64) -> i64 {
+ if n > 0 {
+  return n
+ }
+ exit(2)
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 8 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos b78c2f94883fbc27bc28f35ea14f769cfb8c8fe0aaa55e66f23890fb098d9fdc
+x86_64-linux 4a4c997390f32002dcad4726a149c0f3a2278db21d7f6b61968a0f7186ddfb6d
+aarch64-linux b1007b2dc6e89898ec1cc5bb8c0f02df1643057f412fd7ed232fa097354d9bd7
+==== 5
+---- file a.azl (no newline at end)
+const A = 1
+const S = "s"
+const T = true
+fn main() {
+match 3 {
+A => {}
+2 => {}
+_ => {}
+}
+match "x" {
+S => {}
+_ => {}
+}
+match true {
+T => {}
+false => {}
+}
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 18 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos c328e01790a0d9f2bea86de8f1f3cd8100b8d5f08266450b138ec7195134ed70
+x86_64-linux 65629dac4f312a1c8a32effc5a9b8440b2bfffb594a4f6ca037e0fbc83921801
+aarch64-linux 4aa7bb63ed36f658f97c5a733b1148f6057a2a8d73310e08e947a398066dba06
+==== 6
+---- file a.azl
+const n = 2
+const part = 3
+const at = 4
+const s = 5
+const i = 6
+fn main() {
+let found = "a,b".split(",").len() + n + part + at + s + i
+let c = "abc".contains("c")
+let t = " x ".trim()
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 10 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 28060b1bbde9478127c2a60fafece1c6fd8236a70eba5ac20a1473a7a23e37f8
+x86_64-linux 9bbbbb1865d042b13c044936c6a159f1f833cda6be5b6af6c55f3d7edb39f0ab
+aarch64-linux 0e97e17f0972e4a4a4807dcba9153699ba0c9eb3fd0bf2a65e5436db51ad66ca

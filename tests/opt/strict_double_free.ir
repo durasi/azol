@@ -1,0 +1,10 @@
+; run:
+; err: ir-interp: `free` of something that is not the start of a live allocated block
+; exit: 3
+fn main() {
+b0:
+    v0 = callrt alloc(8)
+    callrt free(v0)
+    callrt free(v0)
+    ret
+}

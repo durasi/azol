@@ -1,0 +1,7 @@
+; parse: 5:8: `u8` is only the width of a `load` or a `store`
+fn main() {
+b0:
+    jump b1(1)
+b1(v0: u8):
+    ret
+}

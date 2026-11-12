@@ -1,0 +1,25 @@
+# From the tests of the first compiler: src/parser.rs, `unary_binds_tighter_than_binary`.
+==== 1
+---- file a.azl (no newline at end)
+fn t() {
+x = -a * b
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  x = (* (neg a) b)
+---- stderr
+parsed 3 lines into 7 nodes
+==== 2
+---- file a.azl (no newline at end)
+fn t() {
+x = - -a
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  x = (neg (neg a))
+---- stderr
+parsed 3 lines into 6 nodes

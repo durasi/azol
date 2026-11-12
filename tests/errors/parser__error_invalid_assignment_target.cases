@@ -1,0 +1,21 @@
+# From the tests of the first compiler: src/parser.rs, `error_invalid_assignment_target`.
+==== 1
+---- file a.azl (no newline at end)
+fn main() {
+  f() = 1
+}
+---- run parse a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0110]: cannot assign to this expression
+ --> a.azl:2:3
+  |
+2 |   f() = 1
+  |   ^
+---- asserted 2:3 cannot assign to this expression
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0110","message":"cannot assign to this expression","file":"a.azl","line":2,"column":3,"end_line":2,"end_column":4,"source":"  f() = 1","rule":"The left side of `=` is a variable, a field of one, or an element of a list."}
+{"summary":{"errors":1,"files":1}}

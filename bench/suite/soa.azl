@@ -1,0 +1,59 @@
+// soa: a struct of arrays with element-wise arithmetic.
+// Algorithm: four equally long lists; every round adds velocities to
+// positions and stirs one velocity; then a weighted sum.
+// Sizes: 100,000 elements, 3,000 rounds; small: 1,000 elements, 3,000 rounds.
+// Output: the weighted sum.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+struct World {
+    x: List[i64]
+    y: List[i64]
+    vx: List[i64]
+    vy: List[i64]
+}
+
+fn step(w: mut World) {
+    var i = 0
+    while i < w.x.len() {
+        w.x[i] = w.x[i] + w.vx[i]
+        w.y[i] = w.y[i] + w.vy[i]
+        w.vx[i] = w.vx[i] ^ (w.y[i] & 3)
+        i = i + 1
+    }
+}
+
+fn main() {
+    let count = size(100000, 1000)
+    let rounds = size(3000, 3000)
+    var w = World { x: [], y: [], vx: [], vy: [] }
+    var seed = 3
+    var n = 0
+    while n < count {
+        seed = seed * 48271 % 2147483647
+        w.x.push(seed % 1000)
+        w.y.push(seed % 777)
+        w.vx.push(seed % 7 - 3)
+        w.vy.push(seed % 5 - 2)
+        n = n + 1
+    }
+    var round = 0
+    while round < rounds {
+        step(mut w)
+        round = round + 1
+    }
+    var total = 0
+    var i = 0
+    while i < count {
+        total = total + w.x[i] * 3 + w.y[i]
+        i = i + 1
+    }
+    print(total)
+}

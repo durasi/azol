@@ -1,0 +1,17 @@
+; `eq` and `ne` also compare two `bool` and two `ptr`; the unsigned
+; orderings also compare two `ptr`.
+; run:
+; out: => true, false, true, false, true
+fn main() -> bool, bool, bool, bool, bool {
+    frames 16
+b0:
+    v0 = frame 0
+    v1 = gep v0, 1, 8, 0
+    v2 = eq v0, v0
+    v3 = eq v0, v1
+    v4 = ne v0, 0
+    v5 = bconst 1
+    v6 = eq v5, 0
+    v7 = ult v0, v1
+    ret v2, v3, v4, v6, v7
+}

@@ -1,0 +1,9 @@
+; verify: main: b0: store u8, v0, 0, 1  [data]: nothing may be stored to `data`
+data "x"
+
+fn main() {
+b0:
+    v0 = addr @data+0
+    store u8, v0, 0, 1  [data]
+    ret
+}

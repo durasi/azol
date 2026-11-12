@@ -1,0 +1,12 @@
+; verify: main: b0: v0 = call twice(1, 2) -> i64: `twice` takes 1 arguments, not 2
+fn twice(p0: i64) -> i64 {
+b0:
+    v0 = add p0, p0
+    ret v0
+}
+
+fn main() -> i64 {
+b0:
+    v0 = call twice(1, 2) -> i64
+    ret v0
+}

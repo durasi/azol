@@ -1,0 +1,56 @@
+// dp_lcs: the longest common subsequence of two byte strings.
+// Algorithm: the classic table, keeping only two rows.
+// Sizes: two strings of 12,000 bytes over four letters; small: 1,500 bytes.
+// Output: the length of the longest common subsequence.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+fn letters(count: i64, start: i64) -> str {
+    var text = ""
+    var seed = start
+    var n = 0
+    while n < count {
+        seed = seed * 48271 % 2147483647
+        text.push(97 + seed % 4)
+        n = n + 1
+    }
+    return text
+}
+
+fn main() {
+    let count = size(12000, 1500)
+    let a = letters(count, 51)
+    let b = letters(count, 67)
+    let width = count + 1
+    // Two rows side by side: `above` and `row` are where each one starts.
+    var table = 0.filled(width * 2)
+    var above = 0
+    var row = width
+    var i = 1
+    while i <= count {
+        table[row] = 0
+        var j = 1
+        while j <= count {
+            if a[i - 1] == b[j - 1] {
+                table[row + j] = table[above + j - 1] + 1
+            } else if table[above + j] >= table[row + j - 1] {
+                table[row + j] = table[above + j]
+            } else {
+                table[row + j] = table[row + j - 1]
+            }
+            j = j + 1
+        }
+        let held = above
+        above = row
+        row = held
+        i = i + 1
+    }
+    print(table[above + count])
+}

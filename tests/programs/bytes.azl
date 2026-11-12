@@ -1,0 +1,90 @@
+// expect-exit: 1
+// expect-line: Hi
+// expect-line: Jello
+// expect-line: hello
+// expect-line: Jello?
+// expect-line: ABCDEFGHIJKLMNOPQRSTUVWXYZABCD
+// expect-line: 100
+// expect-line: aBc
+// expect-line: Xyyz
+// expect-line: Jello? jello?
+// expect-line: 14 513 67305985 578437695752307201
+// expect-line: 255 65535 4294967295 -1
+// expect-line: 1 2 239 190 173 222 1 2 3 4 5 6 7 8
+// expect-line: 3 0 0 7 7 7
+// expect-line: ab ab ab 3
+// expect-stderr: azol: index out of range
+// A string as a buffer of bytes: `push`, `set`, and numbers of two,
+// four and eight bytes. A string whose bytes live in the executable
+// gets a buffer of its own the first time it is changed.
+struct Out {
+    code: str,
+    n: i64,
+}
+
+fn fill(s: mut str, n: i64) {
+    var i = 0
+    while i < n {
+        s.push(65 + i % 26)
+        i = i + 1
+    }
+}
+
+fn main() {
+    var s = ""
+    s.push(72)
+    s.push(105)
+    print(s)
+    var t = "hello"
+    t.set(0, 74)
+    print(t)
+    print("hello")
+    t.push(33)
+    t.set(5, 63)
+    print(t)
+    var u = ""
+    fill(mut u, 100)
+    print(u.slice(0, 30))
+    print(str(u.len()))
+    var o = Out { code: "ab", n: 1 }
+    o.code.push(99)
+    o.code.set(1, 66)
+    print(o.code)
+    var xs = ["x", "yy"]
+    xs[1].push(0x7A)
+    xs[0].set(0, 0x158)
+    print(xs[0] + xs[1])
+    var w = t
+    w.set(0, 106)
+    print(t + " " + w)
+
+    var b = ""
+    b.push_u16(0x0201)
+    b.push_u32(0x04030201)
+    b.push_u64(0x0807060504030201)
+    print(str(b.len()) + " " + str(b.u16_at(0)) + " " + str(b.u32_at(2)) + " " + str(b.u64_at(6)))
+    var m = ""
+    m.push_u64(-1)
+    print(str(m[7]) + " " + str(m.u16_at(3)) + " " + str(m.u32_at(4)) + " " + str(m.u64_at(0)))
+    b.set_u32(2, 0xDEADBEEF)
+    var line = ""
+    for i, x in b.bytes() {
+        if i > 0 {
+            line.push(32)
+        }
+        line = line + str(x)
+    }
+    print(line)
+
+    var zeros = 0.filled(3)
+    let sevens = 7.filled(3)
+    zeros[0] = zeros.len()
+    print(str(zeros[0]) + " " + str(zeros[1]) + " " + str(zeros[2]) + " " + str(sevens[0]) + " " + str(sevens[1]) + " " + str(sevens[2]))
+    let texts = "ab".filled(3)
+    print(texts.join(" ") + " " + str(texts.len()))
+    let none: List[str] = "x".filled(0 - 2)
+    if none.len() != 0 {
+        print("wrong")
+    }
+    t.set(6, 1)
+}

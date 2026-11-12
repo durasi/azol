@@ -1,0 +1,371 @@
+# From the tests of the first compiler: src/sema.rs, `generic_structs`.
+==== 1
+---- file a.azl (no newline at end)
+struct Pair[A, B] {
+ first: A
+ second: B
+}
+struct Stack[T] {
+ items: List[T]
+}
+fn main() {
+let p = Pair { first: 1, second: "x" }
+let q: Pair[str, i64] = p
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0301]: expected `Pair[str, i64]` but this is `Pair[i64, str]`
+  --> a.azl:10:25
+   |
+10 | let q: Pair[str, i64] = p
+   |                         ^
+---- asserted 10:25 expected `Pair[str, i64]` but this is `Pair[i64, str]`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0301","message":"expected `Pair[str, i64]` but this is `Pair[i64, str]`","file":"a.azl","line":10,"column":25,"end_line":10,"end_column":26,"source":"let q: Pair[str, i64] = p","rule":"A value stored in a variable or a place has exactly the type of that variable or place; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 2
+---- file a.azl (no newline at end)
+struct Pair[A, B] {
+ first: A
+ second: B
+}
+struct Stack[T] {
+ items: List[T]
+}
+fn main() {
+let p: Pair[i64, i64] = Pair { first: 1, second: "x" }
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: field `second` needs `i64` but this is `str`
+ --> a.azl:9:50
+  |
+9 | let p: Pair[i64, i64] = Pair { first: 1, second: "x" }
+  |                                                  ^
+---- asserted 9:50 field `second` needs `i64` but this is `str`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"field `second` needs `i64` but this is `str`","file":"a.azl","line":9,"column":50,"end_line":9,"end_column":53,"source":"let p: Pair[i64, i64] = Pair { first: 1, second: \"x\" }","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 3
+---- file a.azl (no newline at end)
+struct Pair[A, B] {
+ first: A
+ second: B
+}
+struct Stack[T] {
+ items: List[T]
+}
+fn main() {
+let p = Pair { first: 1 }
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0313]: field `second` of `Pair` is missing
+ --> a.azl:9:9
+  |
+9 | let p = Pair { first: 1 }
+  |         ^
+---- asserted 9:9 field `second` of `Pair` is missing
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0313","message":"field `second` of `Pair` is missing","file":"a.azl","line":9,"column":9,"end_line":9,"end_column":13,"source":"let p = Pair { first: 1 }","rule":"A struct literal gives every field of the struct exactly once."}
+{"summary":{"errors":1,"files":1}}
+==== 4
+---- file a.azl (no newline at end)
+struct Pair[A, B] {
+ first: A
+ second: B
+}
+struct Stack[T] {
+ items: List[T]
+}
+fn main() {
+let p = Pair { first: 1, second: 2, third: 3 }
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0206]: struct `Pair` has no field `third`
+ --> a.azl:9:37
+  |
+9 | let p = Pair { first: 1, second: 2, third: 3 }
+  |                                     ^
+---- asserted 9:37 struct `Pair` has no field `third`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0206","message":"struct `Pair` has no field `third`","file":"a.azl","line":9,"column":37,"end_line":9,"end_column":42,"source":"let p = Pair { first: 1, second: 2, third: 3 }","rule":"Only structs have fields, and only the ones they declare."}
+{"summary":{"errors":1,"files":1}}
+==== 5
+---- file a.azl (no newline at end)
+struct Pair[A, B] {
+ first: A
+ second: B
+}
+struct Stack[T] {
+ items: List[T]
+}
+fn main() {
+let p = Pair { first: 1, first: 2 }
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0313]: field `first` is given more than once
+ --> a.azl:9:26
+  |
+9 | let p = Pair { first: 1, first: 2 }
+  |                          ^
+---- asserted 9:26 field `first` is given more than once
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0313","message":"field `first` is given more than once","file":"a.azl","line":9,"column":26,"end_line":9,"end_column":31,"source":"let p = Pair { first: 1, first: 2 }","rule":"A struct literal gives every field of the struct exactly once."}
+{"summary":{"errors":1,"files":1}}
+==== 6
+---- file a.azl (no newline at end)
+struct Pair[A, B] {
+ first: A
+ second: B
+}
+struct Stack[T] {
+ items: List[T]
+}
+fn main() {
+let s = Stack { items: [] }
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0601]: cannot tell what this empty list holds; give the variable a type, as in `var xs: List[i64] = []`
+ --> a.azl:9:24
+  |
+9 | let s = Stack { items: [] }
+  |                        ^
+---- asserted 9:24 cannot tell what this empty list holds; give the variable a type, as in `var xs: List[i64] = []`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0601","message":"cannot tell what this empty list holds; give the variable a type, as in `var xs: List[i64] = []`","file":"a.azl","line":9,"column":24,"end_line":9,"end_column":25,"source":"let s = Stack { items: [] }","rule":"The type arguments of a generic type or function come from the values given or from the type expected at that place; when neither settles them they must be written.","help":"Give the variable a type."}
+{"summary":{"errors":1,"files":1}}
+==== 7
+---- file a.azl (no newline at end)
+struct Pair[A, B] {
+ first: A
+ second: B
+}
+struct Stack[T] {
+ items: List[T]
+}
+fn main() {
+let s = Stack { items: 1 }
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: field `items` needs `List[T]` but this is `i64`
+ --> a.azl:9:24
+  |
+9 | let s = Stack { items: 1 }
+  |                        ^
+---- asserted 9:24 field `items` needs `List[T]` but this is `i64`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"field `items` needs `List[T]` but this is `i64`","file":"a.azl","line":9,"column":24,"end_line":9,"end_column":25,"source":"let s = Stack { items: 1 }","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 8
+---- file a.azl (no newline at end)
+struct Pair[A, B] {
+ first: A
+ second: B
+}
+struct Stack[T] {
+ items: List[T]
+}
+fn main() {
+let p = Pair { first: print(1), second: 2 }
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0310]: this expression has no value to store
+ --> a.azl:9:23
+  |
+9 | let p = Pair { first: print(1), second: 2 }
+  |                       ^
+---- asserted 9:23 this expression has no value to store
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0310","message":"this expression has no value to store","file":"a.azl","line":9,"column":23,"end_line":9,"end_column":28,"source":"let p = Pair { first: print(1), second: 2 }","rule":"A call to a function that returns nothing has no value and cannot be stored, passed, compared or matched on."}
+{"summary":{"errors":1,"files":1}}
+==== 9
+---- file a.azl (no newline at end)
+fn f(p: Pair) {
+}
+struct Pair[A, B] {
+ first: A
+ second: B
+}
+struct Stack[T] {
+ items: List[T]
+}
+fn main() {
+
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0602]: `Pair` takes 2 type arguments, as in `Pair[i64, i64]`
+ --> a.azl:1:9
+  |
+1 | fn f(p: Pair) {
+  |         ^
+---- asserted 1:9 `Pair` takes 2 type arguments, as in `Pair[i64, i64]`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0602","message":"`Pair` takes 2 type arguments, as in `Pair[i64, i64]`","file":"a.azl","line":1,"column":9,"end_line":1,"end_column":13,"source":"fn f(p: Pair) {","rule":"A generic type is written with exactly as many type arguments as it declares type parameters, and other types with none."}
+{"summary":{"errors":1,"files":1}}
+==== 10
+---- file a.azl (no newline at end)
+fn f(p: Stack[i64, i64]) {
+}
+struct Pair[A, B] {
+ first: A
+ second: B
+}
+struct Stack[T] {
+ items: List[T]
+}
+fn main() {
+
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0602]: `Stack` takes 1 type argument, as in `Stack[i64]`
+ --> a.azl:1:9
+  |
+1 | fn f(p: Stack[i64, i64]) {
+  |         ^
+---- asserted 1:9 `Stack` takes 1 type argument, as in `Stack[i64]`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0602","message":"`Stack` takes 1 type argument, as in `Stack[i64]`","file":"a.azl","line":1,"column":9,"end_line":1,"end_column":14,"source":"fn f(p: Stack[i64, i64]) {","rule":"A generic type is written with exactly as many type arguments as it declares type parameters, and other types with none."}
+{"summary":{"errors":1,"files":1}}
+==== 11
+---- file a.azl (no newline at end)
+struct S[T, T] {
+ a: T
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0208]: type parameter `T` is declared more than once
+ --> a.azl:1:13
+  |
+1 | struct S[T, T] {
+  |             ^
+---- asserted 1:13 type parameter `T` is declared more than once
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0208","message":"type parameter `T` is declared more than once","file":"a.azl","line":1,"column":13,"end_line":1,"end_column":14,"source":"struct S[T, T] {","rule":"A name is declared once: functions, constants and variants share one namespace across all files, types another."}
+{"summary":{"errors":1,"files":1}}
+==== 12
+---- file a.azl (no newline at end)
+struct S[T] {
+ a: S[T]
+}
+fn main() {
+ let s: S[i64] = S { a: 1 }
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0413]: struct `S[i64]` contains itself, so it would have no finite size
+ --> a.azl:1:8
+  |
+1 | struct S[T] {
+  |        ^
+---- asserted 1:8 struct `S[i64]` contains itself, so it would have no finite size
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0413","message":"struct `S[i64]` contains itself, so it would have no finite size","file":"a.azl","line":1,"column":8,"end_line":1,"end_column":9,"source":"struct S[T] {","rule":"A value is stored inline in its owner, so a type cannot contain itself directly; it can through a `List`."}
+{"summary":{"errors":1,"files":1}}
+==== 13
+---- file a.azl (no newline at end)
+struct S[T] {
+ a: S[List[T]]
+}
+fn main() {
+ let s: Option[S[i64]] = None
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0603]: this type nests structs too deeply
+ --> a.azl:5:9
+  |
+5 |  let s: Option[S[i64]] = None
+  |         ^
+---- asserted 5:9 this type nests structs too deeply
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0603","message":"this type nests structs too deeply","file":"a.azl","line":5,"column":9,"end_line":5,"end_column":15,"source":" let s: Option[S[i64]] = None","rule":"A generic function or type is compiled once per set of types it is used with, so that set must be finite."}
+{"summary":{"errors":1,"files":1}}
+==== 14
+---- file a.azl (no newline at end)
+struct Unused[T] {
+ a: T
+}
+struct P {
+ x: i64
+}
+fn main() {
+ let p = P { x: 1 }
+ let q = p.y
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0206]: struct `P` has no field `y`
+ --> a.azl:9:12
+  |
+9 |  let q = p.y
+  |            ^
+---- asserted 9:12 struct `P` has no field `y`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0206","message":"struct `P` has no field `y`","file":"a.azl","line":9,"column":12,"end_line":9,"end_column":13,"source":" let q = p.y","rule":"Only structs have fields, and only the ones they declare."}
+{"summary":{"errors":1,"files":1}}

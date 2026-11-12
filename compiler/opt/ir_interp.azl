@@ -1,0 +1,724 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// An interpreter for the intermediate form. It is the reference every
+// pass is tested against: a function is run before the pass and after
+// it on the same arguments, and what it prints, what it returns and how
+// it stops must be the same.
+//
+// It follows azoL exactly where azoL says something:
+//
+//   - `i64` arithmetic wraps; `sdiv` and `srem` round toward zero, and
+//     the smallest number divided by -1 is itself; shifts use the low
+//     six bits of the count; `sar` keeps the sign, `shr` does not.
+//   - A `trap` ends the program with the runtimes' own message on
+//     standard error and exit code 1.
+//
+// And it is strict where the intermediate form leaves the machine free,
+// so that a mistake of the optimiser stops the run instead of giving a
+// number that happens to look right. These end the run with a message
+// that starts with `ir-interp:` (the tool then exits with 3):
+//
+//   - a `load` or `store` outside the object its address points into,
+//     through an address of nothing, or into an object that was freed
+//     (a frame object is freed when its function returns);
+//   - a `load` of bytes that were never stored;
+//   - a `store` to the read-only data;
+//   - an access that is not in the region it names: `[frame N]` must
+//     touch frame object N of the running function, `[data]` the data,
+//     `[param K]` the object parameter K points into, `[buf(...)]` an
+//     allocated block or the data;
+//   - `free` or `realloc` of something that is not the start of a
+//     live allocated block (so: freeing twice);
+//   - `sdiv` or `srem` by zero: the check before it has been lost;
+//   - a `bool` that is neither 0 nor 1;
+//   - blocks still allocated when the entry function returns.
+//
+// An address is a number: the object's number times 2^32, plus the
+// offset. Object 0 is nothing, object 1 the read-only data. `gep` is
+// plain arithmetic on that number, so an address may leave its object
+// and come back; only an access is checked.
+//
+// The runtime routines, as far as this file knows them:
+//
+//   alloc(bytes) -> ptr                 a new block, its bytes not yet stored
+//   realloc(p, bytes) -> ptr            a new block with the old bytes; the old one is freed
+//   free(p)                             `free(0)` does nothing
+//   memcpy(to, from, bytes)
+//   print_i64(n)  print_bool(b)         a line on standard output
+//   print_str(p, bytes)                 the bytes and a line end on standard output
+//   eprint_str(p, bytes)                the same on standard error
+//   str_eq(p, n, q, m) -> bool          whether the two byte strings are equal
+//   str_append(p, len, cap, q, n) -> ptr, i64, i64
+//                                       a string's three slots after `n` bytes at `q` are added;
+//                                       `cap` 0 means the bytes at `p` are not the string's own
+//   exit(code)                          ends the program
+
+const IRM_FREED = 0
+const IRM_HEAP = 1
+const IRM_FRAME = 2
+const IRM_DATA = 3
+
+struct IrMachine {
+    // Every object: its bytes, a 1 for each byte that has been stored,
+    // and what it is.
+    obj_bytes: List[str]
+    obj_stored: List[str]
+    obj_kind: List[i64]
+    // Function names to their place in the module.
+    funcs: Map[i64]
+    steps: i64
+    step_limit: i64
+    depth: i64
+    // A mistake the interpreter found; `message` says which.
+    failed: bool
+    message: str
+    // The program ended by a `trap` or `exit`.
+    stopped: bool
+    exit_code: i64
+    stop_message: str
+}
+
+const IRM_MAX_DEPTH = 4000
+
+fn irm_new(m: IrModule) -> IrMachine {
+    var funcs: Map[i64] = new_map()
+    var i = 0
+    while i < m.funcs.len() {
+        funcs.set(m.funcs[i].name, i)
+        i = i + 1
+    }
+    var stored = ""
+    i = 0
+    while i < m.data.len() {
+        stored.push(1)
+        i = i + 1
+    }
+    return IrMachine {
+        obj_bytes: ["", m.data],
+        obj_stored: ["", stored],
+        obj_kind: [IRM_FREED, IRM_DATA],
+        funcs: funcs,
+        steps: 0,
+        step_limit: 50000000,
+        depth: 0,
+        failed: false,
+        message: "",
+        stopped: false,
+        exit_code: 0,
+        stop_message: ""
+    }
+}
+
+fn irm_fail(mach: mut IrMachine, message: str) {
+    if !mach.failed {
+        mach.failed = true
+        mach.message = "ir-interp: " + message
+    }
+}
+
+// Whether the run is over, one way or the other.
+fn irm_done(mach: IrMachine) -> bool {
+    return mach.failed || mach.stopped
+}
+
+fn irm_new_object(mach: mut IrMachine, bytes: i64, kind: i64) -> i64 {
+    var zeros = ""
+    var i = 0
+    while i < bytes {
+        zeros.push(0)
+        i = i + 1
+    }
+    mach.obj_bytes.push(zeros)
+    mach.obj_stored.push(zeros)
+    mach.obj_kind.push(kind)
+    return mach.obj_kind.len() - 1 << 32
+}
+
+// The object an address points into after it has been checked for an
+// access of `bytes` bytes; -1 when the access is a mistake.
+fn irm_object(mach: mut IrMachine, p: i64, bytes: i64, what: str) -> i64 {
+    let obj = p >> 32
+    let offset = p & 4294967295
+    if p < 0 || obj >= mach.obj_kind.len() {
+        irm_fail(mut mach, what + " through a number that is not an address")
+        return -1
+    }
+    if obj == 0 {
+        irm_fail(mut mach, what + " through the address of nothing")
+        return -1
+    }
+    if mach.obj_kind[obj] == IRM_FREED {
+        irm_fail(mut mach, what + " in memory that was freed")
+        return -1
+    }
+    if offset + bytes > mach.obj_bytes[obj].len() {
+        irm_fail(mut mach, what + " of " + str(bytes) + " bytes at offset " + str(offset) + " of an object of " + str(mach.obj_bytes[obj].len()) + " bytes")
+        return -1
+    }
+    return obj
+}
+
+fn irm_load(mach: mut IrMachine, p: i64, bytes: i64) -> i64 {
+    let obj = irm_object(mut mach, p, bytes, "a load")
+    if obj < 0 {
+        return 0
+    }
+    let offset = p & 4294967295
+    var value = 0
+    var i = bytes - 1
+    while i >= 0 {
+        if mach.obj_stored[obj][offset + i] == 0 {
+            irm_fail(mut mach, "a load of bytes that were never stored")
+            return 0
+        }
+        value = value << 8 | mach.obj_bytes[obj][offset + i]
+        i = i - 1
+    }
+    return value
+}
+
+fn irm_store(mach: mut IrMachine, p: i64, bytes: i64, value: i64) {
+    let obj = irm_object(mut mach, p, bytes, "a store")
+    if obj < 0 {
+        return
+    }
+    if mach.obj_kind[obj] == IRM_DATA {
+        irm_fail(mut mach, "a store to the read-only data")
+        return
+    }
+    let offset = p & 4294967295
+    var i = 0
+    while i < bytes {
+        mach.obj_bytes[obj].set(offset + i, value >> i * 8)
+        mach.obj_stored[obj].set(offset + i, 1)
+        i = i + 1
+    }
+}
+
+// The bytes of a string of `n` bytes at `p`.
+fn irm_text(mach: mut IrMachine, p: i64, n: i64) -> str {
+    if n == 0 {
+        return ""
+    }
+    if n < 0 {
+        irm_fail(mut mach, "a string of a negative length")
+        return ""
+    }
+    let obj = irm_object(mut mach, p, n, "a read")
+    if obj < 0 {
+        return ""
+    }
+    let offset = p & 4294967295
+    var i = 0
+    while i < n {
+        if mach.obj_stored[obj][offset + i] == 0 {
+            irm_fail(mut mach, "a read of bytes that were never stored")
+            return ""
+        }
+        i = i + 1
+    }
+    return mach.obj_bytes[obj].slice(offset, offset + n)
+}
+
+// Stores the bytes of `text` at `p`.
+fn irm_put_text(mach: mut IrMachine, p: i64, text: str) {
+    if text.len() == 0 {
+        return
+    }
+    let obj = irm_object(mut mach, p, text.len(), "a write")
+    if obj < 0 {
+        return
+    }
+    if mach.obj_kind[obj] == IRM_DATA {
+        irm_fail(mut mach, "a write to the read-only data")
+        return
+    }
+    let offset = p & 4294967295
+    var i = 0
+    while i < text.len() {
+        mach.obj_bytes[obj].set(offset + i, text[i])
+        mach.obj_stored[obj].set(offset + i, 1)
+        i = i + 1
+    }
+}
+
+// Frees an allocated block; `p` must be its start.
+fn irm_free(mach: mut IrMachine, p: i64) {
+    if p == 0 {
+        return
+    }
+    let obj = p >> 32
+    if p < 0 || obj >= mach.obj_kind.len() || p & 4294967295 != 0 || mach.obj_kind[obj] != IRM_HEAP {
+        irm_fail(mut mach, "`free` of something that is not the start of a live allocated block")
+        return
+    }
+    mach.obj_kind[obj] = IRM_FREED
+    mach.obj_bytes[obj] = ""
+    mach.obj_stored[obj] = ""
+}
+
+fn irm_alloc(mach: mut IrMachine, bytes: i64) -> i64 {
+    if bytes < 0 || bytes > 1073741824 {
+        irm_fail(mut mach, "`alloc` of " + str(bytes) + " bytes")
+        return 0
+    }
+    return irm_new_object(mut mach, bytes, IRM_HEAP)
+}
+
+// The high 64 bits of the unsigned product.
+fn irm_umulh(a: i64, b: i64) -> i64 {
+    let mask = 4294967295
+    let a_low = a & mask
+    let a_high = a >> 32 & mask
+    let b_low = b & mask
+    let b_high = b >> 32 & mask
+    let low_low = a_low * b_low
+    let low_high = a_low * b_high
+    let high_low = a_high * b_low
+    let high_high = a_high * b_high
+    let middle = (low_low >> 32 & mask) + (low_high & mask) + (high_low & mask)
+    return high_high + (low_high >> 32 & mask) + (high_low >> 32 & mask) + (middle >> 32 & mask)
+}
+
+fn irm_unsigned_less(a: i64, b: i64) -> bool {
+    let top = 1 << 63
+    return a ^ top < b ^ top
+}
+
+fn irm_bool(value: bool) -> i64 {
+    if value {
+        return 1
+    }
+    return 0
+}
+
+// The result of an instruction with two operands.
+fn irm_binary(mach: mut IrMachine, op: i64, a: i64, b: i64) -> i64 {
+    if op == IR_ADD {
+        return a + b
+    }
+    if op == IR_SUB {
+        return a - b
+    }
+    if op == IR_MUL {
+        return a * b
+    }
+    if op == IR_SDIV || op == IR_SREM {
+        if b == 0 {
+            irm_fail(mut mach, "`" + ir_op_name(op) + "` by zero: the check before it is missing")
+            return 0
+        }
+        if b == -1 {
+            if op == IR_SDIV {
+                return 0 - a
+            }
+            return 0
+        }
+        if op == IR_SDIV {
+            return a / b
+        }
+        return a % b
+    }
+    if op == IR_AND {
+        return a & b
+    }
+    if op == IR_OR {
+        return a | b
+    }
+    if op == IR_XOR {
+        return a ^ b
+    }
+    if op == IR_SHL {
+        return a << (b & 63)
+    }
+    if op == IR_SAR {
+        return a >> (b & 63)
+    }
+    if op == IR_SHR {
+        let count = b & 63
+        if count == 0 {
+            return a
+        }
+        return a >> count & (1 << 64 - count) - 1
+    }
+    if op == IR_UMULH {
+        return irm_umulh(a, b)
+    }
+    if op == IR_SMULH {
+        var high = irm_umulh(a, b)
+        if a < 0 {
+            high = high - b
+        }
+        if b < 0 {
+            high = high - a
+        }
+        return high
+    }
+    if op == IR_EQ {
+        return irm_bool(a == b)
+    }
+    if op == IR_NE {
+        return irm_bool(a != b)
+    }
+    if op == IR_SLT {
+        return irm_bool(a < b)
+    }
+    if op == IR_SLE {
+        return irm_bool(a <= b)
+    }
+    if op == IR_SGT {
+        return irm_bool(a > b)
+    }
+    if op == IR_SGE {
+        return irm_bool(a >= b)
+    }
+    if op == IR_ULT {
+        return irm_bool(irm_unsigned_less(a, b))
+    }
+    if op == IR_ULE {
+        return irm_bool(!irm_unsigned_less(b, a))
+    }
+    if op == IR_UGT {
+        return irm_bool(irm_unsigned_less(b, a))
+    }
+    return irm_bool(!irm_unsigned_less(a, b))
+}
+
+fn irm_unary(op: i64, a: i64) -> i64 {
+    if op == IR_NEG {
+        return 0 - a
+    }
+    if op == IR_EXT8U || op == IR_TRUNC8 {
+        return a & 255
+    }
+    if op == IR_EXT8S {
+        return a << 56 >> 56
+    }
+    if op == IR_EXT32U || op == IR_TRUNC32 {
+        return a & 4294967295
+    }
+    return a << 32 >> 32
+}
+
+// Checks that an access at `p` is in the region its instruction names.
+fn irm_check_region(mach: mut IrMachine, f: IrFunc, region: i64, p: i64, vals: List[i64], frames: List[i64]) {
+    let obj = p >> 32
+    let kind = f.reg_kind[region]
+    var inside = true
+    if kind == IR_REGION_FRAME {
+        inside = frames[f.reg_n[region]] >> 32 == obj
+    } else if kind == IR_REGION_DATA {
+        inside = obj == 1
+    } else if kind == IR_REGION_PARAM {
+        inside = vals[f.reg_n[region]] >> 32 == obj
+    } else if kind == IR_REGION_BUF {
+        inside = obj > 0 && obj < mach.obj_kind.len() && (mach.obj_kind[obj] == IRM_HEAP || mach.obj_kind[obj] == IRM_DATA)
+    }
+    if !inside {
+        var name = ""
+        ir_print_region(f, region, mut name)
+        irm_fail(mut mach, "an access that is not in its region `" + name + "`")
+    }
+}
+
+// A runtime routine. `x` are its arguments; the results are pushed to
+// `out`.
+fn irm_callrt(mach: mut IrMachine, routine: i64, x: List[i64], out: mut List[i64]) {
+    if routine == IR_RT_ALLOC {
+        out.push(irm_alloc(mut mach, x[0]))
+    } else if routine == IR_RT_REALLOC {
+        let fresh = irm_alloc(mut mach, x[1])
+        if x[0] != 0 && !mach.failed {
+            let old = x[0] >> 32
+            if x[0] < 0 || old >= mach.obj_kind.len() || x[0] & 4294967295 != 0 || mach.obj_kind[old] != IRM_HEAP {
+                irm_fail(mut mach, "`realloc` of something that is not the start of a live allocated block")
+                return
+            }
+            var keep = mach.obj_bytes[old].len()
+            if keep > x[1] {
+                keep = x[1]
+            }
+            var i = 0
+            while i < keep {
+                mach.obj_bytes[fresh >> 32].set(i, mach.obj_bytes[old][i])
+                mach.obj_stored[fresh >> 32].set(i, mach.obj_stored[old][i])
+                i = i + 1
+            }
+            irm_free(mut mach, x[0])
+        }
+        out.push(fresh)
+    } else if routine == IR_RT_FREE {
+        irm_free(mut mach, x[0])
+    } else if routine == IR_RT_MEMCPY {
+        let text = irm_text(mut mach, x[1], x[2])
+        irm_put_text(mut mach, x[0], text)
+    } else if routine == IR_RT_PRINT_I64 {
+        print(x[0])
+    } else if routine == IR_RT_PRINT_BOOL {
+        if x[0] != 0 && x[0] != 1 {
+            irm_fail(mut mach, "a `bool` that is neither 0 nor 1")
+            return
+        }
+        print(x[0] == 1)
+    } else if routine == IR_RT_PRINT_STR {
+        let text = irm_text(mut mach, x[0], x[1])
+        if !mach.failed {
+            print(text)
+        }
+    } else if routine == IR_RT_EPRINT_STR {
+        let text = irm_text(mut mach, x[0], x[1])
+        if !mach.failed {
+            eprint(text)
+        }
+    } else if routine == IR_RT_STR_EQ {
+        let first = irm_text(mut mach, x[0], x[1])
+        let second = irm_text(mut mach, x[2], x[3])
+        out.push(irm_bool(first == second))
+    } else if routine == IR_RT_STR_APPEND {
+        // p, len, cap, q, n
+        let more = irm_text(mut mach, x[3], x[4])
+        let need = x[1] + x[4]
+        if x[2] >= need {
+            irm_put_text(mut mach, x[0] + x[1], more)
+            out.push(x[0])
+            out.push(need)
+            out.push(x[2])
+            return
+        }
+        var room = x[2] * 2
+        if room < need {
+            room = need
+        }
+        if room < 16 {
+            room = 16
+        }
+        let old = irm_text(mut mach, x[0], x[1])
+        let fresh = irm_alloc(mut mach, room)
+        if mach.failed {
+            return
+        }
+        irm_put_text(mut mach, fresh, old)
+        irm_put_text(mut mach, fresh + x[1], more)
+        if x[2] > 0 {
+            irm_free(mut mach, x[0])
+        }
+        out.push(fresh)
+        out.push(need)
+        out.push(room)
+    } else if routine == IR_RT_EXIT {
+        mach.stopped = true
+        mach.exit_code = x[0] & 255
+    } else {
+        irm_fail(mut mach, "the runtime routine `" + ir_rt_name(routine) + "` is not known to the interpreter")
+    }
+}
+
+// Runs function `f` of module `m` with the given arguments and gives
+// what it returns. When `irm_done(mach)` is true afterwards the run
+// ended early and the result means nothing.
+fn irm_run(mach: mut IrMachine, m: IrModule, f: IrFunc, arguments: List[i64]) -> List[i64] {
+    var returned: List[i64] = []
+    if arguments.len() != f.param_count {
+        irm_fail(mut mach, "`" + f.name + "` takes " + str(f.param_count) + " arguments, not " + str(arguments.len()))
+        return returned
+    }
+    if mach.depth >= IRM_MAX_DEPTH {
+        irm_fail(mut mach, "calls nested more than " + str(IRM_MAX_DEPTH) + " deep")
+        return returned
+    }
+    mach.depth = mach.depth + 1
+    var vals = 0.filled(f.val_ty.len())
+    var k = 0
+    while k < arguments.len() {
+        vals[k] = arguments[k]
+        k = k + 1
+    }
+    var frames: List[i64] = []
+    for bytes in f.frames {
+        frames.push(irm_new_object(mut mach, bytes, IRM_FRAME))
+    }
+    var passed: List[i64] = []
+    var ins = f.blk_first[f.order[0]]
+    while !mach.failed && !mach.stopped {
+        mach.steps = mach.steps + 1
+        if mach.steps > mach.step_limit {
+            irm_fail(mut mach, "more than " + str(mach.step_limit) + " instructions were run")
+            break
+        }
+        let op = f.ins_op[ins]
+        var a = f.ins_a[ins]
+        if a >= 0 {
+            a = vals[a]
+        } else if a < -1 {
+            a = f.consts[0 - a - 2]
+        }
+        var b = f.ins_b[ins]
+        if b >= 0 {
+            b = vals[b]
+        } else if b < -1 {
+            b = f.consts[0 - b - 2]
+        }
+        // The edge to leave the block by, when the instruction ends it.
+        var edge = -1
+        if op >= IR_ADD && op <= IR_SMULH || op >= IR_EQ && op <= IR_UGE {
+            vals[f.ins_res[ins]] = irm_binary(mut mach, op, a, b)
+        } else if op == IR_ICONST || op == IR_BCONST {
+            vals[f.ins_res[ins]] = f.ins_imm[ins]
+        } else if op == IR_LOAD {
+            let p = a + f.ins_imm[ins]
+            let ty = f.ins_ty[ins]
+            let bytes = ir_type_bytes(ty)
+            var value = irm_load(mut mach, p, bytes)
+            if !mach.failed {
+                irm_check_region(mut mach, f, f.ins_reg[ins], p, vals, frames)
+            }
+            if ty == IR_I8 {
+                value = value << 56 >> 56
+            } else if ty == IR_I32 {
+                value = value << 32 >> 32
+            } else if ty == IR_BOOL && value != 0 && value != 1 {
+                irm_fail(mut mach, "a `bool` that is neither 0 nor 1")
+            }
+            vals[f.ins_res[ins]] = value
+        } else if op == IR_STORE {
+            let p = a + f.ins_imm[ins]
+            irm_store(mut mach, p, ir_type_bytes(f.ins_ty[ins]), b)
+            if !mach.failed {
+                irm_check_region(mut mach, f, f.ins_reg[ins], p, vals, frames)
+            }
+        } else if op == IR_GEP {
+            vals[f.ins_res[ins]] = a + b * f.ins_imm2[ins] + f.ins_imm[ins]
+        } else if op == IR_FRAME {
+            vals[f.ins_res[ins]] = frames[f.ins_imm[ins]]
+        } else if op == IR_ADDR {
+            vals[f.ins_res[ins]] = (1 << 32) + f.ins_imm[ins]
+        } else if op == IR_SELECT {
+            var c = f.ins_c[ins]
+            if c >= 0 {
+                c = vals[c]
+            } else {
+                c = f.consts[0 - c - 2]
+            }
+            if a != 0 {
+                vals[f.ins_res[ins]] = b
+            } else {
+                vals[f.ins_res[ins]] = c
+            }
+        } else if op == IR_NEG || op >= IR_EXT8U && op <= IR_TRUNC32 {
+            vals[f.ins_res[ins]] = irm_unary(op, a)
+        } else if op == IR_CALL || op == IR_CALLRT {
+            var given: List[i64] = []
+            k = 0
+            while k < f.ins_an[ins] {
+                let x = f.args[f.ins_as[ins] + k]
+                if x >= 0 {
+                    given.push(vals[x])
+                } else {
+                    given.push(f.consts[0 - x - 2])
+                }
+                k = k + 1
+            }
+            var got: List[i64] = []
+            if op == IR_CALLRT {
+                irm_callrt(mut mach, f.ins_imm[ins], given, mut got)
+            } else {
+                var callee = -1
+                match mach.funcs.get(f.callees[f.ins_imm[ins]]) {
+                    Some(at) => callee = at
+                    None => {}
+                }
+                if callee < 0 {
+                    irm_fail(mut mach, "there is no function `" + f.callees[f.ins_imm[ins]] + "`")
+                } else {
+                    got = irm_run(mut mach, m, m.funcs[callee], given)
+                }
+            }
+            if mach.failed || mach.stopped {
+                break
+            }
+            if got.len() != f.ins_rn[ins] {
+                irm_fail(mut mach, "a call gave " + str(got.len()) + " results where " + str(f.ins_rn[ins]) + " are taken")
+                break
+            }
+            k = 0
+            while k < got.len() {
+                vals[f.results[f.ins_rs[ins] + k]] = got[k]
+                k = k + 1
+            }
+        } else if op == IR_JUMP {
+            edge = f.ins_es[ins]
+        } else if op == IR_BR {
+            edge = f.ins_es[ins]
+            if a == 0 {
+                edge = edge + 1
+            }
+        } else if op == IR_SWITCH {
+            edge = f.ins_es[ins]
+            let default = edge + f.ins_en[ins] - 1
+            while edge < default && f.edge_key[edge] != a {
+                edge = edge + 1
+            }
+        } else if op == IR_RET {
+            k = 0
+            while k < f.ins_an[ins] {
+                let x = f.args[f.ins_as[ins] + k]
+                if x >= 0 {
+                    returned.push(vals[x])
+                } else {
+                    returned.push(f.consts[0 - x - 2])
+                }
+                k = k + 1
+            }
+            break
+        } else if op == IR_TRAP {
+            mach.stopped = true
+            mach.exit_code = 1
+            mach.stop_message = ir_trap_message(f.ins_imm[ins])
+            break
+        } else {
+            irm_fail(mut mach, "an instruction that cannot be run")
+            break
+        }
+        if edge >= 0 {
+            // All arguments are read before any parameter is set.
+            let to = f.edge_blk[edge]
+            passed.truncate(0)
+            k = 0
+            while k < f.edge_an[edge] {
+                let x = f.args[f.edge_as[edge] + k]
+                if x >= 0 {
+                    passed.push(vals[x])
+                } else {
+                    passed.push(f.consts[0 - x - 2])
+                }
+                k = k + 1
+            }
+            k = 0
+            while k < passed.len() {
+                vals[f.bparams[f.blk_ps[to] + k]] = passed[k]
+                k = k + 1
+            }
+            ins = f.blk_first[to]
+        } else {
+            ins = f.ins_next[ins]
+        }
+    }
+    for object in frames {
+        mach.obj_kind[object >> 32] = IRM_FREED
+        mach.obj_bytes[object >> 32] = ""
+        mach.obj_stored[object >> 32] = ""
+    }
+    mach.depth = mach.depth - 1
+    return returned
+}
+
+// How many allocated blocks are still there.
+fn irm_live_blocks(mach: IrMachine) -> i64 {
+    var count = 0
+    for kind in mach.obj_kind {
+        if kind == IRM_HEAP {
+            count = count + 1
+        }
+    }
+    return count
+}

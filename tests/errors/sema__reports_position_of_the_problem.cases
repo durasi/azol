@@ -1,0 +1,22 @@
+# From the tests of the first compiler: src/sema.rs, `reports_position_of_the_problem`.
+==== 1
+---- file a.azl (no newline at end)
+fn main() {
+    let a = 1
+    let b = a + true
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: `+` needs `i64` but this is `bool`
+ --> a.azl:3:17
+  |
+3 |     let b = a + true
+  |                 ^
+---- asserted 3:17 `+` needs `i64` but this is `bool`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"`+` needs `i64` but this is `bool`","file":"a.azl","line":3,"column":17,"end_line":3,"end_column":21,"source":"    let b = a + true","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}

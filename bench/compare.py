@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compares azoL with Rust and JavaScript (Node.js) on this machine.
 
-    cargo build --release
+    sh build.sh
     python3 bench/compare.py              everything, best of 5 runs
     python3 bench/compare.py --runs 9     more runs per measurement
     python3 bench/compare.py fib40 sort   only the named benchmarks
@@ -50,7 +50,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 BUILD = os.path.join(HERE, "build")
 GENERATED = os.path.join(HERE, "generated")
-AZOL = os.path.join(ROOT, "target", "release", "azol")
+AZOL = os.environ.get("AZOL") or os.path.join(ROOT, "azol")
 UNITS = 3000
 README_START = "<!-- bench:start -->"
 README_END = "<!-- bench:end -->"
@@ -365,7 +365,7 @@ def main():
         return
 
     if not os.path.exists(AZOL):
-        sys.exit("%s is missing; run `cargo build --release` first" % AZOL)
+        sys.exit("%s is missing; run `sh build.sh` first" % AZOL)
     os.makedirs(BUILD, exist_ok=True)
     have_rust, have_node = bool(shutil.which("rustc")), bool(shutil.which("node"))
     problems = []

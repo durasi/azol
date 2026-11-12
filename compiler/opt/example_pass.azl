@@ -1,0 +1,42 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// An example of a pass, to copy from: it removes every `add` of two
+// constants and every `add` of 0. docs/design/optimizer-notes.md walks
+// through it. It is not part of the optimiser; the real `simplify`
+// pass does this and much more.
+
+// Gives the number of instructions it removed. Removing one can make
+// another removable, so the caller repeats it until it gives 0.
+fn ir_example_fold_add(f: mut IrFunc) -> i64 {
+    var removed = 0
+    var at = 0
+    while at < f.order.len() {
+        var ins = f.blk_first[f.order[at]]
+        while ins >= 0 {
+            // Read the next one first: this one may be removed.
+            let next = f.ins_next[ins]
+            if f.ins_op[ins] == IR_ADD {
+                let a = f.ins_a[ins]
+                let b = f.ins_b[ins]
+                // What can stand for the result: -1 when nothing can.
+                var instead = -1
+                if ir_is_const(a) && ir_is_const(b) {
+                    let sum = ir_const_value(f, a) + ir_const_value(f, b)
+                    instead = ir_const(mut f, sum)
+                } else if ir_is_const(b) && ir_const_value(f, b) == 0 {
+                    instead = a
+                } else if ir_is_const(a) && ir_const_value(f, a) == 0 {
+                    instead = b
+                }
+                if instead != -1 {
+                    ir_replace_value(mut f, f.ins_res[ins], instead)
+                    ir_remove(mut f, ins)
+                    removed = removed + 1
+                }
+            }
+            ins = next
+        }
+        at = at + 1
+    }
+    return removed
+}

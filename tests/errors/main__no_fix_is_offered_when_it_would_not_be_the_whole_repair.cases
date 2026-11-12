@@ -1,0 +1,113 @@
+# From the tests of the first compiler: src/main.rs, `no_fix_is_offered_when_it_would_not_be_the_whole_repair`.
+==== a parameter: to copy it or to declare it `mut` is the author's choice
+---- file a.azl
+fn f(a: i64) {
+    a = 1
+}
+
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0402","message":"cannot change `a`: a parameter is read-only unless it is declared `mut`","file":"a.azl","line":2,"column":5,"end_line":2,"end_column":6,"source":"    a = 1","rule":"A function can change an argument only through a parameter declared `mut`, and the caller then writes `mut` too."}
+{"summary":{"errors":1,"files":1}}
+---- no-fix
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0402]: cannot change `a`: a parameter is read-only unless it is declared `mut`
+ --> a.azl:2:5
+  |
+2 |     a = 1
+  |     ^
+==== a loop variable
+---- file a.azl
+fn main() {
+    for x in [1] {
+        x = 2
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0403","message":"cannot change `x`: a loop variable or pattern binding is read-only","file":"a.azl","line":3,"column":9,"end_line":3,"end_column":10,"source":"        x = 2","rule":"The variable of a `for` loop and the names bound by a pattern are read-only views of the value they come from."}
+{"summary":{"errors":1,"files":1}}
+---- no-fix
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0403]: cannot change `x`: a loop variable or pattern binding is read-only
+ --> a.azl:3:9
+  |
+3 |         x = 2
+  |         ^
+==== an argument that is not a changeable variable
+---- file a.azl
+fn grow(items: mut List[i64]) {
+}
+
+fn main() {
+    let xs = [1]
+    grow(xs)
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0405","message":"argument 1 of `grow` can be changed by the function, so it must be written `mut <variable>`","file":"a.azl","line":6,"column":10,"end_line":6,"end_column":12,"source":"    grow(xs)","rule":"An argument for a `mut` parameter is written with `mut` in front, so that every place a variable can change is visible in the caller.","help":"Write `mut` in front of the argument."}
+{"summary":{"errors":1,"files":1}}
+---- no-fix
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0405]: argument 1 of `grow` can be changed by the function, so it must be written `mut <variable>`
+ --> a.azl:6:10
+  |
+6 |     grow(xs)
+  |          ^
+==== an argument that is not a variable
+---- file a.azl
+fn grow(items: mut List[i64]) {
+}
+
+fn main() {
+    grow([1])
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0405","message":"argument 1 of `grow` can be changed by the function, so it must be written `mut <variable>`","file":"a.azl","line":5,"column":10,"end_line":5,"end_column":11,"source":"    grow([1])","rule":"An argument for a `mut` parameter is written with `mut` in front, so that every place a variable can change is visible in the caller.","help":"Write `mut` in front of the argument."}
+{"summary":{"errors":1,"files":1}}
+---- no-fix
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0405]: argument 1 of `grow` can be changed by the function, so it must be written `mut <variable>`
+ --> a.azl:5:10
+  |
+5 |     grow([1])
+  |          ^
+==== a `match` on one line has no line to add an arm on
+---- file a.azl
+fn main() {
+    match true { true => print(1) }
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0501","message":"this `match` does not handle `false`; add an arm for it or a final `_ =>` arm","file":"a.azl","line":2,"column":5,"end_line":2,"end_column":10,"source":"    match true { true => print(1) }","rule":"A `match` handles every case: each variant of an enum, both `true` and `false`, or has a final `_ =>` arm.","help":"Add the missing arms."}
+{"summary":{"errors":1,"files":1}}
+---- no-fix
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0501]: this `match` does not handle `false`; add an arm for it or a final `_ =>` arm
+ --> a.azl:2:5
+  |
+2 |     match true { true => print(1) }
+  |     ^

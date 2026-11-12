@@ -38,6 +38,26 @@ BOOL = ('bool',)
 STR = ('str',)
 
 
+_EMULATOR_REPO = []
+
+
+def emulator_repo():
+    """The folder the checking emulator for Linux on ARM64 reads the facts
+    about the runtime from: the repository while it holds the first
+    compiler's `src/runtime_linux_arm64.rs`, else a folder that gives it
+    the same text from `runtime/linux_arm64/runtime.facts`."""
+    if not _EMULATOR_REPO:
+        if os.path.exists(os.path.join(REPO, 'src', 'runtime_linux_arm64.rs')):
+            _EMULATOR_REPO.append(REPO)
+        else:
+            import shutil, tempfile
+            folder = tempfile.mkdtemp(prefix='azol-facts-')
+            os.makedirs(os.path.join(folder, 'src'))
+            shutil.copy(os.path.join(REPO, 'runtime', 'linux_arm64', 'runtime.facts'), os.path.join(folder, 'src', 'runtime_linux_arm64.rs'))
+            _EMULATOR_REPO.append(folder)
+    return _EMULATOR_REPO[0]
+
+
 def TList(t):
     return ('list', t)
 
@@ -62,12 +82,18 @@ def TP(name):
     return ('tp', name)
 
 
+def TMap(t):
+    return ('map', t)
+
+
 def ty(t):
     k = t[0]
     if k in ('i64', 'bool', 'str'):
         return k
     if k == 'list':
         return 'List[' + ty(t[1]) + ']'
+    if k == 'map':
+        return 'Map[' + ty(t[1]) + ']'
     if k == 'tp':
         return t[1]
     return t[1] + ('[' + ', '.join(ty(x) for x in t[2]) + ']' if t[2] else '')
@@ -77,8 +103,8 @@ def subst(t, m):
     k = t[0]
     if k == 'tp':
         return m[t[1]]
-    if k == 'list':
-        return ('list', subst(t[1], m))
+    if k in ('list', 'map'):
+        return (k, subst(t[1], m))
     if k in ('struct', 'enum'):
         return (k, t[1], tuple(subst(x, m) for x in t[2]))
     return t
@@ -129,6 +155,8 @@ class E:
 
 
 class Fn:
+    forever = False         # its recursion never ends: calling it overflows the stack
+
     def __init__(self, name, tparams, params, ret, body, fixed=False):
         self.name = name
         self.tparams = tparams
@@ -145,6 +173,7 @@ class Program:
         self.consts = []        # [(name, type, E)]
         self.fns = []
         self.seed = 0
+        self.native_only = False
 
 
 def kids(e):
@@ -155,7 +184,7 @@ def kids(e):
         return [a[1], a[2]]
     if k in ('and', 'or', 'index'):
         return [a[0], a[1]]
-    if k in ('neg', 'not', 'mut'):
+    if k in ('neg', 'not', 'mut', 'try'):
         return [a[0]]
     if k == 'field':
         return [a[0]]
@@ -188,6 +217,9 @@ M64 = (1 << 64) - 1
 
 def int_text(v, style):
     if v == MIN:
+        # The smallest number can be written in decimal as well.
+        if style in ('d', 'u', 'c'):
+            return '-9223372036854775808', 11
         return '0x8000000000000000', 12
     if style == 'c' and 32 <= v <= 126:
         c = chr(v)
@@ -258,6 +290,8 @@ def rx(e, p=0):
         s = '!' + rx(a[0], 12)
     elif k == 'mut':
         s = 'mut ' + rx(a[0])
+    elif k == 'try':
+        s = rx(a[0], 12) + '?'
     elif k in ('call', 'builtin'):
         s = a[0] + '(' + ', '.join(rx(x) for x in a[1]) + ')'
     elif k == 'field':
@@ -430,6 +464,26 @@ class OracleError(Exception):
     """The program is not valid (an unknown name, a missing match arm)."""
 
 
+class EarlyReturn(Exception):
+    """`value?` met a `None` or an `Err`: the function returns it."""
+
+    def __init__(self, value):
+        self.value = value
+
+
+class MapV:
+    """A `Map[V]`: the keys and the values side by side, in the order
+    `keys()` gives them."""
+    __slots__ = ('keys', 'vals')
+
+    def __init__(self, keys=None, vals=None):
+        self.keys = keys if keys is not None else []
+        self.vals = vals if vals is not None else []
+
+    def __len__(self):
+        return len(self.keys)
+
+
 class EnumV:
     __slots__ = ('name', 'vals')
 
@@ -479,6 +533,11 @@ def same(a, b):
 
 BRK = 'brk'
 CNT = 'cnt'
+# Methods that change their receiver, and the newer library methods.
+MUT_METHODS = ('extend', 'truncate', 'insert', 'remove_at', 'set', 'remove')
+LIBRARY = ('is_empty', 'compare', 'index_of_from', 'last_index_of', 'replace', 'repeat', 'to_upper', 'to_lower',
+           'pad_left', 'pad_right', 'bytes', 'parse_hex', 'hash', 'index_of', 'count', 'take', 'skip', 'sorted',
+           'min', 'max', 'sum', 'to_str')
 
 
 class Interp:
@@ -526,6 +585,9 @@ class Interp:
         if isinstance(v, EnumV):
             self.steps += 1
             return EnumV(v.name, [self.cp(x) for x in v.vals])
+        if isinstance(v, MapV):
+            self.steps += len(v.keys) + 1
+            return MapV(list(v.keys), [self.cp(x) for x in v.vals])
         return v
 
     def tick(self):
@@ -545,8 +607,12 @@ class Interp:
         if self.depth > 300:
             raise Budget()
         env = [dict((p[0], c) for p, c in zip(f.params, cells))]
-        r = self.block(f.body, env)
-        self.depth -= 1
+        try:
+            r = self.block(f.body, env)
+        except EarlyReturn as early:
+            return early.value
+        finally:
+            self.depth -= 1
         if isinstance(r, tuple):
             return r[1]
         return None
@@ -637,7 +703,12 @@ class Interp:
                     cells.append(self.place_cell(x.a[0], env))
                 else:
                     cells.append(Cell(self.ev(x, env)))
-            return self.invoke(self.fns[a[0]], cells)
+            if a[0] == 'new_map':
+                return MapV()
+            f = self.fns[a[0]]
+            if f.forever:
+                raise Stop(b'azol: stack overflow')
+            return self.invoke(f, cells)
         if k == 'field':
             return self.ev(a[0], env)[a[1]]
         if k == 'index':
@@ -654,6 +725,11 @@ class Interp:
             return EnumV(a[0], [self.cp(self.ev(x, env)) for x in a[1]])
         if k == 'm':
             return self.method(a[0], a[1], a[2], env)
+        if k == 'try':
+            v = self.ev(a[0], env)
+            if v.name in ('Some', 'Ok'):
+                return v.vals[0]
+            raise EarlyReturn(self.cp(v))
         if k == 'builtin':
             v = self.ev(a[1][0], env)
             if a[0] == 'str':
@@ -676,8 +752,19 @@ class Interp:
             if len(lst) > 4000:
                 raise Budget()
             return None
+        if name in MUT_METHODS:
+            # The arguments are values; the receiver is changed in place.
+            args = [self.cp(self.ev(x, env)) for x in arg_es]
+            return self.mut_method(name, self.ev(recv_e, env), args)
         recv = self.ev(recv_e, env)
         args = [self.ev(x, env) for x in arg_es]
+        if isinstance(recv, MapV):
+            return self.map_method(name, recv, args)
+        if isinstance(recv, int) and not isinstance(recv, bool):
+            return self.int_method(name, recv, args)
+        if name in LIBRARY:
+            self.steps += len(recv) >> 3
+            return self.library(name, recv, args)
         if name == 'len':
             return len(recv)
         if name == 'pop':
@@ -746,6 +833,161 @@ class Interp:
         if name == 'reversed':
             return [self.cp(x) for x in reversed(recv)]
         raise OracleError('method ' + name)
+
+    def big(self, n):
+        if n > 60000:
+            raise Budget()
+
+    def mut_method(self, name, recv, args):
+        if isinstance(recv, MapV):
+            key = args[0]
+            if name == 'set':
+                if key in recv.keys:
+                    recv.vals[recv.keys.index(key)] = args[1]
+                else:
+                    recv.keys.append(key)
+                    recv.vals.append(args[1])
+                    self.big(len(recv.keys) * 100)
+                return None
+            if name == 'remove':
+                # The last key takes the freed place (see the README: this
+                # order is the library's, not the manual's).
+                if key not in recv.keys:
+                    return False
+                at = recv.keys.index(key)
+                recv.keys[at] = recv.keys[-1]
+                recv.vals[at] = recv.vals[-1]
+                recv.keys.pop()
+                recv.vals.pop()
+                return True
+            raise OracleError('map method ' + name)
+        if name == 'extend':
+            recv.extend(args[0])
+            if len(recv) > 4000:
+                raise Budget()
+            return None
+        if name == 'truncate':
+            del recv[max(args[0], 0):]
+            return None
+        if name == 'insert':
+            if not 0 <= args[0] <= len(recv):
+                raise Stop(b'azol: index out of range')
+            recv.insert(args[0], args[1])
+            return None
+        if name == 'remove_at':
+            if not 0 <= args[0] < len(recv):
+                raise Stop(b'azol: index out of range')
+            return recv.pop(args[0])
+        raise OracleError('method ' + name)
+
+    def map_method(self, name, recv, args):
+        if name == 'len':
+            return len(recv.keys)
+        if name == 'has':
+            return args[0] in recv.keys
+        if name == 'get':
+            if args[0] in recv.keys:
+                return EnumV('Some', [self.cp(recv.vals[recv.keys.index(args[0])])])
+            return EnumV('None', [])
+        if name == 'keys':
+            return list(recv.keys)
+        raise OracleError('map method ' + name)
+
+    def int_method(self, name, n, args):
+        if name == 'abs':
+            return wrap(-n) if n < 0 else n
+        if name == 'min':
+            return min(n, args[0])
+        if name == 'max':
+            return max(n, args[0])
+        if name == 'clamp':
+            if n < args[0]:
+                return args[0]
+            if n > args[1]:
+                return args[1]
+            return n
+        if name == 'pow':
+            if args[0] <= 0:
+                return 1
+            return wrap(pow(n & M64, args[0], 1 << 64))
+        if name == 'compare':
+            return (n > args[0]) - (n < args[0])
+        if name == 'to_hex':
+            return format(n & M64, 'x').encode()
+        raise OracleError('number method ' + name)
+
+    def library(self, name, recv, args):
+        some = lambda v: EnumV('Some', [v])
+        none = EnumV('None', [])
+        if name == 'is_empty':
+            return len(recv) == 0
+        if isinstance(recv, bytes):
+            if name == 'compare':
+                return (recv > args[0]) - (recv < args[0])
+            if name == 'index_of_from':
+                at = recv.find(args[0], max(args[1], 0))
+                return some(at) if at >= 0 else none
+            if name == 'last_index_of':
+                at = recv.rfind(args[0])
+                return some(at) if at >= 0 else none
+            if name == 'replace':
+                if not args[0]:
+                    return recv
+                out = recv.replace(args[0], args[1])
+                self.big(len(out))
+                return out
+            if name == 'repeat':
+                self.big(len(recv) * max(args[0], 0))
+                return recv * max(args[0], 0)
+            if name == 'to_upper':
+                return recv.upper()
+            if name == 'to_lower':
+                return recv.lower()
+            if name in ('pad_left', 'pad_right'):
+                width, fill = args
+                self.big(width)
+                pad = b''
+                while fill and len(pad) + len(recv) < width:
+                    pad += fill
+                return pad + recv if name == 'pad_left' else recv + pad
+            if name == 'bytes':
+                return list(recv)
+            if name == 'parse_hex':
+                if not 1 <= len(recv) <= 16 or any(c not in b'0123456789abcdefABCDEF' for c in recv):
+                    return none
+                return some(wrap(int(recv, 16)))
+            if name == 'hash':
+                h = 0xcbf29ce484222325
+                for c in recv:
+                    h = ((h ^ c) * 0x100000001b3) & M64
+                return wrap(h)
+            raise OracleError('string method ' + name)
+        if name == 'index_of':
+            for i, x in enumerate(recv):
+                if same(x, args[0]):
+                    return some(i)
+            return none
+        if name == 'count':
+            return sum(1 for x in recv if same(x, args[0]))
+        if name == 'take':
+            return [self.cp(x) for x in recv[:max(args[0], 0)]]
+        if name == 'skip':
+            return [self.cp(x) for x in recv[max(args[0], 0):]]
+        if name == 'sorted':
+            self.steps += len(recv) * 4
+            return sorted(recv)
+        if name == 'min':
+            return some(min(recv)) if recv else none
+        if name == 'max':
+            return some(max(recv)) if recv else none
+        if name == 'sum':
+            return wrap(sum(recv))
+        if name == 'to_str':
+            for c in recv:
+                if not 0 <= c <= 255:
+                    raise Stop(b'azol: chr needs a number from 0 to 255')
+            return bytes(recv)
+        raise OracleError('list method ' + name)
 
     def emit(self, v):
         if v is True:
@@ -919,6 +1161,8 @@ class Gen:
         self.stats = Counter()
         self.consts = []
         self.const_values = {}
+        self.notry = 0      # above zero where `?` may not be written
+        self.in_main = False
         r = self.r
         self.maxd = r.choice([1, 2, 2, 2, 3, 3, 4])
         self.nest = r.choice([2, 2, 3, 3, 4, 5])
@@ -931,7 +1175,10 @@ class Gen:
             'if': 9, 'while': 5 * r.uniform(0.3, 1.7), 'for': 8 * r.uniform(0.3, 1.7),
             'match': 8 * r.uniform(0.3, 1.7), 'push': 7 * r.uniform(0.3, 1.7), 'call': 6 * r.uniform(0.3, 1.7),
             'ctl': 3, 'ret': 2, 'known': 3, 'show': 3, 'stop': 0.12, 'exit': 0.05, 'eprint': 0.3, 'grow': 1.2,
+            'elems': 5 * r.uniform(0.2, 1.8), 'map': 3 * r.uniform(0.2, 1.8), 'mrecv': 5 * r.uniform(0.3, 1.7),
+            'try': 5 * r.uniform(0.3, 1.7), 'reads': 2.5 * r.uniform(0.3, 1.7),
         }
+        self.tryp = r.choice([0.0, 0.05, 0.1, 0.1, 0.2, 0.35])
 
     # ---- names and scopes
 
@@ -1031,7 +1278,8 @@ class Gen:
         if r.random() < 0.3:
             d.add_enum('Tree', [], [('Leaf', [I64]), ('Node', [TList(TEnum('Tree'))])])
             self.leaf_types.append(TEnum('Tree'))
-        pool = [I64, I64, I64, BOOL, STR, STR, TList(I64), TList(STR), unit]
+        pool = [I64, I64, I64, BOOL, STR, STR, TList(I64), TList(STR), unit, TOpt(I64), TRes(I64, STR),
+                r.choice([TRes(STR, STR), TRes(TList(I64), STR), TOpt(STR), TRes(I64, I64)])]
         for _ in range(r.randint(5, 10)):
             pool.append(self.rtype(r.choice([0, 1, 1, 2, 2, 3])))
         self.pool = pool
@@ -1080,6 +1328,11 @@ class Gen:
                 t = BOOL
             else:
                 e = E('str', STR, r.choice(STRINGS))
+                strs = [n for n, ct in self.consts if ct == STR]
+                for _ in range(r.choice([0, 0, 1, 1, 2, 3])):
+                    self.stats['constant joined with +'] += 1
+                    other = E('const', STR, r.choice(strs)) if strs and r.random() < 0.5 else E('str', STR, r.choice(STRINGS))
+                    e = E('bin', STR, '+', e, other) if r.random() < 0.7 else E('bin', STR, '+', other, e)
                 t = STR
             self.prog.consts.append((name, t, e))
             self.consts.append((name, t))
@@ -1170,10 +1423,13 @@ class Gen:
         if k == 'list':
             if ctx and r.random() < 0.25:
                 return E('llit', t, [])
-            return E('llit', t, [self.expr(t[1], 0, ctx) for _ in range(r.choice([1, 1, 2, 3]))])
+            return E('llit', t, self.items(t[1], r.choice([1, 1, 2, 3]), 0, ctx))
+        if k == 'map':
+            raise Retry()
         if k == 'struct':
             inner = not t[2]
-            return E('slit', t, t[1], [(f, self.expr(ft, 0, inner)) for f, ft in self.d.fields(t)])
+            fields = self.d.fields(t)
+            return E('slit', t, t[1], list(zip([f for f, _ in fields], self.parts([ft for _, ft in fields], 0, inner))))
         if k == 'enum':
             generic = bool(t[2])
             if generic and not ctx:
@@ -1186,8 +1442,105 @@ class Gen:
                 v, ps = self.base_variant(t)
             else:
                 v, ps = r.choice(self.d.variants(t))
-            return E('ctor', t, v, [self.expr(p, 0, not generic) for p in ps])
+            return E('ctor', t, v, self.parts(ps, 0, not generic))
         raise Retry()
+
+    def owns(self, t, seen=()):
+        """Does a value of this type own memory?"""
+        k = t[0]
+        if k in ('str', 'list', 'map'):
+            return True
+        if k in ('struct', 'enum'):
+            if t in seen:
+                return True
+            seen = seen + (t,)
+            if k == 'struct':
+                return any(self.owns(ft, seen) for _, ft in self.d.fields(t))
+            return any(self.owns(p, seen) for _, ps in self.d.variants(t) for p in ps)
+        return False
+
+    def items(self, el, n, d, ctx):
+        """The items of a list literal, where `?` may not be written."""
+        self.notry += 1
+        try:
+            return [self.expr(el, d, ctx) for _ in range(n)]
+        finally:
+            self.notry -= 1
+
+    def parts(self, types, d, ctx):
+        """The parts of a struct literal or a variant: `?` may be written
+        until a part that owns memory has been built."""
+        out = []
+        closed = 0
+        try:
+            for t in types:
+                out.append(self.expr(t, d, ctx))
+                if not closed and self.owns(t):
+                    closed = 1
+                    self.notry += 1
+        finally:
+            self.notry -= closed
+        return out
+
+    # ---- `?`
+
+    def try_on(self):
+        t = self.ret
+        return (not self.in_main and not self.notry and t is not None and t[0] == 'enum'
+                and t[1] in ('Option', 'Result'))
+
+    def try_types(self):
+        """The types `?` can give here from a variable or a call."""
+        have = [v.t for v in self.visible()] + [f.ret for f in self.fns if not f.has_mut] + list(self.makers)
+        out = []
+        for T in have:
+            if T is not None and T[0] == 'enum' and T[1] == self.ret[1]:
+                if T[1] == 'Option' or T[2][1] == self.ret[2][1]:
+                    out.append(T[2][0])
+        return out
+
+    def try_expr(self, t, d):
+        """`source?` of type `t`, in a function that can return what the
+        source may hold instead."""
+        r = self.r
+        if not self.try_on() or t is None or t[0] == 'map':
+            raise Retry()
+        opt = self.ret[1] == 'Option'
+        T = TOpt(t) if opt else TRes(t, self.ret[2][1])
+        ways = []
+        vs = self.vars_of(T)
+        if vs:
+            ways += ['var'] * 5
+        fs = [f for f in self.fns if f.ret == T and not f.has_mut]
+        if fs:
+            ways += ['call'] * 4
+        if T in self.makers:
+            ways += ['make'] * 2
+        if opt and self.selfable(t):
+            ways += ['typed']
+        ps = self.paths(T) if r.random() < 0.3 else []
+        if ps:
+            ways.append('path')
+        if not ways:
+            raise Retry()
+        w = r.choice(ways)
+        if w == 'var':
+            src = self.use(r.choice(vs))
+            self.stats['? on a variable'] += 1
+        elif w == 'call':
+            src = self.call(r.choice(fs), d)
+            self.stats['? on a call'] += 1
+        elif w == 'make':
+            src = E('call', T, self.makers[T], [self.expr(I64, max(d - 1, 0), False)])
+            self.stats['? on a call'] += 1
+        elif w == 'path':
+            src = r.choice(ps)
+            self.stats['? on a field or element'] += 1
+        else:
+            src = self.typed(T, max(d, 1), False)
+            self.stats['? on a temporary'] += 1
+        self.stats['? on ' + ('Option' if opt else 'Result')] += 1
+        return E('try', t, src)
 
     # ---- expressions
 
@@ -1231,6 +1584,16 @@ class Gen:
 
     def expr(self, t, d, ctx=True):
         r = self.r
+        if t[0] == 'map':
+            vs = self.vars_of(t)
+            if not vs:
+                raise Retry()
+            return self.use(r.choice(vs))
+        if self.tryp and r.random() < self.tryp and self.try_on():
+            try:
+                return self.try_expr(t, d)
+            except Retry:
+                pass
         vs = self.vars_of(t)
         if d <= 0:
             if vs and r.random() < 0.75:
@@ -1283,7 +1646,28 @@ class Gen:
         k = t[0]
         st = self.stats
         if k == 'i64':
-            c = r.choice(['arith'] * 5 + ['div'] * 2 + ['shift'] * 2 + ['bit'] * 2 + ['neg', 'len', 'len', 'byte', 'lit', 'count', 'unwrap'])
+            c = r.choice(['arith'] * 5 + ['div'] * 2 + ['shift'] * 2 + ['bit'] * 2 + ['neg', 'len', 'len', 'byte', 'lit', 'count', 'unwrap']
+                         + ['imeth', 'imeth', 'lsum', 'cmp3', 'lcount'])
+            if c == 'imeth':
+                m = r.choice(['abs', 'min', 'max', 'clamp', 'pow', 'compare'])
+                st['i64.' + m] += 1
+                recv = self.expr(I64, d - 1, False) if r.random() < 0.7 else self.int_lit()
+                n = {'abs': 0, 'clamp': 2}.get(m, 1)
+                args = [self.expr(I64, d - 1, False) for _ in range(n)]
+                if m == 'pow' and r.random() < 0.7:
+                    args = [self.lit(r.choice([0, 1, 2, 3, 5, 7, 10, 31, 62, 63, 64, 65, -1]))]
+                return E('m', I64, m, recv, args)
+            if c == 'lsum':
+                st['list.sum'] += 1
+                return E('m', I64, 'sum', self.expr(TList(I64), d - 1, False), [])
+            if c == 'cmp3':
+                m = r.choice(['compare', 'compare', 'hash'])
+                st['str.' + m] += 1
+                return E('m', I64, m, self.expr(STR, d - 1, False), [self.expr(STR, d - 1, False)] if m == 'compare' else [])
+            if c == 'lcount':
+                et = r.choice([I64, STR, BOOL, self.unit])
+                st['list.count'] += 1
+                return E('m', I64, 'count', self.expr(TList(et), d - 1, False), [self.expr(et, d - 1, False)])
             if c == 'arith':
                 st['+ - *'] += 1
                 return E('bin', I64, r.choice(['+', '+', '-', '-', '*']), self.expr(I64, d - 1, False), self.expr(I64, d - 1, False))
@@ -1323,7 +1707,11 @@ class Gen:
                 return E('call', I64, 'unwrap_or', [self.typed(TOpt(I64), d, False), self.expr(I64, d - 1, False)])
             return self.int_lit()
         if k == 'bool':
-            c = r.choice(['cmp'] * 5 + ['streq', 'booleq', 'enumeq', 'and', 'and', 'or', 'or', 'not', 'text', 'has', 'lit'])
+            c = r.choice(['cmp'] * 5 + ['streq', 'booleq', 'enumeq', 'and', 'and', 'or', 'or', 'not', 'text', 'has', 'lit', 'empty'])
+            if c == 'empty':
+                st['is_empty'] += 1
+                rt = STR if r.random() < 0.5 else self.some_list_type()
+                return E('m', BOOL, 'is_empty', self.expr(rt, d - 1, False), [])
             if c == 'cmp':
                 st['comparison'] += 1
                 return E('bin', BOOL, r.choice(CMP), self.expr(I64, d - 1, False), self.expr(I64, d - 1, False))
@@ -1353,7 +1741,28 @@ class Gen:
                 return E('m', BOOL, 'contains', self.expr(TList(et), d - 1, False), [self.expr(et, d - 1, False)])
             return E('bool', BOOL, r.random() < 0.5)
         if k == 'str':
-            c = r.choice(['cat'] * 4 + ['stri', 'stri', 'strb', 'chr', 'sub', 'sub', 'slice', 'trim', 'join', 'lit', 'lit'])
+            c = r.choice(['cat'] * 4 + ['stri', 'stri', 'strb', 'chr', 'sub', 'sub', 'slice', 'trim', 'join', 'lit', 'lit']
+                         + ['smeth'] * 4 + ['hex', 'bytes'])
+            if c == 'smeth':
+                m = r.choice(['replace', 'repeat', 'to_upper', 'to_lower', 'pad_left', 'pad_right'])
+                st['str.' + m] += 1
+                recv = self.expr(STR, d - 1, False)
+                small = lambda n: E('call', I64, 'clampi', [self.expr(I64, d - 1, True), self.lit(n)])
+                if m == 'replace':
+                    args = [self.expr(STR, min(d - 1, 1), False), self.expr(STR, min(d - 1, 1), False)]
+                elif m == 'repeat':
+                    args = [small(5) if r.random() < 0.8 else self.lit(r.choice([-1, 0, 1, 2, 9]))]
+                elif m in ('pad_left', 'pad_right'):
+                    args = [small(24) if r.random() < 0.8 else self.lit(r.choice([-5, 0, 1, 8, 40])), self.expr(STR, 0, False)]
+                else:
+                    args = []
+                return E('m', STR, m, recv, args)
+            if c == 'hex':
+                st['i64.to_hex'] += 1
+                return E('m', STR, 'to_hex', self.expr(I64, d - 1, False), [])
+            if c == 'bytes':
+                st['str.bytes and back'] += 1
+                return E('m', STR, 'to_str', E('m', TList(I64), 'bytes', self.expr(STR, d - 1, False), []), [])
             if c == 'cat':
                 st['string +'] += 1
                 return E('bin', STR, '+', self.expr(STR, d - 1, False), self.expr(STR, d - 1, False))
@@ -1384,7 +1793,18 @@ class Gen:
             return self.str_lit()
         if k == 'list':
             el = t[1]
-            c = r.choice(['lit', 'lit', 'lit', 'rev', 'split', 'rep'])
+            c = r.choice(['lit', 'lit', 'lit', 'rev', 'split', 'rep', 'sorted', 'take', 'bytes'])
+            if c == 'sorted' and el in (I64, STR):
+                st['list.sorted'] += 1
+                return E('m', t, 'sorted', self.expr(t, d - 1, False), [])
+            if c == 'take' and self.selfable(t):
+                m = r.choice(['take', 'skip'])
+                st['list.' + m] += 1
+                n = self.lit(r.choice([-1, 0, 1, 1, 2, 3, 100])) if r.random() < 0.6 else self.expr(I64, d - 1, False)
+                return E('m', t, m, self.expr(t, d - 1, False), [n])
+            if c == 'bytes' and el == I64:
+                st['str.bytes'] += 1
+                return E('m', t, 'bytes', self.expr(STR, d - 1, False), [])
             if c == 'rev' and self.selfable(t):
                 st['list.reversed'] += 1
                 return E('m', t, 'reversed', self.expr(t, d - 1, False), [])
@@ -1400,7 +1820,7 @@ class Gen:
             if ctx and r.random() < 0.12:
                 return E('llit', t, [])
             st['list literal'] += 1
-            return E('llit', t, [self.expr(el, d - 1, ctx) for _ in range(r.choice([1, 1, 2, 2, 3, 4]))])
+            return E('llit', t, self.items(el, r.choice([1, 1, 2, 2, 3, 4]), d - 1, ctx))
         if k == 'struct':
             if t[1] == 'Box' and r.random() < 0.3 and self.selfable(t):
                 st['generic call wrap'] += 1
@@ -1413,11 +1833,31 @@ class Gen:
                 # A generic struct literal learns its types from its fields.
                 return self.leaf(t, ctx) if False else self.struct_of_vars(t, d)
             st['struct literal'] += 1
-            return E('slit', t, t[1], [(f, self.expr(ft, d - 1, inner)) for f, ft in self.d.fields(t)])
+            fields = self.d.fields(t)
+            return E('slit', t, t[1], list(zip([f for f, _ in fields], self.parts([ft for _, ft in fields], d - 1, inner))))
         if k == 'enum':
             generic = bool(t[2])
             if t[1] == 'Option' and r.random() < 0.35:
                 el = t[2][0]
+                if el in (I64, STR) and r.random() < 0.25:
+                    m = r.choice(['min', 'max'])
+                    st['list.' + m] += 1
+                    return E('m', t, m, self.expr(TList(el), d - 1, False), [])
+                if el == I64 and r.random() < 0.4:
+                    m = r.choice(['index_of_from', 'last_index_of', 'parse_hex', 'index_of'])
+                    st[('list.' if m == 'index_of' else 'str.') + m] += 1
+                    if m == 'index_of':
+                        et = r.choice([I64, STR, BOOL, self.unit])
+                        return E('m', t, m, self.expr(TList(et), d - 1, False), [self.expr(et, d - 1, False)])
+                    if m == 'parse_hex':
+                        src = self.expr(STR, d - 1, False)
+                        if r.random() < 0.6:
+                            src = E('m', STR, 'to_hex', self.expr(I64, d - 1, False), [])
+                        return E('m', t, m, src, [])
+                    args = [self.expr(STR, d - 1, False)]
+                    if m == 'index_of_from':
+                        args.append(self.expr(I64, d - 1, False) if r.random() < 0.5 else self.lit(r.choice([-1, 0, 1, 2, 5, 100])))
+                    return E('m', t, m, self.expr(STR, d - 1, False), args)
                 if el == I64 and r.random() < 0.6:
                     if r.random() < 0.5:
                         st['str.find'] += 1
@@ -1431,11 +1871,12 @@ class Gen:
                 return self.leaf(t, False)
             st['enum value'] += 1
             v, ps = r.choice(self.d.variants(t))
-            return E('ctor', t, v, [self.expr(p, d - 1, not generic) for p in ps])
+            return E('ctor', t, v, self.parts(ps, d - 1, not generic))
         raise Retry()
 
     def struct_of_vars(self, t, d):
-        return E('slit', t, t[1], [(f, self.expr(ft, d - 1, False)) for f, ft in self.d.fields(t)])
+        fields = self.d.fields(t)
+        return E('slit', t, t[1], list(zip([f for f, _ in fields], self.parts([ft for _, ft in fields], d - 1, False))))
 
     def unctx(self, t, d):
         """An expression that needs no expected type."""
@@ -1468,6 +1909,15 @@ class Gen:
             it = self.fresh('it')
             body = self.show(E('var', t[1], it), depth - 1)
             return [['print', E('m', I64, 'len', e, [])], ['for', None, it, e, body]]
+        if k == 'map':
+            key = self.fresh('it')
+            got = self.fresh('b')
+            keys = E('m', TList(STR), 'sorted', E('m', TList(STR), 'keys', copy.deepcopy(e), []), [])
+            arms = [[('v', 'Some', [got]), self.show(E('var', t[1], got), depth - 1), False],
+                    [('v', 'None', []), [['print', E('str', STR, b'none')]], True]]
+            return [['print', E('m', I64, 'len', e, [])],
+                    ['for', None, key, keys, [['print', E('var', STR, key)],
+                                              ['match', E('m', TOpt(t[1]), 'get', copy.deepcopy(e), [E('var', STR, key)]), arms]]]]
         if k == 'struct':
             out = []
             for f, ft in self.d.fields(t):
@@ -1503,12 +1953,17 @@ class Gen:
     def safe_stmt(self, d):
         depth = len(self.scopes)
         loop = self.loop
+        before = dict(self.scopes[-1])
         try:
             return self.stmt(d)
         except Retry:
             del self.scopes[depth:]
+            # Whatever the abandoned statement declared is gone with it.
+            self.scopes[-1].clear()
+            self.scopes[-1].update(before)
             self.loop = loop
             self.banned = ()
+            self.notry = 0
             return [['print', self.expr(I64, 0, False)]]
 
     def stmt(self, d):
@@ -1516,7 +1971,7 @@ class Gen:
         w = self.weights
         kinds = list(w)
         k = r.choices(kinds, [w[x] for x in kinds])[0]
-        if d <= 0 and k in ('if', 'while', 'for', 'match', 'known', 'grow'):
+        if d <= 0 and k in ('if', 'while', 'for', 'match', 'known', 'grow', 'elems', 'map', 'reads'):
             k = r.choice(['let', 'print', 'assign', 'push'])
         self.stats['statement ' + k] += 1
         return getattr(self, 's_' + k)(d)
@@ -2045,12 +2500,439 @@ class Gen:
         self.declare(name, sig.ret, False)
         return [['let', name, False, False, sig.ret, call]] + (self.show(E('var', sig.ret, name), 2) if r.random() < 0.6 else [])
 
+    # ---- the newer features
+
+    def len_of(self, e):
+        return E('m', I64, 'len', copy.deepcopy(e), [])
+
+    def clamp_to(self, e, n):
+        return E('call', I64, 'clampi', [e, n])
+
+    def without(self, v, make):
+        """Runs `make` while the variable `v` may not be read."""
+        old = self.banned
+        self.banned = old + (v,) if v is not None else old
+        try:
+            return make()
+        finally:
+            self.banned = old
+
+    def s_try(self, d):
+        """`let x = source?`, `source?` alone, or `?` inside a larger expression."""
+        r = self.r
+        if not self.try_on():
+            return self.s_let(d)
+        known = self.try_types()
+        for _ in range(6):
+            t = r.choice([I64, I64, STR, BOOL]) if r.random() < 0.4 else self.pick_type()
+            if known and r.random() < 0.7:
+                t = r.choice(known)
+            try:
+                e = self.try_expr(t, self.xd())
+            except Retry:
+                continue
+            x = r.random()
+            if x < 0.2:
+                self.stats['? as a statement'] += 1
+                return [['expr', e]]
+            if x < 0.45 and t in (I64, STR):
+                self.stats['? inside an expression'] += 1
+                other = self.expr(t, self.xd(), False)
+                both = E('bin', t, '+', e, other) if r.random() < 0.5 else E('bin', t, '+', other, e)
+                return [['print', both]]
+            name = self.let_name()
+            mut = r.random() < 0.5
+            self.declare(name, t, mut)
+            self.stats['let with ?'] += 1
+            return [['let', name, mut, False, t, e]]
+        return self.s_let(d)
+
+    def list_recvs(self):
+        """Lists that may be changed: (place, the variable it is part of)."""
+        out = []
+        for v in self.visible():
+            if not v.mut or v.frozen:
+                continue
+            if v.t[0] == 'list' and not v.fixed:
+                out.append((self.use(v), v))
+            fields = []
+            self.list_fields(self.use(v), 2, fields)
+            out.extend((f, v) for f in fields)
+        return out
+
+    def s_mrecv(self, d):
+        """The library methods that change their receiver."""
+        r = self.r
+        recvs = self.list_recvs()
+        if not recvs:
+            return self.s_let(d)
+        recv, v = r.choice(recvs)
+        el = recv.t[1]
+        m = r.choice(['extend', 'extend', 'truncate', 'insert', 'insert', 'remove_at', 'remove_at'])
+        self.stats['list.' + m] += 1
+        if m == 'extend':
+            more = self.without(v, lambda: self.expr(recv.t, r.choice([0, 1, 1, 2]), True))
+            return [['expr', E('m', None, 'extend', recv, [more])]]
+        if m == 'truncate':
+            n = self.lit(r.choice([-1, 0, 1, 2, 3, 5, 100])) if r.random() < 0.6 else self.clamp_to(self.without(v, lambda: self.expr(I64, 1, True)), self.lit(6))
+            return [['expr', E('m', None, 'truncate', recv, [n])]]
+        if m == 'insert':
+            item = self.without(v, lambda: self.expr(el, r.choice([0, 1, 1, 2]), True))
+            x = r.random()
+            if x < 0.06:
+                self.stats['deliberate stop'] += 1
+                return [['expr', E('m', None, 'insert', recv, [self.lit(r.choice([-1, 1, 3, 9])), item])]]
+            if x < 0.5:
+                # The receiver is read inside its own call, for a number.
+                at = self.clamp_to(self.without(v, lambda: self.expr(I64, 1, True)), E('bin', I64, '+', self.len_of(recv), self.lit(1)))
+                return [['expr', E('m', None, 'insert', recv, [at, item])]]
+            name = self.fresh()
+            at = self.clamp_to(self.without(v, lambda: self.expr(I64, 1, True)), E('bin', I64, '+', self.len_of(recv), self.lit(1)))
+            return [['let', name, False, False, I64, at], ['expr', E('m', None, 'insert', recv, [E('var', I64, name), item])]]
+        at = self.clamp_to(self.without(v, lambda: self.expr(I64, 1, True)), self.len_of(recv))
+        take = E('m', el, 'remove_at', recv, [at])
+        guard = E('bin', BOOL, '>', self.len_of(recv), self.lit(0))
+        x = r.random()
+        if x < 0.05:
+            self.stats['deliberate stop'] += 1
+            return [['expr', E('m', el, 'remove_at', copy.deepcopy(recv), [self.len_of(recv)])]]
+        if x < 0.3:
+            return [['if', [[guard, [['expr', take]]]], None]]
+        name = self.fresh()
+        body = [['let', name, False, r.random() < 0.5, el, take]] + self.show(E('var', el, name), 2)
+        return [['if', [[guard, body]], None]]
+
+    KEYS = [b'a', b'b', b'ann', b'bob', b'', b'k1', b'k2', b'k10', b'key=value', b'zz', b'The quick brown fox', b' ']
+
+    def map_key(self):
+        r = self.r
+        x = r.random()
+        if x < 0.55:
+            return E('str', STR, r.choice(self.KEYS))
+        if x < 0.85:
+            return E('bin', STR, '+', E('str', STR, b'k'), E('builtin', STR, 'str', [E('bin', I64, '&', self.expr(I64, 1, False), self.lit(15))]))
+        return self.expr(STR, 1, False)
+
+    def s_map(self, d):
+        """A `Map[V]`: made, filled, read, copied and emptied."""
+        r = self.r
+        maps = [v for v in self.visible() if v.t[0] == 'map' and v.mut and not v.frozen]
+        out = []
+        if maps and r.random() < 0.6:
+            m = r.choice(maps)
+        else:
+            vt = r.choice([I64, I64, STR, STR, TList(I64), TList(STR), TOpt(I64), TStruct('Pair', I64, STR), self.unit,
+                           TList(TList(STR))])
+            name = self.fresh('m')
+            m = self.declare(name, TMap(vt), True)
+            out.append(['let', name, True, True, m.t, E('call', m.t, 'new_map', [])])
+            self.stats['Map made'] += 1
+        vt = m.t[1]
+        use = lambda: self.use(m)
+        value = lambda dd: self.without(m, lambda: self.expr(vt, dd, True))
+        for _ in range(r.randint(2, 8)):
+            op = r.choice(['set', 'set', 'set', 'get', 'get', 'has', 'len', 'remove', 'remove', 'keys', 'bulk', 'copy', 'drain'])
+            self.stats['Map.' + op] += 1
+            if op == 'set':
+                out.append(['expr', E('m', None, 'set', use(), [self.without(m, self.map_key), value(r.choice([0, 1, 1, 2]))])])
+            elif op == 'get':
+                got = self.fresh('b')
+                arms = [[('v', 'Some', [got]), self.show(E('var', vt, got), 2), False],
+                        [('v', 'None', []), [['print', E('str', STR, b'none')]], True]]
+                if r.random() < 0.5:
+                    arms.reverse()
+                out.append(['match', E('m', TOpt(vt), 'get', use(), [self.map_key()]), arms])
+            elif op == 'has':
+                out.append(['print', E('m', BOOL, 'has', use(), [self.map_key()])])
+            elif op == 'len':
+                out.append(['print', E('m', I64, 'len', use(), [])])
+            elif op == 'remove':
+                gone = E('m', BOOL, 'remove', use(), [self.without(m, self.map_key)])
+                if r.random() < 0.5:
+                    out.append(['print', gone])
+                else:
+                    name = self.fresh()
+                    self.declare(name, BOOL, False)
+                    out.append(['let', name, False, False, BOOL, gone])
+            elif op == 'keys':
+                keys = E('m', TList(STR), 'keys', use(), [])
+                if r.random() < 0.6:
+                    keys = E('m', TList(STR), 'sorted', keys, [])
+                out.append(['print', E('m', STR, 'join', keys, [E('str', STR, b',')])])
+            elif op in ('bulk', 'drain'):
+                # Many keys, so the table is built again more than once.
+                if self.loop > 0:
+                    continue
+                i = self.fresh('i')
+                n = r.choice([5, 9, 13, 30, 70, 120])
+                iv = lambda: E('var', I64, i)
+                key = E('bin', STR, '+', E('str', STR, r.choice([b'k', b'k', b'', b'key'])),
+                        E('builtin', STR, 'str', [iv() if r.random() < 0.7 else E('bin', I64, '%', iv(), self.lit(r.choice([3, 7, 16])))]))
+                self.scopes.append({})
+                try:
+                    self.declare(i, I64, False)
+                    if op == 'bulk':
+                        act = ['expr', E('m', None, 'set', use(), [key, value(r.choice([0, 0, 1]))])]
+                    else:
+                        act = ['expr', E('m', BOOL, 'remove', use(), [key])]
+                finally:
+                    self.scopes.pop()
+                out.append(['let', i, True, False, I64, self.lit(0)])
+                out.append(['while', E('bin', BOOL, '<', iv(), self.lit(n)),
+                            [act, ['assign', iv(), E('bin', I64, '+', iv(), self.lit(1))]]])
+                self.declare(i, I64, False)
+                out.append(['print', E('m', I64, 'len', use(), [])])
+            else:
+                name = self.fresh('m')
+                out.append(['let', name, True, r.random() < 0.5, m.t, use()])
+                self.declare(name, m.t, True)
+        if r.random() < 0.4:
+            out.extend(self.show(use(), 2))
+        return out
+
+    def elem_struct(self):
+        r = self.r
+        cands = [TStruct('Pair', I64, I64), TStruct('Box', I64), TStruct('Pair', I64, STR), TStruct('Box', STR),
+                 TStruct('Pair', STR, I64)]
+        for kind, name in self.d.order:
+            if kind == 'struct' and not self.d.structs[name][0] and any(ft == I64 for _, ft in self.d.structs[name][1]):
+                cands += [TStruct(name)] * 2
+        return r.choice(cands)
+
+    def s_elems(self, d):
+        """Many reads and writes of `xs[i]`, `xs[i].field` and `xs[i][j]` with
+        the same index in straight-line code, between calls, pushes, pops and
+        assignments to the index and to the list."""
+        r = self.r
+        shape = r.choice(['i64', 'i64', 'i64', 'struct', 'struct', 'struct', 'nested', 'nested', 'str'])
+        el = {'i64': I64, 'nested': TList(I64), 'str': STR}.get(shape) or self.elem_struct()
+        lt = TList(el)
+        out = []
+        have = [v for v in self.visible() if v.t == lt and v.mut and not v.frozen and not v.fixed]
+        if have and r.random() < 0.5:
+            v = r.choice(have)
+        else:
+            name = self.fresh('xs')
+            first = E('llit', lt, self.items(el, r.randint(1, 4), 0, True))
+            v = self.declare(name, lt, True)
+            out.append(['let', name, True, True, lt, first])
+        self.stats['element access, ' + shape] += 1
+        i = self.fresh('i')
+        xs = lambda: self.use(v)
+        iv = lambda: E('var', I64, i)
+        rd = lambda: E('index', el, xs(), iv())
+        reclamp = lambda e: ['assign', iv(), self.clamp_to(e, self.len_of(xs()))]
+        i64_fields = [f for f, ft in self.d.fields(el) if ft == I64] if shape == 'struct' else []
+        str_fields = [f for f, ft in self.d.fields(el) if ft == STR] if shape == 'struct' else []
+        fld = lambda f, t=I64: E('field', t, rd(), f)
+
+        def num():
+            """A number read from the element."""
+            if shape == 'i64':
+                return rd()
+            if shape == 'struct':
+                if i64_fields:
+                    return fld(r.choice(i64_fields))
+                return E('m', I64, 'len', fld(r.choice(str_fields), STR), []) if str_fields else self.len_of(xs())
+            return E('m', I64, 'len', rd(), [])
+
+        def reads():
+            e = num()
+            for _ in range(r.randint(1, 3)):
+                other = num() if r.random() < 0.7 else self.expr(I64, 1, False)
+                e = E('bin', I64, r.choice(['+', '-', '*', '^', '&']), e, other) if r.random() < 0.5 else E('bin', I64, r.choice(['+', '-', '|']), other, e)
+            return e
+
+        def ops(n, depth):
+            body = []
+            for _ in range(n):
+                body.extend(op(depth))
+            return body
+
+        def op(depth):
+            kinds = ['read', 'read', 'read', 'write', 'write', 'write', 'let', 'call', 'push', 'pop', 'setidx', 'setidx',
+                     'setlist', 'twice', 'insert', 'cut', 'show']
+            if depth > 0:
+                kinds += ['if', 'if', 'while']
+            if self.try_on():
+                kinds += ['try', 'try']
+            k = r.choice(kinds)
+            self.stats['element ' + k] += 1
+            if k == 'read':
+                return [['print', reads()]]
+            if k == 'let':
+                name = self.fresh()
+                value = reads()
+                self.declare(name, I64, False)
+                return [['let', name, False, False, I64, value]]
+            if k == 'call':
+                x = r.random()
+                if x < 0.4:
+                    return [['print', E('bin', I64, '+', num(), E('bin', I64, '+', self.clamp_to(num(), self.lit(7)), num()))]]
+                return [['print', self.expr(r.choice([I64, STR, BOOL]), 2, False)]]
+            if k == 'write':
+                if shape == 'i64':
+                    return [['assign', rd(), reads() if r.random() < 0.7 else self.expr(I64, 1, False)]]
+                if shape == 'struct':
+                    x = r.random()
+                    if i64_fields and x < 0.55:
+                        return [['assign', fld(r.choice(i64_fields)), reads()]]
+                    if str_fields and x < 0.8:
+                        f = r.choice(str_fields)
+                        grow = ['assign', fld(f, STR), E('bin', STR, '+', fld(f, STR), self.expr(STR, 0, False))]
+                        return [['if', [[E('bin', BOOL, '<', E('m', I64, 'len', fld(f, STR), []), self.lit(40)), [grow]]], None]]
+                    return [['assign', rd(), self.without(v, lambda: self.leaf(el, True))]]
+                if shape == 'nested':
+                    x = r.random()
+                    j = self.fresh('i')
+                    inner = lambda: E('index', I64, rd(), E('var', I64, j))
+                    if x < 0.5:
+                        body = [['let', j, False, False, I64, self.clamp_to(self.expr(I64, 1, True), E('m', I64, 'len', rd(), []))],
+                                ['assign', inner(), E('bin', I64, '+', inner(), E('bin', I64, '*', inner(), self.lit(r.randint(1, 9))))],
+                                ['print', E('bin', I64, '-', inner(), E('bin', I64, '^', inner(), num()))]]
+                        return [['if', [[E('bin', BOOL, '>', E('m', I64, 'len', rd(), []), self.lit(0)), body]], None]]
+                    if x < 0.8:
+                        return [['expr', E('m', None, 'push', rd(), [self.expr(I64, 1, False) if r.random() < 0.5 else num()])]]
+                    return [['assign', rd(), self.without(v, lambda: self.expr(el, 1, True))]]
+                grow = ['assign', rd(), E('bin', STR, '+', rd(), self.expr(STR, 0, False) if r.random() < 0.7 else rd())]
+                if r.random() < 0.6:
+                    return [['if', [[E('bin', BOOL, '<', E('m', I64, 'len', rd(), []), self.lit(40)), [grow]]], None]]
+                return [['assign', rd(), self.expr(STR, 1, False)]]
+            if k == 'push':
+                if r.random() < 0.5:
+                    name = self.fresh()
+                    return [['let', name, False, False, el, rd()], ['expr', E('m', None, 'push', xs(), [E('var', el, name)])]]
+                return [['expr', E('m', None, 'push', xs(), [self.without(v, lambda: self.expr(el, 1, True))])]]
+            if k == 'pop':
+                return [['if', [[E('bin', BOOL, '>', self.len_of(xs()), self.lit(1)),
+                                 [['expr', E('m', el, 'pop', xs(), [])], reclamp(iv())]]], None]]
+            if k == 'setidx':
+                x = r.random()
+                if x < 0.04:
+                    self.stats['deliberate stop'] += 1
+                    return [['assign', iv(), E('bin', I64, '+', iv(), self.lit(r.choice([1, 1, 2, -1])))]]
+                if x < 0.5:
+                    return [reclamp(E('bin', I64, '+', iv(), self.lit(1)))]
+                return [reclamp(self.expr(I64, 1, True))]
+            if k == 'setlist':
+                fresh_list = self.without(v, lambda: E('llit', lt, self.items(el, r.randint(1, 3), 0, True)))
+                return [['assign', xs(), fresh_list], reclamp(iv())]
+            if k == 'twice':
+                if not self.selfable(el):
+                    return [['print', reads()]]
+                return [['expr', E('call', None, 'twice', [E('mut', lt, xs()), self.without(v, lambda: self.expr(el, 1, False))])]]
+            if k == 'insert':
+                item = self.without(v, lambda: self.expr(el, 1, True))
+                x = r.random()
+                if x < 0.5:
+                    return [['expr', E('m', None, 'insert', xs(), [iv(), item])]]
+                if x < 0.75:
+                    return [['expr', E('m', None, 'extend', xs(), [self.without(v, lambda: self.expr(lt, 1, True))])]]
+                return [['if', [[E('bin', BOOL, '>', self.len_of(xs()), self.lit(1)),
+                                 [['expr', E('m', el, 'remove_at', xs(), [iv()])], reclamp(iv())]]], None]]
+            if k == 'cut':
+                return [['expr', E('m', None, 'truncate', xs(), [E('bin', I64, '+', iv(), self.lit(r.choice([1, 1, 2, 5])))])]]
+            if k == 'show':
+                return self.show(rd(), 2)
+            if k == 'try':
+                try:
+                    src = self.try_expr(I64, 1)
+                except Retry:
+                    return [['print', reads()]]
+                self.stats['? between element reads'] += 1
+                e = E('bin', I64, '+', num(), E('bin', I64, '+', src, num()))
+                if r.random() < 0.5:
+                    return [['print', e]]
+                name = self.fresh()
+                self.declare(name, I64, False)
+                return [['let', name, False, False, I64, e]]
+            if k == 'if':
+                cond = E('bin', BOOL, r.choice(CMP), num(), reads() if r.random() < 0.5 else self.expr(I64, 1, False))
+                if r.random() < 0.3:
+                    cond = E(r.choice(['and', 'or']), BOOL, cond, self.expr(BOOL, 1, False))
+                self.scopes.append({})
+                try:
+                    then = ops(r.randint(1, 3), depth - 1)
+                finally:
+                    self.scopes.pop()
+                els = None
+                if r.random() < 0.4:
+                    self.scopes.append({})
+                    try:
+                        els = ops(r.randint(1, 3), depth - 1)
+                    finally:
+                        self.scopes.pop()
+                return [['if', [[cond, then]], els]]
+            # while
+            c = self.fresh('i')
+            cv = lambda: E('var', I64, c)
+            self.scopes.append({})
+            try:
+                body = ops(r.randint(1, 4), depth - 1)
+            finally:
+                self.scopes.pop()
+            body.append(['assign', cv(), E('bin', I64, '+', cv(), self.lit(1))])
+            return [['let', c, True, False, I64, self.lit(0)], ['while', E('bin', BOOL, '<', cv(), self.lit(r.choice([1, 2, 3, 4]))), body]]
+
+        self.scopes.append({})
+        try:
+            start = self.clamp_to(self.expr(I64, 1, True), self.len_of(xs()))
+            self.declare(i, I64, False)
+            body = [['let', i, True, False, I64, start]] + ops(r.randint(3, 10), 2)
+            if r.random() < 0.5:
+                body.extend(self.show(xs(), 2))
+        finally:
+            self.scopes.pop()
+        out.append(['if', [[E('bin', BOOL, '>', self.len_of(xs()), self.lit(0)), body]], None])
+        return out
+
+    def s_reads(self, d, only=None):
+        """A loop that reads a parameter or a variable many times: values that
+        arrive by reference are worth a register there."""
+        r = self.r
+        fits = []
+        for v in (only if only is not None else self.visible()):
+            if v.t in (TList(I64), STR) or (v.t[0] == 'struct' and any(ft == I64 for _, ft in self.d.fields(v.t))):
+                fits.append(v)
+        if not fits:
+            return self.s_print(d)
+        v = r.choice(fits)
+        self.stats['loop reading one value many times'] += 1
+        k = self.fresh('i')
+        acc = self.fresh()
+        kv = lambda: E('var', I64, k)
+        av = lambda: E('var', I64, acc)
+        if v.t[0] == 'struct':
+            fs = [f for f, ft in self.d.fields(v.t) if ft == I64]
+            term = lambda: E('field', I64, self.use(v), r.choice(fs))
+            bound = self.lit(r.choice([2, 3, 5]))
+        else:
+            term = lambda: E('index', I64, self.use(v), kv())
+            bound = E('m', I64, 'len', self.use(v), [])
+        e = term()
+        for _ in range(r.randint(1, 4)):
+            e = E('bin', I64, r.choice(['+', '-', '*', '^']), e, term() if r.random() < 0.7 else kv())
+        body = [['assign', av(), E('bin', I64, r.choice(['+', '^', '-']), av(), e)]]
+        if v.t == TList(I64) and v.mut and not v.frozen and r.random() < 0.5:
+            body.append(['assign', term(), E('bin', I64, '+', term(), kv())])
+        if r.random() < 0.3:
+            body.append(['if', [[E('bin', BOOL, r.choice(CMP), term(), av()), [['assign', av(), E('bin', I64, '+', av(), term())]]]], None])
+        body.append(['assign', kv(), E('bin', I64, '+', kv(), self.lit(1))])
+        self.declare(acc, I64, False)
+        return [['let', acc, True, False, I64, self.lit(0)], ['let', k, True, False, I64, self.lit(0)],
+                ['while', E('bin', BOOL, '<', kv(), bound), body], ['print', av()]]
+
     # ---- functions
 
     def function(self, name, ret='pick', params=None, size=None):
         r = self.r
         if ret == 'pick':
             ret = None if r.random() < 0.12 else self.pick_type()
+            if r.random() < 0.3:
+                # A function `?` can be used in, and on.
+                wraps = [t for t in self.closure if t[0] == 'enum' and t[1] in ('Option', 'Result')]
+                results = [t for t in wraps if t[1] == 'Result']
+                ret = r.choice(results) if results and r.random() < 0.5 else r.choice(wraps + [TOpt(I64), TOpt(STR)])
         rec = False
         if params is None:
             params = []
@@ -2068,6 +2950,26 @@ class Gen:
             self.declare(pn, pt, pm)
         self.scopes.append({})
         body = []
+        nums = [pn for pn, pt, pm in params if pt == I64 and not pm]
+        if ret is not None and nums and r.random() < 0.3:
+            # `if a < b { return c }` on parameters, before anything else.
+            self.stats['leading guard on parameters'] += 1
+            a = E('var', I64, r.choice(nums))
+            b = E('var', I64, r.choice(nums)) if len(nums) > 1 and r.random() < 0.6 else self.lit(r.choice([0, 1, 3, 10, -1]))
+            same_type = [pn for pn, pt, pm in params if pt == ret]
+            if same_type and r.random() < 0.6:
+                c = E('var', ret, r.choice(same_type))
+            elif ret in (I64, BOOL, STR):
+                c = self.leaf(ret, True)
+            else:
+                try:
+                    c = self.expr(ret, 0, True)
+                except Retry:
+                    c = None
+            if c is not None:
+                body.append(['if', [[E('bin', BOOL, r.choice(['<', '<', '<=', '>', '==', '!=']), a, b), [['return', c]]]], None])
+        if params and r.random() < 0.35:
+            body.extend(self.s_reads(1, only=[self.find(pn) for pn, _, _ in params]))
         n = self.budget
         rec_at = r.randrange(n) if rec else -1
         for i in range(n):
@@ -2085,7 +2987,16 @@ class Gen:
                 if pm:
                     body.extend(self.show(E('var', pt, pn), 2))
         if ret is not None:
-            body.append(['return', self.expr(ret, self.xd(), True)])
+            last = ['return', self.expr(ret, self.xd(), True)]
+            if r.random() < 0.05:
+                # `exit` ends a path, so nothing has to be returned after it.
+                self.stats['exit ending a path'] += 1
+                sure = E('bin', BOOL, '==', self.clamp_to(self.expr(I64, 0, False), self.lit(1)), self.lit(0))
+                cond = sure if r.random() < 0.85 else self.expr(BOOL, 1, False)
+                body.append(['if', [[cond, [last]]], None])
+                body.append(['exit', self.lit(r.randint(0, 200))])
+            else:
+                body.append(last)
         self.scopes = []
         f = Fn(name, [], params, ret, body)
         f.rec = rec
@@ -2137,6 +3048,36 @@ class Gen:
         self.prog.fns.append(Fn('big_frame', [], [(seed, I64, False)], I64, body))
         self.fns.append(Sig('big_frame', [(seed, I64, False)], I64))
         self.stats['large frame'] += 1
+
+    def forever(self):
+        """A function whose recursion never ends, and the statement that
+        calls it: the program must stop with `azol: stack overflow`."""
+        r = self.r
+        n = lambda: E('var', I64, 'n')
+        down = E('call', I64, 'forever', [E('bin', I64, '+', n(), self.lit(1))])
+        shape = r.choice(['plain', 'plain', 'frame', 'heap'])
+        self.stats['stack overflow, ' + shape] += 1
+        body = []
+        result = E('bin', I64, '+', down, self.lit(1))
+        if shape == 'frame':
+            prev = 'n'
+            for j in range(r.randint(20, 200)):
+                body.append(['let', 'w' + str(j), False, False, I64, E('bin', I64, '+', E('var', I64, prev), self.lit(j))])
+                prev = 'w' + str(j)
+            result = E('bin', I64, '+', down, E('var', I64, prev))
+        elif shape == 'heap':
+            body.append(['let', 'held', False, False, TList(I64), E('llit', TList(I64), [n(), n()])])
+            body.append(['let', 'text', False, False, STR, E('bin', STR, '+', E('str', STR, b'level '), E('builtin', STR, 'str', [n()]))])
+            result = E('bin', I64, '+', down, E('bin', I64, '+', E('index', I64, E('var', TList(I64), 'held'), self.lit(0)),
+                                                 E('m', I64, 'len', E('var', STR, 'text'), [])))
+        body.append(['return', result])
+        f = Fn('forever', [], [('n', I64, False)], I64, body, fixed=True)
+        f.forever = True
+        self.prog.fns.append(f)
+        # A hundred thousand live blocks are too many for the checking heap
+        # of the emulators; that shape runs natively only.
+        self.prog.native_only = shape == 'heap'
+        return ['print', E('call', I64, 'forever', [self.lit(r.randint(0, 9))])]
 
     def helpers(self):
         """The hand-written helper functions every program starts with."""
@@ -2214,8 +3155,12 @@ class Gen:
             self.big_frame()
         for _ in range(r.randint(2, 6)):
             self.function(self.fresh('f'))
+        forever = None
+        if r.random() < 0.012:
+            forever = self.forever()
         # main: many live variables first, then statements, then everything shown.
         self.ret = I64
+        self.in_main = True
         self.loop = 0
         self.scopes = [{}]
         body = []
@@ -2233,6 +3178,8 @@ class Gen:
         while self.budget > 0:
             self.budget -= 1
             body.extend(self.safe_stmt(self.nest))
+        if forever:
+            body.insert(r.randint(0, len(body)), forever)
         for v in list(self.scopes[0].values()):
             body.extend(self.show(self.use(v), 3))
         body.append(['return', self.expr(I64, 1, True)])
@@ -2249,6 +3196,22 @@ def generate(seed):
 # --------------------------------------------------------------- running
 
 EMU = None
+EMU_LINUX = None
+
+
+def load_linux_emulator():
+    """The checking emulator for aarch64-linux builds, when it is here."""
+    global EMU_LINUX
+    where = os.environ.get('AZOL_EMU_DIR', '/home/claude/ref')
+    if os.path.exists(os.path.join(where, 'emu_linux_arm64.py')):
+        if where not in sys.path:
+            sys.path.insert(0, where)
+        try:
+            import emu_linux_arm64
+            EMU_LINUX = emu_linux_arm64
+        except Exception as x:
+            print('note: the aarch64-linux emulator could not be loaded:', x)
+    return EMU_LINUX is not None
 
 
 def load_emulator():
@@ -2266,13 +3229,41 @@ def load_emulator():
 
 
 class Runner:
-    def __init__(self, azol, arm=True, limit=120000):
+    def __init__(self, azol, arm=True, limit=120000, linux_every=0):
         self.azol = azol
         self.arm = arm and EMU is not None
+        self.linux_every = linux_every if EMU_LINUX is not None else 0
         self.limit = limit
         self.dir = tempfile.mkdtemp(prefix='azol_fuzz_')
         self.ran_x64 = 0
         self.ran_arm = 0
+        self.ran_linux_arm = 0
+        self.checked = 0
+
+    def emulated(self, emu, path, target, label, want, info, **more):
+        """Builds for `target`, runs under `emu`; returns a finding or None."""
+        exe = os.path.join(self.dir, 'p.' + label)
+        state, text = self.build(path, exe, target)
+        if state != 'ok':
+            info['compiler'] = text
+            return label + '-compile-' + state + ': ' + first_error(text)
+        try:
+            out, code, trap, balanced, err, heap = emu.run(exe, max_insn=60_000_000, **more)
+        except Exception as x:
+            info[label] = ('', repr(x), 'emulator error')
+            return label + '-emulator-error'
+        info[label] = (out, err, code, trap, balanced, heap)
+        if trap is not None:
+            return label + '-trap'
+        if (loose(out), loose(err), code) != (loose(want[0]), loose(want[1]), want[2]):
+            return label + '-mismatch'
+        if heap.get('violations'):
+            return label + '-heap-violation'
+        if heap.get('leaks'):
+            return label + '-leak'
+        if not balanced:
+            return label + '-stack-unbalanced'
+        return None
 
     def build(self, src, out, target):
         try:
@@ -2320,30 +3311,19 @@ class Runner:
             return 'x64-crash (signal %d)' % -got[2], info
         if got != want:
             return 'x64-mismatch', info
-        if not self.arm:
+        self.checked += 1
+        if prog.native_only:
             return None, info
-        mac = os.path.join(self.dir, 'p.mac')
-        state, text = self.build(path, mac, 'aarch64-macos')
-        if state != 'ok':
-            info['compiler'] = text
-            return 'arm64-compile-' + state + ': ' + first_error(text), info
-        self.ran_arm += 1
-        try:
-            out, code, trap, balanced, err, heap = EMU.run(mac, max_insn=60_000_000)
-        except Exception as x:
-            info['arm64'] = ('', repr(x), 'emulator error')
-            return 'arm64-emulator-error', info
-        info['arm64'] = (out, err, code, trap, balanced, heap)
-        if trap is not None:
-            return 'arm64-trap', info
-        if (loose(out), loose(err), code) != (loose(want[0]), loose(want[1]), want[2]):
-            return 'arm64-mismatch', info
-        if heap.get('violations'):
-            return 'arm64-heap-violation', info
-        if heap.get('leaks'):
-            return 'arm64-leak', info
-        if not balanced:
-            return 'arm64-stack-unbalanced', info
+        if self.arm:
+            self.ran_arm += 1
+            kind = self.emulated(EMU, path, 'aarch64-macos', 'arm64', want, info)
+            if kind:
+                return kind, info
+        if self.linux_every and self.checked % self.linux_every == 0:
+            self.ran_linux_arm += 1
+            kind = self.emulated(EMU_LINUX, path, 'aarch64-linux', 'linux-arm64', want, info, repo=emulator_repo())
+            if kind:
+                return kind, info
         return None, info
 
 
@@ -2604,6 +3584,7 @@ def save_finding(folder, seed, kind, prog, info, reduced, rinfo, tries):
             f.write('=== oracle\n' + show_result(i.get('oracle')))
             f.write('\n=== x86_64-linux, run natively\n' + show_result(i.get('x64')))
             f.write('\n=== aarch64-macos, run under the checking emulator\n' + show_result(i.get('arm64')))
+            f.write('\n=== aarch64-linux, run under its checking emulator\n' + show_result(i.get('linux-arm64')))
             if 'compiler' in i:
                 f.write('\n=== compiler\n' + i['compiler'])
     with open(os.path.join(where, 'info.txt'), 'w') as f:
@@ -2617,8 +3598,9 @@ def main():
     ap.add_argument('--count', type=int, default=200, help='how many programs to run')
     ap.add_argument('--seed', type=int, default=1, help='the first seed; program i uses seed + i')
     ap.add_argument('--minutes', type=float, default=25, help='stop fuzzing after this long')
-    ap.add_argument('--azol', default=os.path.join(REPO, 'target', 'release', 'azol'), help='the compiler to test')
+    ap.add_argument('--azol', default=os.path.join(REPO, 'azol'), help='the compiler to test (default: ./azol, which `sh build.sh` makes)')
     ap.add_argument('--no-arm', action='store_true', help='skip the arm64 build and the emulator')
+    ap.add_argument('--linux-arm-every', type=int, default=8, help='also build every Nth program for aarch64-linux and run it under its emulator (0: never)')
     ap.add_argument('--no-reduce', action='store_true', help='save findings without shrinking them')
     ap.add_argument('--findings', default=os.path.join(HERE, 'findings'), help='where findings are saved')
     ap.add_argument('--max-findings', type=int, default=40, help='stop after this many findings')
@@ -2631,10 +3613,12 @@ def main():
         print(render(generate(a.show)[0]))
         return 0
     if not os.path.exists(a.azol):
-        print('no compiler at ' + a.azol + '; run `cargo build --release` first')
+        print('no compiler at ' + a.azol + '; run `sh build.sh` first')
         return 2
     have_emu = (not a.no_arm) and load_emulator()
-    runner = Runner(a.azol, arm=have_emu)
+    if not a.no_arm and a.linux_arm_every:
+        load_linux_emulator()
+    runner = Runner(a.azol, arm=have_emu, linux_every=a.linux_arm_every)
     if a.only is not None:
         try:
             prog, _ = generate(a.only)
@@ -2647,6 +3631,7 @@ def main():
             print('=== oracle\n' + show_result(info.get('oracle')))
             print('=== x86_64-linux\n' + show_result(info.get('x64')))
             print('=== aarch64-macos\n' + show_result(info.get('arm64')))
+            print('=== aarch64-linux\n' + show_result(info.get('linux-arm64')))
             print(info.get('compiler', ''))
         return 0 if kind in (None, 'skip') else 1
 
@@ -2693,8 +3678,8 @@ def main():
             print('%d programs, %d findings, %d skipped, %.0f s' % (ran, len(found), skipped, time.time() - start), flush=True)
     took = time.time() - start
     print()
-    print('programs run: %d (x86_64-linux: %d, aarch64-macos under the emulator: %d), skipped: %d, seeds %d..%d, %.0f s'
-          % (ran, runner.ran_x64, runner.ran_arm, skipped, a.seed, seed - 1, took))
+    print('programs run: %d (x86_64-linux: %d, aarch64-macos under the emulator: %d, aarch64-linux under the emulator: %d), skipped: %d, seeds %d..%d, %.0f s'
+          % (ran, runner.ran_x64, runner.ran_arm, runner.ran_linux_arm, skipped, a.seed, seed - 1, took))
     print('programs that ended in a predicted run-time stop or wrote to stderr: %d' % stops)
     if broken:
         print('programs the oracle rejected (generator bugs): %d' % broken)

@@ -1,0 +1,430 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// What the passes ask about the shape of a function: who jumps to a
+// block, the order to visit blocks in, which block dominates which,
+// where the loops are, and which values are alive at the edges of each
+// block. All of it is computed from the function as it is now and is
+// out of date as soon as a pass changes a jump or a block; a pass that
+// does so calls `ir_cfg` again.
+//
+//   predecessors   For block `b`, the `pred_n[b]` entries of `pred_blk`
+//                  and `pred_edge` from `pred_s[b]`: the block each way
+//                  in comes from, and its edge. A block that jumps to
+//                  `b` twice is there twice.
+//   order          `rpo` is the blocks that can be reached from the
+//                  entry, in reverse postorder: a block comes after
+//                  everything that dominates it. `rpo_at[b]` is its
+//                  place there, or -1 for a block that cannot be reached.
+//   dominators     `idom[b]` is the closest block every path from the
+//                  entry to `b` goes through; the entry's is itself, an
+//                  unreachable block's is -1. `dom_depth[b]` counts the
+//                  steps up to the entry. (Cooper, Harvey and Kennedy,
+//                  "A Simple, Fast Dominance Algorithm".)
+//   loops          A loop is a block (its header) with a jump back to
+//                  it from a block it dominates (a latch), and every
+//                  block that can reach a latch without passing the
+//                  header. `loop_parent` is the loop directly around
+//                  it, or -1; `loop_depth` is 1 for an outermost loop.
+//                  `blk_loop[b]` is the innermost loop `b` is in, or -1.
+//                  A jump backwards to a block that does not dominate
+//                  its source is no loop: it is counted in
+//                  `irreducible`, and a pass that needs loops leaves
+//                  such a function alone.
+
+struct IrCfg {
+    pred_s: List[i64]
+    pred_n: List[i64]
+    pred_blk: List[i64]
+    pred_edge: List[i64]
+    rpo: List[i64]
+    rpo_at: List[i64]
+    idom: List[i64]
+    dom_depth: List[i64]
+    loop_header: List[i64]
+    loop_parent: List[i64]
+    loop_depth: List[i64]
+    // The blocks of loop `l`: `loop_bn[l]` entries of `loop_blocks`
+    // from `loop_bs[l]`; the header is the first. In the same way its
+    // latches and its exits, the blocks outside it that it jumps to.
+    loop_bs: List[i64]
+    loop_bn: List[i64]
+    loop_blocks: List[i64]
+    loop_ls: List[i64]
+    loop_ln: List[i64]
+    loop_latches: List[i64]
+    loop_xs: List[i64]
+    loop_xn: List[i64]
+    loop_exits: List[i64]
+    blk_loop: List[i64]
+    irreducible: i64
+}
+
+// The closest block that dominates both `a` and `b`.
+fn ir_cfg_intersect(idom: List[i64], rpo_at: List[i64], a: i64, b: i64) -> i64 {
+    var x = a
+    var y = b
+    while x != y {
+        while rpo_at[x] > rpo_at[y] {
+            x = idom[x]
+        }
+        while rpo_at[y] > rpo_at[x] {
+            y = idom[y]
+        }
+    }
+    return x
+}
+
+fn ir_cfg(f: IrFunc) -> IrCfg {
+    let blocks = f.blk_first.len()
+    // Predecessors: count, then fill.
+    var pred_n = 0.filled(blocks)
+    for b in f.order {
+        let last = f.blk_last[b]
+        if last >= 0 {
+            var e = f.ins_es[last]
+            let end = e + f.ins_en[last]
+            while e < end {
+                pred_n[f.edge_blk[e]] = pred_n[f.edge_blk[e]] + 1
+                e = e + 1
+            }
+        }
+    }
+    var pred_s = 0.filled(blocks)
+    var total = 0
+    var b = 0
+    while b < blocks {
+        pred_s[b] = total
+        total = total + pred_n[b]
+        pred_n[b] = 0
+        b = b + 1
+    }
+    var pred_blk = 0.filled(total)
+    var pred_edge = 0.filled(total)
+    for from in f.order {
+        let last = f.blk_last[from]
+        if last >= 0 {
+            var e = f.ins_es[last]
+            let end = e + f.ins_en[last]
+            while e < end {
+                let to = f.edge_blk[e]
+                pred_blk[pred_s[to] + pred_n[to]] = from
+                pred_edge[pred_s[to] + pred_n[to]] = e
+                pred_n[to] = pred_n[to] + 1
+                e = e + 1
+            }
+        }
+    }
+    // Postorder by a walk with its own stack: a block, and the next of
+    // its edges to follow.
+    var rpo_at = (-1).filled(blocks)
+    var post: List[i64] = []
+    var seen = false.filled(blocks)
+    var stack_blk: List[i64] = []
+    var stack_edge: List[i64] = []
+    if f.order.len() > 0 {
+        let entry = f.order[0]
+        seen[entry] = true
+        stack_blk.push(entry)
+        stack_edge.push(0)
+    }
+    while stack_blk.len() > 0 {
+        let top = stack_blk.len() - 1
+        let at = stack_blk[top]
+        let last = f.blk_last[at]
+        var edges = 0
+        if last >= 0 {
+            edges = f.ins_en[last]
+        }
+        if stack_edge[top] < edges {
+            // The last way out first, so that in the finished order the
+            // first way out of a block comes right after it.
+            let to = f.edge_blk[f.ins_es[last] + edges - 1 - stack_edge[top]]
+            stack_edge[top] = stack_edge[top] + 1
+            if !seen[to] {
+                seen[to] = true
+                stack_blk.push(to)
+                stack_edge.push(0)
+            }
+        } else {
+            post.push(at)
+            stack_blk.pop()
+            stack_edge.pop()
+        }
+    }
+    let rpo = post.reversed()
+    var i = 0
+    while i < rpo.len() {
+        rpo_at[rpo[i]] = i
+        i = i + 1
+    }
+    // Dominators.
+    var idom = (-1).filled(blocks)
+    if rpo.len() > 0 {
+        idom[rpo[0]] = rpo[0]
+    }
+    var changed = true
+    while changed {
+        changed = false
+        i = 1
+        while i < rpo.len() {
+            let at = rpo[i]
+            var best = -1
+            var k = 0
+            while k < pred_n[at] {
+                let from = pred_blk[pred_s[at] + k]
+                if idom[from] >= 0 {
+                    if best < 0 {
+                        best = from
+                    } else {
+                        best = ir_cfg_intersect(idom, rpo_at, from, best)
+                    }
+                }
+                k = k + 1
+            }
+            if best != idom[at] {
+                idom[at] = best
+                changed = true
+            }
+            i = i + 1
+        }
+    }
+    var dom_depth = 0.filled(blocks)
+    i = 1
+    while i < rpo.len() {
+        dom_depth[rpo[i]] = dom_depth[idom[rpo[i]]] + 1
+        i = i + 1
+    }
+    var cfg = IrCfg {
+        pred_s: pred_s,
+        pred_n: pred_n,
+        pred_blk: pred_blk,
+        pred_edge: pred_edge,
+        rpo: rpo,
+        rpo_at: rpo_at,
+        idom: idom,
+        dom_depth: dom_depth,
+        loop_header: [],
+        loop_parent: [],
+        loop_depth: [],
+        loop_bs: [],
+        loop_bn: [],
+        loop_blocks: [],
+        loop_ls: [],
+        loop_ln: [],
+        loop_latches: [],
+        loop_xs: [],
+        loop_xn: [],
+        loop_exits: [],
+        blk_loop: (-1).filled(blocks),
+        irreducible: 0
+    }
+    ir_cfg_loops(f, mut cfg)
+    return cfg
+}
+
+// Whether every path from the entry to `b` goes through `a`. A block
+// dominates itself. False when either cannot be reached.
+fn ir_dominates(cfg: IrCfg, a: i64, b: i64) -> bool {
+    if cfg.rpo_at[a] < 0 || cfg.rpo_at[b] < 0 {
+        return false
+    }
+    var at = b
+    while cfg.dom_depth[at] > cfg.dom_depth[a] {
+        at = cfg.idom[at]
+    }
+    return at == a
+}
+
+// Headers are taken in reverse postorder, so a loop is found before the
+// loops inside it.
+fn ir_cfg_loops(f: IrFunc, cfg: mut IrCfg) {
+    let blocks = f.blk_first.len()
+    // The loop a block was last put in while a body is collected.
+    var mark = (-1).filled(blocks)
+    var work: List[i64] = []
+    var i = 0
+    while i < cfg.rpo.len() {
+        let header = cfg.rpo[i]
+        i = i + 1
+        var latches: List[i64] = []
+        var k = 0
+        while k < cfg.pred_n[header] {
+            let from = cfg.pred_blk[cfg.pred_s[header] + k]
+            k = k + 1
+            if cfg.rpo_at[from] < 0 || cfg.rpo_at[from] < cfg.rpo_at[header] {
+                continue
+            }
+            if !ir_dominates(cfg, header, from) {
+                cfg.irreducible = cfg.irreducible + 1
+                continue
+            }
+            if !latches.contains(from) {
+                latches.push(from)
+            }
+        }
+        if latches.len() == 0 {
+            continue
+        }
+        let id = cfg.loop_header.len()
+        cfg.loop_header.push(header)
+        cfg.loop_parent.push(cfg.blk_loop[header])
+        if cfg.blk_loop[header] < 0 {
+            cfg.loop_depth.push(1)
+        } else {
+            cfg.loop_depth.push(cfg.loop_depth[cfg.blk_loop[header]] + 1)
+        }
+        cfg.loop_ls.push(cfg.loop_latches.len())
+        cfg.loop_ln.push(latches.len())
+        cfg.loop_bs.push(cfg.loop_blocks.len())
+        cfg.loop_blocks.push(header)
+        mark[header] = id
+        for latch in latches {
+            cfg.loop_latches.push(latch)
+            if mark[latch] != id {
+                mark[latch] = id
+                cfg.loop_blocks.push(latch)
+                work.push(latch)
+            }
+        }
+        while work.len() > 0 {
+            let at = work.pop()
+            k = 0
+            while k < cfg.pred_n[at] {
+                let from = cfg.pred_blk[cfg.pred_s[at] + k]
+                if cfg.rpo_at[from] >= 0 && mark[from] != id {
+                    mark[from] = id
+                    cfg.loop_blocks.push(from)
+                    work.push(from)
+                }
+                k = k + 1
+            }
+        }
+        cfg.loop_bn.push(cfg.loop_blocks.len() - cfg.loop_bs[id])
+        cfg.loop_xs.push(cfg.loop_exits.len())
+        var exits: List[i64] = []
+        k = cfg.loop_bs[id]
+        while k < cfg.loop_blocks.len() {
+            let inside = cfg.loop_blocks[k]
+            cfg.blk_loop[inside] = id
+            let last = f.blk_last[inside]
+            if last >= 0 {
+                var e = f.ins_es[last]
+                let end = e + f.ins_en[last]
+                while e < end {
+                    if mark[f.edge_blk[e]] != id && !exits.contains(f.edge_blk[e]) {
+                        exits.push(f.edge_blk[e])
+                    }
+                    e = e + 1
+                }
+            }
+            k = k + 1
+        }
+        for out in exits {
+            cfg.loop_exits.push(out)
+        }
+        cfg.loop_xn.push(exits.len())
+    }
+}
+
+// Whether block `b` is in loop `l` or in a loop inside it.
+fn ir_in_loop(cfg: IrCfg, b: i64, l: i64) -> bool {
+    var at = cfg.blk_loop[b]
+    while at >= 0 {
+        if at == l {
+            return true
+        }
+        at = cfg.loop_parent[at]
+    }
+    return false
+}
+
+// ---- liveness -------------------------------------------------------------------
+
+// Which values are alive on the way into each block and on the way out
+// of it, as one bit per value: `words` 64-bit words for every block.
+// A parameter of a block is defined at its top, so it is not alive on
+// the way in; an argument of an edge is used at the end of the block
+// the edge leaves.
+struct IrLive {
+    words: i64
+    live_in: List[i64]
+    live_out: List[i64]
+}
+
+fn ir_live_in(live: IrLive, b: i64, v: i64) -> bool {
+    return live.live_in[b * live.words + (v >> 6)] >> (v & 63) & 1 != 0
+}
+
+fn ir_live_out(live: IrLive, b: i64, v: i64) -> bool {
+    return live.live_out[b * live.words + (v >> 6)] >> (v & 63) & 1 != 0
+}
+
+fn ir_liveness(f: IrFunc, cfg: IrCfg) -> IrLive {
+    let blocks = f.blk_first.len()
+    let words = (f.val_ty.len() + 63) / 64
+    // `used`: values a block reads before it defines them. `defined`:
+    // values it defines, its parameters among them.
+    var used = 0.filled(blocks * words)
+    var defined = 0.filled(blocks * words)
+    for b in cfg.rpo {
+        let base = b * words
+        var k = 0
+        while k < f.blk_pn[b] {
+            let v = f.bparams[f.blk_ps[b] + k]
+            defined[base + (v >> 6)] = defined[base + (v >> 6)] | 1 << (v & 63)
+            k = k + 1
+        }
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            let n = ir_operand_count(f, ins)
+            k = 0
+            while k < n {
+                let x = ir_operand(f, ins, k)
+                if x >= 0 && defined[base + (x >> 6)] >> (x & 63) & 1 == 0 {
+                    used[base + (x >> 6)] = used[base + (x >> 6)] | 1 << (x & 63)
+                }
+                k = k + 1
+            }
+            k = 0
+            while k < f.ins_rn[ins] {
+                let v = f.results[f.ins_rs[ins] + k]
+                defined[base + (v >> 6)] = defined[base + (v >> 6)] | 1 << (v & 63)
+                k = k + 1
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    var live_in = 0.filled(blocks * words)
+    var live_out = 0.filled(blocks * words)
+    var changed = true
+    while changed {
+        changed = false
+        var i = cfg.rpo.len() - 1
+        while i >= 0 {
+            let b = cfg.rpo[i]
+            let base = b * words
+            let last = f.blk_last[b]
+            var w = 0
+            while w < words {
+                var out = 0
+                if last >= 0 {
+                    var e = f.ins_es[last]
+                    let end = e + f.ins_en[last]
+                    while e < end {
+                        out = out | live_in[f.edge_blk[e] * words + w]
+                        e = e + 1
+                    }
+                }
+                let into = used[base + w] | out & (defined[base + w] ^ -1)
+                if out != live_out[base + w] || into != live_in[base + w] {
+                    live_out[base + w] = out
+                    live_in[base + w] = into
+                    changed = true
+                }
+                w = w + 1
+            }
+            i = i - 1
+        }
+    }
+    return IrLive { words: words, live_in: live_in, live_out: live_out }
+}

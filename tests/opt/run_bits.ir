@@ -1,0 +1,11 @@
+; run: main 12 10
+; out: => 8, 14, 6
+; run: main -1 255
+; out: => 255, -1, -256
+fn main(p0: i64, p1: i64) -> i64, i64, i64 {
+b0:
+    v0 = and p0, p1
+    v1 = or p0, p1
+    v2 = xor p0, p1
+    ret v0, v1, v2
+}

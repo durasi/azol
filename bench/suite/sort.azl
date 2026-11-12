@@ -1,0 +1,68 @@
+// sort: a hand-written quicksort.
+// Algorithm: Hoare partition around the middle element, recursing on both
+// halves; then a sampled checksum and a check that the list is ordered.
+// Sizes: 3,000,000 numbers below 1,000,000; small: 200,000.
+// Output: checksum + 1 when ordered.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+fn quicksort(xs: mut List[i64], low: i64, high: i64) {
+    if low >= high {
+        return
+    }
+    let pivot = xs[(low + high) / 2]
+    var i = low
+    var j = high
+    while i <= j {
+        while xs[i] < pivot {
+            i = i + 1
+        }
+        while xs[j] > pivot {
+            j = j - 1
+        }
+        if i <= j {
+            let held = xs[i]
+            xs[i] = xs[j]
+            xs[j] = held
+            i = i + 1
+            j = j - 1
+        }
+    }
+    quicksort(mut xs, low, j)
+    quicksort(mut xs, i, high)
+}
+
+fn main() {
+    let count = size(3000000, 200000)
+    var xs: List[i64] = []
+    var seed = 42
+    var n = 0
+    while n < count {
+        seed = seed * 48271 % 2147483647
+        xs.push(seed % 1000000)
+        n = n + 1
+    }
+    quicksort(mut xs, 0, count - 1)
+    var checksum = 0
+    var k = 0
+    while k < count {
+        checksum = checksum + xs[k] * (k % 7)
+        k = k + 1000
+    }
+    var ordered = 1
+    var m = 1
+    while m < count {
+        if xs[m - 1] > xs[m] {
+            ordered = 0
+        }
+        m = m + 1
+    }
+    print(checksum + ordered)
+}

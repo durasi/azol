@@ -1,0 +1,25 @@
+# From the tests of the first compiler: src/parser.rs, `binary_operators_are_left_associative`.
+==== 1
+---- file a.azl (no newline at end)
+fn t() {
+x = a - b - c
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  x = (- (- a b) c)
+---- stderr
+parsed 3 lines into 8 nodes
+==== 2
+---- file a.azl (no newline at end)
+fn t() {
+x = a / b * c % d
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  x = (% (* (/ a b) c) d)
+---- stderr
+parsed 3 lines into 10 nodes

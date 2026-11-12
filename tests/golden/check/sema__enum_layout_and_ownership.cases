@@ -1,0 +1,27 @@
+# From the tests of the first compiler: src/sema.rs, `enum_layout_and_ownership`.
+==== 1
+---- file a.azl (no newline at end)
+enum Shape {
+ Circle(i64)
+ Rect(i64, i64)
+ Empty
+}
+struct Named {
+ name: Option[str]
+ id: i64
+}
+fn main() {
+ let a: Option[i64] = None
+ let b: Result[Shape, str] = Err("no")
+ let c: Option[i64] = Some(1)
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 14 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 71ba800845f1a4979bc2272b420ec138392810096d58bec047d36ba8b6786b51
+x86_64-linux 41f79a39aeec798914c1485ac9eb6236f31fa4f5e16f2288b80a21a29bf26850
+aarch64-linux 28e0a34a152412e7962fa1ee09750894a9cb7fa9a70b43765dd3edb9348179df

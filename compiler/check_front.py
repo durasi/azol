@@ -8,7 +8,7 @@ Rust tool adds to standard error and the error code it puts before a
 message are left out of the comparison.
 
 It is run on every .azl file of tests/programs, tests/multi, examples,
-this folder and src/prelude.azl, on bench/generated/big.azl, and on
+this folder and lib/prelude.azl, on bench/generated/big.azl, and on
 deliberately broken texts: one or more for every message the lexer and
 the parser can give, and a set of examples damaged at regular places.
 
@@ -21,13 +21,17 @@ does the same in a fraction of a second. The timings printed at the end
 are of the work alone (`--time`: nothing is printed), best of five runs.
 
 `azol-front` is built for x86-64 Linux and run directly, so this script
-needs such a machine. Build the Rust compiler first: cargo build --release
+needs such a machine. The compiler it compares with is the oracle: `--oracle <path>`, or see
+compiler/oracle.py for the one taken when none is given.
 """
 import glob, os, platform, re, shutil, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-AZOL = os.path.join(ROOT, "target", "release", "azol")
+sys.path.insert(0, HERE)
+import oracle  # noqa: E402
+
+AZOL = oracle.path()
 BIG = os.path.join(ROOT, "bench", "generated", "big.azl")
 SOURCES = ["front_main.azl", "driver.azl", "token.azl", "lexer.azl", "ast.azl", "parser.azl", "dump.azl"]
 MODES = ["lex", "parse"]
@@ -243,7 +247,7 @@ def main():
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         sys.exit("check_front.py runs azol-front directly and so needs x86-64 Linux")
     if not os.path.exists(AZOL):
-        sys.exit("build the compiler first: cargo build --release")
+        sys.exit(oracle.missing())
     work = tempfile.mkdtemp(prefix="azol-check-front-")
     try:
         return check(work, "--quick" in sys.argv[1:])
@@ -258,7 +262,7 @@ def check(work, quick):
         sys.exit("azol-front does not build:\n" + built.stderr.decode(errors="replace"))
 
     files = []
-    for pattern in ["tests/programs/*.azl", "tests/multi/*/*.azl", "examples/*.azl", "compiler/*.azl", "src/prelude.azl"]:
+    for pattern in ["tests/programs/*.azl", "tests/multi/*/*.azl", "examples/*.azl", "compiler/*.azl", "lib/prelude.azl"]:
         files += sorted(glob.glob(os.path.join(ROOT, pattern)))
     if not files:
         sys.exit("no programs found")

@@ -19,27 +19,10 @@ fn read_or_exit(path: str) -> str {
 // in the whole text, or an empty message when there is none.
 fn parse_part(p: mut Parser, start: i64, len: i64) -> ParseError {
     p.tokens = new_tokens()
-    if start == 0 && len == p.src.len() {
-        match lex(p.src, mut p.tokens) {
-            Some(found) => return ParseError { message: found.message, offset: found.offset }
-            None => {}
-        }
-    } else {
-        let text = p.src.slice(start, start + len)
-        match lex(text, mut p.tokens) {
-            Some(found) => return ParseError { message: found.message, offset: found.offset + start }
-            None => {}
-        }
-        // Positions are offsets in the whole text.
-        var i = 0
-        var count = p.tokens.starts.len()
-        if start == 0 {
-            count = 0
-        }
-        while i < count {
-            p.tokens.starts[i] = p.tokens.starts[i] + start
-            i = i + 1
-        }
+    // Positions are offsets in the whole text.
+    match lex_part(p.src, start, start + len, mut p.tokens) {
+        Some(found) => return ParseError { message: found.message, offset: found.offset }
+        None => {}
     }
     parse_tokens(mut p)
     if p.failed {

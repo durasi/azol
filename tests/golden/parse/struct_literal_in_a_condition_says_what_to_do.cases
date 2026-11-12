@@ -1,0 +1,31 @@
+# From the tests of the first compiler: src/parser.rs, `struct_literal_in_a_condition_says_what_to_do`.
+==== 1
+---- file a.azl (no newline at end)
+fn t() {
+if a == b {
+x = 1
+}
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  if (== a b)
+    x = 1
+---- stderr
+parsed 5 lines into 8 nodes
+==== 2
+---- file a.azl (no newline at end)
+fn t() {
+if a {
+b.c(1)
+}
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  if a
+    (call b.c 1)
+---- stderr
+parsed 5 lines into 8 nodes

@@ -1,0 +1,15 @@
+; Without a sign, -1 is the largest number.
+; run: main -1 1
+; out: => false, false, true, true
+; run: main 1 -1
+; out: => true, true, false, false
+; run: main 9 9
+; out: => false, true, false, true
+fn main(p0: i64, p1: i64) -> bool, bool, bool, bool {
+b0:
+    v0 = ult p0, p1
+    v1 = ule p0, p1
+    v2 = ugt p0, p1
+    v3 = uge p0, p1
+    ret v0, v1, v2, v3
+}

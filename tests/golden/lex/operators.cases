@@ -1,0 +1,27 @@
+# From the tests of the first compiler: src/lexer.rs, `operators`.
+==== 1
+---- file a.azl (no newline at end)
+= == != < <= > >= -> => + - * / % ! && ||
+---- run lex a.azl
+---- exit 0
+---- stdout
+   1:1    Assign     =
+   1:3    Eq         ==
+   1:6    NotEq      !=
+   1:9    Lt         <
+   1:11   LtEq       <=
+   1:14   Gt         >
+   1:16   GtEq       >=
+   1:19   Arrow      ->
+   1:22   FatArrow   =>
+   1:25   Plus       +
+   1:27   Minus      -
+   1:29   Star       *
+   1:31   Slash      /
+   1:33   Percent    %
+   1:35   Bang       !
+   1:37   AndAnd     &&
+   1:40   OrOr       ||
+   1:42   Eof        
+---- stderr
+lexed 41 bytes, 1 lines, 18 tokens

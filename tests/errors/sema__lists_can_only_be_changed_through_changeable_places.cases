@@ -1,0 +1,268 @@
+# From the tests of the first compiler: src/sema.rs, `lists_can_only_be_changed_through_changeable_places`.
+==== 1
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+let xs = [1]
+xs.push(2)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0401]: cannot change `xs`: declare it with `var` to make it changeable
+  --> a.azl:20:1
+   |
+20 | xs.push(2)
+   | ^
+---- asserted 20:1 cannot change `xs`: declare it with `var` to make it changeable
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0401","message":"cannot change `xs`: declare it with `var` to make it changeable","file":"a.azl","line":20,"column":1,"end_line":20,"end_column":3,"source":"xs.push(2)","rule":"A variable declared with `let` never changes; only one declared with `var` can be assigned, grown or passed as `mut`.","help":"Declare the variable with `var` instead of `let`.","fix":{"file":"a.azl","line":19,"column":1,"end_line":19,"end_column":4,"replacement":"var"}}
+{"summary":{"errors":1,"files":1}}
+==== 2
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+let xs = [1]
+xs[0] = 2
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0401]: cannot change `xs`: declare it with `var` to make it changeable
+  --> a.azl:20:1
+   |
+20 | xs[0] = 2
+   | ^
+---- asserted 20:1 cannot change `xs`: declare it with `var` to make it changeable
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0401","message":"cannot change `xs`: declare it with `var` to make it changeable","file":"a.azl","line":20,"column":1,"end_line":20,"end_column":3,"source":"xs[0] = 2","rule":"A variable declared with `let` never changes; only one declared with `var` can be assigned, grown or passed as `mut`.","help":"Declare the variable with `var` instead of `let`.","fix":{"file":"a.azl","line":19,"column":1,"end_line":19,"end_column":4,"replacement":"var"}}
+{"summary":{"errors":1,"files":1}}
+==== 3
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+let xs = [1]
+let x = xs.pop()
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0401]: cannot change `xs`: declare it with `var` to make it changeable
+  --> a.azl:20:9
+   |
+20 | let x = xs.pop()
+   |         ^
+---- asserted 20:9 cannot change `xs`: declare it with `var` to make it changeable
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0401","message":"cannot change `xs`: declare it with `var` to make it changeable","file":"a.azl","line":20,"column":9,"end_line":20,"end_column":11,"source":"let x = xs.pop()","rule":"A variable declared with `let` never changes; only one declared with `var` can be assigned, grown or passed as `mut`.","help":"Declare the variable with `var` instead of `let`.","fix":{"file":"a.azl","line":19,"column":1,"end_line":19,"end_column":4,"replacement":"var"}}
+{"summary":{"errors":1,"files":1}}
+==== 4
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+make().push(1)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0407]: `push` changes the list, so it needs a variable or a part of a variable
+  --> a.azl:19:1
+   |
+19 | make().push(1)
+   | ^
+---- asserted 19:1 `push` changes the list, so it needs a variable or a part of a variable
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0407","message":"`push` changes the list, so it needs a variable or a part of a variable","file":"a.azl","line":19,"column":1,"end_line":19,"end_column":5,"source":"make().push(1)","rule":"Only a variable, a field of one or an element of one can be changed; a computed value has no owner to change.","help":"Store the value in a `var` first."}
+{"summary":{"errors":1,"files":1}}
+==== 5
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn f(xs: List[i64]) {
+ xs.push(1)
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0402]: cannot change `xs`: a parameter is read-only unless it is declared `mut`
+  --> a.azl:19:2
+   |
+19 |  xs.push(1)
+   |  ^
+---- asserted 19:2 cannot change `xs`: a parameter is read-only unless it is declared `mut`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0402","message":"cannot change `xs`: a parameter is read-only unless it is declared `mut`","file":"a.azl","line":19,"column":2,"end_line":19,"end_column":4,"source":" xs.push(1)","rule":"A function can change an argument only through a parameter declared `mut`, and the caller then writes `mut` too."}
+{"summary":{"errors":1,"files":1}}
+==== 6
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+let xs = [1]
+grow(mut xs)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0401]: cannot pass `xs` as `mut`: declare it with `var` to make it changeable
+  --> a.azl:20:6
+   |
+20 | grow(mut xs)
+   |      ^
+---- asserted 20:6 cannot pass `xs` as `mut`: declare it with `var` to make it changeable
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0401","message":"cannot pass `xs` as `mut`: declare it with `var` to make it changeable","file":"a.azl","line":20,"column":6,"end_line":20,"end_column":9,"source":"grow(mut xs)","rule":"A variable declared with `let` never changes; only one declared with `var` can be assigned, grown or passed as `mut`.","help":"Declare the variable with `var` instead of `let`.","fix":{"file":"a.azl","line":19,"column":1,"end_line":19,"end_column":4,"replacement":"var"}}
+{"summary":{"errors":1,"files":1}}
+==== 7
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+for x in [1, 2] {
+x = 3
+}
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0403]: cannot change `x`: a loop variable or pattern binding is read-only
+  --> a.azl:20:1
+   |
+20 | x = 3
+   | ^
+---- asserted 20:1 cannot change `x`: a loop variable or pattern binding is read-only
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0403","message":"cannot change `x`: a loop variable or pattern binding is read-only","file":"a.azl","line":20,"column":1,"end_line":20,"end_column":2,"source":"x = 3","rule":"The variable of a `for` loop and the names bound by a pattern are read-only views of the value they come from."}
+{"summary":{"errors":1,"files":1}}

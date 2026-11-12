@@ -1,0 +1,1239 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The intermediate form of the optimising back end (`azol build -O`),
+// as docs/design/optimizer.md section 3 specifies it: SSA with block
+// parameters, a control-flow graph of basic blocks, one function at a
+// time. This file holds the data structures, the builder that the
+// lowering stage and the passes use, and what every pass needs: the
+// operands of an instruction by position, uses, replacing a value,
+// removing instructions and blocks, splitting an edge.
+//
+// Everything is an index into parallel lists; nothing is allocated per
+// node. The four kinds of index:
+//
+//   value        A number from 0 up. The parameters of the function are
+//                the values 0 to `param_count - 1` (`p0`, `p1`, ... in
+//                the text form); every other value `param_count + N` is
+//                `vN`. `val_ty` is its type, or -1 when the number is
+//                not in use. A value is defined once: by a parameter of
+//                the function, by a parameter of a block (`val_blk`) or
+//                by an instruction (`val_ins`).
+//   instruction  A row of the `ins_*` lists. The instructions of a block
+//                are a chain through `ins_prev` and `ins_next`, so that
+//                one can be put in or taken out anywhere. A removed
+//                instruction keeps its row with the operation IR_NONE.
+//   block        A row of the `blk_*` lists. `order` lists the blocks
+//                that exist, in layout order; its first is the entry.
+//   edge         A row of the `edge_*` lists: one way out of a block's
+//                last instruction, with the arguments it passes to the
+//                parameters of its target. A `jump` has one edge, a `br`
+//                two (taken, not taken), a `switch` one for every case
+//                and one more for the default, which comes last.
+//
+// An operand of an instruction is either a value (0 or more) or a
+// constant, which is written as -(k + 2) for entry k of `consts`, so
+// that `add v2, 1` needs no instruction for the 1. -1 means "nothing".
+// `ir_const(f, n)` makes a constant operand, `ir_is_const(x)` tests for
+// one and `ir_const_value(f, x)` reads it.
+//
+// The operands of any instruction can be gone through by position with
+// `ir_operand_count`, `ir_operand` and `ir_set_operand`: first the
+// fixed ones (`ins_a`, `ins_b`, `ins_c`), then the arguments of a call
+// or the values of a `ret`, then the arguments of every edge.
+
+// ---- types --------------------------------------------------------------
+
+// The types a value can have.
+const IR_I64 = 0
+const IR_BOOL = 1
+const IR_PTR = 2
+// Widths that only a `load` or a `store` can name. The loaded value is
+// an `i64`, extended from that width with or without its sign.
+const IR_I8 = 3
+const IR_U8 = 4
+const IR_I32 = 5
+const IR_U32 = 6
+const IR_U64 = 7
+const IR_TYPE_COUNT = 8
+
+fn ir_type_name(ty: i64) -> str {
+    match ty {
+        0 => return "i64"
+        1 => return "bool"
+        2 => return "ptr"
+        3 => return "i8"
+        4 => return "u8"
+        5 => return "i32"
+        6 => return "u32"
+        7 => return "u64"
+        _ => return "?"
+    }
+}
+
+// How many bytes a `load` or `store` of this width touches.
+fn ir_type_bytes(ty: i64) -> i64 {
+    if ty == IR_I8 || ty == IR_U8 {
+        return 1
+    }
+    if ty == IR_I32 || ty == IR_U32 {
+        return 4
+    }
+    return 8
+}
+
+// The type of the value a `load` of this width gives.
+fn ir_loaded_type(ty: i64) -> i64 {
+    if ty == IR_BOOL || ty == IR_PTR {
+        return ty
+    }
+    return IR_I64
+}
+
+// ---- operations -----------------------------------------------------------
+
+const IR_NONE = 0
+const IR_ICONST = 1
+const IR_BCONST = 2
+const IR_ADDR = 3
+const IR_ADD = 4
+const IR_SUB = 5
+const IR_MUL = 6
+const IR_SDIV = 7
+const IR_SREM = 8
+const IR_AND = 9
+const IR_OR = 10
+const IR_XOR = 11
+const IR_SHL = 12
+const IR_SAR = 13
+const IR_SHR = 14
+const IR_UMULH = 15
+const IR_SMULH = 16
+const IR_NEG = 17
+const IR_EQ = 18
+const IR_NE = 19
+const IR_SLT = 20
+const IR_SLE = 21
+const IR_SGT = 22
+const IR_SGE = 23
+const IR_ULT = 24
+const IR_ULE = 25
+const IR_UGT = 26
+const IR_UGE = 27
+const IR_SELECT = 28
+const IR_EXT8U = 29
+const IR_EXT8S = 30
+const IR_EXT32U = 31
+const IR_EXT32S = 32
+const IR_TRUNC8 = 33
+const IR_TRUNC32 = 34
+const IR_LOAD = 35
+const IR_STORE = 36
+const IR_FRAME = 37
+const IR_GEP = 38
+const IR_CALL = 39
+const IR_CALLRT = 40
+const IR_JUMP = 41
+const IR_BR = 42
+const IR_SWITCH = 43
+const IR_RET = 44
+const IR_TRAP = 45
+const IR_OP_COUNT = 46
+
+fn ir_op_name(op: i64) -> str {
+    match op {
+        1 => return "iconst"
+        2 => return "bconst"
+        3 => return "addr"
+        4 => return "add"
+        5 => return "sub"
+        6 => return "mul"
+        7 => return "sdiv"
+        8 => return "srem"
+        9 => return "and"
+        10 => return "or"
+        11 => return "xor"
+        12 => return "shl"
+        13 => return "sar"
+        14 => return "shr"
+        15 => return "umulh"
+        16 => return "smulh"
+        17 => return "neg"
+        18 => return "eq"
+        19 => return "ne"
+        20 => return "slt"
+        21 => return "sle"
+        22 => return "sgt"
+        23 => return "sge"
+        24 => return "ult"
+        25 => return "ule"
+        26 => return "ugt"
+        27 => return "uge"
+        28 => return "select"
+        29 => return "ext8u"
+        30 => return "ext8s"
+        31 => return "ext32u"
+        32 => return "ext32s"
+        33 => return "trunc8"
+        34 => return "trunc32"
+        35 => return "load"
+        36 => return "store"
+        37 => return "frame"
+        38 => return "gep"
+        39 => return "call"
+        40 => return "callrt"
+        41 => return "jump"
+        42 => return "br"
+        43 => return "switch"
+        44 => return "ret"
+        45 => return "trap"
+        _ => return "?"
+    }
+}
+
+fn ir_is_binary(op: i64) -> bool {
+    return op >= IR_ADD && op <= IR_SMULH || op >= IR_EQ && op <= IR_UGE
+}
+
+fn ir_is_compare(op: i64) -> bool {
+    return op >= IR_EQ && op <= IR_UGE
+}
+
+fn ir_is_unary(op: i64) -> bool {
+    return op == IR_NEG || op >= IR_EXT8U && op <= IR_TRUNC32
+}
+
+// The last instruction of every block is one of these, and no other
+// instruction is.
+fn ir_is_terminator(op: i64) -> bool {
+    return op >= IR_JUMP && op <= IR_TRAP
+}
+
+// How many of `ins_a`, `ins_b`, `ins_c` the operation uses.
+fn ir_fixed_operands(op: i64) -> i64 {
+    if ir_is_binary(op) || op == IR_STORE || op == IR_GEP {
+        return 2
+    }
+    if ir_is_unary(op) || op == IR_LOAD || op == IR_BR || op == IR_SWITCH {
+        return 1
+    }
+    if op == IR_SELECT {
+        return 3
+    }
+    return 0
+}
+
+// True for an instruction that can be dropped when nothing uses its
+// result: it changes nothing and cannot stop the program.
+fn ir_is_pure(op: i64) -> bool {
+    return op >= IR_ICONST && op <= IR_TRUNC32 || op == IR_LOAD || op == IR_FRAME || op == IR_GEP
+}
+
+// ---- stops ----------------------------------------------------------------
+
+const IR_TRAP_INDEX = 0
+const IR_TRAP_DIVIDE = 1
+const IR_TRAP_POP = 2
+const IR_TRAP_SLICE = 3
+const IR_TRAP_CHR = 4
+const IR_TRAP_MEMORY = 5
+// A check that the optimiser removed and that fired after all
+// (`-O --keep-checks`, section 9.3 of the design).
+const IR_TRAP_INTERNAL = 6
+const IR_TRAP_COUNT = 7
+
+fn ir_trap_name(kind: i64) -> str {
+    match kind {
+        0 => return "index"
+        1 => return "divide"
+        2 => return "pop"
+        3 => return "slice"
+        4 => return "chr"
+        5 => return "memory"
+        6 => return "internal"
+        _ => return "?"
+    }
+}
+
+// What the program says on standard error when it stops this way; the
+// words are the runtimes' own.
+fn ir_trap_message(kind: i64) -> str {
+    match kind {
+        0 => return "azol: index out of range"
+        1 => return "azol: division by zero"
+        2 => return "azol: pop from an empty list"
+        3 => return "azol: slice out of range"
+        4 => return "azol: chr needs a number from 0 to 255"
+        5 => return "azol: out of memory"
+        _ => return "azol: internal error: a check that was removed has fired"
+    }
+}
+
+// ---- regions ----------------------------------------------------------------
+
+// What a `load` or a `store` may touch (section 3.4 of the design).
+const IR_REGION_FRAME = 1
+const IR_REGION_BUF = 2
+const IR_REGION_PARAM = 3
+const IR_REGION_RET = 4
+const IR_REGION_DATA = 5
+const IR_REGION_RT = 6
+
+// What a function may do to the value a by-reference parameter points
+// to: the bits of `param_fx`.
+const IR_FX_READ = 1
+const IR_FX_WRITE = 2
+const IR_FX_WRITEBUF = 4
+const IR_FX_RESIZE = 8
+const IR_FX_FREE = 16
+const IR_FX_ALL = 31
+
+// ---- runtime routines ---------------------------------------------------------
+
+// The routines a `callrt` can name. This table is the start of the one
+// the design calls `ir_rt.azl`: the lowering stage adds to it.
+const IR_RT_ALLOC = 0
+const IR_RT_REALLOC = 1
+const IR_RT_FREE = 2
+const IR_RT_MEMCPY = 3
+const IR_RT_PRINT_I64 = 4
+const IR_RT_PRINT_BOOL = 5
+const IR_RT_PRINT_STR = 6
+const IR_RT_EPRINT_STR = 7
+const IR_RT_STR_EQ = 8
+const IR_RT_STR_APPEND = 9
+const IR_RT_EXIT = 10
+const IR_RT_COUNT = 11
+
+fn ir_rt_name(id: i64) -> str {
+    match id {
+        0 => return "alloc"
+        1 => return "realloc"
+        2 => return "free"
+        3 => return "memcpy"
+        4 => return "print_i64"
+        5 => return "print_bool"
+        6 => return "print_str"
+        7 => return "eprint_str"
+        8 => return "str_eq"
+        9 => return "str_append"
+        10 => return "exit"
+        _ => return "?"
+    }
+}
+
+// The types of a routine's arguments, one letter each: `i` for `i64`,
+// `b` for `bool`, `p` for `ptr`.
+fn ir_rt_args(id: i64) -> str {
+    match id {
+        0 => return "i"
+        1 => return "pi"
+        2 => return "p"
+        3 => return "ppi"
+        4 => return "i"
+        5 => return "b"
+        6 => return "pi"
+        7 => return "pi"
+        8 => return "pipi"
+        9 => return "piipi"
+        10 => return "i"
+        _ => return ""
+    }
+}
+
+// The types of its results, in the same letters.
+fn ir_rt_results(id: i64) -> str {
+    match id {
+        0 => return "p"
+        1 => return "p"
+        8 => return "b"
+        9 => return "pii"
+        _ => return ""
+    }
+}
+
+// Whether a call of the routine can be seen from outside the program:
+// it prints, or ends the program. A check may not move across one.
+fn ir_rt_has_output(id: i64) -> bool {
+    return id >= IR_RT_PRINT_I64 && id <= IR_RT_EPRINT_STR || id == IR_RT_EXIT
+}
+
+// Whether the routine can stop the program (out of memory, `exit`).
+fn ir_rt_can_stop(id: i64) -> bool {
+    return id == IR_RT_ALLOC || id == IR_RT_REALLOC || id == IR_RT_STR_APPEND || id == IR_RT_EXIT
+}
+
+// Whether the routine changes the allocator's state (region `rt`).
+fn ir_rt_touches_rt(id: i64) -> bool {
+    return id <= IR_RT_FREE || id == IR_RT_STR_APPEND
+}
+
+fn ir_letter_type(letter: i64) -> i64 {
+    if letter == 'b' {
+        return IR_BOOL
+    }
+    if letter == 'p' {
+        return IR_PTR
+    }
+    return IR_I64
+}
+
+// ---- a function -----------------------------------------------------------------
+
+struct IrFunc {
+    name: str
+    // The parameters are the values 0 to `param_count - 1`.
+    param_count: i64
+    // For each parameter, the IR_FX_* bits; 0 for one that is not `ptr`.
+    param_fx: List[i64]
+    ret_ty: List[i64]
+    // The size in bytes of every frame object.
+    frames: List[i64]
+    // values
+    val_ty: List[i64]
+    val_ins: List[i64]
+    val_blk: List[i64]
+    // constants that operands refer to
+    consts: List[i64]
+    // instructions
+    ins_op: List[i64]
+    // The result type; for `load` and `store` the width.
+    ins_ty: List[i64]
+    ins_a: List[i64]
+    ins_b: List[i64]
+    ins_c: List[i64]
+    // `iconst`, `bconst`: the number. `addr`, `load`, `store`, `gep`:
+    // the offset. `frame`: the object. `call`: the entry of `callees`.
+    // `callrt`: the routine. `trap`: the kind.
+    ins_imm: List[i64]
+    // `gep`: the scale.
+    ins_imm2: List[i64]
+    // `load`, `store`: the region, an entry of the `reg_*` lists.
+    ins_reg: List[i64]
+    // The first result, or -1; all results are the `ins_rn` entries of
+    // `results` from `ins_rs`.
+    ins_res: List[i64]
+    ins_rs: List[i64]
+    ins_rn: List[i64]
+    // Arguments of a call and values of a `ret`: `ins_an` entries of
+    // `args` from `ins_as`.
+    ins_as: List[i64]
+    ins_an: List[i64]
+    // Ways out of a terminator: `ins_en` edges from `ins_es`.
+    ins_es: List[i64]
+    ins_en: List[i64]
+    ins_blk: List[i64]
+    ins_prev: List[i64]
+    ins_next: List[i64]
+    results: List[i64]
+    args: List[i64]
+    // edges
+    edge_blk: List[i64]
+    edge_key: List[i64]
+    edge_as: List[i64]
+    edge_an: List[i64]
+    // blocks
+    blk_first: List[i64]
+    blk_last: List[i64]
+    // Parameters of a block: `blk_pn` entries of `bparams` from `blk_ps`.
+    blk_ps: List[i64]
+    blk_pn: List[i64]
+    blk_live: List[bool]
+    bparams: List[i64]
+    order: List[i64]
+    // regions: kind, and the object, the parameter or the inner region
+    reg_kind: List[i64]
+    reg_n: List[i64]
+    // names of the functions this one calls
+    callees: List[str]
+}
+
+// Several functions and the read-only data they share. Functions are
+// added with `ir_add_func`, which keeps `index`, from a name to its
+// place in `funcs`.
+struct IrModule {
+    funcs: List[IrFunc]
+    data: str
+    index: Map[i64]
+}
+
+fn ir_new_func(name: str) -> IrFunc {
+    return IrFunc {
+        name: name,
+        param_count: 0,
+        param_fx: [],
+        ret_ty: [],
+        frames: [],
+        val_ty: [],
+        val_ins: [],
+        val_blk: [],
+        consts: [],
+        ins_op: [],
+        ins_ty: [],
+        ins_a: [],
+        ins_b: [],
+        ins_c: [],
+        ins_imm: [],
+        ins_imm2: [],
+        ins_reg: [],
+        ins_res: [],
+        ins_rs: [],
+        ins_rn: [],
+        ins_as: [],
+        ins_an: [],
+        ins_es: [],
+        ins_en: [],
+        ins_blk: [],
+        ins_prev: [],
+        ins_next: [],
+        results: [],
+        args: [],
+        edge_blk: [],
+        edge_key: [],
+        edge_as: [],
+        edge_an: [],
+        blk_first: [],
+        blk_last: [],
+        blk_ps: [],
+        blk_pn: [],
+        blk_live: [],
+        bparams: [],
+        order: [],
+        reg_kind: [],
+        reg_n: [],
+        callees: []
+    }
+}
+
+fn ir_new_module() -> IrModule {
+    return IrModule { funcs: [], data: "", index: new_map() }
+}
+
+fn ir_add_func(m: mut IrModule, f: IrFunc) {
+    m.index.set(f.name, m.funcs.len())
+    m.funcs.push(f)
+}
+
+// The function of that name, or -1.
+fn ir_find_func(m: IrModule, name: str) -> i64 {
+    match m.index.get(name) {
+        Some(at) => return at
+        None => return -1
+    }
+}
+
+// ---- operands ---------------------------------------------------------------
+
+// A constant as an operand.
+fn ir_const(f: mut IrFunc, n: i64) -> i64 {
+    f.consts.push(n)
+    return 0 - f.consts.len() - 1
+}
+
+fn ir_is_const(x: i64) -> bool {
+    return x < -1
+}
+
+fn ir_is_value(x: i64) -> bool {
+    return x >= 0
+}
+
+fn ir_const_value(f: IrFunc, x: i64) -> i64 {
+    return f.consts[0 - x - 2]
+}
+
+// The type of an operand; -1 for a constant, which fits `i64`, `bool`
+// (0 or 1) and, when it is 0, `ptr`.
+fn ir_operand_type(f: IrFunc, x: i64) -> i64 {
+    if x < 0 {
+        return -1
+    }
+    return f.val_ty[x]
+}
+
+// ---- values, parameters, regions ---------------------------------------------
+
+fn ir_new_value(f: mut IrFunc, ty: i64) -> i64 {
+    f.val_ty.push(ty)
+    f.val_ins.push(-1)
+    f.val_blk.push(-1)
+    return f.val_ty.len() - 1
+}
+
+// Adds a parameter to the function. All parameters come before the
+// first other value. `fx` is the IR_FX_* bits of a `ptr` parameter.
+fn ir_add_param(f: mut IrFunc, ty: i64, fx: i64) -> i64 {
+    let v = ir_new_value(mut f, ty)
+    f.param_count = f.param_count + 1
+    f.param_fx.push(fx)
+    return v
+}
+
+// A frame object of `bytes` bytes; `frame N` gives its address.
+fn ir_add_frame(f: mut IrFunc, bytes: i64) -> i64 {
+    f.frames.push(bytes)
+    return f.frames.len() - 1
+}
+
+// The region of that kind; `n` is the frame object, the parameter, or
+// for IR_REGION_BUF the region of the header that owns the buffer.
+fn ir_region(f: mut IrFunc, kind: i64, n: i64) -> i64 {
+    var i = 0
+    while i < f.reg_kind.len() {
+        if f.reg_kind[i] == kind && f.reg_n[i] == n {
+            return i
+        }
+        i = i + 1
+    }
+    f.reg_kind.push(kind)
+    f.reg_n.push(n)
+    return f.reg_kind.len() - 1
+}
+
+// Whether two regions can name the same memory (facts M1, M2 and M11
+// of the design; the facts about parameters are the checker's and are
+// already in the regions the lowering stage chose).
+fn ir_regions_overlap(f: IrFunc, a: i64, b: i64) -> bool {
+    return a == b
+}
+
+fn ir_callee(f: mut IrFunc, name: str) -> i64 {
+    var i = 0
+    while i < f.callees.len() {
+        if f.callees[i] == name {
+            return i
+        }
+        i = i + 1
+    }
+    f.callees.push(name)
+    return f.callees.len() - 1
+}
+
+// ---- blocks -------------------------------------------------------------------
+
+// A new, empty block at the end of the layout.
+fn ir_add_block(f: mut IrFunc) -> i64 {
+    f.blk_first.push(-1)
+    f.blk_last.push(-1)
+    f.blk_ps.push(f.bparams.len())
+    f.blk_pn.push(0)
+    f.blk_live.push(true)
+    f.order.push(f.blk_first.len() - 1)
+    return f.blk_first.len() - 1
+}
+
+// Adds a parameter to a block and gives its value. The parameters of
+// one block must be added one after the other, before any other block
+// gets one, or the block's list is moved to the end.
+fn ir_add_block_param(f: mut IrFunc, b: i64, ty: i64) -> i64 {
+    let v = ir_new_value(mut f, ty)
+    f.val_blk[v] = b
+    if f.blk_ps[b] + f.blk_pn[b] != f.bparams.len() {
+        let from = f.blk_ps[b]
+        f.blk_ps[b] = f.bparams.len()
+        var i = 0
+        while i < f.blk_pn[b] {
+            f.bparams.push(f.bparams[from + i])
+            i = i + 1
+        }
+    }
+    f.bparams.push(v)
+    f.blk_pn[b] = f.blk_pn[b] + 1
+    return v
+}
+
+fn ir_block_param(f: IrFunc, b: i64, k: i64) -> i64 {
+    return f.bparams[f.blk_ps[b] + k]
+}
+
+// The entry block.
+fn ir_entry(f: IrFunc) -> i64 {
+    return f.order[0]
+}
+
+// The last instruction of a block, which is its terminator once the
+// block is complete; -1 for an empty block.
+fn ir_terminator(f: IrFunc, b: i64) -> i64 {
+    return f.blk_last[b]
+}
+
+// ---- instructions ---------------------------------------------------------------
+
+// A new instruction that is in no block yet. Results, arguments and
+// edges are added afterwards.
+fn ir_make(f: mut IrFunc, op: i64, ty: i64, a: i64, b: i64, c: i64, imm: i64) -> i64 {
+    f.ins_op.push(op)
+    f.ins_ty.push(ty)
+    f.ins_a.push(a)
+    f.ins_b.push(b)
+    f.ins_c.push(c)
+    f.ins_imm.push(imm)
+    f.ins_imm2.push(0)
+    f.ins_reg.push(-1)
+    f.ins_res.push(-1)
+    f.ins_rs.push(f.results.len())
+    f.ins_rn.push(0)
+    f.ins_as.push(f.args.len())
+    f.ins_an.push(0)
+    f.ins_es.push(f.edge_blk.len())
+    f.ins_en.push(0)
+    f.ins_blk.push(-1)
+    f.ins_prev.push(-1)
+    f.ins_next.push(-1)
+    return f.ins_op.len() - 1
+}
+
+// Gives the newest instruction one more result, the existing value `v`.
+fn ir_add_result_value(f: mut IrFunc, ins: i64, v: i64) {
+    f.val_ins[v] = ins
+    f.results.push(v)
+    if f.ins_rn[ins] == 0 {
+        f.ins_res[ins] = v
+    }
+    f.ins_rn[ins] = f.ins_rn[ins] + 1
+}
+
+// Gives the newest instruction one more result of type `ty`.
+fn ir_add_result(f: mut IrFunc, ins: i64, ty: i64) -> i64 {
+    let v = ir_new_value(mut f, ty)
+    ir_add_result_value(mut f, ins, v)
+    return v
+}
+
+fn ir_result(f: IrFunc, ins: i64, k: i64) -> i64 {
+    return f.results[f.ins_rs[ins] + k]
+}
+
+// Gives the newest instruction one more argument (a call) or value (a
+// `ret`).
+fn ir_add_arg(f: mut IrFunc, ins: i64, x: i64) {
+    f.args.push(x)
+    f.ins_an[ins] = f.ins_an[ins] + 1
+}
+
+// Gives the newest instruction one more way out, to block `target`.
+// The edge's arguments are added with `ir_add_edge_arg`.
+fn ir_add_edge(f: mut IrFunc, ins: i64, target: i64, key: i64) -> i64 {
+    f.edge_blk.push(target)
+    f.edge_key.push(key)
+    f.edge_as.push(f.args.len())
+    f.edge_an.push(0)
+    f.ins_en[ins] = f.ins_en[ins] + 1
+    return f.edge_blk.len() - 1
+}
+
+// Gives the newest edge one more argument.
+fn ir_add_edge_arg(f: mut IrFunc, e: i64, x: i64) {
+    f.args.push(x)
+    f.edge_an[e] = f.edge_an[e] + 1
+}
+
+// Replaces all arguments of an edge.
+fn ir_set_edge_args(f: mut IrFunc, e: i64, values: List[i64]) {
+    f.edge_as[e] = f.args.len()
+    f.edge_an[e] = values.len()
+    for x in values {
+        f.args.push(x)
+    }
+}
+
+// Puts an instruction that is in no block at the end of block `b`.
+fn ir_link_end(f: mut IrFunc, b: i64, ins: i64) {
+    let last = f.blk_last[b]
+    f.ins_blk[ins] = b
+    f.ins_prev[ins] = last
+    f.ins_next[ins] = -1
+    if last < 0 {
+        f.blk_first[b] = ins
+    } else {
+        f.ins_next[last] = ins
+    }
+    f.blk_last[b] = ins
+}
+
+// Puts an instruction that is in no block just before instruction `at`.
+fn ir_link_before(f: mut IrFunc, at: i64, ins: i64) {
+    let b = f.ins_blk[at]
+    let before = f.ins_prev[at]
+    f.ins_blk[ins] = b
+    f.ins_prev[ins] = before
+    f.ins_next[ins] = at
+    f.ins_prev[at] = ins
+    if before < 0 {
+        f.blk_first[b] = ins
+    } else {
+        f.ins_next[before] = ins
+    }
+}
+
+// Takes an instruction out of its block without removing it; it can be
+// linked again elsewhere.
+fn ir_unlink(f: mut IrFunc, ins: i64) {
+    let b = f.ins_blk[ins]
+    if b < 0 {
+        return
+    }
+    let before = f.ins_prev[ins]
+    let after = f.ins_next[ins]
+    if before < 0 {
+        f.blk_first[b] = after
+    } else {
+        f.ins_next[before] = after
+    }
+    if after < 0 {
+        f.blk_last[b] = before
+    } else {
+        f.ins_prev[after] = before
+    }
+    f.ins_blk[ins] = -1
+    f.ins_prev[ins] = -1
+    f.ins_next[ins] = -1
+}
+
+// Removes an instruction for good. Its results stop existing; nothing
+// may use them any more.
+fn ir_remove(f: mut IrFunc, ins: i64) {
+    ir_unlink(mut f, ins)
+    var k = 0
+    while k < f.ins_rn[ins] {
+        let v = f.results[f.ins_rs[ins] + k]
+        f.val_ty[v] = -1
+        f.val_ins[v] = -1
+        k = k + 1
+    }
+    f.ins_op[ins] = IR_NONE
+    f.ins_res[ins] = -1
+    f.ins_rn[ins] = 0
+    f.ins_an[ins] = 0
+    f.ins_en[ins] = 0
+}
+
+// The type of the result of an instruction with one result.
+fn ir_result_type(f: IrFunc, op: i64, ty: i64, a: i64, b: i64) -> i64 {
+    if ir_is_compare(op) || op == IR_BCONST {
+        return IR_BOOL
+    }
+    if op == IR_ADDR || op == IR_FRAME || op == IR_GEP {
+        return IR_PTR
+    }
+    if op == IR_LOAD {
+        return ir_loaded_type(ty)
+    }
+    if op == IR_AND || op == IR_OR || op == IR_XOR {
+        // On two `bool` values these are the logical operations.
+        if ir_operand_type(f, a) == IR_BOOL || ir_operand_type(f, b) == IR_BOOL {
+            return IR_BOOL
+        }
+        return IR_I64
+    }
+    if op == IR_SELECT {
+        // `a` and `b` are the two choices here.
+        if a >= 0 {
+            return f.val_ty[a]
+        }
+        if b >= 0 {
+            return f.val_ty[b]
+        }
+        return IR_I64
+    }
+    return IR_I64
+}
+
+// ---- the builder ----------------------------------------------------------------
+//
+// Each of these adds one instruction at the end of block `b` and gives
+// its result (or the instruction, when it has no single result).
+
+fn ir_emit(f: mut IrFunc, b: i64, op: i64, ty: i64, x: i64, y: i64, z: i64, imm: i64) -> i64 {
+    let ins = ir_make(mut f, op, ty, x, y, z, imm)
+    var result_ty = ir_result_type(f, op, ty, x, y)
+    if op == IR_SELECT {
+        result_ty = ir_result_type(f, op, ty, y, z)
+    }
+    f.ins_ty[ins] = ty
+    if op != IR_LOAD {
+        f.ins_ty[ins] = result_ty
+    }
+    ir_link_end(mut f, b, ins)
+    return ir_add_result(mut f, ins, result_ty)
+}
+
+fn ir_iconst(f: mut IrFunc, b: i64, n: i64) -> i64 {
+    return ir_emit(mut f, b, IR_ICONST, IR_I64, -1, -1, -1, n)
+}
+
+fn ir_bconst(f: mut IrFunc, b: i64, value: bool) -> i64 {
+    var n = 0
+    if value {
+        n = 1
+    }
+    return ir_emit(mut f, b, IR_BCONST, IR_BOOL, -1, -1, -1, n)
+}
+
+// The address of byte `offset` of the read-only data.
+fn ir_addr(f: mut IrFunc, b: i64, offset: i64) -> i64 {
+    return ir_emit(mut f, b, IR_ADDR, IR_PTR, -1, -1, -1, offset)
+}
+
+// Any operation with two operands: arithmetic or a comparison.
+fn ir_binary(f: mut IrFunc, b: i64, op: i64, x: i64, y: i64) -> i64 {
+    return ir_emit(mut f, b, op, IR_I64, x, y, -1, 0)
+}
+
+// `neg`, the extensions and the truncations.
+fn ir_unary(f: mut IrFunc, b: i64, op: i64, x: i64) -> i64 {
+    return ir_emit(mut f, b, op, IR_I64, x, -1, -1, 0)
+}
+
+// `x` when `cond` is true, otherwise `y`.
+fn ir_select(f: mut IrFunc, b: i64, cond: i64, x: i64, y: i64) -> i64 {
+    return ir_emit(mut f, b, IR_SELECT, IR_I64, cond, x, y, 0)
+}
+
+fn ir_load(f: mut IrFunc, b: i64, ty: i64, p: i64, offset: i64, region: i64) -> i64 {
+    let v = ir_emit(mut f, b, IR_LOAD, ty, p, -1, -1, offset)
+    f.ins_reg[f.val_ins[v]] = region
+    return v
+}
+
+// Gives the instruction.
+fn ir_store(f: mut IrFunc, b: i64, ty: i64, p: i64, offset: i64, value: i64, region: i64) -> i64 {
+    let ins = ir_make(mut f, IR_STORE, ty, p, value, -1, offset)
+    f.ins_reg[ins] = region
+    ir_link_end(mut f, b, ins)
+    return ins
+}
+
+// The address of frame object `object`.
+fn ir_frame(f: mut IrFunc, b: i64, object: i64) -> i64 {
+    return ir_emit(mut f, b, IR_FRAME, IR_PTR, -1, -1, -1, object)
+}
+
+// `p + index * scale + offset`.
+fn ir_gep(f: mut IrFunc, b: i64, p: i64, index: i64, scale: i64, offset: i64) -> i64 {
+    let v = ir_emit(mut f, b, IR_GEP, IR_PTR, p, index, -1, offset)
+    f.ins_imm2[f.val_ins[v]] = scale
+    return v
+}
+
+// A call of another function of the program. Gives the instruction;
+// its results are `ir_result(f, ins, k)`.
+fn ir_call(f: mut IrFunc, b: i64, name: str, arguments: List[i64], result_types: List[i64]) -> i64 {
+    let callee = ir_callee(mut f, name)
+    let ins = ir_make(mut f, IR_CALL, IR_I64, -1, -1, -1, callee)
+    for x in arguments {
+        ir_add_arg(mut f, ins, x)
+    }
+    for ty in result_types {
+        ir_add_result(mut f, ins, ty)
+    }
+    ir_link_end(mut f, b, ins)
+    return ins
+}
+
+// A call of a runtime routine, one of IR_RT_*. Gives the instruction.
+fn ir_callrt(f: mut IrFunc, b: i64, routine: i64, arguments: List[i64]) -> i64 {
+    let ins = ir_make(mut f, IR_CALLRT, IR_I64, -1, -1, -1, routine)
+    for x in arguments {
+        ir_add_arg(mut f, ins, x)
+    }
+    let results = ir_rt_results(routine)
+    var k = 0
+    while k < results.len() {
+        ir_add_result(mut f, ins, ir_letter_type(results[k]))
+        k = k + 1
+    }
+    ir_link_end(mut f, b, ins)
+    return ins
+}
+
+// The terminators. Each gives the instruction.
+
+fn ir_jump(f: mut IrFunc, b: i64, target: i64, arguments: List[i64]) -> i64 {
+    let ins = ir_make(mut f, IR_JUMP, IR_I64, -1, -1, -1, 0)
+    let e = ir_add_edge(mut f, ins, target, 0)
+    for x in arguments {
+        ir_add_edge_arg(mut f, e, x)
+    }
+    ir_link_end(mut f, b, ins)
+    return ins
+}
+
+// To `taken` when `cond` is true, otherwise to `other`.
+fn ir_br(f: mut IrFunc, b: i64, cond: i64, taken: i64, taken_args: List[i64], other: i64, other_args: List[i64]) -> i64 {
+    let ins = ir_make(mut f, IR_BR, IR_I64, cond, -1, -1, 0)
+    let first = ir_add_edge(mut f, ins, taken, 0)
+    for x in taken_args {
+        ir_add_edge_arg(mut f, first, x)
+    }
+    let second = ir_add_edge(mut f, ins, other, 0)
+    for x in other_args {
+        ir_add_edge_arg(mut f, second, x)
+    }
+    ir_link_end(mut f, b, ins)
+    return ins
+}
+
+// A `switch` on `value` with no way out yet. Add the cases with
+// `ir_add_edge(f, ins, target, key)` and, last, the default with any
+// key; their arguments with `ir_add_edge_arg`.
+fn ir_switch(f: mut IrFunc, b: i64, value: i64) -> i64 {
+    let ins = ir_make(mut f, IR_SWITCH, IR_I64, value, -1, -1, 0)
+    ir_link_end(mut f, b, ins)
+    return ins
+}
+
+fn ir_ret(f: mut IrFunc, b: i64, values: List[i64]) -> i64 {
+    let ins = ir_make(mut f, IR_RET, IR_I64, -1, -1, -1, 0)
+    for x in values {
+        ir_add_arg(mut f, ins, x)
+    }
+    ir_link_end(mut f, b, ins)
+    return ins
+}
+
+// Stops the program; `kind` is one of IR_TRAP_*.
+fn ir_trap(f: mut IrFunc, b: i64, kind: i64) -> i64 {
+    let ins = ir_make(mut f, IR_TRAP, IR_I64, -1, -1, -1, kind)
+    ir_link_end(mut f, b, ins)
+    return ins
+}
+
+// ---- operands by position -------------------------------------------------------
+
+// How many operands the instruction has, of every sort.
+fn ir_operand_count(f: IrFunc, ins: i64) -> i64 {
+    var n = ir_fixed_operands(f.ins_op[ins]) + f.ins_an[ins]
+    var e = f.ins_es[ins]
+    let end = e + f.ins_en[ins]
+    while e < end {
+        n = n + f.edge_an[e]
+        e = e + 1
+    }
+    return n
+}
+
+// Where operand `k` is kept: 0, 1, 2 for `ins_a`, `ins_b`, `ins_c`,
+// otherwise 3 + its place in `args`.
+fn ir_operand_place(f: IrFunc, ins: i64, k: i64) -> i64 {
+    let fixed = ir_fixed_operands(f.ins_op[ins])
+    if k < fixed {
+        return k
+    }
+    var rest = k - fixed
+    if rest < f.ins_an[ins] {
+        return 3 + f.ins_as[ins] + rest
+    }
+    rest = rest - f.ins_an[ins]
+    var e = f.ins_es[ins]
+    while rest >= f.edge_an[e] {
+        rest = rest - f.edge_an[e]
+        e = e + 1
+    }
+    return 3 + f.edge_as[e] + rest
+}
+
+fn ir_operand(f: IrFunc, ins: i64, k: i64) -> i64 {
+    let place = ir_operand_place(f, ins, k)
+    if place == 0 {
+        return f.ins_a[ins]
+    }
+    if place == 1 {
+        return f.ins_b[ins]
+    }
+    if place == 2 {
+        return f.ins_c[ins]
+    }
+    return f.args[place - 3]
+}
+
+fn ir_set_operand(f: mut IrFunc, ins: i64, k: i64, x: i64) {
+    let place = ir_operand_place(f, ins, k)
+    if place == 0 {
+        f.ins_a[ins] = x
+    } else if place == 1 {
+        f.ins_b[ins] = x
+    } else if place == 2 {
+        f.ins_c[ins] = x
+    } else {
+        f.args[place - 3] = x
+    }
+}
+
+// ---- uses -------------------------------------------------------------------------
+
+// Who uses each value: for value `v`, the `count[v]` entries of `ins`
+// from `start[v]` are the instructions with `v` among their operands,
+// once for every operand that is `v`. Valid until the function changes.
+struct IrUses {
+    start: List[i64]
+    count: List[i64]
+    ins: List[i64]
+}
+
+fn ir_uses(f: IrFunc) -> IrUses {
+    let values = f.val_ty.len()
+    var count = 0.filled(values)
+    for b in f.order {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            let n = ir_operand_count(f, ins)
+            var k = 0
+            while k < n {
+                let x = ir_operand(f, ins, k)
+                if x >= 0 {
+                    count[x] = count[x] + 1
+                }
+                k = k + 1
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    var start = 0.filled(values)
+    var total = 0
+    var v = 0
+    while v < values {
+        start[v] = total
+        total = total + count[v]
+        count[v] = 0
+        v = v + 1
+    }
+    var users = 0.filled(total)
+    for b in f.order {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            let n = ir_operand_count(f, ins)
+            var k = 0
+            while k < n {
+                let x = ir_operand(f, ins, k)
+                if x >= 0 {
+                    users[start[x] + count[x]] = ins
+                    count[x] = count[x] + 1
+                }
+                k = k + 1
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    return IrUses { start: start, count: count, ins: users }
+}
+
+// Makes every instruction that uses value `old` use operand `new`
+// instead (a value or a constant). Gives the number of operands changed.
+fn ir_replace_value(f: mut IrFunc, old: i64, new: i64) -> i64 {
+    var changed = 0
+    var at = 0
+    while at < f.order.len() {
+        var ins = f.blk_first[f.order[at]]
+        while ins >= 0 {
+            let n = ir_operand_count(f, ins)
+            var k = 0
+            while k < n {
+                if ir_operand(f, ins, k) == old {
+                    ir_set_operand(mut f, ins, k, new)
+                    changed = changed + 1
+                }
+                k = k + 1
+            }
+            ins = f.ins_next[ins]
+        }
+        at = at + 1
+    }
+    return changed
+}
+
+// ---- changing the graph -------------------------------------------------------------
+
+// Removes a block and its instructions. Nothing may jump to it, and
+// nothing may use the values it defined.
+fn ir_remove_block(f: mut IrFunc, b: i64) {
+    var ins = f.blk_first[b]
+    while ins >= 0 {
+        let next = f.ins_next[ins]
+        ir_remove(mut f, ins)
+        ins = next
+    }
+    var k = 0
+    while k < f.blk_pn[b] {
+        let v = f.bparams[f.blk_ps[b] + k]
+        f.val_ty[v] = -1
+        f.val_blk[v] = -1
+        k = k + 1
+    }
+    f.blk_pn[b] = 0
+    f.blk_live[b] = false
+    var kept: List[i64] = []
+    for other in f.order {
+        if other != b {
+            kept.push(other)
+        }
+    }
+    f.order = kept
+}
+
+// Removes parameter `k` of a block and the argument every edge into
+// the block passes for it. Nothing may use the parameter's value.
+fn ir_remove_block_param(f: mut IrFunc, b: i64, k: i64) {
+    let v = f.bparams[f.blk_ps[b] + k]
+    f.val_ty[v] = -1
+    f.val_blk[v] = -1
+    var i = k
+    while i + 1 < f.blk_pn[b] {
+        f.bparams[f.blk_ps[b] + i] = f.bparams[f.blk_ps[b] + i + 1]
+        i = i + 1
+    }
+    f.blk_pn[b] = f.blk_pn[b] - 1
+    var at = 0
+    while at < f.order.len() {
+        let last = f.blk_last[f.order[at]]
+        at = at + 1
+        if last >= 0 {
+            var e = f.ins_es[last]
+            let end = e + f.ins_en[last]
+            while e < end {
+                if f.edge_blk[e] == b {
+                    var j = k
+                    while j + 1 < f.edge_an[e] {
+                        f.args[f.edge_as[e] + j] = f.args[f.edge_as[e] + j + 1]
+                        j = j + 1
+                    }
+                    f.edge_an[e] = f.edge_an[e] - 1
+                }
+                e = e + 1
+            }
+        }
+    }
+}
+
+// Puts a new block on edge `e`: the edge then goes to the new block
+// with no arguments, and the new block jumps on to the old target with
+// the arguments the edge had. Gives the new block, where a pass can
+// put instructions before the jump.
+fn ir_split_edge(f: mut IrFunc, e: i64) -> i64 {
+    let target = f.edge_blk[e]
+    let middle = ir_add_block(mut f)
+    let jump = ir_make(mut f, IR_JUMP, IR_I64, -1, -1, -1, 0)
+    let onward = ir_add_edge(mut f, jump, target, 0)
+    var k = 0
+    while k < f.edge_an[e] {
+        ir_add_edge_arg(mut f, onward, f.args[f.edge_as[e] + k])
+        k = k + 1
+    }
+    ir_link_end(mut f, middle, jump)
+    f.edge_blk[e] = middle
+    f.edge_an[e] = 0
+    return middle
+}
+
+// How many blocks, values and instructions the lists have room for;
+// some of them may no longer exist.
+fn ir_block_count(f: IrFunc) -> i64 {
+    return f.blk_first.len()
+}
+
+fn ir_value_count(f: IrFunc) -> i64 {
+    return f.val_ty.len()
+}
+
+fn ir_instruction_count(f: IrFunc) -> i64 {
+    return f.ins_op.len()
+}

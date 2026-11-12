@@ -1,0 +1,25 @@
+# From the tests of the first compiler: src/parser.rs, `items`.
+==== 1
+---- file a.azl (no newline at end)
+struct Pair[A, B] { first: A, second: B }
+
+enum Option[T] {
+  Some(T)
+  None
+}
+fn id[T](x: T) -> T {
+  return x
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+struct Pair[A, B]
+  first: A
+  second: B
+enum Option[T]
+  Some(T)
+  None
+fn id[T](x: T) -> T
+  return x
+---- stderr
+parsed 9 lines into 15 nodes

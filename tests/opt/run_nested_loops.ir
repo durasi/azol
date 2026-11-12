@@ -1,0 +1,27 @@
+; The sum of i * j for i and j from 1 to p0: (p0 (p0 + 1) / 2) squared.
+; run: main 4
+; out: => 100
+; run: main 0
+; out: => 0
+; run: main 10
+; out: => 3025
+fn main(p0: i64) -> i64 {
+b0:
+    jump b1(1, 0)
+b1(v0: i64, v1: i64):
+    v2 = sle v0, p0
+    br v2, b2(1, v1), b5
+b2(v3: i64, v4: i64):
+    v5 = sle v3, p0
+    br v5, b3, b4
+b3:
+    v6 = mul v0, v3
+    v7 = add v4, v6
+    v8 = add v3, 1
+    jump b2(v8, v7)
+b4:
+    v9 = add v0, 1
+    jump b1(v9, v4)
+b5:
+    ret v1
+}

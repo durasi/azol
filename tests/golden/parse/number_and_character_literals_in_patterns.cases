@@ -1,0 +1,29 @@
+# From the tests of the first compiler: src/parser.rs, `number_and_character_literals_in_patterns`.
+==== 1
+---- file a.azl (no newline at end)
+fn t() {
+match v {
+0x1F => a()
+-0b11 => b()
+'x' => c()
+'\n' => d()
+_ => e()
+}
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  match v
+    0x1F =>
+      (call a)
+    -0b11 =>
+      (call b)
+    'x' =>
+      (call c)
+    '\n' =>
+      (call d)
+    _ =>
+      (call e)
+---- stderr
+parsed 9 lines into 28 nodes

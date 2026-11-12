@@ -1,0 +1,164 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// A test of the builder and of the changes a pass makes to a function:
+// it builds functions without the text form, changes them, and prints
+// what it has after each step. tests/opt/run_opt_tests.py compares the
+// output with tests/opt/builder.expected.
+
+fn show(m: IrModule, title: str) {
+    print("== " + title)
+    let text = ir_print_module(m)
+    print(text.slice(0, text.len() - 1))
+    let problem = ir_verify_module(m)
+    if problem.len() > 0 {
+        print("verify: " + problem)
+    } else {
+        print("verify: ok")
+    }
+}
+
+fn run(m: IrModule, name: str, arguments: List[i64]) {
+    var mach = irm_new(m)
+    let returned = irm_run(mut mach, m, m.funcs[ir_find_func(m, name)], arguments)
+    if mach.failed {
+        print("run " + name + ": " + mach.message)
+    } else if returned.len() > 0 {
+        print("run " + name + ": " + str(returned[0]))
+    } else {
+        print("run " + name + ": nothing")
+    }
+}
+
+// The sum of the numbers below `p0`.
+fn build_sum() -> IrFunc {
+    var f = ir_new_func("sum_to")
+    let n = ir_add_param(mut f, IR_I64, 0)
+    f.ret_ty.push(IR_I64)
+    let entry = ir_add_block(mut f)
+    let header = ir_add_block(mut f)
+    let body = ir_add_block(mut f)
+    let done = ir_add_block(mut f)
+    let i = ir_add_block_param(mut f, header, IR_I64)
+    let total = ir_add_block_param(mut f, header, IR_I64)
+    let zero = ir_const(mut f, 0)
+    ir_jump(mut f, entry, header, [zero, zero])
+    let more = ir_binary(mut f, header, IR_SLT, i, n)
+    ir_br(mut f, header, more, body, [], done, [])
+    let sum = ir_binary(mut f, body, IR_ADD, total, i)
+    let one = ir_const(mut f, 1)
+    let next = ir_binary(mut f, body, IR_ADD, i, one)
+    ir_jump(mut f, body, header, [next, sum])
+    ir_ret(mut f, done, [total])
+    return f
+}
+
+// Stores 7 in a frame object, prints it, and gives sum_to(7).
+fn build_main() -> IrFunc {
+    var f = ir_new_func("main")
+    f.ret_ty.push(IR_I64)
+    let b = ir_add_block(mut f)
+    let object = ir_add_frame(mut f, 8)
+    let region = ir_region(mut f, IR_REGION_FRAME, object)
+    let p = ir_frame(mut f, b, object)
+    let seven = ir_const(mut f, 7)
+    ir_store(mut f, b, IR_I64, p, 0, seven, region)
+    let loaded = ir_load(mut f, b, IR_I64, p, 0, region)
+    ir_callrt(mut f, b, IR_RT_PRINT_I64, [loaded])
+    let call = ir_call(mut f, b, "sum_to", [loaded], [IR_I64])
+    let got = ir_result(f, call, 0)
+    ir_ret(mut f, b, [got])
+    return f
+}
+
+// One of every kind of instruction with a single result, to see the
+// type the builder gives each.
+fn build_kinds() -> IrFunc {
+    var f = ir_new_func("kinds")
+    let n = ir_add_param(mut f, IR_I64, 0)
+    let p = ir_add_param(mut f, IR_PTR, IR_FX_READ | IR_FX_WRITEBUF)
+    f.ret_ty.push(IR_I64)
+    let b = ir_add_block(mut f)
+    let two = ir_const(mut f, 2)
+    let ten = ir_iconst(mut f, b, 10)
+    let yes = ir_bconst(mut f, b, true)
+    let less = ir_binary(mut f, b, IR_ULT, n, ten)
+    let both = ir_binary(mut f, b, IR_AND, less, yes)
+    let mask = ir_binary(mut f, b, IR_AND, n, two)
+    let low = ir_unary(mut f, b, IR_EXT8S, mask)
+    let pick = ir_select(mut f, b, both, low, two)
+    let flag = ir_select(mut f, b, both, yes, less)
+    let at = ir_gep(mut f, b, p, pick, 8, 16)
+    let same = ir_binary(mut f, b, IR_EQ, at, p)
+    let own = ir_region(mut f, IR_REGION_PARAM, 1)
+    let buffer = ir_load(mut f, b, IR_PTR, p, 0, own)
+    let owned = ir_region(mut f, IR_REGION_BUF, own)
+    let byte = ir_load(mut f, b, IR_U8, buffer, 3, owned)
+    let text = ir_addr(mut f, b, 0)
+    let other = ir_add_block(mut f)
+    let last = ir_add_block(mut f)
+    let result = ir_add_block_param(mut f, last, IR_I64)
+    let choice = ir_switch(mut f, b, byte)
+    let first = ir_add_edge(mut f, choice, last, 65)
+    ir_add_edge_arg(mut f, first, pick)
+    ir_add_edge(mut f, choice, other, 0)
+    ir_trap(mut f, other, IR_TRAP_CHR)
+    ir_ret(mut f, last, [result])
+    // Mentioned so that nothing above is left without a use in the text.
+    print("types: " + ir_type_name(f.val_ty[flag]) + " " + ir_type_name(f.val_ty[same]) + " " + ir_type_name(f.val_ty[text]))
+    return f
+}
+
+fn main() {
+    var m = ir_new_module()
+    ir_add_func(mut m, build_sum())
+    show(m, "built")
+    run(m, "sum_to", [5])
+
+    // Who uses what.
+    let uses = ir_uses(m.funcs[0])
+    print("uses of p0: " + str(uses.count[0]) + ", of v0: " + str(uses.count[1]) + ", of v1: " + str(uses.count[2]) + ", of v4: " + str(uses.count[5]))
+    print("operands of the last jump: " + str(ir_operand_count(m.funcs[0], ir_terminator(m.funcs[0], 2))))
+
+    // A new block on the way out of the loop.
+    let branch = ir_terminator(m.funcs[0], 1)
+    let way_out = m.funcs[0].ins_es[branch] + 1
+    let middle = ir_split_edge(mut m.funcs[0], way_out)
+    show(m, "edge split, new block b" + str(middle))
+    run(m, "sum_to", [5])
+
+    // The last block takes the sum as a parameter.
+    let passed = ir_add_block_param(mut m.funcs[0], 3, IR_I64)
+    let onward = m.funcs[0].ins_es[ir_terminator(m.funcs[0], middle)]
+    ir_set_edge_args(mut m.funcs[0], onward, [2])
+    let last = ir_terminator(m.funcs[0], 3)
+    ir_set_operand(mut m.funcs[0], last, 0, passed)
+    show(m, "block parameter added")
+    run(m, "sum_to", [6])
+
+    // And no longer.
+    ir_replace_value(mut m.funcs[0], passed, 2)
+    ir_remove_block_param(mut m.funcs[0], 3, 0)
+    show(m, "block parameter removed")
+
+    // An instruction put in front of another, and taken out again.
+    let first = m.funcs[0].blk_first[2]
+    let dead = ir_make(mut m.funcs[0], IR_MUL, IR_I64, 1, 2, -1, 0)
+    ir_add_result(mut m.funcs[0], dead, IR_I64)
+    ir_link_before(mut m.funcs[0], first, dead)
+    show(m, "instruction inserted")
+    ir_remove(mut m.funcs[0], dead)
+
+    // A block nothing reaches, added and removed.
+    let extra = ir_add_block(mut m.funcs[0])
+    let nothing = ir_const(mut m.funcs[0], 0)
+    ir_ret(mut m.funcs[0], extra, [nothing])
+    print("blocks in the layout: " + str(m.funcs[0].order.len()))
+    ir_remove_block(mut m.funcs[0], extra)
+    show(m, "instruction and block removed")
+    run(m, "sum_to", [100])
+
+    ir_add_func(mut m, build_main())
+    ir_add_func(mut m, build_kinds())
+    show(m, "three functions")
+    run(m, "main", [])
+}

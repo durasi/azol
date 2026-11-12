@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Compiles runtime.c and writes runtime.bin and ../../src/runtime_x64.rs.
+"""Compiles runtime.c and writes runtime.bin and runtime.facts.
+
+runtime.facts says where everything is in runtime.bin, in the notation of
+the first compiler's tables (it is also written to ../../src/runtime_x64.rs
+while that compiler's sources exist). compiler/gen_runtime_azl.py makes
+compiler/runtime_x64.azl from it.
 
 Needs clang and lld for x86-64 (for example `pip install ziglang`) and the
 `lief` Python package. Run it after editing runtime.c or runtime.ld.
@@ -15,7 +20,8 @@ MEMORY = 0x40000000
 ENTRIES = [
     "print_i64", "print_bool", "print_str", "div_zero", "index_fail", "pop_empty", "alloc", "free", "list_push",
     "list_clone", "drop", "str_concat", "str_eq", "str_from_i64", "str_from_bool", "eprint_str", "exit", "str_slice",
-    "chr", "args", "read_file", "write_file", "str_append", "set_executable",
+    "chr", "args", "read_file", "write_file", "str_append", "set_executable", "remove_file", "rename_file", "clock",
+    "str_is_utf8",
 ]
 FLAGS = [
     # General-purpose registers only: no vector instructions, so the code
@@ -93,5 +99,8 @@ pub const MEMORY_SIZE: u64 = %d;
     ", ".join(str(offset("rt_" + name)) for name in ENTRIES),
     offset("_start"), MEMORY, memory_size,
 )
-open(os.path.join(HERE, "..", "..", "src", "runtime_x64.rs"), "w").write(out)
-print("wrote runtime.bin (%d bytes) and src/runtime_x64.rs; writable memory %d bytes" % (len(code), memory_size))
+open(os.path.join(HERE, "runtime.facts"), "w").write(out)
+# The same text is a module of the first compiler while its sources exist.
+if os.path.isdir(os.path.join(HERE, "..", "..", "src")):
+    open(os.path.join(HERE, "..", "..", "src", "runtime_x64.rs"), "w").write(out)
+print("wrote runtime.bin (%d bytes) and runtime.facts; writable memory %d bytes; now run compiler/gen_runtime_azl.py" % (len(code), memory_size))

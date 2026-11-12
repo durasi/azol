@@ -5,13 +5,13 @@
 
 CPU time is user plus system time of the compiler process, all of its
 threads together, so it can be larger than the wall time. Run from the
-repository root after `cargo build --release`. The source defaults to
+repository root after `sh build.sh`. The source defaults to
 bench/generated/big.azl (write it with `python3 bench/gen.py 3000`).
 """
 import os, statistics, sys, tempfile, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-AZOL = os.path.join(ROOT, "target", "release", "azol")
+AZOL = os.environ.get("AZOL") or os.path.join(ROOT, "azol")
 runs = int(sys.argv[1]) if len(sys.argv) > 1 else 20
 source = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ROOT, "bench", "generated", "big.azl")
 

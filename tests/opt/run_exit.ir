@@ -1,0 +1,15 @@
+; `exit` ends the program at once: nothing is returned, and blocks
+; still allocated are not counted.
+; run: main 7
+; out: 1
+; exit: 7
+; run: main 0
+; out: 1
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = callrt alloc(8)
+    callrt print_i64(1)
+    callrt exit(p0)
+    callrt print_i64(2)
+    ret 5
+}

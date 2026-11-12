@@ -1,0 +1,86 @@
+# From the tests of the first compiler: src/sema.rs, `system_functions`.
+==== 1
+---- file a.azl (no newline at end)
+fn main() {
+let a: List[str] = args()
+let r: Result[str, str] = read_file("a")
+let w: Result[i64, str] = write_file("a", "b")
+let c: str = chr(65)
+eprint(c)
+exit(2)
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 8 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos b849997103a3cdc4290593fdb2de290d26845830a6ef5204661b1812c35f8260
+x86_64-linux 40679e919db70eb157caa3a3cacb2cc46da31cbf863583f7c35f15513ff60fe7
+aarch64-linux c0605b491aff3eafa41ddac460ee6b998d0289e803b28d77175dfd267ebb7341
+==== 2
+---- file a.azl (no newline at end)
+fn main() {
+let r: Result[i64, str] = set_executable("a")
+set_executable("b" + "c")
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 4 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos e26f3f5f02a184b289b4b7b00c64302fe438229c70aac19c21f6c90e61eb4141
+x86_64-linux cd09a953ca972a7c0a3f50d318ee034e9fda22c5159c1c0f3bb1729885a52f73
+aarch64-linux 19dff578770e61568ccb7b02139bbf50d6394b93d28725bec86dbd773538a7f9
+==== 3
+---- file a.azl (no newline at end)
+fn main() {
+let r: Result[i64, str] = remove_file("a")
+remove_file("b" + "c")
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 4 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos a254014301e2ddf8c352dcdf75298fda6b124a384f4efefa47546a43958469b5
+x86_64-linux 136a46250fa66e6187546b88a334ababd873365aab7fe378df1e9df0249d0064
+aarch64-linux 1b52babb9c94c6c8ea794ef67e88af78823c50092c8bfa062222c66a95b9e49d
+==== 4
+---- file a.azl (no newline at end)
+fn main() {
+let r: Result[i64, str] = rename_file("a", "b")
+rename_file("b" + "c", "d")
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 4 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 92d95c9dc50d04544ae9a2950c2f89035ab8c2e8ceca96013ab175bb756e9974
+x86_64-linux 7298bc08babf04b69310b2ebbb87d1f40eca6345c17bfea978fc0bb00f63f089
+aarch64-linux ac5b5e3a5a7176e94c74506de2bbfe8bcdb5a924e4c6cee3e3b34ef3095531cd
+==== 5
+---- file a.azl (no newline at end)
+fn main() {
+let t: i64 = clock()
+let d = clock() - t
+clock()
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 5 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 8c27117393de0a60bd79faec8060b3495625eab211e015238cd70044fffb9721
+x86_64-linux 8e5306a80b6819e7290606b4c55b89e8747b987d01f8d0617274952c6b58ee63
+aarch64-linux 69845185d2c28d533974350f391f07e549bc5726e168c8db8359bb3cf615ee7b

@@ -1,0 +1,110 @@
+// dijkstra: shortest paths with a binary-heap priority queue.
+// Algorithm: a directed graph with four random out-edges per node and
+// weights from 1 to 100; Dijkstra's algorithm with a binary heap and stale
+// entries skipped.
+// Rust uses `BinaryHeap`; azoL has no priority queue, so the heap is
+// written out over two lists.
+// Sizes: 400,000 nodes; small: 30,000.
+// Output: nodes reached, and the sum of their distances modulo 1,000,000,007.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+struct Heap {
+    distance: List[i64]
+    node: List[i64]
+}
+
+fn smaller(h: Heap, i: i64, j: i64) -> bool {
+    if h.distance[i] != h.distance[j] {
+        return h.distance[i] < h.distance[j]
+    }
+    return h.node[i] < h.node[j]
+}
+
+fn swap(h: mut Heap, i: i64, j: i64) {
+    let d = h.distance[i]
+    h.distance[i] = h.distance[j]
+    h.distance[j] = d
+    let n = h.node[i]
+    h.node[i] = h.node[j]
+    h.node[j] = n
+}
+
+fn add(h: mut Heap, distance: i64, node: i64) {
+    h.distance.push(distance)
+    h.node.push(node)
+    var i = h.node.len() - 1
+    while i > 0 && smaller(h, i, (i - 1) / 2) {
+        swap(mut h, i, (i - 1) / 2)
+        i = (i - 1) / 2
+    }
+}
+
+// Removes the smallest entry; its distance and node are in the last slot
+// until the caller pops them.
+fn move_smallest_last(h: mut Heap) {
+    let last = h.node.len() - 1
+    swap(mut h, 0, last)
+    var i = 0
+    while true {
+        var least = i
+        let left = i * 2 + 1
+        let right = i * 2 + 2
+        if left < last && smaller(h, left, least) {
+            least = left
+        }
+        if right < last && smaller(h, right, least) {
+            least = right
+        }
+        if least == i {
+            return
+        }
+        swap(mut h, i, least)
+        i = least
+    }
+}
+
+fn main() {
+    let nodes = size(400000, 30000)
+    var target: List[i64] = []
+    var weight: List[i64] = []
+    var seed = 79
+    var n = 0
+    while n < nodes * 4 {
+        seed = seed * 48271 % 2147483647
+        target.push(seed % nodes)
+        seed = seed * 48271 % 2147483647
+        weight.push(1 + seed % 100)
+        n = n + 1
+    }
+    var best = (-1).filled(nodes)
+    var heap = Heap { distance: [], node: [] }
+    add(mut heap, 0, 0)
+    var reached = 0
+    var total = 0
+    while heap.node.len() > 0 {
+        move_smallest_last(mut heap)
+        let d = heap.distance.pop()
+        let at = heap.node.pop()
+        if best[at] < 0 {
+            best[at] = d
+            reached = reached + 1
+            total = (total + d) % 1000000007
+            var e = at * 4
+            while e < at * 4 + 4 {
+                if best[target[e]] < 0 {
+                    add(mut heap, d + weight[e], target[e])
+                }
+                e = e + 1
+            }
+        }
+    }
+    print(str(reached) + " " + str(total))
+}

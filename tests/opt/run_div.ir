@@ -1,0 +1,18 @@
+; Division rounds toward zero and the remainder has the sign of the
+; number divided. The smallest number divided by -1 is itself.
+; run: main 7 2
+; out: => 3, 1
+; run: main -7 2
+; out: => -3, -1
+; run: main 7 -2
+; out: => -3, 1
+; run: main -7 -2
+; out: => 3, -1
+; run: main -9223372036854775808 -1
+; out: => -9223372036854775808, 0
+fn main(p0: i64, p1: i64) -> i64, i64 {
+b0:
+    v0 = sdiv p0, p1
+    v1 = srem p0, p1
+    ret v0, v1
+}

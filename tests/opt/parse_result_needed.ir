@@ -1,0 +1,6 @@
+; parse: 4:5: `add` gives one result; write `vN = add ...`
+fn main() {
+b0:
+    add 1, 2
+    ret
+}

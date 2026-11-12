@@ -1,0 +1,15 @@
+# From the tests of the first compiler: src/lexer.rs, `unexpected_character`.
+==== 1
+---- file a.azl (no newline at end)
+let a = 1
+let b = #
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0101]: unexpected character
+ --> a.azl:2:9
+  |
+2 | let b = #
+  |         ^
+---- asserted 2:9 unexpected character

@@ -1,0 +1,14 @@
+; run: main -3 2
+; out: => true, true, false, false, false, true
+; run: main 2 2
+; out: => false, true, false, true, true, false
+fn main(p0: i64, p1: i64) -> bool, bool, bool, bool, bool, bool {
+b0:
+    v0 = slt p0, p1
+    v1 = sle p0, p1
+    v2 = sgt p0, p1
+    v3 = sge p0, p1
+    v4 = eq p0, p1
+    v5 = ne p0, p1
+    ret v0, v1, v2, v3, v4, v5
+}

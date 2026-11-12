@@ -1,0 +1,15 @@
+# From the tests of the first compiler: src/parser.rs, `let_and_var_with_types`.
+==== 1
+---- file a.azl (no newline at end)
+fn t() {
+let a: i32 = 1
+var b: List[Option[i32]] = c
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  let a: i32 = 1
+  var b: List[Option[i32]] = c
+---- stderr
+parsed 4 lines into 9 nodes

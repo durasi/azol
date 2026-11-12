@@ -1,0 +1,46 @@
+# From the tests of the first compiler: src/main.rs, `errors_are_sorted_by_file_and_position`.
+==== 1
+---- file a.azl
+fn main() {
+    b()
+    print(x)
+}
+
+fn last() {
+    print(y)
+}
+---- file b.azl
+fn b() {
+    print(z)
+}
+---- run check --json a.azl b.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0201","message":"unknown variable `x`","file":"a.azl","line":3,"column":11,"end_line":3,"end_column":12,"source":"    print(x)","rule":"A name must be declared before it is used: as a variable, a parameter, a constant or a variant."}
+{"severity":"error","code":"E0201","message":"unknown variable `y`","file":"a.azl","line":7,"column":11,"end_line":7,"end_column":12,"source":"    print(y)","rule":"A name must be declared before it is used: as a variable, a parameter, a constant or a variant."}
+{"severity":"error","code":"E0201","message":"unknown variable `z`","file":"b.azl","line":2,"column":11,"end_line":2,"end_column":12,"source":"    print(z)","rule":"A name must be declared before it is used: as a variable, a parameter, a constant or a variant."}
+{"summary":{"errors":3,"files":2}}
+---- reports a.azl * 3:11, a.azl * 7:11, b.azl * 2:11
+---- run check a.azl b.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0201]: unknown variable `x`
+ --> a.azl:3:11
+  |
+3 |     print(x)
+  |           ^
+
+error[E0201]: unknown variable `y`
+ --> a.azl:7:11
+  |
+7 |     print(y)
+  |           ^
+
+error[E0201]: unknown variable `z`
+ --> b.azl:2:11
+  |
+2 |     print(z)
+  |           ^
+
+found 3 errors

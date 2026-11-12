@@ -1,0 +1,57 @@
+// crc32: a table-driven checksum over a large buffer.
+// Algorithm: the standard reflected CRC-32 (polynomial 0xEDB88320), one
+// table look-up per byte.
+// Sizes: 64 MB of pseudo-random bytes; small: 2 MB.
+// Output: the checksum as a number.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+fn make_table() -> List[i64] {
+    var table: List[i64] = []
+    var n = 0
+    while n < 256 {
+        var c = n
+        var bit = 0
+        while bit < 8 {
+            if c & 1 == 1 {
+                c = 0xEDB88320 ^ c >> 1
+            } else {
+                c = c >> 1
+            }
+            bit = bit + 1
+        }
+        table.push(c)
+        n = n + 1
+    }
+    return table
+}
+
+fn crc32(table: List[i64], data: str) -> i64 {
+    var crc = 0xFFFFFFFF
+    var i = 0
+    while i < data.len() {
+        crc = table[(crc ^ data[i]) & 255] ^ crc >> 8
+        i = i + 1
+    }
+    return crc ^ 0xFFFFFFFF
+}
+
+fn main() {
+    let length = size(67108864, 2097152)
+    var data = ""
+    var seed = 41
+    var n = 0
+    while n < length {
+        seed = seed * 48271 % 2147483647
+        data.push(seed >> 8)
+        n = n + 1
+    }
+    print(crc32(make_table(), data))
+}

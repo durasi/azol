@@ -1,0 +1,17 @@
+# From the tests of the first compiler: src/parser.rs, `constants`.
+==== 1
+---- file a.azl (no newline at end)
+const LIMIT = 10
+const MASK: i64 = (1 << 4) - 1
+const NAME = "azoL"
+fn main() {
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+const LIMIT = 10
+const MASK: i64 = (- (<< 1 4) 1)
+const NAME = "azoL"
+fn main()
+---- stderr
+parsed 5 lines into 12 nodes

@@ -83,6 +83,18 @@ const BUILTIN_EXIT = 4294967282
 const BUILTIN_EPRINT = 4294967281
 const BUILTIN_STR_SLICE = 4294967280
 const BUILTIN_SET_EXECUTABLE = 4294967279
+// `push(byte)` on a string: one more byte at its end.
+const BUILTIN_STR_PUSH = 4294967278
+// `set(index, byte)` on a string: one byte replaced.
+const BUILTIN_STR_SET = 4294967277
+// `remove_file(path)`.
+const BUILTIN_REMOVE_FILE = 4294967276
+// `rename_file(from, to)`.
+const BUILTIN_RENAME_FILE = 4294967275
+// `clock()`: nanoseconds on a clock that only moves forward.
+const BUILTIN_CLOCK = 4294967274
+// `is_utf8()` on a string: whether its bytes are well-formed UTF-8.
+const BUILTIN_STR_IS_UTF8 = 4294967273
 
 // In `expr_aux` of a name that is a constant.
 const CONST_INT = 4294967295
@@ -167,6 +179,14 @@ const SYM_W_NOT = 26
 const SYM_W_INDEX = 27
 const SYM_W_ELEMENT = 28
 const SYM_W_PUSH = 29
+// A name again: `set` of a string.
+const SYM_SET = 30
+// More built-in functions, and `is_utf8` of a string.
+const SYM_REMOVE_FILE = 31
+const SYM_RENAME_FILE = 32
+const SYM_CLOCK = 33
+const SYM_EMBED = 34
+const SYM_IS_UTF8 = 35
 
 // One struct type. A generic struct has one per combination of type
 // arguments that the program uses.
@@ -390,6 +410,11 @@ struct IntMap {
 struct Checker {
     names: Names
     prelude_start: i64
+    // Where each source file starts in the source text, and its path,
+    // in order: `embed` reads files relative to the one it is written
+    // in. Empty when the files are not known.
+    file_starts: List[i64]
+    file_paths: List[str]
     failed: bool
     error: SemaError
     errors: List[SemaError]
@@ -1314,7 +1339,7 @@ fn ck_add_variant(c: mut Checker, name: i64, template: i64, index: i64) {
 }
 
 fn is_builtin_function(sym: i64) -> bool {
-    return sym == SYM_STR || (sym >= SYM_PRINT && sym <= SYM_EXIT)
+    return sym == SYM_STR || (sym >= SYM_PRINT && sym <= SYM_EXIT) || (sym >= SYM_REMOVE_FILE && sym <= SYM_EMBED)
 }
 
 fn ck_declare_types(c: mut Checker, p: Parser) {

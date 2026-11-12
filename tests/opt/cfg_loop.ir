@@ -1,0 +1,24 @@
+; One loop: b1 is its header, b2 its latch, b3 where it leaves to.
+; The parameters of b1 are not alive on the way in: they are set there.
+; cfg:
+; out: fn main
+; out:   order: b0 b1 b2 b3
+; out:   idom: b0=b0 b1=b0 b2=b1 b3=b1
+; out:   loop 0: header b1, depth 1, parent -, blocks b1 b2, latches b2, exits b3
+; out:   live b0: in p0 | out p0
+; out:   live b1: in p0 | out p0 v0 v1
+; out:   live b2: in p0 v0 v1 | out p0
+; out:   live b3: in v1 | out -
+fn main(p0: i64) -> i64 {
+b0:
+    jump b1(0, 0)
+b1(v0: i64, v1: i64):
+    v2 = slt v0, p0
+    br v2, b2, b3
+b2:
+    v3 = add v1, v0
+    v4 = add v0, 1
+    jump b1(v4, v3)
+b3:
+    ret v1
+}

@@ -1,0 +1,17 @@
+# From the tests of the first compiler: src/parser.rs, `a_new_line_does_not_continue_a_call_or_index`.
+==== 1
+---- file a.azl (no newline at end)
+fn t() {
+a
+(b)
+[c]
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  a
+  b
+  (array c)
+---- stderr
+parsed 5 lines into 8 nodes

@@ -1,0 +1,54 @@
+// prefix: prefix sums and a running maximum.
+// Algorithm: every round writes the prefix sums of one list into another,
+// takes their maximum, and refills the first list from the sums.
+// Sizes: 4,000,000 elements, 20 rounds; small: 200,000 elements, 5 rounds.
+// Output: the sum of the maxima.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+fn main() {
+    let count = size(4000000, 200000)
+    let rounds = size(20, 5)
+    var source: List[i64] = []
+    var seed = 31
+    var n = 0
+    while n < count {
+        seed = seed * 48271 % 2147483647
+        source.push(seed % 1024)
+        n = n + 1
+    }
+    var sums = 0.filled(count)
+    var total = 0
+    var round = 0
+    while round < rounds {
+        sums[0] = source[0]
+        var i = 1
+        while i < count {
+            sums[i] = sums[i - 1] + source[i]
+            i = i + 1
+        }
+        var highest = 0
+        i = 0
+        while i < count {
+            if sums[i] > highest {
+                highest = sums[i]
+            }
+            i = i + 1
+        }
+        total = total + highest
+        i = 0
+        while i < count {
+            source[i] = (sums[i] ^ i) & 1023
+            i = i + 1
+        }
+        round = round + 1
+    }
+    print(total)
+}

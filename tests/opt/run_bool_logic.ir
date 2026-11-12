@@ -1,0 +1,16 @@
+; `and`, `or` and `xor` on two `bool` values give a `bool`.
+; run: main 3 5
+; out: => false, true, true, false
+; run: main 5 5
+; out: => false, false, true, true
+fn main(p0: i64, p1: i64) -> bool, bool, bool, bool {
+b0:
+    v0 = slt p0, p1
+    v1 = sgt p0, p1
+    v2 = bconst 1
+    v3 = and v0, v1
+    v4 = or v0, v1
+    v5 = xor v1, v2
+    v6 = xor v4, 1
+    ret v3, v4, v5, v6
+}

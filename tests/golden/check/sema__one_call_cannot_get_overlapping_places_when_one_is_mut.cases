@@ -1,0 +1,317 @@
+# From the tests of the first compiler: src/sema.rs, `one_call_cannot_get_overlapping_places_when_one_is_mut`.
+==== 1
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn swap(a: mut Point, b: mut Point) {
+}
+fn mix(a: mut Point, b: Point) {
+}
+fn both(a: Point, b: Point) {
+}
+fn bump(n: mut i64, by: i64) {
+}
+fn two(a: mut i64, b: mut i64) {
+}
+fn id(p: Point) -> Point {
+ return p
+}
+fn touch(p: mut Point) -> i64 {
+ return 1
+}
+fn sum(p: Point, n: i64) -> i64 {
+ return n
+}
+fn main() {
+var p = Point { x: 1, y: 2 }
+var q = Point { x: 3, y: 4 }
+var l = Line { from: p, to: q }
+swap(mut p, mut q)
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 33 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 46b61cf57967728d439e599a718a180c656e5637af464fe5dfbabaa00106a51f
+x86_64-linux a331bd0a291bf4f7a56d42d3b026bf66a85f1752ffa1242cd4e1d3012967e5e5
+aarch64-linux 288f3816df73996221b36b43425ed1cbf6fca1f06c2d1aa424ac9ade6e19e715
+==== 2
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn swap(a: mut Point, b: mut Point) {
+}
+fn mix(a: mut Point, b: Point) {
+}
+fn both(a: Point, b: Point) {
+}
+fn bump(n: mut i64, by: i64) {
+}
+fn two(a: mut i64, b: mut i64) {
+}
+fn id(p: Point) -> Point {
+ return p
+}
+fn touch(p: mut Point) -> i64 {
+ return 1
+}
+fn sum(p: Point, n: i64) -> i64 {
+ return n
+}
+fn main() {
+var p = Point { x: 1, y: 2 }
+var q = Point { x: 3, y: 4 }
+var l = Line { from: p, to: q }
+swap(mut l.from, mut l.to)
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 33 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 8ff0f2ba18e893679275c2bbaff91ebb1ff032b473d40d94bd4ebc79acea1f70
+x86_64-linux e041992c59f2acaf95e5c51f7181e208855e8eff0235bdf1645165235a536705
+aarch64-linux 0809d0c5656ae5b13beac74bdb6240d72fe1d7ec210bb3663976f8ab643f6288
+==== 3
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn swap(a: mut Point, b: mut Point) {
+}
+fn mix(a: mut Point, b: Point) {
+}
+fn both(a: Point, b: Point) {
+}
+fn bump(n: mut i64, by: i64) {
+}
+fn two(a: mut i64, b: mut i64) {
+}
+fn id(p: Point) -> Point {
+ return p
+}
+fn touch(p: mut Point) -> i64 {
+ return 1
+}
+fn sum(p: Point, n: i64) -> i64 {
+ return n
+}
+fn main() {
+var p = Point { x: 1, y: 2 }
+var q = Point { x: 3, y: 4 }
+var l = Line { from: p, to: q }
+two(mut p.x, mut p.y)
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 33 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos c0545007d9124030a632248c1b43ece6ea4e47562904f98140729bd0876ae1f0
+x86_64-linux c4bc7bcbbb1d97ecc72e8b415b651af0eccf73610f7b86a183578dc77bb2375d
+aarch64-linux 437ac3c566316fb71f58d421464ff18239dfe368363f73a07af54e2b984ff867
+==== 4
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn swap(a: mut Point, b: mut Point) {
+}
+fn mix(a: mut Point, b: Point) {
+}
+fn both(a: Point, b: Point) {
+}
+fn bump(n: mut i64, by: i64) {
+}
+fn two(a: mut i64, b: mut i64) {
+}
+fn id(p: Point) -> Point {
+ return p
+}
+fn touch(p: mut Point) -> i64 {
+ return 1
+}
+fn sum(p: Point, n: i64) -> i64 {
+ return n
+}
+fn main() {
+var p = Point { x: 1, y: 2 }
+var q = Point { x: 3, y: 4 }
+var l = Line { from: p, to: q }
+both(p, p)
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 33 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 16be3872fd2b7fe83b0091fe749e279a377ed5f18148ca75d1434e2016a3edba
+x86_64-linux 3521957bcc7954b3310aab5c4b0f4235e3efc5c391b63625a614b60bab7e3e81
+aarch64-linux c020c4f02fe4e9dcd76cafe94686c05f96bc33a942beae2b94c7aab0b7511d24
+==== 5
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn swap(a: mut Point, b: mut Point) {
+}
+fn mix(a: mut Point, b: Point) {
+}
+fn both(a: Point, b: Point) {
+}
+fn bump(n: mut i64, by: i64) {
+}
+fn two(a: mut i64, b: mut i64) {
+}
+fn id(p: Point) -> Point {
+ return p
+}
+fn touch(p: mut Point) -> i64 {
+ return 1
+}
+fn sum(p: Point, n: i64) -> i64 {
+ return n
+}
+fn main() {
+var p = Point { x: 1, y: 2 }
+var q = Point { x: 3, y: 4 }
+var l = Line { from: p, to: q }
+bump(mut p.x, p.x)
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 33 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos abd053eef1e201abbeda5fd59a664bed4c2eb9271a733cc5a990abb10d558f31
+x86_64-linux c3c198c0bad711be81d6e15924eb621cfac5c7a08a159e036b6ac95e3202a0b6
+aarch64-linux 99386688ec96006f0191058a6dc6a25b3a2c2a557a6c62a4effb1424b7f32d6c
+==== 6
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn swap(a: mut Point, b: mut Point) {
+}
+fn mix(a: mut Point, b: Point) {
+}
+fn both(a: Point, b: Point) {
+}
+fn bump(n: mut i64, by: i64) {
+}
+fn two(a: mut i64, b: mut i64) {
+}
+fn id(p: Point) -> Point {
+ return p
+}
+fn touch(p: mut Point) -> i64 {
+ return 1
+}
+fn sum(p: Point, n: i64) -> i64 {
+ return n
+}
+fn main() {
+var p = Point { x: 1, y: 2 }
+var q = Point { x: 3, y: 4 }
+var l = Line { from: p, to: q }
+print(sum(id(p), touch(mut p)))
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 33 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos cc56df106bf60c18f4608e61b7e5188dabbbd60a971d750ae2ee13777c45253e
+x86_64-linux fb6c9c288146cb091681d8a091026710596c13cb6e151fdad7d5360a7a2ae950
+aarch64-linux 8caad88ac88a699d8dbfded98f25914a93fb2774aeec0f8731042adf9e60c865
+==== 7
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn swap(a: mut Point, b: mut Point) {
+}
+fn mix(a: mut Point, b: Point) {
+}
+fn both(a: Point, b: Point) {
+}
+fn bump(n: mut i64, by: i64) {
+}
+fn two(a: mut i64, b: mut i64) {
+}
+fn id(p: Point) -> Point {
+ return p
+}
+fn touch(p: mut Point) -> i64 {
+ return 1
+}
+fn sum(p: Point, n: i64) -> i64 {
+ return n
+}
+fn main() {
+var p = Point { x: 1, y: 2 }
+var q = Point { x: 3, y: 4 }
+var l = Line { from: p, to: q }
+mix(mut p, q)
+mix(mut q, p)
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 34 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 8ffdf55e6a889076f75357660b6f2f9231c16a06aacc206a599bcb23d24b6965
+x86_64-linux 7f3af310f67d830494d1d8a6c10286eaf3476a34d65efd72545fa2da52d61614
+aarch64-linux 9fd637131a515cd6d484e3d4fb19cdd740ffb44e72e07247a8042bc99b26b6db

@@ -1,0 +1,6 @@
+; verify: main: b0: v0 = load i64, p1, 0  [param 0]: `param 0` is not a `ptr` parameter of the function
+fn main(p0: i64, p1: ptr [param 1 read]) -> i64 {
+b0:
+    v0 = load i64, p1, 0  [param 0]
+    ret v0
+}

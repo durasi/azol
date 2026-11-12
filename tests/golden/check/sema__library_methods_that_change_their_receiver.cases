@@ -1,0 +1,78 @@
+# From the tests of the first compiler: src/sema.rs, `library_methods_that_change_their_receiver`.
+==== 1
+---- file a.azl
+
+fn main() {
+var xs = [1]
+xs.extend([2, 3])
+xs.insert(0, 9)
+xs.truncate(2)
+let n = xs.remove_at(0)
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 8 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos a8289c02130959d3e4ffd3b86df4902d011244c0374be5a6012d776edaee6b18
+x86_64-linux 2d80a5a06e14a65deb722d314ecb8ae7ff2eb21e9894197a0a293570b2b6c80b
+aarch64-linux 64af4995409e4cc9a3e6ca315e3f6c081c8be075bf053636250fe0c2f3c2dfa2
+==== 2
+---- file a.azl
+
+fn main() {
+var m: Map[i64] = new_map()
+m.set("a", 1)
+let gone = m.remove("a")
+let n = m.len()
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 7 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos f69bb7ab36a8bbfb6936993beb9ff1ab8a73e59df7b938d4fd9159239356cafe
+x86_64-linux e62b0ef2e628835079086e0c041c44e78bbbe9bae7e7cfde5415309952673a62
+aarch64-linux 5daf63e87b09b29ba87be36c756a417ee26bb734e373707690062d1aacf45f02
+==== 3
+---- file a.azl
+fn f(xs: mut List[i64]) {
+ xs.truncate(0)
+}
+fn main() {
+var xs = [1]
+f(mut xs)
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 7 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos a44543f5e3864d6043fc09f1e26d71b586d4251227d3a7b75651be854d308e14
+x86_64-linux 06d36ccc5b7cae3648e88d2596b894429e8900b01d592c5653dd5a4b478d4319
+aarch64-linux 8882fb4388859748e4a8560be8bf1c835105097f3de864d9cc1a59cda5b80543
+==== 4
+---- file a.azl
+
+fn main() {
+let a = 3.min(4)
+let b = [3, 4].min()
+let c = "".is_empty()
+let d = [1].is_empty()
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 7 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos fdf7c3bc4b2740432d230a0aca87947aab668067e12c2f519c174830ab549545
+x86_64-linux f9e1dbee2b1f6b11dc6c7bdfd57e774e5f2d6003e7bbf3eb216fcf46ccd7ea3f
+aarch64-linux 7bfd7160e49568b06cc579256391ea55ab680f460eadec1099b4377b36229c7c

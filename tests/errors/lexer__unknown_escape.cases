@@ -1,0 +1,14 @@
+# From the tests of the first compiler: src/lexer.rs, `unknown_escape`.
+==== 1
+---- file a.azl (no newline at end)
+"\q"
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0103]: unknown escape sequence in string literal
+ --> a.azl:1:2
+  |
+1 | "\q"
+  |  ^
+---- asserted 1:2 unknown escape sequence in string literal

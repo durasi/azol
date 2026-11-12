@@ -1,0 +1,18 @@
+; The read-only data: bytes are read from it and printed from it.
+; 'h' is 104 and the byte after the quote is 0.
+; run:
+; out: hello
+; out: lo "q\
+; out: => 104, 0
+data "hello \"q\\\x00\xff"
+
+fn main() -> i64, i64 {
+b0:
+    v0 = addr @data+0
+    callrt print_str(v0, 5)
+    v1 = addr @data+3
+    callrt print_str(v1, 6)
+    v2 = load u8, v0, 0  [data]
+    v3 = load u8, v0, 9  [data]
+    ret v2, v3
+}

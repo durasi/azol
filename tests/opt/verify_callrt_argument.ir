@@ -1,0 +1,6 @@
+; verify: main: b0: callrt print_str(5, 2): argument 1 of `print_str` is `ptr`
+fn main() {
+b0:
+    callrt print_str(5, 2)
+    ret
+}

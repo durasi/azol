@@ -1,0 +1,42 @@
+# From the tests of the first compiler: src/sema.rs, `embedded_files`.
+==== 1
+---- file a.azl (no newline at end)
+const NOTE = embed("note.txt")
+const TWICE = NOTE + embed("note.txt")
+fn main() {
+ print(NOTE)
+ print(TWICE)
+}
+---- file note.txt (escaped)
+two\nlines \xff\x00
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 6 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos f78484063bc40211b419b660cdbc7564a63454f377f3753cd3d2de1ebe80fe46
+x86_64-linux 237ba46ee990738731e37475efefb711715d2a362315a11b85a2b9f3174d8810
+aarch64-linux 032ce9eba6a456b7cd16d64a8c0fe762cc3853abacabd64e7e0628f5f0b0a77e
+==== 2
+---- file sub/a.azl (no newline at end)
+const NOTE = embed("note.txt")
+const UP = embed("../top.txt")
+fn main() {
+ print(NOTE + UP)
+}
+---- file sub/note.txt
+next to the source
+---- file top.txt
+one folder up
+---- run check sub/a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 5 lines in 1 file: no errors
+---- run build-all sub/a.azl
+---- executables
+aarch64-macos 071d88135691e7779a87f879a0e7b4a3308c98df0b8241d03b43289c049a3086
+x86_64-linux 6c96feeada56937769f230f0401c3d6e9251eac8878b7a93076b7633d3a20d1b
+aarch64-linux 0e62fb5c2b06c25f482cd33c4e67f7a5803ddd20af324218d1d94303d8d50da1

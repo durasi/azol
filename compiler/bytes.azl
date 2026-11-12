@@ -1,76 +1,64 @@
 // Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
 
-// Binary output. A file being built is a `List[i64]` with one byte, 0 to
-// 255, in each element. That costs memory, but any byte can be read or
-// replaced in place at any time, which the linkers need: instructions
-// are completed after the code has been copied in, and the signature
-// hashes the file it is appended to. The list becomes a string only
-// once, when the file is written.
+// Binary output. A file being built is a `str` used as a buffer of
+// bytes: `push` adds a byte, `set` replaces one and an index reads one,
+// all of them in place, which the linkers need: instructions are
+// completed after the code has been copied in, and the signature hashes
+// the file it is appended to. The buffer is what `write_file` takes.
 
-fn put8(out: mut List[i64], value: i64) {
-    out.push(value & 0xFF)
+fn put8(out: mut str, value: i64) {
+    out.push(value)
 }
 
 // Little-endian numbers: lowest byte first.
-fn put16(out: mut List[i64], value: i64) {
-    out.push(value & 0xFF)
-    out.push((value >> 8) & 0xFF)
+fn put16(out: mut str, value: i64) {
+    out.push(value)
+    out.push(value >> 8)
 }
 
-fn put32(out: mut List[i64], value: i64) {
-    out.push(value & 0xFF)
-    out.push((value >> 8) & 0xFF)
-    out.push((value >> 16) & 0xFF)
-    out.push((value >> 24) & 0xFF)
+fn put32(out: mut str, value: i64) {
+    out.push(value)
+    out.push(value >> 8)
+    out.push(value >> 16)
+    out.push(value >> 24)
 }
 
-fn put64(out: mut List[i64], value: i64) {
+fn put64(out: mut str, value: i64) {
     put32(mut out, value)
     put32(mut out, value >> 32)
 }
 
 // Big-endian numbers: highest byte first.
-fn put32_be(out: mut List[i64], value: i64) {
-    out.push((value >> 24) & 0xFF)
-    out.push((value >> 16) & 0xFF)
-    out.push((value >> 8) & 0xFF)
-    out.push(value & 0xFF)
+fn put32_be(out: mut str, value: i64) {
+    out.push(value >> 24)
+    out.push(value >> 16)
+    out.push(value >> 8)
+    out.push(value)
 }
 
-fn put64_be(out: mut List[i64], value: i64) {
+fn put64_be(out: mut str, value: i64) {
     put32_be(mut out, value >> 32)
     put32_be(mut out, value)
 }
 
 // The bytes of a string.
-fn put_text(out: mut List[i64], text: str) {
-    var i = 0
-    while i < text.len() {
-        out.push(text[i])
-        i = i + 1
-    }
-}
-
-// All of `bytes`.
-fn put_bytes(out: mut List[i64], bytes: List[i64]) {
-    for byte in bytes {
-        out.push(byte)
-    }
+fn put_text(out: mut str, text: str) {
+    out = out + text
 }
 
 // Adds `byte` until the output is `length` bytes long.
-fn pad_to(out: mut List[i64], length: i64, byte: i64) {
+fn pad_to(out: mut str, length: i64, byte: i64) {
     while out.len() < length {
         out.push(byte)
     }
 }
 
 // Replaces the four bytes at `at` with a little-endian number.
-fn patch32(out: mut List[i64], at: i64, value: i64) {
-    out[at] = value & 0xFF
-    out[at + 1] = (value >> 8) & 0xFF
-    out[at + 2] = (value >> 16) & 0xFF
-    out[at + 3] = (value >> 24) & 0xFF
+fn patch32(out: mut str, at: i64, value: i64) {
+    out.set(at, value)
+    out.set(at + 1, value >> 8)
+    out.set(at + 2, value >> 16)
+    out.set(at + 3, value >> 24)
 }
 
 // `value` rounded up to a multiple of `to`.
@@ -78,84 +66,15 @@ fn align_up(value: i64, to: i64) -> i64 {
     return (value + to - 1) / to * to
 }
 
-// The finished bytes as a string, ready for `write_file`.
-fn bytes_to_text(bytes: List[i64]) -> str {
-    var text = ""
-    append_bytes(mut text, bytes)
-    return text
-}
-
-// How many bytes make it worth building the table of byte pairs.
-const PAIRS_FROM = 1000000
-
-// Adds `bytes` to the end of `text`. Text grows by whole strings only,
-// so every byte value is made into a string once and added from a
-// table; for a lot of bytes, every pair of byte values is, which halves
-// the number of additions.
-fn append_bytes(text: mut str, bytes: List[i64]) {
-    var singles: List[str] = []
-    var b = 0
-    while b < 256 {
-        singles.push(chr(b))
-        b = b + 1
-    }
-    var i = 0
-    if bytes.len() >= PAIRS_FROM {
-        var pairs: List[str] = []
-        b = 0
-        while b < 65536 {
-            pairs.push(singles[b >> 8] + singles[b & 255])
-            b = b + 1
-        }
-        let last = bytes.len() - 1
-        while i < last {
-            text = text + pairs[bytes[i] * 256 + bytes[i + 1]]
-            i = i + 2
-        }
-    }
-    while i < bytes.len() {
-        text = text + singles[bytes[i]]
-        i = i + 1
-    }
-}
-
-// Adds `count` bytes of value `byte` to the end of `text`.
-fn append_repeated(text: mut str, byte: i64, count: i64) {
-    if count <= 0 {
-        return
-    }
-    let one = chr(byte)
-    var chunk = ""
-    var size = 0
-    while size < 64 && size < count {
-        chunk = chunk + one
-        size = size + 1
-    }
-    var left = count
-    while left >= size {
-        text = text + chunk
-        left = left - size
-    }
-    while left > 0 {
-        text = text + one
-        left = left - 1
-    }
-}
-
-// The bytes of a string as a list.
-fn text_to_bytes(text: str) -> List[i64] {
-    var bytes: List[i64] = []
-    put_text(mut bytes, text)
-    return bytes
-}
-
 // Two lowercase hexadecimal digits per byte.
-fn hex_text(bytes: List[i64]) -> str {
+fn hex_text(bytes: str) -> str {
     let digits = "0123456789abcdef"
     var text = ""
-    for byte in bytes {
-        text = text + chr(digits[byte >> 4])
-        text = text + chr(digits[byte & 15])
+    var i = 0
+    while i < bytes.len() {
+        text.push(digits[bytes[i] >> 4])
+        text.push(digits[bytes[i] & 15])
+        i = i + 1
     }
     return text
 }

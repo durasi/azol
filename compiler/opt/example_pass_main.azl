@@ -1,0 +1,45 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Runs the example pass on a file of the text form and prints the
+// result: `example-pass <file.ir>`. The functions are verified before
+// the pass and after it. tests/opt/run_opt_tests.py builds this and
+// checks it against tests/opt/passes.
+
+fn main() {
+    let a = args()
+    if a.len() != 2 {
+        eprint("usage: example-pass <file.ir>")
+        exit(2)
+    }
+    var m = ir_new_module()
+    match read_file(a[1]) {
+        Ok(text) => {
+            let problem = ir_parse_module(text, mut m)
+            if problem.message.len() > 0 {
+                eprint("error: " + a[1] + ":" + str(problem.line) + ":" + str(problem.column) + ": " + problem.message)
+                exit(1)
+            }
+        }
+        Err(why) => {
+            eprint("error: cannot read '" + a[1] + "': " + why)
+            exit(1)
+        }
+    }
+    let before = ir_verify_module(m)
+    if before.len() > 0 {
+        eprint("error: " + before)
+        exit(1)
+    }
+    var i = 0
+    while i < m.funcs.len() {
+        while ir_example_fold_add(mut m.funcs[i]) > 0 {}
+        i = i + 1
+    }
+    let after = ir_verify_module(m)
+    if after.len() > 0 {
+        eprint("error: the pass broke the function: " + after)
+        exit(1)
+    }
+    let text = ir_print_module(m)
+    print(text.slice(0, text.len() - 1))
+}

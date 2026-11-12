@@ -1,0 +1,19 @@
+# From the tests of the first compiler: src/lexer.rs, `keywords_and_identifiers`.
+==== 1
+---- file a.azl (no newline at end)
+let var mut letter fnx struct_ match const constant
+---- run lex a.azl
+---- exit 0
+---- stdout
+   1:1    Let        let
+   1:5    Var        var
+   1:9    Mut        mut
+   1:13   Ident      letter
+   1:20   Ident      fnx
+   1:24   Ident      struct_
+   1:32   Match      match
+   1:38   Const      const
+   1:44   Ident      constant
+   1:52   Eof        
+---- stderr
+lexed 51 bytes, 1 lines, 10 tokens

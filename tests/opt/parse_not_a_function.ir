@@ -1,0 +1,3 @@
+; parse: 2:1: expected `fn` or `data`
+function main() {
+}

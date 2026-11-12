@@ -68,8 +68,8 @@ struct Fixup {
 struct CodeFile {
     target: str
     entry: i64
-    code: List[i64]
-    data: List[i64]
+    code: str
+    data: str
     // macOS.
     ident: str
     imports: List[str]
@@ -179,8 +179,8 @@ fn hex_digit(c: i64) -> i64 {
 }
 
 // `count` bytes written as hexadecimal digits, over any number of lines.
-fn read_bytes(reader: mut Reader, count: i64) -> List[i64] {
-    var bytes: List[i64] = []
+fn read_bytes(reader: mut Reader, count: i64) -> str {
+    var bytes = ""
     while bytes.len() < count {
         skip_spaces(mut reader)
         if reader.at + 1 >= reader.text.len() {

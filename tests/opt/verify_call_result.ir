@@ -1,0 +1,12 @@
+; verify: main: b0: v0 = call twice(1) -> bool: result 1 of `twice` is `i64`
+fn twice(p0: i64) -> i64 {
+b0:
+    v0 = add p0, p0
+    ret v0
+}
+
+fn main() -> bool {
+b0:
+    v0 = call twice(1) -> bool
+    ret v0
+}

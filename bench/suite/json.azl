@@ -1,0 +1,224 @@
+// json: parse and re-serialise a document.
+// Algorithm: build a JSON text (an array of objects with numbers, strings,
+// arrays, booleans and nulls), parse it into a tree by recursive descent,
+// sum the numbers by walking the tree, write the tree back out and compare
+// with the original.
+// Sizes: 120,000 objects (about 11 MB); small: 6,000 objects.
+// Output: the length written, the sum of numbers, and whether the text came back unchanged.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+enum Json {
+    Null
+    Flag(bool)
+    Number(i64)
+    Text(str)
+    Array(List[Json])
+    Object(List[Member])
+}
+
+struct Member {
+    key: str
+    value: Json
+}
+
+struct Parser {
+    text: str
+    at: i64
+}
+
+fn skip_spaces(p: mut Parser) {
+    while p.at < p.text.len() && (p.text[p.at] == 32 || p.text[p.at] == 10) {
+        p.at = p.at + 1
+    }
+}
+
+// The text between the quote at the cursor and the next quote.
+fn parse_text(p: mut Parser) -> str {
+    let start = p.at + 1
+    p.at = start
+    while p.text[p.at] != 34 {
+        p.at = p.at + 1
+    }
+    p.at = p.at + 1
+    return p.text.slice(start, p.at - 1)
+}
+
+fn parse_number(p: mut Parser) -> i64 {
+    var negative = false
+    if p.text[p.at] == 45 {
+        negative = true
+        p.at = p.at + 1
+    }
+    var n = 0
+    while p.at < p.text.len() && p.text[p.at] >= 48 && p.text[p.at] <= 57 {
+        n = n * 10 + p.text[p.at] - 48
+        p.at = p.at + 1
+    }
+    if negative {
+        return 0 - n
+    }
+    return n
+}
+
+fn parse_value(p: mut Parser) -> Json {
+    skip_spaces(mut p)
+    let c = p.text[p.at]
+    if c == 123 {
+        var members: List[Member] = []
+        p.at = p.at + 1
+        skip_spaces(mut p)
+        while p.text[p.at] != 125 {
+            if p.text[p.at] == 44 {
+                p.at = p.at + 1
+                skip_spaces(mut p)
+            }
+            let key = parse_text(mut p)
+            skip_spaces(mut p)
+            p.at = p.at + 1
+            let value = parse_value(mut p)
+            members.push(Member { key: key, value: value })
+            skip_spaces(mut p)
+        }
+        p.at = p.at + 1
+        return Object(members)
+    }
+    if c == 91 {
+        var items: List[Json] = []
+        p.at = p.at + 1
+        skip_spaces(mut p)
+        while p.text[p.at] != 93 {
+            if p.text[p.at] == 44 {
+                p.at = p.at + 1
+            }
+            items.push(parse_value(mut p))
+            skip_spaces(mut p)
+        }
+        p.at = p.at + 1
+        return Array(items)
+    }
+    if c == 34 {
+        return Text(parse_text(mut p))
+    }
+    if c == 116 {
+        p.at = p.at + 4
+        return Flag(true)
+    }
+    if c == 102 {
+        p.at = p.at + 5
+        return Flag(false)
+    }
+    if c == 110 {
+        p.at = p.at + 4
+        return Null
+    }
+    return Number(parse_number(mut p))
+}
+
+fn total(value: Json) -> i64 {
+    match value {
+        Number(n) => return n
+        Array(items) => {
+            var sum = 0
+            for item in items {
+                sum = sum + total(item)
+            }
+            return sum
+        }
+        Object(members) => {
+            var sum = 0
+            for member in members {
+                sum = sum + total(member.value)
+            }
+            return sum
+        }
+        _ => return 0
+    }
+}
+
+fn write(value: Json, out: mut str) {
+    match value {
+        Null => out = out + "null"
+        Flag(on) => {
+            if on {
+                out = out + "true"
+            } else {
+                out = out + "false"
+            }
+        }
+        Number(n) => out = out + str(n)
+        Text(text) => {
+            out.push(34)
+            out = out + text
+            out.push(34)
+        }
+        Array(items) => {
+            out.push(91)
+            for i, item in items {
+                if i > 0 {
+                    out.push(44)
+                }
+                write(item, mut out)
+            }
+            out.push(93)
+        }
+        Object(members) => {
+            out.push(123)
+            for i, member in members {
+                if i > 0 {
+                    out.push(44)
+                }
+                out.push(34)
+                out = out + member.key
+                out = out + "\":"
+                write(member.value, mut out)
+            }
+            out.push(125)
+        }
+    }
+}
+
+fn document(objects: i64) -> str {
+    var text = "["
+    var seed = 83
+    var n = 0
+    while n < objects {
+        seed = seed * 48271 % 2147483647
+        if n > 0 {
+            text = text + ","
+        }
+        text = text + "{\"id\":"
+        text = text + str(n)
+        text = text + ",\"name\":\"item"
+        text = text + str(seed % 100000)
+        text = text + "\",\"tags\":[\"red\",\"green\","
+        text = text + str(seed % 7)
+        text = text + "],\"active\":"
+        if seed % 3 == 0 {
+            text = text + "true"
+        } else {
+            text = text + "false"
+        }
+        text = text + ",\"score\":"
+        text = text + str(seed % 2001 - 1000)
+        text = text + ",\"extra\":null}"
+        n = n + 1
+    }
+    return text + "]"
+}
+
+fn main() {
+    let text = document(size(120000, 6000))
+    var parser = Parser { text: text, at: 0 }
+    let tree = parse_value(mut parser)
+    var out = ""
+    write(tree, mut out)
+    print(str(out.len()) + " " + str(total(tree)) + " " + str(out == text))
+}

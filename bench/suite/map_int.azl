@@ -1,0 +1,145 @@
+// map_int: a map with integer keys: insert, look up, remove.
+// Algorithm: insert pseudo-random keys, look up present and absent keys,
+// remove every second key, look up again.
+// Rust uses its standard `HashMap`; azoL has no map with integer keys yet
+// (`Map[K, V]` is planned), so the azoL version carries its own table.
+// Sizes: 1,000,000 keys; small: 100,000.
+// Output: keys left, keys removed, and the two look-up totals.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+// azoL's library map takes text keys only until `Map[K, V]` exists, so
+// this is a hash table written here: open addressing with linear probing,
+// tombstones, and doubling when half full.
+struct IntMap {
+    keys: List[i64]
+    values: List[i64]
+    state: List[i64]
+    mask: i64
+    used: i64
+    live: i64
+}
+
+const EMPTY = 0
+const FULL = 1
+const REMOVED = 2
+
+fn new_int_map(capacity: i64) -> IntMap {
+    return IntMap { keys: 0.filled(capacity), values: 0.filled(capacity), state: EMPTY.filled(capacity), mask: capacity - 1, used: 0, live: 0 }
+}
+
+fn slot_of(key: i64, mask: i64) -> i64 {
+    return (key * 0x2545F4914F6CDD1D >> 32) & mask
+}
+
+fn grow(m: mut IntMap) {
+    var bigger = new_int_map((m.mask + 1) * 2)
+    var i = 0
+    while i <= m.mask {
+        if m.state[i] == FULL {
+            put(mut bigger, m.keys[i], m.values[i])
+        }
+        i = i + 1
+    }
+    m = bigger
+}
+
+fn put(m: mut IntMap, key: i64, value: i64) {
+    if (m.used + 1) * 2 > m.mask + 1 {
+        grow(mut m)
+    }
+    var at = slot_of(key, m.mask)
+    var free = -1
+    while m.state[at] != EMPTY {
+        if m.state[at] == FULL && m.keys[at] == key {
+            m.values[at] = value
+            return
+        }
+        if m.state[at] == REMOVED && free < 0 {
+            free = at
+        }
+        at = (at + 1) & m.mask
+    }
+    if free >= 0 {
+        at = free
+    } else {
+        m.used = m.used + 1
+    }
+    m.keys[at] = key
+    m.values[at] = value
+    m.state[at] = FULL
+    m.live = m.live + 1
+}
+
+fn find(m: IntMap, key: i64) -> i64 {
+    var at = slot_of(key, m.mask)
+    while m.state[at] != EMPTY {
+        if m.state[at] == FULL && m.keys[at] == key {
+            return at
+        }
+        at = (at + 1) & m.mask
+    }
+    return -1
+}
+
+fn take(m: mut IntMap, key: i64) -> bool {
+    let at = find(m, key)
+    if at < 0 {
+        return false
+    }
+    m.state[at] = REMOVED
+    m.live = m.live - 1
+    return true
+}
+
+fn lookups(m: IntMap, count: i64) -> i64 {
+    var total = 0
+    var hit = 17
+    var miss = 23
+    var n = 0
+    while n < count {
+        hit = hit * 48271 % 2147483647
+        let at = find(m, hit)
+        if at >= 0 {
+            total = total + m.values[at]
+        }
+        miss = miss * 16807 % 2147483647
+        if find(m, miss + 2147483647) >= 0 {
+            total = total + 1
+        }
+        n = n + 1
+    }
+    return total
+}
+
+fn main() {
+    let count = size(1000000, 100000)
+    var m = new_int_map(16)
+    var seed = 17
+    var n = 0
+    while n < count {
+        seed = seed * 48271 % 2147483647
+        put(mut m, seed, n)
+        n = n + 1
+    }
+    let first = lookups(m, count)
+    var removed = 0
+    seed = 17
+    n = 0
+    while n < count {
+        seed = seed * 48271 % 2147483647
+        if n % 2 == 0 && take(mut m, seed) {
+            removed = removed + 1
+        }
+        n = n + 1
+    }
+    let second = lookups(m, count)
+    print(str(m.live) + " " + str(removed) + " " + str(first) + " " + str(second))
+}

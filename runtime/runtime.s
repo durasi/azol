@@ -20,6 +20,7 @@
 .globl _rt_drop, _rt_str_concat, _rt_str_eq, _rt_str_from_i64, _rt_str_from_bool
 .globl _rt_eprint_str, _rt_exit, _rt_str_slice, _rt_chr, _rt_args, _rt_read_file, _rt_write_file
 .globl _rt_str_append, _rt_set_executable, _rt_start, _rt_start_main
+.globl _rt_remove_file, _rt_rename_file, _rt_clock, _rt_str_is_utf8
 
 // x0 = number. Prints it and a newline.
 _rt_print_i64:
@@ -850,6 +851,181 @@ _rt_set_executable:
 36:
     ldp x19, x20, [sp, #16]
     ldp x29, x30, [sp], #32
+    ret
+
+// x0 = address of a string naming a file, x8 = address of three slots.
+// Deletes the file. Returns like `_rt_set_executable`.
+_rt_remove_file:
+    stp x29, x30, [sp, #-32]!
+    mov x29, sp
+    stp x19, x20, [sp, #16]
+    mov x19, x8
+    bl _rt_c_path
+    mov x20, x0
+    brk #0x1013
+    nop
+    nop
+    cbz w0, 41f
+    mov x0, x19
+    bl _rt_os_error
+    mov x0, x20
+    bl _rt_free
+    mov x0, #1
+    b 42f
+41:
+    mov x0, x20
+    bl _rt_free
+    str xzr, [x19]
+    mov x0, #0
+42:
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+
+// x0, x1 = addresses of two strings naming files, x8 = address of three
+// slots. Gives the first file the second name, replacing a file that
+// already has it. Returns like `_rt_set_executable`.
+_rt_rename_file:
+    stp x29, x30, [sp, #-48]!
+    mov x29, sp
+    stp x19, x20, [sp, #16]
+    str x21, [sp, #32]
+    mov x19, x8
+    mov x21, x1
+    bl _rt_c_path
+    mov x20, x0
+    mov x0, x21
+    bl _rt_c_path
+    mov x21, x0
+    mov x1, x21
+    mov x0, x20
+    brk #0x1014
+    nop
+    nop
+    cbz w0, 43f
+    mov x0, x19
+    bl _rt_os_error
+    mov x0, x20
+    bl _rt_free
+    mov x0, x21
+    bl _rt_free
+    mov x0, #1
+    b 44f
+43:
+    mov x0, x20
+    bl _rt_free
+    mov x0, x21
+    bl _rt_free
+    str xzr, [x19]
+    mov x0, #0
+44:
+    ldr x21, [sp, #32]
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #48
+    ret
+
+// Returns in x0 the nanoseconds on a clock that only moves forward:
+// `clock_gettime_nsec_np(CLOCK_UPTIME_RAW)`, where CLOCK_UPTIME_RAW is 8
+// in <time.h> of the macOS SDK. It counts while the machine is awake,
+// and already in nanoseconds, so nothing is converted here.
+_rt_clock:
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    mov x0, #8
+    brk #0x1015
+    nop
+    nop
+    ldp x29, x30, [sp], #16
+    ret
+
+// x0 = address of a string. Returns 1 in x0 when its bytes are well-formed
+// UTF-8 and 0 when they are not: no stray or missing continuation bytes,
+// no encoding longer than needed, no surrogates, nothing above U+10FFFF.
+// x1 walks the bytes, x2 is their end.
+_rt_str_is_utf8:
+    ldp x1, x2, [x0]
+    add x2, x1, x2
+    mov x9, #0x8080808080808080
+45:
+    // Eight plain characters at a time, while there are that many.
+    sub x3, x2, x1
+    cmp x3, #8
+    b.lo 46f
+    ldr x4, [x1]
+    tst x4, x9
+    b.ne 46f
+    add x1, x1, #8
+    b 45b
+46:
+    cmp x1, x2
+    b.hs 53f
+    ldrb w4, [x1]
+    cmp w4, #128
+    b.hs 47f
+    add x1, x1, #1
+    b 45b
+47:
+    // w4 starts a longer character: x7 = how many bytes follow, and
+    // w5..w6 = the range the next one must be in, which is what rules out
+    // the encodings that are too long, the surrogates and the numbers
+    // that are too large.
+    mov w5, #0x80
+    mov w6, #0xbf
+    cmp w4, #0xc2
+    b.lo 54f
+    cmp w4, #0xe0
+    b.hs 48f
+    mov x7, #1
+    b 50f
+48:
+    cmp w4, #0xf0
+    b.hs 49f
+    mov x7, #2
+    mov w10, #0xa0
+    cmp w4, #0xe0
+    csel w5, w10, w5, eq
+    mov w10, #0x9f
+    cmp w4, #0xed
+    csel w6, w10, w6, eq
+    b 50f
+49:
+    cmp w4, #0xf5
+    b.hs 54f
+    mov x7, #3
+    mov w10, #0x90
+    cmp w4, #0xf0
+    csel w5, w10, w5, eq
+    mov w10, #0x8f
+    cmp w4, #0xf4
+    csel w6, w10, w6, eq
+50:
+    sub x3, x2, x1
+    cmp x3, x7
+    b.ls 54f
+    ldrb w8, [x1, #1]
+    cmp w8, w5
+    b.lo 54f
+    cmp w8, w6
+    b.hi 54f
+    mov x10, #2
+51:
+    cmp x10, x7
+    b.hi 52f
+    ldrb w8, [x1, x10]
+    and w8, w8, #0xc0
+    cmp w8, #0x80
+    b.ne 54f
+    add x10, x10, #1
+    b 51b
+52:
+    add x1, x1, x7
+    add x1, x1, #1
+    b 45b
+53:
+    mov x0, #1
+    ret
+54:
+    mov x0, #0
     ret
 
 // Where a macOS program starts: it arranges for running out of stack to

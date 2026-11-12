@@ -1,0 +1,61 @@
+# From the tests of the first compiler: src/parser.rs, `multi_line_expressions`.
+==== 1
+---- file a.azl (no newline at end)
+fn t() {
+let x = a +
+    b
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  let x = (+ a b)
+---- stderr
+parsed 4 lines into 5 nodes
+==== 2
+---- file a.azl (no newline at end)
+fn t() {
+f(
+  1,
+  mut b,
+)
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  (call f 1 (mut b))
+---- stderr
+parsed 6 lines into 7 nodes
+==== 3
+---- file a.azl (no newline at end)
+fn t() {
+let y = list
+    .map(f)
+    .len
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  let y = (call list.map f).len
+---- stderr
+parsed 5 lines into 7 nodes
+==== 4
+---- file a.azl (no newline at end)
+fn t() {
+let p = Point {
+  x: 1,
+  y: [
+    2,
+    3
+  ],
+}
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  let p = (new Point x: 1 y: (array 2 3))
+---- stderr
+parsed 9 lines into 9 nodes

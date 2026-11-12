@@ -1,0 +1,351 @@
+# From the tests of the first compiler: src/sema.rs, `one_call_cannot_get_overlapping_places_when_one_is_mut`.
+==== 1
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn swap(a: mut Point, b: mut Point) {
+}
+fn mix(a: mut Point, b: Point) {
+}
+fn both(a: Point, b: Point) {
+}
+fn bump(n: mut i64, by: i64) {
+}
+fn two(a: mut i64, b: mut i64) {
+}
+fn id(p: Point) -> Point {
+ return p
+}
+fn touch(p: mut Point) -> i64 {
+ return 1
+}
+fn sum(p: Point, n: i64) -> i64 {
+ return n
+}
+fn main() {
+var p = Point { x: 1, y: 2 }
+var q = Point { x: 3, y: 4 }
+var l = Line { from: p, to: q }
+swap(mut p, mut p)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0410]: `p` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+  --> a.azl:32:17
+   |
+32 | swap(mut p, mut p)
+   |                 ^
+---- asserted 32:17 `p` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0410","message":"`p` is passed twice in one call and one of the uses is `mut`; copy it into a variable first","file":"a.azl","line":32,"column":17,"end_line":32,"end_column":18,"source":"swap(mut p, mut p)","rule":"One call cannot receive the same data twice when one of the uses is `mut`."}
+{"summary":{"errors":1,"files":1}}
+==== 2
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn swap(a: mut Point, b: mut Point) {
+}
+fn mix(a: mut Point, b: Point) {
+}
+fn both(a: Point, b: Point) {
+}
+fn bump(n: mut i64, by: i64) {
+}
+fn two(a: mut i64, b: mut i64) {
+}
+fn id(p: Point) -> Point {
+ return p
+}
+fn touch(p: mut Point) -> i64 {
+ return 1
+}
+fn sum(p: Point, n: i64) -> i64 {
+ return n
+}
+fn main() {
+var p = Point { x: 1, y: 2 }
+var q = Point { x: 3, y: 4 }
+var l = Line { from: p, to: q }
+mix(mut p, p)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0410]: `p` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+  --> a.azl:32:12
+   |
+32 | mix(mut p, p)
+   |            ^
+---- asserted 32:12 `p` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0410","message":"`p` is passed twice in one call and one of the uses is `mut`; copy it into a variable first","file":"a.azl","line":32,"column":12,"end_line":32,"end_column":13,"source":"mix(mut p, p)","rule":"One call cannot receive the same data twice when one of the uses is `mut`."}
+{"summary":{"errors":1,"files":1}}
+==== 3
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn swap(a: mut Point, b: mut Point) {
+}
+fn mix(a: mut Point, b: Point) {
+}
+fn both(a: Point, b: Point) {
+}
+fn bump(n: mut i64, by: i64) {
+}
+fn two(a: mut i64, b: mut i64) {
+}
+fn id(p: Point) -> Point {
+ return p
+}
+fn touch(p: mut Point) -> i64 {
+ return 1
+}
+fn sum(p: Point, n: i64) -> i64 {
+ return n
+}
+fn main() {
+var p = Point { x: 1, y: 2 }
+var q = Point { x: 3, y: 4 }
+var l = Line { from: p, to: q }
+mix(mut l.from, l.from)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0410]: `l` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+  --> a.azl:32:17
+   |
+32 | mix(mut l.from, l.from)
+   |                 ^
+---- asserted 32:17 `l` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0410","message":"`l` is passed twice in one call and one of the uses is `mut`; copy it into a variable first","file":"a.azl","line":32,"column":17,"end_line":32,"end_column":23,"source":"mix(mut l.from, l.from)","rule":"One call cannot receive the same data twice when one of the uses is `mut`."}
+{"summary":{"errors":1,"files":1}}
+==== 4
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn swap(a: mut Point, b: mut Point) {
+}
+fn mix(a: mut Point, b: Point) {
+}
+fn both(a: Point, b: Point) {
+}
+fn bump(n: mut i64, by: i64) {
+}
+fn two(a: mut i64, b: mut i64) {
+}
+fn id(p: Point) -> Point {
+ return p
+}
+fn touch(p: mut Point) -> i64 {
+ return 1
+}
+fn sum(p: Point, n: i64) -> i64 {
+ return n
+}
+fn main() {
+var p = Point { x: 1, y: 2 }
+var q = Point { x: 3, y: 4 }
+var l = Line { from: p, to: q }
+swap(mut l, mut l)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: argument 1 of `swap` needs `Point` but this is `Line`
+  --> a.azl:32:10
+   |
+32 | swap(mut l, mut l)
+   |          ^
+---- asserted 32:10 argument 1 of `swap` needs `Point` but this is `Line`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"argument 1 of `swap` needs `Point` but this is `Line`","file":"a.azl","line":32,"column":10,"end_line":32,"end_column":11,"source":"swap(mut l, mut l)","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 5
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn swap(a: mut Point, b: mut Point) {
+}
+fn mix(a: mut Point, b: Point) {
+}
+fn both(a: Point, b: Point) {
+}
+fn bump(n: mut i64, by: i64) {
+}
+fn two(a: mut i64, b: mut i64) {
+}
+fn id(p: Point) -> Point {
+ return p
+}
+fn touch(p: mut Point) -> i64 {
+ return 1
+}
+fn sum(p: Point, n: i64) -> i64 {
+ return n
+}
+fn main() {
+var p = Point { x: 1, y: 2 }
+var q = Point { x: 3, y: 4 }
+var l = Line { from: p, to: q }
+two(mut p.x, mut p.x)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0410]: `p` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+  --> a.azl:32:18
+   |
+32 | two(mut p.x, mut p.x)
+   |                  ^
+---- asserted 32:18 `p` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0410","message":"`p` is passed twice in one call and one of the uses is `mut`; copy it into a variable first","file":"a.azl","line":32,"column":18,"end_line":32,"end_column":21,"source":"two(mut p.x, mut p.x)","rule":"One call cannot receive the same data twice when one of the uses is `mut`."}
+{"summary":{"errors":1,"files":1}}
+==== 6
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn swap(a: mut Point, b: mut Point) {
+}
+fn mix(a: mut Point, b: Point) {
+}
+fn both(a: Point, b: Point) {
+}
+fn bump(n: mut i64, by: i64) {
+}
+fn two(a: mut i64, b: mut i64) {
+}
+fn id(p: Point) -> Point {
+ return p
+}
+fn touch(p: mut Point) -> i64 {
+ return 1
+}
+fn sum(p: Point, n: i64) -> i64 {
+ return n
+}
+fn main() {
+var p = Point { x: 1, y: 2 }
+var q = Point { x: 3, y: 4 }
+var l = Line { from: p, to: q }
+mix(mut p, id(p))
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0410]: `p` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+  --> a.azl:32:15
+   |
+32 | mix(mut p, id(p))
+   |               ^
+---- asserted 32:15 `p` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0410","message":"`p` is passed twice in one call and one of the uses is `mut`; copy it into a variable first","file":"a.azl","line":32,"column":15,"end_line":32,"end_column":16,"source":"mix(mut p, id(p))","rule":"One call cannot receive the same data twice when one of the uses is `mut`."}
+{"summary":{"errors":1,"files":1}}
+==== 7
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn swap(a: mut Point, b: mut Point) {
+}
+fn mix(a: mut Point, b: Point) {
+}
+fn both(a: Point, b: Point) {
+}
+fn bump(n: mut i64, by: i64) {
+}
+fn two(a: mut i64, b: mut i64) {
+}
+fn id(p: Point) -> Point {
+ return p
+}
+fn touch(p: mut Point) -> i64 {
+ return 1
+}
+fn sum(p: Point, n: i64) -> i64 {
+ return n
+}
+fn main() {
+var p = Point { x: 1, y: 2 }
+var q = Point { x: 3, y: 4 }
+var l = Line { from: p, to: q }
+print(sum(p, touch(mut p)))
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0410]: `p` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+  --> a.azl:32:24
+   |
+32 | print(sum(p, touch(mut p)))
+   |                        ^
+---- asserted 32:24 `p` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0410","message":"`p` is passed twice in one call and one of the uses is `mut`; copy it into a variable first","file":"a.azl","line":32,"column":24,"end_line":32,"end_column":25,"source":"print(sum(p, touch(mut p)))","rule":"One call cannot receive the same data twice when one of the uses is `mut`."}
+{"summary":{"errors":1,"files":1}}

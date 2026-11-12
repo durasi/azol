@@ -1,0 +1,22 @@
+; A block that jumps to itself is a loop of one block, and its own
+; latch.
+; cfg:
+; out: fn main
+; out:   order: b0 b1 b2
+; out:   idom: b0=b0 b1=b0 b2=b1
+; out:   loop 0: header b1, depth 1, parent -, blocks b1, latches b1, exits b2
+; out:   live b0: in p0 | out p0
+; out:   live b1: in p0 | out p0 v1
+; out:   live b2: in v1 | out -
+; run: main 5
+; out: => 5
+fn main(p0: i64) -> i64 {
+b0:
+    jump b1(0)
+b1(v0: i64):
+    v1 = add v0, 1
+    v2 = slt v1, p0
+    br v2, b1(v1), b2
+b2:
+    ret v1
+}

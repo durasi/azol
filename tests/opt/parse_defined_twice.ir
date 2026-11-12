@@ -1,0 +1,7 @@
+; parse: 5:5: v0 is defined twice
+fn main() -> i64 {
+b0:
+    v0 = add 1, 2
+    v0 = add 3, 4
+    ret v0
+}

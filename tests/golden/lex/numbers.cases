@@ -1,0 +1,16 @@
+# From the tests of the first compiler: src/lexer.rs, `numbers`.
+==== 1
+---- file a.azl (no newline at end)
+42 1_000 3.14 7.x
+---- run lex a.azl
+---- exit 0
+---- stdout
+   1:1    Int        42
+   1:4    Int        1_000
+   1:10   Float      3.14
+   1:15   Int        7
+   1:16   Dot        .
+   1:17   Ident      x
+   1:18   Eof        
+---- stderr
+lexed 17 bytes, 1 lines, 7 tokens

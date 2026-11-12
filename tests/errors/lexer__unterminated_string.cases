@@ -1,0 +1,15 @@
+# From the tests of the first compiler: src/lexer.rs, `unterminated_string`.
+==== 1
+---- file a.azl (no newline at end)
+let s = "abc
+let t = 1
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0102]: unterminated string literal
+ --> a.azl:1:9
+  |
+1 | let s = "abc
+  |         ^
+---- asserted 1:9 unterminated string literal

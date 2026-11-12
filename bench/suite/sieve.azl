@@ -1,0 +1,34 @@
+// sieve: flags in a list.
+// Algorithm: the sieve of Eratosthenes over a list of booleans.
+// Sizes: primes up to 30,000,000; small: 2,000,000.
+// Output: count * 100000000 + the largest prime.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+fn main() {
+    let limit = size(30000000, 2000000)
+    var composite = false.filled(limit + 1)
+    var count = 0
+    var last = 0
+    var i = 2
+    while i <= limit {
+        if !composite[i] {
+            count = count + 1
+            last = i
+            var j = i * i
+            while j <= limit {
+                composite[j] = true
+                j = j + i
+            }
+        }
+        i = i + 1
+    }
+    print(count * 100000000 + last)
+}

@@ -1,0 +1,93 @@
+// expect-exit: 0
+// expect-line: true
+// expect-line: true
+// expect-line: true
+// expect-line: 599994
+// expect-line: true
+// expect-line: true
+// expect-line: 5
+// expect-line: 0
+// expect-line: No such file or directory
+// expect-line: moved
+// expect-line: 6
+// expect-line: 0
+// expect-line: second
+// expect-line: 0
+// expect-line: No such file or directory
+// expect-line: No such file or directory
+// expect-line: No such file or directory
+// expect-line: 1
+// expect-line: No such file or directory
+// expect-line: 0
+// expect-line: No such file or directory
+
+// The clock, and removing and renaming files.
+
+fn outcome(result: Result[i64, str]) {
+    match result {
+        Ok(number) => print(number)
+        Err(problem) => print(problem)
+    }
+}
+
+fn show(path: str) {
+    match read_file(path) {
+        Ok(text) => print(text)
+        Err(problem) => print(problem)
+    }
+}
+
+fn spin(n: i64) -> i64 {
+    var i = 0
+    var sum = 0
+    while i < n {
+        sum = sum + i % 7
+        i = i + 1
+    }
+    return sum
+}
+
+fn main() {
+    let before = clock()
+    let sum = spin(200000)
+    let after = clock()
+    print(str(before > 0))
+    print(str(after >= before))
+    print(str(after > before))
+    print(sum)
+    // The left reading is taken first.
+    let apart = clock() - clock()
+    print(str(apart <= 0))
+    var last = clock()
+    var forward = true
+    var i = 0
+    while i < 50 {
+        let now = clock()
+        if now < last {
+            forward = false
+        }
+        last = now
+        i = i + 1
+    }
+    print(str(forward))
+
+    let path = "/tmp/azol_test_remove.txt"
+    let other = "/tmp/azol_test_renamed.txt"
+    outcome(write_file(path, "moved"))
+    outcome(rename_file(path, other))
+    show(path)
+    show(other)
+    // A file that already has the new name is replaced.
+    outcome(write_file(path, "second"))
+    outcome(rename_file(path, other))
+    show(other)
+    outcome(remove_file(other))
+    outcome(remove_file(other))
+    outcome(rename_file(path, other))
+    outcome(remove_file("/tmp/azol_no_such_folder/file"))
+    // Names worked out on the way are given back afterwards.
+    outcome(write_file(path, "x"))
+    outcome(rename_file(path + "", "/tmp/azol_no_such_" + "folder/file"))
+    outcome(remove_file("/tmp/azol_test_" + "remove.txt"))
+    outcome(remove_file("/tmp/azol_test_" + "remove.txt"))
+}

@@ -1,0 +1,16 @@
+; A block nothing jumps to is allowed; it is not run.
+; run:
+; out: => 1
+; cfg:
+; out: fn main
+; out:   order: b0
+; out:   unreachable: b1
+; out:   idom: b0=b0
+; out:   live b0: in - | out -
+fn main() -> i64 {
+b0:
+    ret 1
+b1:
+    v0 = add 1, 2
+    ret v0
+}

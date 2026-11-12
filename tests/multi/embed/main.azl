@@ -1,0 +1,30 @@
+// expect-exit: 0
+// expect-line: 18
+// expect-line: The rust remover.
+// expect-line: 4 0 1 254 255
+// expect-line: 0
+// expect-line: azoL: The rust remover.
+// expect-line: 22
+// expect-line: true
+// expect-line: 18
+
+// Files embedded as constants. Each path starts at the folder of the
+// source file that names it, wherever the compiler is started.
+
+const MOTTO = embed("data/motto.txt")
+const BYTES = embed("data/bytes.bin")
+const EMPTY = embed("data/empty.txt")
+const FOLDER = "data/"
+const LINE = "azoL: " + embed(FOLDER + "motto.txt")
+const ALL = MOTTO + EMPTY + BYTES
+
+fn main() {
+    print(MOTTO.len())
+    print(MOTTO.trim())
+    print(str(BYTES.len()) + " " + str(BYTES[0]) + " " + str(BYTES[1]) + " " + str(BYTES[2]) + " " + str(BYTES[3]))
+    print(EMPTY.len())
+    print(LINE.trim())
+    print(ALL.len())
+    print(str(MOTTO.is_utf8() && !BYTES.is_utf8()))
+    print(from_parts())
+}

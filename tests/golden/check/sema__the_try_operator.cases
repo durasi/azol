@@ -1,0 +1,279 @@
+# From the tests of the first compiler: src/sema.rs, `the_try_operator`.
+==== 1
+---- file a.azl (no newline at end)
+fn number(s: str) -> Result[i64, str] {
+ return Ok(1)
+}
+fn words(s: str) -> Result[List[str], str] {
+ return Ok([s])
+}
+fn maybe() -> Option[i64] {
+ return None
+}
+struct P {
+ a: List[str]
+ n: i64
+}
+struct Q {
+ n: i64
+ a: List[str]
+}
+fn f() -> Result[i64, str] {
+ let n = number("1")? + number("2")?
+ number("3")?
+ return Ok(n)
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 24 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos dfd057942f64a1bdae9683a030645f893d4568ed376d68be7da8a67d342ecf0e
+x86_64-linux ad7c1cb477bc90a262e5acccff826b464ea560f0f2d27a5b10441340049294eb
+aarch64-linux 94d2d65a6aef58680f93aa639f6026df314793ad13a59181204a856eee26dd82
+==== 2
+---- file a.azl (no newline at end)
+fn number(s: str) -> Result[i64, str] {
+ return Ok(1)
+}
+fn words(s: str) -> Result[List[str], str] {
+ return Ok([s])
+}
+fn maybe() -> Option[i64] {
+ return None
+}
+struct P {
+ a: List[str]
+ n: i64
+}
+struct Q {
+ n: i64
+ a: List[str]
+}
+fn f() -> Result[str, str] {
+ let w = words("a")?
+ return Ok(w[0])
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 23 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 5cf75155662200913699fd74ab3ebfcf9a54ceed32cf00b26110527489dcda6a
+x86_64-linux 2e650f61c19039d4257f509d28034fd5978be2008162dd0563504435726666a2
+aarch64-linux 4ce325ac50f57036b575e8a2cc22b6b714fcf5cf8c855a35555e7eb18c296e8e
+==== 3
+---- file a.azl (no newline at end)
+fn number(s: str) -> Result[i64, str] {
+ return Ok(1)
+}
+fn words(s: str) -> Result[List[str], str] {
+ return Ok([s])
+}
+fn maybe() -> Option[i64] {
+ return None
+}
+struct P {
+ a: List[str]
+ n: i64
+}
+struct Q {
+ n: i64
+ a: List[str]
+}
+fn f() -> Option[str] {
+ let n = maybe()?
+ return Some(str(n))
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 23 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos f6bfa5caf7c22e94e3fd8b67d562ecefc3a0429f8c92d142c4dfe8d6ea31a251
+x86_64-linux d6f1036cb26f71632ea424000e51c18755fbf8e9579085e50339d100b4c94142
+aarch64-linux 361d0dcaec8ff702f24c40ed7a9759ac715b4850409d5474486f90edb7bde546
+==== 4
+---- file a.azl (no newline at end)
+fn number(s: str) -> Result[i64, str] {
+ return Ok(1)
+}
+fn words(s: str) -> Result[List[str], str] {
+ return Ok([s])
+}
+fn maybe() -> Option[i64] {
+ return None
+}
+struct P {
+ a: List[str]
+ n: i64
+}
+struct Q {
+ n: i64
+ a: List[str]
+}
+fn f(r: Result[List[i64], str]) -> Result[i64, str] {
+ return Ok(r?.len())
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 22 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 66839fdc9aff8838ff8cbd9c2a29a1bb122ebce84401266219d391abccc9c15e
+x86_64-linux 8f8a91b5cb9163b5186c97a2715bc242a1b9332c35ae5ccbc361c6b20759de5f
+aarch64-linux ac21c38c3c154bc540c25d82020cea960adb787f77feaa2f08dfd2c93687ff8c
+==== 5
+---- file a.azl (no newline at end)
+fn number(s: str) -> Result[i64, str] {
+ return Ok(1)
+}
+fn words(s: str) -> Result[List[str], str] {
+ return Ok([s])
+}
+fn maybe() -> Option[i64] {
+ return None
+}
+struct P {
+ a: List[str]
+ n: i64
+}
+struct Q {
+ n: i64
+ a: List[str]
+}
+fn f() -> Result[Q, str] {
+ return Ok(Q { n: number("1")?, a: words("a")? })
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 22 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 4c34a9f6f240c276b29d1eb4c9022b6aef0b70f13a9ce9a5c77b3743b830f89c
+x86_64-linux 828b1af8fa0127dda2525f7b99523d82f79734bcae7b54dd9ef12bf8520bba92
+aarch64-linux e63db24f8b0ffbc0d80063bd331ccb8a9773b1bb8c3b1d7fac43a09ecbf3a6fe
+==== 6
+---- file a.azl (no newline at end)
+fn number(s: str) -> Result[i64, str] {
+ return Ok(1)
+}
+fn words(s: str) -> Result[List[str], str] {
+ return Ok([s])
+}
+fn maybe() -> Option[i64] {
+ return None
+}
+struct P {
+ a: List[str]
+ n: i64
+}
+struct Q {
+ n: i64
+ a: List[str]
+}
+fn f() -> Result[P, str] {
+ return Ok(P { a: words("a")?, n: 1 })
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 22 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 9faa6b287f1db61ff8d84b0c504671349289c0c21fb7ccdfa00f2436f87340dc
+x86_64-linux 7b4569f48989bf3f8c127ed0ecbea1575b0bf9bee2ed189fd006280260fedbcb
+aarch64-linux 917f55937e090a64a12c86bc7041bbe6e11ff431a1a96896fd09051ecb3da8c5
+==== 7
+---- file a.azl (no newline at end)
+fn number(s: str) -> Result[i64, str] {
+ return Ok(1)
+}
+fn words(s: str) -> Result[List[str], str] {
+ return Ok([s])
+}
+fn maybe() -> Option[i64] {
+ return None
+}
+struct P {
+ a: List[str]
+ n: i64
+}
+struct Q {
+ n: i64
+ a: List[str]
+}
+fn f() -> Result[i64, str] {
+ let n = [1, 2].len() + number("1")?
+ return Ok(n)
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 23 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 16d2091a1daa639ee5bcb878ea8c3f181b270d44451acb1cbad128525b9a42b6
+x86_64-linux 16729bdec10f51bcab525d9eb3bed0c3f5b52ff36a42cafaf4afec43a8b1b357
+aarch64-linux 5fa1a47928c998ebc563202433454655c098b890334741e76454e73c45d5fef8
+==== 8
+---- file a.azl (no newline at end)
+fn number(s: str) -> Result[i64, str] {
+ return Ok(1)
+}
+fn words(s: str) -> Result[List[str], str] {
+ return Ok([s])
+}
+fn maybe() -> Option[i64] {
+ return None
+}
+struct P {
+ a: List[str]
+ n: i64
+}
+struct Q {
+ n: i64
+ a: List[str]
+}
+fn f(s: str) -> Result[Q, str] {
+ let q = Q { n: 1, a: [s] }
+ return Ok(Q { n: number(s)?, a: q.a })
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 23 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 25756303719c3d2bd58ef993d763637a5f085104a29f0d462672a360b8109e0e
+x86_64-linux abe1e62c297d9c3ce6e80f3193571bb699ad64b05fd83a30018b831264269e07
+aarch64-linux e1a8a4eb15daba7bce2599d981fe7d0e3beaa517b01b9f82e1836df2fb279167

@@ -1,0 +1,25 @@
+# From the tests of the first compiler: src/main.rs, `an_error_in_a_declaration_is_reported_alone`.
+==== 1
+---- file a.azl
+struct P {
+    x: Nope
+}
+
+fn main() {
+    print(nothing)
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0203","message":"unknown type `Nope`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`","file":"a.azl","line":2,"column":8,"end_line":2,"end_column":12,"source":"    x: Nope","rule":"A type is `i64`, `bool`, `str`, `List[...]`, `Option[...]`, `Result[..., ...]` or a struct or enum of the program."}
+{"summary":{"errors":1,"files":1}}
+---- reports E0203 2:8
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0203]: unknown type `Nope`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`
+ --> a.azl:2:8
+  |
+2 |     x: Nope
+  |        ^

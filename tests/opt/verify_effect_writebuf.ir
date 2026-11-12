@@ -1,0 +1,9 @@
+; Storing to the buffer a parameter owns needs `writebuf`; `write` is
+; for the header itself.
+; verify: put: b0: store i64, v0, 0, 1  [buf(param 0)]: parameter p0 is not declared `writebuf`
+fn put(p0: ptr [param 0 read write]) {
+b0:
+    v0 = load ptr, p0, 0  [param 0]
+    store i64, v0, 0, 1  [buf(param 0)]
+    ret
+}

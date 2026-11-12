@@ -1,0 +1,7 @@
+; verify: main: b0: ret: a terminator must be the last instruction of its block
+fn main() {
+b0:
+    ret
+    v0 = add 1, 2
+    ret
+}

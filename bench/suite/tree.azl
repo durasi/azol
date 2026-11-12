@@ -1,0 +1,52 @@
+// tree: allocate and walk trees.
+// Algorithm: build a full binary tree out of an enum whose inner nodes own
+// a list of children, sum it, free it; repeated.
+// Sizes: depth 18, 20 rounds; small: depth 14, 4 rounds.
+// Output: the total of all sums.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+enum Tree {
+    Leaf(i64)
+    Node(List[Tree])
+}
+
+fn build(depth: i64, seed: i64) -> Tree {
+    if depth == 0 {
+        return Leaf(seed % 10)
+    }
+    return Node([build(depth - 1, seed * 3 + 1), build(depth - 1, seed * 5 + 2)])
+}
+
+fn sum(tree: Tree) -> i64 {
+    match tree {
+        Leaf(value) => return value
+        Node(children) => {
+            var total = 1
+            for child in children {
+                total = total + sum(child)
+            }
+            return total
+        }
+    }
+}
+
+fn main() {
+    let depth = size(18, 14)
+    let rounds = size(20, 4)
+    var total = 0
+    var round = 0
+    while round < rounds {
+        let tree = build(depth, round)
+        total = total + sum(tree)
+        round = round + 1
+    }
+    print(total)
+}

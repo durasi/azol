@@ -20,13 +20,13 @@
 //     (not in file)     ALR_MEMORY              the library's writable memory
 
 // The instructions as bytes, lowest byte first.
-fn a_words_to_bytes(words: List[i64]) -> List[i64] {
-    var bytes: List[i64] = []
+fn a_words_to_bytes(words: List[i64]) -> str {
+    var bytes = ""
     for word in words {
-        bytes.push(word & 0xFF)
-        bytes.push((word >> 8) & 0xFF)
-        bytes.push((word >> 16) & 0xFF)
-        bytes.push((word >> 24) & 0xFF)
+        bytes.push(word)
+        bytes.push(word >> 8)
+        bytes.push(word >> 16)
+        bytes.push(word >> 24)
     }
     return bytes
 }
@@ -70,7 +70,7 @@ fn a_code_text_macos(g: AGen, data: str, ident: str) -> str {
     text = text + "code " + str(g.words.len() * 4) + "\n"
     hex_lines(mut text, a_words_to_bytes(g.words))
     text = text + "data " + str(data.len()) + "\n"
-    hex_lines(mut text, data.bytes())
+    hex_lines(mut text, data)
     text = text + "relocs " + str(g.relocs.len()) + "\n"
     for reloc in g.relocs {
         match reloc {
@@ -87,7 +87,7 @@ fn a_build_macos(g: AGen, data: str, ident: str) -> str {
         target: "aarch64-macos",
         entry: g.entry,
         code: a_words_to_bytes(g.words),
-        data: data.bytes(),
+        data: data,
         ident: ident,
         imports: art_imports(),
         relocs: g.relocs,
@@ -100,7 +100,7 @@ fn a_build_macos(g: AGen, data: str, ident: str) -> str {
         calls: [],
         refs: [],
     }
-    return bytes_to_text(build_macho(code))
+    return build_macho(code)
 }
 
 // The 26-bit field of `b` and `bl`: the distance from the instruction at
@@ -133,37 +133,41 @@ fn a_build_linux(g: mut AGen, data: str, library: str) -> str {
         exit(1)
     }
 
-    var head: List[i64] = [0x7F, 'E', 'L', 'F', 2, 1, 1, 0] // 64-bit, little-endian, version 1, System V
-    put64(mut head, 0)
-    put16(mut head, 2) // an executable at fixed addresses
-    put16(mut head, 183) // ARM64
-    put32(mut head, 1)
-    put64(mut head, ALR_BASE + ALR_TEXT_OFFSET + ALR_START) // where the process starts
-    put64(mut head, 64) // program headers follow this header
-    put64(mut head, 0) // no section headers
-    put32(mut head, 0)
-    put16(mut head, 64)
-    put16(mut head, 56)
-    put16(mut head, 3)
-    put16(mut head, 64) // size a section header would have
-    put16(mut head, 0)
-    put16(mut head, 0)
+    // 64-bit, little-endian, version 1, System V
+    var text = ""
+    put8(mut text, 0x7F)
+    put_text(mut text, "ELF")
+    put8(mut text, 2)
+    put8(mut text, 1)
+    put8(mut text, 1)
+    put8(mut text, 0)
+    put64(mut text, 0)
+    put16(mut text, 2) // an executable at fixed addresses
+    put16(mut text, 183) // ARM64
+    put32(mut text, 1)
+    put64(mut text, ALR_BASE + ALR_TEXT_OFFSET + ALR_START) // where the process starts
+    put64(mut text, 64) // program headers follow this header
+    put64(mut text, 0) // no section headers
+    put32(mut text, 0)
+    put16(mut text, 64)
+    put16(mut text, 56)
+    put16(mut text, 3)
+    put16(mut text, 64) // size a section header would have
+    put16(mut text, 0)
+    put16(mut text, 0)
 
     // Code and constant data, then the library's memory, then a note
     // that the stack holds no code. The memory has nothing in the file;
     // its offset only has to agree with its address within a page.
-    a_program_header(mut head, pt_load(), pf_r() | pf_x(), ALR_BASE, file_size, file_size, page)
-    a_program_header(mut head, pt_load(), pf_r() | pf_w(), ALR_MEMORY, 0, ALR_MEMORY_SIZE, page)
-    a_program_header(mut head, pt_gnu_stack(), pf_r() | pf_w(), 0, 0, 0, 16)
-    pad_to(mut head, ALR_TEXT_OFFSET, 0)
-    var text = bytes_to_text(head)
+    a_program_header(mut text, pt_load(), pf_r() | pf_x(), ALR_BASE, file_size, file_size, page)
+    a_program_header(mut text, pt_load(), pf_r() | pf_w(), ALR_MEMORY, 0, ALR_MEMORY_SIZE, page)
+    a_program_header(mut text, pt_gnu_stack(), pf_r() | pf_w(), 0, 0, 0, 16)
+    pad_to(mut text, ALR_TEXT_OFFSET, 0)
     text = text + library
 
     // The library calls this spot; from here the program's `main` is a
     // fixed distance away.
-    var start: List[i64] = []
-    put32(mut start, 0x14000000 | a_branch_distance(jump, code_at + g.entry * 4)) // b main
-    append_bytes(mut text, start)
+    put32(mut text, 0x14000000 | a_branch_distance(jump, code_at + g.entry * 4)) // b main
 
     let offsets = alr_import_offsets()
     for reloc in g.relocs {
@@ -185,7 +189,12 @@ fn a_build_linux(g: mut AGen, data: str, library: str) -> str {
             }
         }
     }
-    append_bytes(mut text, a_words_to_bytes(g.words))
+    for word in g.words {
+        text.push(word)
+        text.push(word >> 8)
+        text.push(word >> 16)
+        text.push(word >> 24)
+    }
     text = text + data
     return text
 }
@@ -193,7 +202,7 @@ fn a_build_linux(g: mut AGen, data: str, library: str) -> str {
 // One program header: its kind and flags, where the piece is mapped (it
 // starts at offset 0 of the file), how much of it is in the file and in
 // memory, and its alignment.
-fn a_program_header(out: mut List[i64], kind: i64, flags: i64, address: i64, file_size: i64, memory_size: i64, align: i64) {
+fn a_program_header(out: mut str, kind: i64, flags: i64, address: i64, file_size: i64, memory_size: i64, align: i64) {
     put32(mut out, kind)
     put32(mut out, flags)
     put64(mut out, 0)

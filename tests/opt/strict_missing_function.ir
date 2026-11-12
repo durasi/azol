@@ -1,0 +1,11 @@
+; A call of a function that is in no file given: it verifies, since the
+; function may be elsewhere, and cannot be run.
+; verify: ok
+; run:
+; err: ir-interp: there is no function `elsewhere`
+; exit: 3
+fn main() -> i64 {
+b0:
+    v0 = call elsewhere(1) -> i64
+    ret v0
+}

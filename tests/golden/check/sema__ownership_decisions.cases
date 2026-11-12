@@ -1,0 +1,40 @@
+# From the tests of the first compiler: src/sema.rs, `ownership_decisions`.
+==== 1
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+let a = make()
+let b = a
+var c = [1]
+c = a
+c = make()
+let d = Bag { items: a, name: "n" }
+let e = Bag { items: [7], name: "n" }
+print(total(make()))
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 27 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 9765555abb5a92404c49e8698b19a4c3cba43f301b868a91bbf1f86348ffd562
+x86_64-linux fae38beffca6cb2b2f29b69a10a434ff80ac1f4441a017a6fc12000079b022d9
+aarch64-linux 6ae372656ba4277cd677d95502dbf1dbb0aab2a4431827c87c6bcb42945a3a2f

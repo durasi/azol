@@ -1,0 +1,366 @@
+# From the tests of the first compiler: src/sema.rs, `a_list_cannot_change_while_something_refers_to_it`.
+==== 1
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+var xs = [1]
+for x in xs {
+xs.push(x)
+}
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0408]: cannot change `xs` while a loop is going through it
+  --> a.azl:21:1
+   |
+21 | xs.push(x)
+   | ^
+---- asserted 21:1 cannot change `xs` while a loop is going through it
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0408","message":"cannot change `xs` while a loop is going through it","file":"a.azl","line":21,"column":1,"end_line":21,"end_column":3,"source":"xs.push(x)","rule":"A list cannot be changed while a `for` loop is going through it."}
+{"summary":{"errors":1,"files":1}}
+==== 2
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+var xs = [1]
+for x in xs {
+xs[0] = x
+}
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0408]: cannot change `xs` while a loop is going through it
+  --> a.azl:21:1
+   |
+21 | xs[0] = x
+   | ^
+---- asserted 21:1 cannot change `xs` while a loop is going through it
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0408","message":"cannot change `xs` while a loop is going through it","file":"a.azl","line":21,"column":1,"end_line":21,"end_column":6,"source":"xs[0] = x","rule":"A list cannot be changed while a `for` loop is going through it."}
+{"summary":{"errors":1,"files":1}}
+==== 3
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+var xs = [1]
+for x in xs {
+xs = [2]
+}
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0408]: cannot change `xs` while a loop is going through it
+  --> a.azl:21:1
+   |
+21 | xs = [2]
+   | ^
+---- asserted 21:1 cannot change `xs` while a loop is going through it
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0408","message":"cannot change `xs` while a loop is going through it","file":"a.azl","line":21,"column":1,"end_line":21,"end_column":3,"source":"xs = [2]","rule":"A list cannot be changed while a `for` loop is going through it."}
+{"summary":{"errors":1,"files":1}}
+==== 4
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+var xs = [1]
+for x in xs {
+let y = xs.pop()
+}
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0408]: cannot change `xs` while a loop is going through it
+  --> a.azl:21:9
+   |
+21 | let y = xs.pop()
+   |         ^
+---- asserted 21:9 cannot change `xs` while a loop is going through it
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0408","message":"cannot change `xs` while a loop is going through it","file":"a.azl","line":21,"column":9,"end_line":21,"end_column":11,"source":"let y = xs.pop()","rule":"A list cannot be changed while a `for` loop is going through it."}
+{"summary":{"errors":1,"files":1}}
+==== 5
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+var xs = [1]
+for x in xs {
+grow(mut xs)
+}
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0408]: cannot pass `xs` as `mut` while a loop is going through it
+  --> a.azl:21:10
+   |
+21 | grow(mut xs)
+   |          ^
+---- asserted 21:10 cannot pass `xs` as `mut` while a loop is going through it
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0408","message":"cannot pass `xs` as `mut` while a loop is going through it","file":"a.azl","line":21,"column":10,"end_line":21,"end_column":12,"source":"grow(mut xs)","rule":"A list cannot be changed while a `for` loop is going through it."}
+{"summary":{"errors":1,"files":1}}
+==== 6
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+var b = Bag { items: [1], name: "a" }
+for x in b.items {
+b = Bag { items: [], name: "b" }
+}
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0408]: cannot change `b` while a loop is going through it
+  --> a.azl:21:1
+   |
+21 | b = Bag { items: [], name: "b" }
+   | ^
+---- asserted 21:1 cannot change `b` while a loop is going through it
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0408","message":"cannot change `b` while a loop is going through it","file":"a.azl","line":21,"column":1,"end_line":21,"end_column":2,"source":"b = Bag { items: [], name: \"b\" }","rule":"A list cannot be changed while a `for` loop is going through it."}
+{"summary":{"errors":1,"files":1}}
+==== 7
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+var xs = [1]
+for x in xs {
+if x > 0 {
+while true {
+xs.push(1)
+}
+}
+}
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0408]: cannot change `xs` while a loop is going through it
+  --> a.azl:23:1
+   |
+23 | xs.push(1)
+   | ^
+---- asserted 23:1 cannot change `xs` while a loop is going through it
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0408","message":"cannot change `xs` while a loop is going through it","file":"a.azl","line":23,"column":1,"end_line":23,"end_column":3,"source":"xs.push(1)","rule":"A list cannot be changed while a `for` loop is going through it."}
+{"summary":{"errors":1,"files":1}}
+==== 8
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn both(xs: List[i64], n: i64) -> i64 {
+ return n
+}
+fn main() {
+var xs = [1]
+print(both(xs, xs.pop()))
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0410]: cannot change `xs` here: it is also passed to a function in the same expression
+  --> a.azl:23:16
+   |
+23 | print(both(xs, xs.pop()))
+   |                ^
+---- asserted 23:16 cannot change `xs` here: it is also passed to a function in the same expression
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0410","message":"cannot change `xs` here: it is also passed to a function in the same expression","file":"a.azl","line":23,"column":16,"end_line":23,"end_column":18,"source":"print(both(xs, xs.pop()))","rule":"One call cannot receive the same data twice when one of the uses is `mut`."}
+{"summary":{"errors":1,"files":1}}
+==== 9
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn both(n: mut i64, xs: List[i64]) {
+}
+fn main() {
+var xs = [1]
+both(mut xs[0], xs)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0410]: `xs` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+  --> a.azl:22:17
+   |
+22 | both(mut xs[0], xs)
+   |                 ^
+---- asserted 22:17 `xs` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0410","message":"`xs` is passed twice in one call and one of the uses is `mut`; copy it into a variable first","file":"a.azl","line":22,"column":17,"end_line":22,"end_column":19,"source":"both(mut xs[0], xs)","rule":"One call cannot receive the same data twice when one of the uses is `mut`."}
+{"summary":{"errors":1,"files":1}}

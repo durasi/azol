@@ -1,0 +1,38 @@
+// knapsack: one-dimensional dynamic programming.
+// Algorithm: the 0/1 knapsack over a single row, walked from the capacity
+// down for every item.
+// Sizes: 4,000 items, capacity 100,000; small: 400 items, capacity 10,000.
+// Output: the best value.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+fn main() {
+    let items = size(4000, 400)
+    let capacity = size(100000, 10000)
+    var best = 0.filled(capacity + 1)
+    var seed = 71
+    var n = 0
+    while n < items {
+        seed = seed * 48271 % 2147483647
+        let weight = 1 + seed % 97
+        seed = seed * 48271 % 2147483647
+        let value = 1 + seed % 1000
+        var c = capacity
+        while c >= weight {
+            let with_item = best[c - weight] + value
+            if with_item > best[c] {
+                best[c] = with_item
+            }
+            c = c - 1
+        }
+        n = n + 1
+    }
+    print(best[capacity])
+}

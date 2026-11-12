@@ -1,0 +1,6 @@
+; parse: 4:19: expected the end of the line
+fn main() -> i64 {
+b0:
+    v0 = add 1, 2 3
+    ret v0
+}

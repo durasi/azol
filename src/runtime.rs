@@ -7,7 +7,7 @@
 //! linker rewrites.
 
 /// Functions imported from the system library, in GOT order.
-pub const IMPORTS: [&str; 19] = ["_write", "_exit", "_malloc", "_realloc", "_free", "_memcpy", "_memcmp", "_open", "_read", "_close", "___error", "_strerror", "_strlen", "__NSGetArgc", "__NSGetArgv", "_chmod", "_sigaltstack", "_sigaction", "__exit"];
+pub const IMPORTS: [&str; 22] = ["_write", "_exit", "_malloc", "_realloc", "_free", "_memcpy", "_memcmp", "_open", "_read", "_close", "___error", "_strerror", "_strlen", "__NSGetArgc", "__NSGetArgv", "_chmod", "_sigaltstack", "_sigaction", "__exit", "_unlink", "_rename", "_clock_gettime_nsec_np"];
 
 /// Text the runtime prints. `RUNTIME_DATA_OFFSETS[n]` is where item `n`
 /// starts; program string literals are placed after it.
@@ -39,11 +39,15 @@ pub const READ_FILE: u32 = 436;
 pub const WRITE_FILE: u32 = 523;
 pub const STR_APPEND: u32 = 583;
 pub const SET_EXECUTABLE: u32 = 645;
+pub const REMOVE_FILE: u32 = 669;
+pub const RENAME_FILE: u32 = 692;
+pub const CLOCK: u32 = 727;
+pub const STR_IS_UTF8: u32 = 735;
 
 /// Where a macOS program starts, and the word in it that the linker turns
 /// into the call of the program's `main`.
-pub const START: u32 = 669;
-pub const START_MAIN: u32 = 702;
+pub const START: u32 = 804;
+pub const START_MAIN: u32 = 837;
 
 pub enum RuntimeReloc {
     /// Three words: load the import's address and call it.
@@ -52,7 +56,7 @@ pub enum RuntimeReloc {
     Data { at: u32, data: u32, reg: u32 },
 }
 
-pub const RUNTIME_RELOCS: [RuntimeReloc; 64] = [
+pub const RUNTIME_RELOCS: [RuntimeReloc; 67] = [
     RuntimeReloc::Import { at: 21, import: 0 },
     RuntimeReloc::Data { at: 27, data: 1, reg: 0 },
     RuntimeReloc::Data { at: 31, data: 2, reg: 0 },
@@ -111,15 +115,18 @@ pub const RUNTIME_RELOCS: [RuntimeReloc; 64] = [
     RuntimeReloc::Import { at: 627, import: 5 },
     RuntimeReloc::Import { at: 636, import: 5 },
     RuntimeReloc::Import { at: 652, import: 15 },
-    RuntimeReloc::Import { at: 680, import: 16 },
-    RuntimeReloc::Import { at: 692, import: 17 },
-    RuntimeReloc::Import { at: 698, import: 17 },
-    RuntimeReloc::Data { at: 714, data: 10, reg: 1 },
-    RuntimeReloc::Import { at: 717, import: 0 },
-    RuntimeReloc::Import { at: 721, import: 18 },
+    RuntimeReloc::Import { at: 675, import: 19 },
+    RuntimeReloc::Import { at: 705, import: 20 },
+    RuntimeReloc::Import { at: 730, import: 21 },
+    RuntimeReloc::Import { at: 815, import: 16 },
+    RuntimeReloc::Import { at: 827, import: 17 },
+    RuntimeReloc::Import { at: 833, import: 17 },
+    RuntimeReloc::Data { at: 849, data: 10, reg: 1 },
+    RuntimeReloc::Import { at: 852, import: 0 },
+    RuntimeReloc::Import { at: 856, import: 18 },
 ];
 
-pub const RUNTIME: [u32; 725] = [
+pub const RUNTIME: [u32; 860] = [
     0xA9BC7BFD, //   0: stp x29, x30, [sp, #-0x40]!
     0x910003FD, //   1: mov x29, sp
     0x9100FFE9, //   2: add x9, sp, #0x3f
@@ -789,60 +796,195 @@ pub const RUNTIME: [u32; 725] = [
     0xA94153F3, // 666: ldp x19, x20, [sp, #0x10]
     0xA8C27BFD, // 667: ldp x29, x30, [sp], #0x20
     0xD65F03C0, // 668: ret 
-    0xA9BF7BFD, // 669: stp x29, x30, [sp, #-0x10]!
+    0xA9BE7BFD, // 669: stp x29, x30, [sp, #-0x20]!
     0x910003FD, // 670: mov x29, sp
-    0xD14043FF, // 671: sub sp, sp, #0x10, lsl #12
-    0xD100C3FF, // 672: sub sp, sp, #0x30
-    0x9100C3E9, // 673: add x9, sp, #0x30
-    0xF90003E9, // 674: str x9, [sp]
-    0xD2A00029, // 675: mov x9, #0x10000
-    0xF90007E9, // 676: str x9, [sp, #8]
-    0xF9000BFF, // 677: str xzr, [sp, #0x10]
-    0x910003E0, // 678: mov x0, sp
-    0xD2800001, // 679: mov x1, #0
-    0xD4220200, // 680: brk #0x1010
-    0xD503201F, // 681: nop 
-    0xD503201F, // 682: nop 
-    0x35000240, // 683: cbnz w0, #0xaf4
-    0x100002C9, // 684: adr x9, #0xb08
-    0xF9000FE9, // 685: str x9, [sp, #0x18]
-    0x528008A9, // 686: mov w9, #0x45
-    0xB90023FF, // 687: str wzr, [sp, #0x20]
-    0xB90027E9, // 688: str w9, [sp, #0x24]
-    0x52800160, // 689: mov w0, #0xb
-    0x910063E1, // 690: add x1, sp, #0x18
-    0xD2800002, // 691: mov x2, #0
-    0xD4220220, // 692: brk #0x1011
-    0xD503201F, // 693: nop 
-    0xD503201F, // 694: nop 
-    0x52800140, // 695: mov w0, #0xa
-    0x910063E1, // 696: add x1, sp, #0x18
-    0xD2800002, // 697: mov x2, #0
-    0xD4220220, // 698: brk #0x1011
-    0xD503201F, // 699: nop 
-    0xD503201F, // 700: nop 
-    0x9100C3FF, // 701: add sp, sp, #0x30
-    0xD4210000, // 702: brk #0x800
-    0x910003BF, // 703: mov sp, x29
-    0xA8C17BFD, // 704: ldp x29, x30, [sp], #0x10
-    0xD65F03C0, // 705: ret 
-    0xF9400C29, // 706: ldr x9, [x1, #0x18]
-    0xF940184A, // 707: ldr x10, [x2, #0x30]
-    0xF940854A, // 708: ldr x10, [x10, #0x108]
-    0xCB0A0129, // 709: sub x9, x9, x10
-    0x91404129, // 710: add x9, x9, #0x10, lsl #12
-    0xF140813F, // 711: cmp x9, #0x20, lsl #12
-    0x54000182, // 712: b.hs #0xb50
-    0xD2800040, // 713: mov x0, #2
-    0xD4242820, // 714: brk #0x2141
-    0xD503201F, // 715: nop 
-    0xD28002A2, // 716: mov x2, #0x15
-    0xD4220000, // 717: brk #0x1000
-    0xD503201F, // 718: nop 
-    0xD503201F, // 719: nop 
-    0xD2800020, // 720: mov x0, #1
-    0xD4220240, // 721: brk #0x1012
-    0xD503201F, // 722: nop 
-    0xD503201F, // 723: nop 
-    0xD65F03C0, // 724: ret 
+    0xA90153F3, // 671: stp x19, x20, [sp, #0x10]
+    0xAA0803F3, // 672: mov x19, x8
+    0x97FFFED8, // 673: bl #0x5e4
+    0xAA0003F4, // 674: mov x20, x0
+    0xD4220260, // 675: brk #0x1013
+    0xD503201F, // 676: nop 
+    0xD503201F, // 677: nop 
+    0x340000E0, // 678: cbz w0, #0xab4
+    0xAA1303E0, // 679: mov x0, x19
+    0x97FFFEE8, // 680: bl #0x640
+    0xAA1403E0, // 681: mov x0, x20
+    0x97FFFDC0, // 682: bl #0x1a8
+    0xD2800020, // 683: mov x0, #1
+    0x14000005, // 684: b #0xac4
+    0xAA1403E0, // 685: mov x0, x20
+    0x97FFFDBC, // 686: bl #0x1a8
+    0xF900027F, // 687: str xzr, [x19]
+    0xD2800000, // 688: mov x0, #0
+    0xA94153F3, // 689: ldp x19, x20, [sp, #0x10]
+    0xA8C27BFD, // 690: ldp x29, x30, [sp], #0x20
+    0xD65F03C0, // 691: ret 
+    0xA9BD7BFD, // 692: stp x29, x30, [sp, #-0x30]!
+    0x910003FD, // 693: mov x29, sp
+    0xA90153F3, // 694: stp x19, x20, [sp, #0x10]
+    0xF90013F5, // 695: str x21, [sp, #0x20]
+    0xAA0803F3, // 696: mov x19, x8
+    0xAA0103F5, // 697: mov x21, x1
+    0x97FFFEBF, // 698: bl #0x5e4
+    0xAA0003F4, // 699: mov x20, x0
+    0xAA1503E0, // 700: mov x0, x21
+    0x97FFFEBC, // 701: bl #0x5e4
+    0xAA0003F5, // 702: mov x21, x0
+    0xAA1503E1, // 703: mov x1, x21
+    0xAA1403E0, // 704: mov x0, x20
+    0xD4220280, // 705: brk #0x1014
+    0xD503201F, // 706: nop 
+    0xD503201F, // 707: nop 
+    0x34000120, // 708: cbz w0, #0xb34
+    0xAA1303E0, // 709: mov x0, x19
+    0x97FFFECA, // 710: bl #0x640
+    0xAA1403E0, // 711: mov x0, x20
+    0x97FFFDA2, // 712: bl #0x1a8
+    0xAA1503E0, // 713: mov x0, x21
+    0x97FFFDA0, // 714: bl #0x1a8
+    0xD2800020, // 715: mov x0, #1
+    0x14000007, // 716: b #0xb4c
+    0xAA1403E0, // 717: mov x0, x20
+    0x97FFFD9C, // 718: bl #0x1a8
+    0xAA1503E0, // 719: mov x0, x21
+    0x97FFFD9A, // 720: bl #0x1a8
+    0xF900027F, // 721: str xzr, [x19]
+    0xD2800000, // 722: mov x0, #0
+    0xF94013F5, // 723: ldr x21, [sp, #0x20]
+    0xA94153F3, // 724: ldp x19, x20, [sp, #0x10]
+    0xA8C37BFD, // 725: ldp x29, x30, [sp], #0x30
+    0xD65F03C0, // 726: ret 
+    0xA9BF7BFD, // 727: stp x29, x30, [sp, #-0x10]!
+    0x910003FD, // 728: mov x29, sp
+    0xD2800100, // 729: mov x0, #8
+    0xD42202A0, // 730: brk #0x1015
+    0xD503201F, // 731: nop 
+    0xD503201F, // 732: nop 
+    0xA8C17BFD, // 733: ldp x29, x30, [sp], #0x10
+    0xD65F03C0, // 734: ret 
+    0xA9400801, // 735: ldp x1, x2, [x0]
+    0x8B020022, // 736: add x2, x1, x2
+    0xB201C3E9, // 737: mov x9, #-0x7f7f7f7f7f7f7f80
+    0xCB010043, // 738: sub x3, x2, x1
+    0xF100207F, // 739: cmp x3, #8
+    0x540000C3, // 740: b.lo #0xba8
+    0xF9400024, // 741: ldr x4, [x1]
+    0xEA09009F, // 742: tst x4, x9
+    0x54000061, // 743: b.ne #0xba8
+    0x91002021, // 744: add x1, x1, #8
+    0x17FFFFF9, // 745: b #0xb88
+    0xEB02003F, // 746: cmp x1, x2
+    0x540006A2, // 747: b.hs #0xc80
+    0x39400024, // 748: ldrb w4, [x1]
+    0x7102009F, // 749: cmp w4, #0x80
+    0x54000062, // 750: b.hs #0xbc4
+    0x91000421, // 751: add x1, x1, #1
+    0x17FFFFF2, // 752: b #0xb88
+    0x52801005, // 753: mov w5, #0x80
+    0x528017E6, // 754: mov w6, #0xbf
+    0x7103089F, // 755: cmp w4, #0xc2
+    0x540005C3, // 756: b.lo #0xc88
+    0x7103809F, // 757: cmp w4, #0xe0
+    0x54000062, // 758: b.hs #0xbe4
+    0xD2800027, // 759: mov x7, #1
+    0x14000014, // 760: b #0xc30
+    0x7103C09F, // 761: cmp w4, #0xf0
+    0x54000122, // 762: b.hs #0xc0c
+    0xD2800047, // 763: mov x7, #2
+    0x5280140A, // 764: mov w10, #0xa0
+    0x7103809F, // 765: cmp w4, #0xe0
+    0x1A850145, // 766: csel w5, w10, w5, eq
+    0x528013EA, // 767: mov w10, #0x9f
+    0x7103B49F, // 768: cmp w4, #0xed
+    0x1A860146, // 769: csel w6, w10, w6, eq
+    0x1400000A, // 770: b #0xc30
+    0x7103D49F, // 771: cmp w4, #0xf5
+    0x540003C2, // 772: b.hs #0xc88
+    0xD2800067, // 773: mov x7, #3
+    0x5280120A, // 774: mov w10, #0x90
+    0x7103C09F, // 775: cmp w4, #0xf0
+    0x1A850145, // 776: csel w5, w10, w5, eq
+    0x528011EA, // 777: mov w10, #0x8f
+    0x7103D09F, // 778: cmp w4, #0xf4
+    0x1A860146, // 779: csel w6, w10, w6, eq
+    0xCB010043, // 780: sub x3, x2, x1
+    0xEB07007F, // 781: cmp x3, x7
+    0x54000289, // 782: b.ls #0xc88
+    0x39400428, // 783: ldrb w8, [x1, #1]
+    0x6B05011F, // 784: cmp w8, w5
+    0x54000223, // 785: b.lo #0xc88
+    0x6B06011F, // 786: cmp w8, w6
+    0x540001E8, // 787: b.hi #0xc88
+    0xD280004A, // 788: mov x10, #2
+    0xEB07015F, // 789: cmp x10, x7
+    0x540000E8, // 790: b.hi #0xc74
+    0x386A6828, // 791: ldrb w8, [x1, x10]
+    0x121A0508, // 792: and w8, w8, #0xc0
+    0x7102011F, // 793: cmp w8, #0x80
+    0x54000101, // 794: b.ne #0xc88
+    0x9100054A, // 795: add x10, x10, #1
+    0x17FFFFF9, // 796: b #0xc54
+    0x8B070021, // 797: add x1, x1, x7
+    0x91000421, // 798: add x1, x1, #1
+    0x17FFFFC3, // 799: b #0xb88
+    0xD2800020, // 800: mov x0, #1
+    0xD65F03C0, // 801: ret 
+    0xD2800000, // 802: mov x0, #0
+    0xD65F03C0, // 803: ret 
+    0xA9BF7BFD, // 804: stp x29, x30, [sp, #-0x10]!
+    0x910003FD, // 805: mov x29, sp
+    0xD14043FF, // 806: sub sp, sp, #0x10, lsl #12
+    0xD100C3FF, // 807: sub sp, sp, #0x30
+    0x9100C3E9, // 808: add x9, sp, #0x30
+    0xF90003E9, // 809: str x9, [sp]
+    0xD2A00029, // 810: mov x9, #0x10000
+    0xF90007E9, // 811: str x9, [sp, #8]
+    0xF9000BFF, // 812: str xzr, [sp, #0x10]
+    0x910003E0, // 813: mov x0, sp
+    0xD2800001, // 814: mov x1, #0
+    0xD4220200, // 815: brk #0x1010
+    0xD503201F, // 816: nop 
+    0xD503201F, // 817: nop 
+    0x35000240, // 818: cbnz w0, #0xd10
+    0x100002C9, // 819: adr x9, #0xd24
+    0xF9000FE9, // 820: str x9, [sp, #0x18]
+    0x528008A9, // 821: mov w9, #0x45
+    0xB90023FF, // 822: str wzr, [sp, #0x20]
+    0xB90027E9, // 823: str w9, [sp, #0x24]
+    0x52800160, // 824: mov w0, #0xb
+    0x910063E1, // 825: add x1, sp, #0x18
+    0xD2800002, // 826: mov x2, #0
+    0xD4220220, // 827: brk #0x1011
+    0xD503201F, // 828: nop 
+    0xD503201F, // 829: nop 
+    0x52800140, // 830: mov w0, #0xa
+    0x910063E1, // 831: add x1, sp, #0x18
+    0xD2800002, // 832: mov x2, #0
+    0xD4220220, // 833: brk #0x1011
+    0xD503201F, // 834: nop 
+    0xD503201F, // 835: nop 
+    0x9100C3FF, // 836: add sp, sp, #0x30
+    0xD4210000, // 837: brk #0x800
+    0x910003BF, // 838: mov sp, x29
+    0xA8C17BFD, // 839: ldp x29, x30, [sp], #0x10
+    0xD65F03C0, // 840: ret 
+    0xF9400C29, // 841: ldr x9, [x1, #0x18]
+    0xF940184A, // 842: ldr x10, [x2, #0x30]
+    0xF940854A, // 843: ldr x10, [x10, #0x108]
+    0xCB0A0129, // 844: sub x9, x9, x10
+    0x91404129, // 845: add x9, x9, #0x10, lsl #12
+    0xF140813F, // 846: cmp x9, #0x20, lsl #12
+    0x54000182, // 847: b.hs #0xd6c
+    0xD2800040, // 848: mov x0, #2
+    0xD4242820, // 849: brk #0x2141
+    0xD503201F, // 850: nop 
+    0xD28002A2, // 851: mov x2, #0x15
+    0xD4220000, // 852: brk #0x1000
+    0xD503201F, // 853: nop 
+    0xD503201F, // 854: nop 
+    0xD2800020, // 855: mov x0, #1
+    0xD4220240, // 856: brk #0x1012
+    0xD503201F, // 857: nop 
+    0xD503201F, // 858: nop 
+    0xD65F03C0, // 859: ret 
 ];

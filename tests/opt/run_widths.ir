@@ -1,0 +1,23 @@
+; A number stored whole and read in parts, lowest byte first:
+; 0x0102030405060708 gives the byte 8 at offset 0, the 32 bits
+; 0x01020304 at offset 4. The narrow stores keep only the low bytes,
+; and `i8` and `i32` loads bring the sign back.
+; run:
+; out: => 8, 16909060, 255, -1, 4294967295, -1, 72623859790382856
+fn main() -> i64, i64, i64, i64, i64, i64, i64 {
+    frames 8, 16
+b0:
+    v0 = frame 0
+    v1 = frame 1
+    store u64, v0, 0, 72623859790382856  [frame 0]
+    v2 = load u8, v0, 0  [frame 0]
+    v3 = load u32, v0, 4  [frame 0]
+    store u8, v1, 0, 511  [frame 1]
+    v4 = load u8, v1, 0  [frame 1]
+    v5 = load i8, v1, 0  [frame 1]
+    store i32, v1, 8, -1  [frame 1]
+    v6 = load u32, v1, 8  [frame 1]
+    v7 = load i32, v1, 8  [frame 1]
+    v8 = load i64, v0, 0  [frame 0]
+    ret v2, v3, v4, v5, v6, v7, v8
+}

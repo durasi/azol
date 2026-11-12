@@ -24,31 +24,36 @@ fn sha256_initial_state() -> List[i64] {
     return [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
 }
 
-// Mixes the 64 bytes of `data` that start at `at` into `state`. `w` is
-// working room with 64 elements; what it holds on entry does not matter.
+// Mixes the 64 bytes of `data` that start at `at` into `state`.
+//
+// The sixteen words the rounds work on are plain variables, `w0` to
+// `w15`, and the code below is written out for each of them: that way no
+// round reads a list. Sixteen rounds make one pass of the loop; from the
+// second pass on, each word is first replaced by the next one of the
+// message schedule. Each round changes two of the eight values `a` to
+// `h`, and after eight rounds every value is back under its own name.
 //
 // A value written twice side by side, `x | x << 32`, turned right by any
 // count up to 32 has the turned value in its low 32 bits: that makes a
 // rotation one shift. What such a shift leaves above the low 32 bits
 // does no harm in a sum, which is cut back to 32 bits before it is kept.
-fn sha256_compress(state: mut List[i64], k: List[i64], w: mut List[i64], data: List[i64], at: i64) {
-    var i = 0
-    var from = at
-    while i < 16 {
-        w[i] = (data[from] << 24) | (data[from + 1] << 16) | (data[from + 2] << 8) | data[from + 3]
-        from = from + 4
-        i = i + 1
-    }
-    while i < 64 {
-        let x = w[i - 15]
-        let y = w[i - 2]
-        let xx = x | x << 32
-        let yy = y | y << 32
-        let s0 = (xx >> 7) ^ (xx >> 18) ^ (x >> 3)
-        let s1 = (yy >> 17) ^ (yy >> 19) ^ (y >> 10)
-        w[i] = (w[i - 16] + s0 + w[i - 7] + s1) & 0xFFFFFFFF
-        i = i + 1
-    }
+fn sha256_compress(state: mut List[i64], k: List[i64], data: str, at: i64) {
+    var w0 = data[at] << 24 | data[at + 1] << 16 | data[at + 2] << 8 | data[at + 3]
+    var w1 = data[at + 4] << 24 | data[at + 5] << 16 | data[at + 6] << 8 | data[at + 7]
+    var w2 = data[at + 8] << 24 | data[at + 9] << 16 | data[at + 10] << 8 | data[at + 11]
+    var w3 = data[at + 12] << 24 | data[at + 13] << 16 | data[at + 14] << 8 | data[at + 15]
+    var w4 = data[at + 16] << 24 | data[at + 17] << 16 | data[at + 18] << 8 | data[at + 19]
+    var w5 = data[at + 20] << 24 | data[at + 21] << 16 | data[at + 22] << 8 | data[at + 23]
+    var w6 = data[at + 24] << 24 | data[at + 25] << 16 | data[at + 26] << 8 | data[at + 27]
+    var w7 = data[at + 28] << 24 | data[at + 29] << 16 | data[at + 30] << 8 | data[at + 31]
+    var w8 = data[at + 32] << 24 | data[at + 33] << 16 | data[at + 34] << 8 | data[at + 35]
+    var w9 = data[at + 36] << 24 | data[at + 37] << 16 | data[at + 38] << 8 | data[at + 39]
+    var w10 = data[at + 40] << 24 | data[at + 41] << 16 | data[at + 42] << 8 | data[at + 43]
+    var w11 = data[at + 44] << 24 | data[at + 45] << 16 | data[at + 46] << 8 | data[at + 47]
+    var w12 = data[at + 48] << 24 | data[at + 49] << 16 | data[at + 50] << 8 | data[at + 51]
+    var w13 = data[at + 52] << 24 | data[at + 53] << 16 | data[at + 54] << 8 | data[at + 55]
+    var w14 = data[at + 56] << 24 | data[at + 57] << 16 | data[at + 58] << 8 | data[at + 59]
+    var w15 = data[at + 60] << 24 | data[at + 61] << 16 | data[at + 62] << 8 | data[at + 63]
     var a = state[0]
     var b = state[1]
     var c = state[2]
@@ -57,23 +62,139 @@ fn sha256_compress(state: mut List[i64], k: List[i64], w: mut List[i64], data: L
     var f = state[5]
     var g = state[6]
     var h = state[7]
-    i = 0
+    var i = 0
     while i < 64 {
-        let ee = e | e << 32
-        let s1 = (ee >> 6) ^ (ee >> 11) ^ (ee >> 25)
-        let t1 = h + s1 + (g ^ (e & (f ^ g))) + k[i] + w[i]
-        let aa = a | a << 32
-        let s0 = (aa >> 2) ^ (aa >> 13) ^ (aa >> 22)
-        let t2 = s0 + ((a & b) | (c & (a | b)))
-        h = g
-        g = f
-        f = e
-        e = (d + t1) & 0xFFFFFFFF
-        d = c
-        c = b
-        b = a
-        a = (t1 + t2) & 0xFFFFFFFF
-        i = i + 1
+        if i > 0 {
+            let x0 = w1 | w1 << 32
+            let y0 = w14 | w14 << 32
+            w0 = (w0 + ((x0 >> 7) ^ (x0 >> 18) ^ (w1 >> 3)) + w9 + ((y0 >> 17) ^ (y0 >> 19) ^ (w14 >> 10))) & 0xFFFFFFFF
+            let x1 = w2 | w2 << 32
+            let y1 = w15 | w15 << 32
+            w1 = (w1 + ((x1 >> 7) ^ (x1 >> 18) ^ (w2 >> 3)) + w10 + ((y1 >> 17) ^ (y1 >> 19) ^ (w15 >> 10))) & 0xFFFFFFFF
+            let x2 = w3 | w3 << 32
+            let y2 = w0 | w0 << 32
+            w2 = (w2 + ((x2 >> 7) ^ (x2 >> 18) ^ (w3 >> 3)) + w11 + ((y2 >> 17) ^ (y2 >> 19) ^ (w0 >> 10))) & 0xFFFFFFFF
+            let x3 = w4 | w4 << 32
+            let y3 = w1 | w1 << 32
+            w3 = (w3 + ((x3 >> 7) ^ (x3 >> 18) ^ (w4 >> 3)) + w12 + ((y3 >> 17) ^ (y3 >> 19) ^ (w1 >> 10))) & 0xFFFFFFFF
+            let x4 = w5 | w5 << 32
+            let y4 = w2 | w2 << 32
+            w4 = (w4 + ((x4 >> 7) ^ (x4 >> 18) ^ (w5 >> 3)) + w13 + ((y4 >> 17) ^ (y4 >> 19) ^ (w2 >> 10))) & 0xFFFFFFFF
+            let x5 = w6 | w6 << 32
+            let y5 = w3 | w3 << 32
+            w5 = (w5 + ((x5 >> 7) ^ (x5 >> 18) ^ (w6 >> 3)) + w14 + ((y5 >> 17) ^ (y5 >> 19) ^ (w3 >> 10))) & 0xFFFFFFFF
+            let x6 = w7 | w7 << 32
+            let y6 = w4 | w4 << 32
+            w6 = (w6 + ((x6 >> 7) ^ (x6 >> 18) ^ (w7 >> 3)) + w15 + ((y6 >> 17) ^ (y6 >> 19) ^ (w4 >> 10))) & 0xFFFFFFFF
+            let x7 = w8 | w8 << 32
+            let y7 = w5 | w5 << 32
+            w7 = (w7 + ((x7 >> 7) ^ (x7 >> 18) ^ (w8 >> 3)) + w0 + ((y7 >> 17) ^ (y7 >> 19) ^ (w5 >> 10))) & 0xFFFFFFFF
+            let x8 = w9 | w9 << 32
+            let y8 = w6 | w6 << 32
+            w8 = (w8 + ((x8 >> 7) ^ (x8 >> 18) ^ (w9 >> 3)) + w1 + ((y8 >> 17) ^ (y8 >> 19) ^ (w6 >> 10))) & 0xFFFFFFFF
+            let x9 = w10 | w10 << 32
+            let y9 = w7 | w7 << 32
+            w9 = (w9 + ((x9 >> 7) ^ (x9 >> 18) ^ (w10 >> 3)) + w2 + ((y9 >> 17) ^ (y9 >> 19) ^ (w7 >> 10))) & 0xFFFFFFFF
+            let x10 = w11 | w11 << 32
+            let y10 = w8 | w8 << 32
+            w10 = (w10 + ((x10 >> 7) ^ (x10 >> 18) ^ (w11 >> 3)) + w3 + ((y10 >> 17) ^ (y10 >> 19) ^ (w8 >> 10))) & 0xFFFFFFFF
+            let x11 = w12 | w12 << 32
+            let y11 = w9 | w9 << 32
+            w11 = (w11 + ((x11 >> 7) ^ (x11 >> 18) ^ (w12 >> 3)) + w4 + ((y11 >> 17) ^ (y11 >> 19) ^ (w9 >> 10))) & 0xFFFFFFFF
+            let x12 = w13 | w13 << 32
+            let y12 = w10 | w10 << 32
+            w12 = (w12 + ((x12 >> 7) ^ (x12 >> 18) ^ (w13 >> 3)) + w5 + ((y12 >> 17) ^ (y12 >> 19) ^ (w10 >> 10))) & 0xFFFFFFFF
+            let x13 = w14 | w14 << 32
+            let y13 = w11 | w11 << 32
+            w13 = (w13 + ((x13 >> 7) ^ (x13 >> 18) ^ (w14 >> 3)) + w6 + ((y13 >> 17) ^ (y13 >> 19) ^ (w11 >> 10))) & 0xFFFFFFFF
+            let x14 = w15 | w15 << 32
+            let y14 = w12 | w12 << 32
+            w14 = (w14 + ((x14 >> 7) ^ (x14 >> 18) ^ (w15 >> 3)) + w7 + ((y14 >> 17) ^ (y14 >> 19) ^ (w12 >> 10))) & 0xFFFFFFFF
+            let x15 = w0 | w0 << 32
+            let y15 = w13 | w13 << 32
+            w15 = (w15 + ((x15 >> 7) ^ (x15 >> 18) ^ (w0 >> 3)) + w8 + ((y15 >> 17) ^ (y15 >> 19) ^ (w13 >> 10))) & 0xFFFFFFFF
+        }
+        let e0 = e | e << 32
+        let t0 = h + ((e0 >> 6) ^ (e0 >> 11) ^ (e0 >> 25)) + (g ^ (e & (f ^ g))) + k[i] + w0
+        let a0 = a | a << 32
+        d = (d + t0) & 0xFFFFFFFF
+        h = (t0 + ((a0 >> 2) ^ (a0 >> 13) ^ (a0 >> 22)) + ((a & b) | (c & (a | b)))) & 0xFFFFFFFF
+        let e1 = d | d << 32
+        let t1 = g + ((e1 >> 6) ^ (e1 >> 11) ^ (e1 >> 25)) + (f ^ (d & (e ^ f))) + k[i + 1] + w1
+        let a1 = h | h << 32
+        c = (c + t1) & 0xFFFFFFFF
+        g = (t1 + ((a1 >> 2) ^ (a1 >> 13) ^ (a1 >> 22)) + ((h & a) | (b & (h | a)))) & 0xFFFFFFFF
+        let e2 = c | c << 32
+        let t2 = f + ((e2 >> 6) ^ (e2 >> 11) ^ (e2 >> 25)) + (e ^ (c & (d ^ e))) + k[i + 2] + w2
+        let a2 = g | g << 32
+        b = (b + t2) & 0xFFFFFFFF
+        f = (t2 + ((a2 >> 2) ^ (a2 >> 13) ^ (a2 >> 22)) + ((g & h) | (a & (g | h)))) & 0xFFFFFFFF
+        let e3 = b | b << 32
+        let t3 = e + ((e3 >> 6) ^ (e3 >> 11) ^ (e3 >> 25)) + (d ^ (b & (c ^ d))) + k[i + 3] + w3
+        let a3 = f | f << 32
+        a = (a + t3) & 0xFFFFFFFF
+        e = (t3 + ((a3 >> 2) ^ (a3 >> 13) ^ (a3 >> 22)) + ((f & g) | (h & (f | g)))) & 0xFFFFFFFF
+        let e4 = a | a << 32
+        let t4 = d + ((e4 >> 6) ^ (e4 >> 11) ^ (e4 >> 25)) + (c ^ (a & (b ^ c))) + k[i + 4] + w4
+        let a4 = e | e << 32
+        h = (h + t4) & 0xFFFFFFFF
+        d = (t4 + ((a4 >> 2) ^ (a4 >> 13) ^ (a4 >> 22)) + ((e & f) | (g & (e | f)))) & 0xFFFFFFFF
+        let e5 = h | h << 32
+        let t5 = c + ((e5 >> 6) ^ (e5 >> 11) ^ (e5 >> 25)) + (b ^ (h & (a ^ b))) + k[i + 5] + w5
+        let a5 = d | d << 32
+        g = (g + t5) & 0xFFFFFFFF
+        c = (t5 + ((a5 >> 2) ^ (a5 >> 13) ^ (a5 >> 22)) + ((d & e) | (f & (d | e)))) & 0xFFFFFFFF
+        let e6 = g | g << 32
+        let t6 = b + ((e6 >> 6) ^ (e6 >> 11) ^ (e6 >> 25)) + (a ^ (g & (h ^ a))) + k[i + 6] + w6
+        let a6 = c | c << 32
+        f = (f + t6) & 0xFFFFFFFF
+        b = (t6 + ((a6 >> 2) ^ (a6 >> 13) ^ (a6 >> 22)) + ((c & d) | (e & (c | d)))) & 0xFFFFFFFF
+        let e7 = f | f << 32
+        let t7 = a + ((e7 >> 6) ^ (e7 >> 11) ^ (e7 >> 25)) + (h ^ (f & (g ^ h))) + k[i + 7] + w7
+        let a7 = b | b << 32
+        e = (e + t7) & 0xFFFFFFFF
+        a = (t7 + ((a7 >> 2) ^ (a7 >> 13) ^ (a7 >> 22)) + ((b & c) | (d & (b | c)))) & 0xFFFFFFFF
+        let e8 = e | e << 32
+        let t8 = h + ((e8 >> 6) ^ (e8 >> 11) ^ (e8 >> 25)) + (g ^ (e & (f ^ g))) + k[i + 8] + w8
+        let a8 = a | a << 32
+        d = (d + t8) & 0xFFFFFFFF
+        h = (t8 + ((a8 >> 2) ^ (a8 >> 13) ^ (a8 >> 22)) + ((a & b) | (c & (a | b)))) & 0xFFFFFFFF
+        let e9 = d | d << 32
+        let t9 = g + ((e9 >> 6) ^ (e9 >> 11) ^ (e9 >> 25)) + (f ^ (d & (e ^ f))) + k[i + 9] + w9
+        let a9 = h | h << 32
+        c = (c + t9) & 0xFFFFFFFF
+        g = (t9 + ((a9 >> 2) ^ (a9 >> 13) ^ (a9 >> 22)) + ((h & a) | (b & (h | a)))) & 0xFFFFFFFF
+        let e10 = c | c << 32
+        let t10 = f + ((e10 >> 6) ^ (e10 >> 11) ^ (e10 >> 25)) + (e ^ (c & (d ^ e))) + k[i + 10] + w10
+        let a10 = g | g << 32
+        b = (b + t10) & 0xFFFFFFFF
+        f = (t10 + ((a10 >> 2) ^ (a10 >> 13) ^ (a10 >> 22)) + ((g & h) | (a & (g | h)))) & 0xFFFFFFFF
+        let e11 = b | b << 32
+        let t11 = e + ((e11 >> 6) ^ (e11 >> 11) ^ (e11 >> 25)) + (d ^ (b & (c ^ d))) + k[i + 11] + w11
+        let a11 = f | f << 32
+        a = (a + t11) & 0xFFFFFFFF
+        e = (t11 + ((a11 >> 2) ^ (a11 >> 13) ^ (a11 >> 22)) + ((f & g) | (h & (f | g)))) & 0xFFFFFFFF
+        let e12 = a | a << 32
+        let t12 = d + ((e12 >> 6) ^ (e12 >> 11) ^ (e12 >> 25)) + (c ^ (a & (b ^ c))) + k[i + 12] + w12
+        let a12 = e | e << 32
+        h = (h + t12) & 0xFFFFFFFF
+        d = (t12 + ((a12 >> 2) ^ (a12 >> 13) ^ (a12 >> 22)) + ((e & f) | (g & (e | f)))) & 0xFFFFFFFF
+        let e13 = h | h << 32
+        let t13 = c + ((e13 >> 6) ^ (e13 >> 11) ^ (e13 >> 25)) + (b ^ (h & (a ^ b))) + k[i + 13] + w13
+        let a13 = d | d << 32
+        g = (g + t13) & 0xFFFFFFFF
+        c = (t13 + ((a13 >> 2) ^ (a13 >> 13) ^ (a13 >> 22)) + ((d & e) | (f & (d | e)))) & 0xFFFFFFFF
+        let e14 = g | g << 32
+        let t14 = b + ((e14 >> 6) ^ (e14 >> 11) ^ (e14 >> 25)) + (a ^ (g & (h ^ a))) + k[i + 14] + w14
+        let a14 = c | c << 32
+        f = (f + t14) & 0xFFFFFFFF
+        b = (t14 + ((a14 >> 2) ^ (a14 >> 13) ^ (a14 >> 22)) + ((c & d) | (e & (c | d)))) & 0xFFFFFFFF
+        let e15 = f | f << 32
+        let t15 = a + ((e15 >> 6) ^ (e15 >> 11) ^ (e15 >> 25)) + (h ^ (f & (g ^ h))) + k[i + 15] + w15
+        let a15 = b | b << 32
+        e = (e + t15) & 0xFFFFFFFF
+        a = (t15 + ((a15 >> 2) ^ (a15 >> 13) ^ (a15 >> 22)) + ((b & c) | (d & (b | c)))) & 0xFFFFFFFF
+        i = i + 16
     }
     state[0] = (state[0] + a) & 0xFFFFFFFF
     state[1] = (state[1] + b) & 0xFFFFFFFF
@@ -87,22 +208,16 @@ fn sha256_compress(state: mut List[i64], k: List[i64], w: mut List[i64], data: L
 
 // Appends the 32-byte hash of `data[start..end]` to `out`. `k` is
 // `sha256_round_constants()`.
-fn sha256_into(out: mut List[i64], data: List[i64], start: i64, end: i64, k: List[i64]) {
+fn sha256_into(out: mut str, data: str, start: i64, end: i64, k: List[i64]) {
     var state = sha256_initial_state()
-    var w: List[i64] = []
-    pad_to(mut w, 64, 0)
     var at = start
     while at + 64 <= end {
-        sha256_compress(mut state, k, mut w, data, at)
+        sha256_compress(mut state, k, data, at)
         at = at + 64
     }
     // What is left, the end marker, zeros and the length in bits fill one
     // or two more blocks.
-    var tail: List[i64] = []
-    while at < end {
-        tail.push(data[at])
-        at = at + 1
-    }
+    var tail = data.slice(at, end)
     tail.push(0x80)
     var tail_length = 64
     if tail.len() > 56 {
@@ -110,9 +225,9 @@ fn sha256_into(out: mut List[i64], data: List[i64], start: i64, end: i64, k: Lis
     }
     pad_to(mut tail, tail_length - 8, 0)
     put64_be(mut tail, (end - start) * 8)
-    sha256_compress(mut state, k, mut w, tail, 0)
+    sha256_compress(mut state, k, tail, 0)
     if tail_length == 128 {
-        sha256_compress(mut state, k, mut w, tail, 64)
+        sha256_compress(mut state, k, tail, 64)
     }
     for word in state {
         put32_be(mut out, word)
@@ -120,9 +235,8 @@ fn sha256_into(out: mut List[i64], data: List[i64], start: i64, end: i64, k: Lis
 }
 
 // The hash of a string of bytes, as 32 bytes.
-fn sha256(text: str) -> List[i64] {
-    let data = text_to_bytes(text)
-    var out: List[i64] = []
-    sha256_into(mut out, data, 0, data.len(), sha256_round_constants())
+fn sha256(text: str) -> str {
+    var out = ""
+    sha256_into(mut out, text, 0, text.len(), sha256_round_constants())
     return out
 }

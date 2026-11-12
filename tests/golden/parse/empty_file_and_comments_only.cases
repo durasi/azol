@@ -1,0 +1,17 @@
+# From the tests of the first compiler: src/parser.rs, `empty_file_and_comments_only`.
+==== 1
+---- file a.azl (empty)
+---- run parse a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+parsed 0 lines into 0 nodes
+==== 2
+---- file a.azl
+// nothing here
+
+---- run parse a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+parsed 2 lines into 0 nodes

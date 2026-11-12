@@ -1,0 +1,79 @@
+// bfs: breadth-first search on a grid.
+// Algorithm: a square grid with about 30% of the cells blocked; from every
+// open cell not seen yet, search through the four neighbours with a queue.
+// Rust uses `VecDeque`; azoL has no queue type, so the queue is a list as
+// long as the grid with a read position.
+// Sizes: 4,000 x 4,000; small: 400 x 400.
+// Output: the number of separate regions, cells reached, the largest
+// distance, and the sum of distances modulo 1,000,000,007.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+fn main() {
+    let side = size(4000, 400)
+    let cells = side * side
+    var blocked: List[bool] = []
+    var seed = 73
+    var n = 0
+    while n < cells {
+        seed = seed * 48271 % 2147483647
+        blocked.push(seed % 100 < 30)
+        n = n + 1
+    }
+    var distance = (-1).filled(cells)
+    var queue = 0.filled(cells)
+    var parts = 0
+    var reached = 0
+    var farthest = 0
+    var total = 0
+    var start = 0
+    while start < cells {
+        if !blocked[start] && distance[start] < 0 {
+            parts = parts + 1
+            var head = 0
+            var tail = 1
+            queue[0] = start
+            distance[start] = 0
+            while head < tail {
+                let cell = queue[head]
+                head = head + 1
+                let d = distance[cell]
+                reached = reached + 1
+                if d > farthest {
+                    farthest = d
+                }
+                total = (total + d) % 1000000007
+                let x = cell % side
+                if x > 0 && !blocked[cell - 1] && distance[cell - 1] < 0 {
+                    distance[cell - 1] = d + 1
+                    queue[tail] = cell - 1
+                    tail = tail + 1
+                }
+                if x < side - 1 && !blocked[cell + 1] && distance[cell + 1] < 0 {
+                    distance[cell + 1] = d + 1
+                    queue[tail] = cell + 1
+                    tail = tail + 1
+                }
+                if cell >= side && !blocked[cell - side] && distance[cell - side] < 0 {
+                    distance[cell - side] = d + 1
+                    queue[tail] = cell - side
+                    tail = tail + 1
+                }
+                if cell + side < cells && !blocked[cell + side] && distance[cell + side] < 0 {
+                    distance[cell + side] = d + 1
+                    queue[tail] = cell + side
+                    tail = tail + 1
+                }
+            }
+        }
+        start = start + 1
+    }
+    print(str(parts) + " " + str(reached) + " " + str(farthest) + " " + str(total))
+}

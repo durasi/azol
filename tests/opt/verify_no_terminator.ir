@@ -1,0 +1,7 @@
+; verify: main: b0: v0 = add 1, 2: the block does not end in a terminator
+fn main() {
+b0:
+    v0 = add 1, 2
+b1:
+    ret
+}

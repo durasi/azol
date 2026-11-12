@@ -1,0 +1,22 @@
+; b1 and b2 jump to each other and both are entered from b0: neither
+; dominates the other, so this cycle is no loop. The walk reaches b2
+; first, so the jump from b1 back to b2 is the one that is counted.
+; cfg:
+; out: fn main
+; out:   order: b0 b2 b1 b3
+; out:   idom: b0=b0 b2=b0 b1=b0 b3=b0
+; out:   irreducible: 1
+; out:   live b0: in p0 | out p0
+; out:   live b2: in p0 | out p0
+; out:   live b1: in p0 | out p0
+; out:   live b3: in - | out -
+fn main(p0: bool) {
+b0:
+    br p0, b1, b2
+b1:
+    br p0, b2, b3
+b2:
+    br p0, b1, b3
+b3:
+    ret
+}

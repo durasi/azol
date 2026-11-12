@@ -1,0 +1,241 @@
+# From the tests of the first compiler: src/sema.rs, `equality_of_enums_without_values`.
+==== 1
+---- file a.azl (no newline at end)
+enum Kind {
+ Ident
+ Number
+ Plus
+}
+enum Shape {
+ Dot
+ Circle(i64)
+}
+enum Flag[T] {
+ On
+ Off
+}
+fn main() {
+let s = Dot
+let b = s == Dot
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0311]: `==` works only on enums whose variants hold no values; use `match` for `Shape`
+  --> a.azl:16:9
+   |
+16 | let b = s == Dot
+   |         ^
+---- asserted 16:9 `==` works only on enums whose variants hold no values; use `match` for `Shape`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0311","message":"`==` works only on enums whose variants hold no values; use `match` for `Shape`","file":"a.azl","line":16,"column":9,"end_line":16,"end_column":10,"source":"let b = s == Dot","rule":"`==` and `!=` compare numbers, `bool`s, strings and enums whose variants hold no values."}
+{"summary":{"errors":1,"files":1}}
+==== 2
+---- file a.azl (no newline at end)
+enum Kind {
+ Ident
+ Number
+ Plus
+}
+enum Shape {
+ Dot
+ Circle(i64)
+}
+enum Flag[T] {
+ On
+ Off
+}
+fn main() {
+let s = Circle(1)
+let b = s != s
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0311]: `!=` works only on enums whose variants hold no values; use `match` for `Shape`
+  --> a.azl:16:9
+   |
+16 | let b = s != s
+   |         ^
+---- asserted 16:9 `!=` works only on enums whose variants hold no values; use `match` for `Shape`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0311","message":"`!=` works only on enums whose variants hold no values; use `match` for `Shape`","file":"a.azl","line":16,"column":9,"end_line":16,"end_column":10,"source":"let b = s != s","rule":"`==` and `!=` compare numbers, `bool`s, strings and enums whose variants hold no values."}
+{"summary":{"errors":1,"files":1}}
+==== 3
+---- file a.azl (no newline at end)
+enum Kind {
+ Ident
+ Number
+ Plus
+}
+enum Shape {
+ Dot
+ Circle(i64)
+}
+enum Flag[T] {
+ On
+ Off
+}
+fn main() {
+let k = Ident
+let b = k == 1
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: `==` needs `Kind` but this is `i64`
+  --> a.azl:16:14
+   |
+16 | let b = k == 1
+   |              ^
+---- asserted 16:14 `==` needs `Kind` but this is `i64`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"`==` needs `Kind` but this is `i64`","file":"a.azl","line":16,"column":14,"end_line":16,"end_column":15,"source":"let b = k == 1","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 4
+---- file a.azl (no newline at end)
+enum Kind {
+ Ident
+ Number
+ Plus
+}
+enum Shape {
+ Dot
+ Circle(i64)
+}
+enum Flag[T] {
+ On
+ Off
+}
+fn main() {
+let k = Ident
+let b = k == Dot
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: `==` needs `Kind` but this is `Shape`
+  --> a.azl:16:14
+   |
+16 | let b = k == Dot
+   |              ^
+---- asserted 16:14 `==` needs `Kind` but this is `Shape`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"`==` needs `Kind` but this is `Shape`","file":"a.azl","line":16,"column":14,"end_line":16,"end_column":17,"source":"let b = k == Dot","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 5
+---- file a.azl (no newline at end)
+enum Kind {
+ Ident
+ Number
+ Plus
+}
+enum Shape {
+ Dot
+ Circle(i64)
+}
+enum Flag[T] {
+ On
+ Off
+}
+fn main() {
+let k = Ident
+let f: Flag[i64] = On
+let b = f == k
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: `==` needs `Flag[i64]` but this is `Kind`
+  --> a.azl:17:14
+   |
+17 | let b = f == k
+   |              ^
+---- asserted 17:14 `==` needs `Flag[i64]` but this is `Kind`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"`==` needs `Flag[i64]` but this is `Kind`","file":"a.azl","line":17,"column":14,"end_line":17,"end_column":15,"source":"let b = f == k","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 6
+---- file a.azl (no newline at end)
+enum Kind {
+ Ident
+ Number
+ Plus
+}
+enum Shape {
+ Dot
+ Circle(i64)
+}
+enum Flag[T] {
+ On
+ Off
+}
+fn main() {
+let f: Flag[i64] = On
+let g: Flag[bool] = On
+let b = f == g
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: `==` needs `Flag[i64]` but this is `Flag[bool]`
+  --> a.azl:17:14
+   |
+17 | let b = f == g
+   |              ^
+---- asserted 17:14 `==` needs `Flag[i64]` but this is `Flag[bool]`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"`==` needs `Flag[i64]` but this is `Flag[bool]`","file":"a.azl","line":17,"column":14,"end_line":17,"end_column":15,"source":"let b = f == g","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+==== 7
+---- file a.azl (no newline at end)
+enum Kind {
+ Ident
+ Number
+ Plus
+}
+enum Shape {
+ Dot
+ Circle(i64)
+}
+enum Flag[T] {
+ On
+ Off
+}
+fn main() {
+let k = Ident
+let b = k < Number
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: `<` needs `i64` but this is `Kind`
+  --> a.azl:16:9
+   |
+16 | let b = k < Number
+   |         ^
+---- asserted 16:9 `<` needs `i64` but this is `Kind`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"`<` needs `i64` but this is `Kind`","file":"a.azl","line":16,"column":9,"end_line":16,"end_column":10,"source":"let b = k < Number","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}

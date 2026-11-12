@@ -1,0 +1,161 @@
+== built
+fn sum_to(p0: i64) -> i64 {
+b0:
+    jump b1(0, 0)
+b1(v0: i64, v1: i64):
+    v2 = slt v0, p0
+    br v2, b2, b3
+b2:
+    v3 = add v1, v0
+    v4 = add v0, 1
+    jump b1(v4, v3)
+b3:
+    ret v1
+}
+verify: ok
+run sum_to: 10
+uses of p0: 1, of v0: 3, of v1: 2, of v4: 1
+operands of the last jump: 2
+== edge split, new block b4
+fn sum_to(p0: i64) -> i64 {
+b0:
+    jump b1(0, 0)
+b1(v0: i64, v1: i64):
+    v2 = slt v0, p0
+    br v2, b2, b4
+b2:
+    v3 = add v1, v0
+    v4 = add v0, 1
+    jump b1(v4, v3)
+b3:
+    ret v1
+b4:
+    jump b3
+}
+verify: ok
+run sum_to: 10
+== block parameter added
+fn sum_to(p0: i64) -> i64 {
+b0:
+    jump b1(0, 0)
+b1(v0: i64, v1: i64):
+    v2 = slt v0, p0
+    br v2, b2, b4
+b2:
+    v3 = add v1, v0
+    v4 = add v0, 1
+    jump b1(v4, v3)
+b3(v5: i64):
+    ret v5
+b4:
+    jump b3(v1)
+}
+verify: ok
+run sum_to: 15
+== block parameter removed
+fn sum_to(p0: i64) -> i64 {
+b0:
+    jump b1(0, 0)
+b1(v0: i64, v1: i64):
+    v2 = slt v0, p0
+    br v2, b2, b4
+b2:
+    v3 = add v1, v0
+    v4 = add v0, 1
+    jump b1(v4, v3)
+b3:
+    ret v1
+b4:
+    jump b3
+}
+verify: ok
+== instruction inserted
+fn sum_to(p0: i64) -> i64 {
+b0:
+    jump b1(0, 0)
+b1(v0: i64, v1: i64):
+    v2 = slt v0, p0
+    br v2, b2, b4
+b2:
+    v6 = mul v0, v1
+    v3 = add v1, v0
+    v4 = add v0, 1
+    jump b1(v4, v3)
+b3:
+    ret v1
+b4:
+    jump b3
+}
+verify: ok
+blocks in the layout: 6
+== instruction and block removed
+fn sum_to(p0: i64) -> i64 {
+b0:
+    jump b1(0, 0)
+b1(v0: i64, v1: i64):
+    v2 = slt v0, p0
+    br v2, b2, b4
+b2:
+    v3 = add v1, v0
+    v4 = add v0, 1
+    jump b1(v4, v3)
+b3:
+    ret v1
+b4:
+    jump b3
+}
+verify: ok
+run sum_to: 4950
+types: bool bool ptr
+== three functions
+fn sum_to(p0: i64) -> i64 {
+b0:
+    jump b1(0, 0)
+b1(v0: i64, v1: i64):
+    v2 = slt v0, p0
+    br v2, b2, b4
+b2:
+    v3 = add v1, v0
+    v4 = add v0, 1
+    jump b1(v4, v3)
+b3:
+    ret v1
+b4:
+    jump b3
+}
+
+fn main() -> i64 {
+    frames 8
+b0:
+    v0 = frame 0
+    store i64, v0, 0, 7  [frame 0]
+    v1 = load i64, v0, 0  [frame 0]
+    callrt print_i64(v1)
+    v2 = call sum_to(v1) -> i64
+    ret v2
+}
+
+fn kinds(p0: i64, p1: ptr [param 1 read writebuf]) -> i64 {
+b0:
+    v0 = iconst 10
+    v1 = bconst 1
+    v2 = ult p0, v0
+    v3 = and v2, v1
+    v4 = and p0, 2
+    v5 = ext8s v4
+    v6 = select v3, v5, 2
+    v7 = select v3, v1, v2
+    v8 = gep p1, v6, 8, 16
+    v9 = eq v8, p1
+    v10 = load ptr, p1, 0  [param 1]
+    v11 = load u8, v10, 3  [buf(param 1)]
+    v12 = addr @data+0
+    switch v11, 65 -> b2(v6), default b1
+b1:
+    trap chr
+b2(v13: i64):
+    ret v13
+}
+verify: ok
+7
+run main: 21

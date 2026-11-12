@@ -1,0 +1,26 @@
+# From the tests of the first compiler: src/main.rs, `json_output_has_every_field`.
+==== with help and a fix; a file name and a line that need escapes
+---- file dir/"a".azl
+fn main() {
+	let s = "a\tb"
+	s = "c"
+}
+---- run check --json 'dir/"a".azl'
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0401","message":"cannot change `s`: declare it with `var` to make it changeable","file":"dir/\"a\".azl","line":3,"column":2,"end_line":3,"end_column":3,"source":"\ts = \"c\"","rule":"A variable declared with `let` never changes; only one declared with `var` can be assigned, grown or passed as `mut`.","help":"Declare the variable with `var` instead of `let`.","fix":{"file":"dir/\"a\".azl","line":2,"column":2,"end_line":2,"end_column":5,"replacement":"var"}}
+{"summary":{"errors":1,"files":1}}
+---- contains {"severity":"error","code":"E0401","message":"cannot change `s`: declare it with `var` to make it changeable","file":"dir/\"a\".azl","line":3,"column":2,"end_line":3,"end_column":3,"source":"\ts = \"c\"","rule":"A variable declared with `let` never changes; only one declared with `var` can be assigned, grown or passed as `mut`.","help":"Declare the variable with `var` instead of `let`.","fix":{"file":"dir/\"a\".azl","line":2,"column":2,"end_line":2,"end_column":5,"replacement":"var"}}
+---- contains {"summary":{"errors":1,"files":1}}
+==== without help and fix when there is nothing certain to say
+---- file a.azl
+fn main() {
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0201","message":"unknown variable `x`","file":"a.azl","line":2,"column":11,"end_line":2,"end_column":12,"source":"    print(x)","rule":"A name must be declared before it is used: as a variable, a parameter, a constant or a variant."}
+{"summary":{"errors":1,"files":1}}
+---- contains {"severity":"error","code":"E0201","message":"unknown variable `x`","file":"a.azl","line":2,"column":11,"end_line":2,"end_column":12,"source":"    print(x)","rule":"A name must be declared before it is used: as a variable, a parameter, a constant or a variant."}
+---- contains {"summary":{"errors":1,"files":1}}

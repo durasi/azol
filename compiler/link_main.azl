@@ -34,7 +34,7 @@ fn main() -> i64 {
     let output = arguments[2]
     let code = read_code_file(read_or_stop(arguments[1]))
 
-    var image: List[i64] = []
+    var image = ""
     if code.target == "aarch64-macos" {
         image = build_macho(code)
     } else {
@@ -44,7 +44,7 @@ fn main() -> i64 {
         image = build_elf(code, read_or_stop(arguments[3]))
     }
 
-    match write_file(output, bytes_to_text(image)) {
+    match write_file(output, image) {
         Ok(written) => {}
         Err(problem) => stop("cannot write '" + output + "': " + problem)
     }

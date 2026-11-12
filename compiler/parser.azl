@@ -568,11 +568,9 @@ fn parse_statement(p: mut Parser) -> i64 {
             if p.failed {
                 return NO_NODE
             }
-            var has_index = false
             var index = Span { start: 0, len: 0 }
             var item = first
             if eat(mut p, TOK_COMMA) {
-                has_index = true
                 index = first
                 item = expect_name(mut p, "a loop variable name")
                 if p.failed {
@@ -591,7 +589,7 @@ fn parse_statement(p: mut Parser) -> i64 {
             if p.failed {
                 return NO_NODE
             }
-            return push_stmt(mut p, StmtFor(has_index, index, item, iter, body), pos)
+            return push_stmt(mut p, StmtFor(index, item, iter, body), pos)
         }
         TOK_MATCH => return parse_match(mut p, pos)
         TOK_CONST => {

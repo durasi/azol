@@ -1,0 +1,49 @@
+# From the tests of the first compiler: src/parser.rs, `postfix_chains`.
+==== 1
+---- file a.azl (no newline at end)
+fn t() {
+x = a.b.c(1)[2].d
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  x = (index (call a.b.c 1) 2).d
+---- stderr
+parsed 3 lines into 11 nodes
+==== 2
+---- file a.azl (no newline at end)
+fn t() {
+grid[i][j] = 0
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  (index (index grid i) j) = 0
+---- stderr
+parsed 3 lines into 8 nodes
+==== 3
+---- file a.azl (no newline at end)
+fn t() {
+x = f(a)?.b + g()?
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  x = (+ (try (call f a)).b (try (call g)))
+---- stderr
+parsed 3 lines into 12 nodes
+==== 4
+---- file a.azl (no newline at end)
+fn t() {
+read(p)?
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  (try (call read p))
+---- stderr
+parsed 3 lines into 6 nodes

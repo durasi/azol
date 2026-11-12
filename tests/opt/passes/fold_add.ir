@@ -1,0 +1,14 @@
+; The example pass: v0 is 5; v1 is p0; v3 is v2; and once v0 is known,
+; v4 is 15.
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = add 2, 3
+    v1 = add p0, 0
+    v2 = add v0, v1
+    v3 = add 0, v2
+    v4 = add v0, 10
+    jump b1(v4)
+b1(v5: i64):
+    v6 = add v5, v3
+    ret v6
+}

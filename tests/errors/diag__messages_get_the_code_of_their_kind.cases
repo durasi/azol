@@ -1,0 +1,419 @@
+# From the tests of the first compiler: src/diag.rs, `messages_get_the_code_of_their_kind`: each
+# message with the code it must carry, shown by a program that gets that message.
+==== `unknown variable `x`` is E0201
+---- file a.azl
+fn main() {
+    b()
+    print(x)
+}
+
+fn last() {
+    print(y)
+}
+---- file b.azl
+fn b() {
+    print(z)
+}
+---- run check a.azl b.azl
+---- exit 1
+---- contains error[E0201]: unknown variable `x`
+==== `expected `)` but found `}`` is E0106
+---- file a.azl (no newline at end)
+fn main() {
+  print(1
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0106]: expected `)` but found `}`
+==== `expected end of line but found `let`` is E0107
+---- file a.azl (no newline at end)
+fn main() {
+  let a = 1 let b = 2
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0107]: expected end of line but found `let`
+==== `expected `}` to close the block but reached end of file` is E0109
+---- file a.azl
+fn main() {
+---- run check a.azl
+---- exit 1
+---- contains error[E0109]: expected `}` to close the block but reached end of file
+==== `expected `i64` but this is `bool`` is E0301
+---- file a.azl
+fn main() {
+    let a: i64 = (1 < 2)
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0301]: expected `i64` but this is `bool`
+==== ``+` needs `i64` but this is `str`` is E0302
+---- file a.azl (no newline at end)
+const A = 1 + "a"
+fn main() {
+
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0302]: `+` needs `i64` but this is `str`
+==== `argument 1 of `f` needs `i64` but this is `bool`` is E0302
+---- file a.azl (no newline at end)
+fn f(a: i64) {
+}
+fn main() {
+ f(true)
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0302]: argument 1 of `f` needs `i64` but this is `bool`
+==== `field `x` needs `i64` but this is `bool`` is E0302
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn main() {
+let p = Point { x: true, y: 2 }
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0302]: field `x` needs `i64` but this is `bool`
+==== ``f` takes 1 argument but 0 were given` is E0309
+---- file a.azl (no newline at end)
+fn f(a: i64) {
+}
+fn main() {
+ f()
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0309]: `f` takes 1 argument but 0 were given
+==== ``Pair` takes 2 type arguments, as in `Pair[i64, i64]`` is E0602
+---- file a.azl (no newline at end)
+fn f(p: Pair) {
+}
+struct Pair[A, B] {
+ first: A
+ second: B
+}
+struct Stack[T] {
+ items: List[T]
+}
+fn main() {
+
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0602]: `Pair` takes 2 type arguments, as in `Pair[i64, i64]`
+==== `cannot change `a`: declare it with `var` to make it changeable` is E0401
+---- file a.azl
+fn one() -> i64 {
+    return true
+}
+
+fn two() {
+    let a = 1
+    a = 2
+    missing()
+}
+
+fn three() {
+    print(nothing)
+}
+
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0401]: cannot change `a`: declare it with `var` to make it changeable
+==== `cannot pass `a` as `mut`: a parameter is read-only unless it is declared `mut`` is E0402
+---- file a.azl
+fn grow(xs: mut List[i64]) {
+    xs.push(1)
+}
+
+fn f(a: List[i64]) {
+    grow(mut a)
+}
+
+fn main() {
+    f([1])
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0402]: cannot pass `a` as `mut`: a parameter is read-only unless it is declared `mut`
+==== `cannot change `x`: a loop variable or pattern binding is read-only` is E0403
+---- file a.azl
+fn main() {
+    for x in [1] {
+        x = 2
+    }
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0403]: cannot change `x`: a loop variable or pattern binding is read-only
+==== `cannot change `A`: it is a constant` is E0703
+---- file a.azl (no newline at end)
+const A = 1
+fn main() {
+A = 2
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0703]: cannot change `A`: it is a constant
+==== `cannot change `xs` while a loop is going through it` is E0408
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+var xs = [1]
+for x in xs {
+xs.push(x)
+}
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0408]: cannot change `xs` while a loop is going through it
+==== `cannot pass `o` as `mut` while a `match` is looking inside it` is E0409
+---- file a.azl (no newline at end)
+fn f(o: mut Option[i64]) {
+}
+fn main() {
+var o = Some(1)
+match o {
+Some(v) => f(mut o)
+None => {}
+}
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0409]: cannot pass `o` as `mut` while a `match` is looking inside it
+==== ``xs` is passed twice in one call and one of the uses is `mut`; copy it into a variable first` is E0410
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn both(n: mut i64, xs: List[i64]) {
+}
+fn main() {
+var xs = [1]
+both(mut xs[0], xs)
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0410]: `xs` is passed twice in one call and one of the uses is `mut`; copy it into a variable first
+==== `this `match` does not handle `None`; add an arm for it or a final `_ =>` arm` is E0501
+---- file a.azl (no newline at end)
+fn main() {
+var o = Some(1)
+match o {
+Some(v) => print(v)
+}
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0501]: this `match` does not handle `None`; add an arm for it or a final `_ =>` arm
+==== `this `match` does not handle `A`, `C` and `D`; add arms for them or a final `_ =>` arm` is E0501
+---- file a.azl (no newline at end)
+enum E {
+ A
+ B
+ C
+ D
+}
+fn main() {
+ let e = A
+ match e {
+ B => {}
+ }
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0501]: this `match` does not handle `A`, `C` and `D`; add arms for them or a final `_ =>` arm
+==== `a `match` on `i64` needs a final `_ =>` arm: the arms cannot list every value` is E0502
+---- file a.azl (no newline at end)
+const A = 1
+fn main() {
+match 3 {
+A => {}
+}
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0502]: a `match` on `i64` needs a final `_ =>` arm: the arms cannot list every value
+==== `this arm can never run: `Some` is already handled above` is E0503
+---- file a.azl (no newline at end)
+fn main() {
+var o = Some(1)
+match o {
+Some(v) => {}
+Some(w) => {}
+None => {}
+}
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0503]: this arm can never run: `Some` is already handled above
+==== ``Some` holds 1 value; write `Some(_)` to match it` is E0506
+---- file a.azl (no newline at end)
+fn main() {
+var o = Some(1)
+match o {
+Some => {}
+None => {}
+}
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0506]: `Some` holds 1 value; write `Some(_)` to match it
+==== ``Some` holds 1 value; write `Some(...)`` is E0312
+---- file a.azl (no newline at end)
+fn main() {
+let x = Some
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0312]: `Some` holds 1 value; write `Some(...)`
+==== ``None` holds no value; write it without `()`` is E0312
+---- file a.azl (no newline at end)
+fn main() {
+let x: Option[i64] = None()
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0312]: `None` holds no value; write it without `()`
+==== ``Some` holds 1 value but 2 were given` is E0309
+---- file a.azl (no newline at end)
+fn main() {
+let x = Some(1, 2)
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0309]: `Some` holds 1 value but 2 were given
+==== ``Some` holds 1 value but this pattern lists 2` is E0506
+---- file a.azl (no newline at end)
+fn main() {
+var o = Some(1)
+match o {
+Some(a, b) => {}
+None => {}
+}
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0506]: `Some` holds 1 value but this pattern lists 2
+==== ``Ok` is a variant of `Result` but this `match` is on `Option[i64]`` is E0505
+---- file a.azl (no newline at end)
+fn main() {
+var o = Some(1)
+match o {
+Ok(v) => {}
+_ => {}
+}
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0505]: `Ok` is a variant of `Result` but this `match` is on `Option[i64]`
+==== ``None` is a variant of `Option` and cannot be used as a variable name` is E0211
+---- file a.azl (no newline at end)
+fn main() {
+let None = 1
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0211]: `None` is a variant of `Option` and cannot be used as a variable name
+==== `cannot tell which `Option` this is; give the variable a type, as in `let x: Option[i64] = ...`` is E0601
+---- file a.azl (no newline at end)
+fn main() {
+let x = None
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0601]: cannot tell which `Option` this is; give the variable a type, as in `let x: Option[i64] = ...`
+==== ``Option[i64]` has no fields; use `match` to look inside it` is E0206
+---- file a.azl (no newline at end)
+fn main() {
+let x = Some(1)
+print(x.value)
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0206]: `Option[i64]` has no fields; use `match` to look inside it
+==== ``i64` has no fields` is E0206
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn main() {
+let n = 1
+print(n.x)
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0206]: `i64` has no fields
+==== `the program has no `main` function` is E0315
+---- file a.azl
+fn f() {
+    g()
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0315]: the program has no `main` function
+==== `this expression has no value to store` is E0310
+---- file a.azl (no newline at end)
+fn main() {
+let x = Some(print(1))
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0310]: this expression has no value to store
+==== ``print` takes an `i64`, a `bool` or a `str` but this is `List[i64]` (in `show` with `T` = `List[i64]`)` is E0308
+---- file a.azl (no newline at end)
+fn show[T](x: T) {
+ print(x)
+}
+fn main() {
+show(1)
+show([1])
+}
+---- run check a.azl
+---- exit 1
+---- contains error[E0308]: `print` takes an `i64`, a `bool` or a `str` but this is `List[i64]` (in `show` with `T` = `List[i64]`)

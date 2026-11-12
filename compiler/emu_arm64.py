@@ -22,7 +22,7 @@ emulators the test programs run under.
 
 Needs the Python package `unicorn`.
 """
-import os, struct, sys
+import os, struct, sys, time
 
 try:
     from unicorn import Uc, UcError, UC_ARCH_ARM64, UC_MODE_ARM, UC_HOOK_CODE, UC_HOOK_INTR
@@ -241,6 +241,12 @@ def load_macos(mu, data, state, argv):
                 os.close(files.pop(a0))
             elif name == "_chmod":
                 os.chmod(text_at(uc, a0), a1 & 0o7777)
+            elif name == "_unlink":
+                os.unlink(text_at(uc, a0))
+            elif name == "_rename":
+                os.rename(text_at(uc, a0), text_at(uc, a1))
+            elif name == "_clock_gettime_nsec_np":
+                result = time.monotonic_ns()
             elif name == "___error":
                 result = errno_at
             elif name == "_strerror":
@@ -323,6 +329,16 @@ def load_linux(mu, data, state, argv):
             return 0
         if number == 53:    # fchmodat
             os.chmod(text_at(uc, a[1]), a[2] & 0o7777)
+            return 0
+        if number == 35:    # unlinkat
+            os.unlink(text_at(uc, a[1]))
+            return 0
+        if number == 38:    # renameat
+            os.rename(text_at(uc, a[1]), text_at(uc, a[3]))
+            return 0
+        if number == 113:   # clock_gettime
+            now = time.monotonic_ns()
+            uc.mem_write(a[1], struct.pack("<qq", now // 10**9, now % 10**9))
             return 0
         if number == 222:   # mmap
             return new_map((a[1] + 0xFFF) & ~0xFFF)

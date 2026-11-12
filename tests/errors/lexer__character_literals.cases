@@ -1,0 +1,119 @@
+# From the tests of the first compiler: src/lexer.rs, `character_literals`.
+==== 1
+---- file a.azl (no newline at end)
+'
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0104]: a character literal holds one ASCII character, as in `'a'`
+ --> a.azl:1:1
+  |
+1 | '
+  | ^
+---- asserted 1:1 a character literal holds one ASCII character, as in `'a'`
+==== 2
+---- file a.azl (no newline at end)
+''
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0104]: a character literal holds one ASCII character, as in `'a'`
+ --> a.azl:1:1
+  |
+1 | ''
+  | ^
+---- asserted 1:1 a character literal holds one ASCII character, as in `'a'`
+==== 3
+---- file a.azl (no newline at end)
+'ab'
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0104]: a character literal holds one ASCII character, as in `'a'`
+ --> a.azl:1:1
+  |
+1 | 'ab'
+  | ^
+---- asserted 1:1 a character literal holds one ASCII character, as in `'a'`
+==== 4
+---- file a.azl (no newline at end)
+'a
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0104]: a character literal holds one ASCII character, as in `'a'`
+ --> a.azl:1:1
+  |
+1 | 'a
+  | ^
+---- asserted 1:1 a character literal holds one ASCII character, as in `'a'`
+==== 5
+---- file a.azl (no newline at end)
+'\q'
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0103]: unknown escape sequence in character literal
+ --> a.azl:1:1
+  |
+1 | '\q'
+  | ^
+---- asserted 1:1 unknown escape sequence in character literal
+==== 6
+---- file a.azl (no newline at end)
+'\'
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0104]: a character literal holds one ASCII character, as in `'a'`
+ --> a.azl:1:1
+  |
+1 | '\'
+  | ^
+---- asserted 1:1 a character literal holds one ASCII character, as in `'a'`
+==== 7
+---- file a.azl (no newline at end)
+'ç'
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0104]: a character literal holds one ASCII character, as in `'a'`
+ --> a.azl:1:1
+  |
+1 | 'ç'
+  | ^
+---- asserted 1:1 a character literal holds one ASCII character, as in `'a'`
+==== 8
+---- file a.azl (no newline at end)
+'
+'
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0104]: a character literal holds one ASCII character, as in `'a'`
+ --> a.azl:1:1
+  |
+1 | '
+  | ^
+---- asserted 1:1 a character literal holds one ASCII character, as in `'a'`
+==== 9
+---- file a.azl (no newline at end)
+'	'
+---- run lex a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0104]: a character literal holds one ASCII character, as in `'a'`
+ --> a.azl:1:1
+  |
+1 | '	'
+  | ^
+---- asserted 1:1 a character literal holds one ASCII character, as in `'a'`

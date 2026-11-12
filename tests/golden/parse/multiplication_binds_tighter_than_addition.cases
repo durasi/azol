@@ -1,0 +1,25 @@
+# From the tests of the first compiler: src/parser.rs, `multiplication_binds_tighter_than_addition`.
+==== 1
+---- file a.azl (no newline at end)
+fn t() {
+x = 1 + 2 * 3
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  x = (+ 1 (* 2 3))
+---- stderr
+parsed 3 lines into 8 nodes
+==== 2
+---- file a.azl (no newline at end)
+fn t() {
+x = (1 + 2) * 3
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  x = (* (+ 1 2) 3)
+---- stderr
+parsed 3 lines into 8 nodes

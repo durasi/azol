@@ -62,6 +62,9 @@ const A_LE = 13
 const A_HS = 2
 // Unsigned lower.
 const A_LO = 3
+// Unsigned higher, and unsigned lower or same.
+const A_HI = 8
+const A_LS = 9
 
 const A_RET = 0xD65F03C0
 const A_BRK_1 = 0xD4200020
@@ -757,7 +760,8 @@ fn a_function_body(g: mut AGen, c: Checker, p: Parser, index: i64, body: IdRange
         var id = first_stmt
         while id < end_stmt && next < REGISTERS {
             match p.ast.stmts[id] {
-                StmtFor(has_index, _, _, iter, _) => {
+                StmtFor(index, _, iter, _) => {
+                    let has_index = index.len > 0
                     let elem = c.lists[ty_index(c.expr_ty[g.sh_e + iter])]
                     let elem_size = ck_size_of(c, elem)
                     let base = c.stmt_slot[g.sh_s + id]
@@ -900,7 +904,7 @@ fn a_has_loop(p: Parser, first: i64, end: i64) -> bool {
     while id < end {
         match p.ast.stmts[id] {
             StmtWhile(_, _) => return true
-            StmtFor(_, _, _, _, _) => return true
+            StmtFor(_, _, _, _) => return true
             _ => {}
         }
         id = id + 1

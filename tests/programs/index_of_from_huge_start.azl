@@ -1,0 +1,17 @@
+// `index_of_from` with a start close to the largest i64 stops the program
+// instead of answering `None`. Found by tests/fuzz/fuzz.py, seeds 201545
+// and 207893; written down by hand from the reduced program.
+// expect-exit: 0
+// expect-line: none
+// expect-line: none
+fn show(found: Option[i64]) {
+    match found {
+        Some(at) => print(at)
+        None => print("none")
+    }
+}
+
+fn main() {
+    show("a".index_of_from("a", 9223372036854775807))
+    show("a".index_of_from("true", 9223372036854775806))
+}

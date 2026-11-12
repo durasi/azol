@@ -1,0 +1,34 @@
+# From the tests of the first compiler: src/sema.rs, `the_smallest_number_can_be_written`.
+==== 1
+---- file a.azl (no newline at end)
+fn main() {
+let a = -9223372036854775808
+let b = -9_223_372_036_854_775_808
+let c = - 9223372036854775808
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 5 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 6fc2ae37a8b16b072f6bfa9611bc5f72495a6c4f5a2f280f383029379a80d180
+x86_64-linux 9013bcce363c1903706131cf8be2be2220a9d914cd98980f0f02ce9936bb59d0
+aarch64-linux fda50cd6a91050fd45486d656c2ef90e1d86c676f9651172bb35b4117fccb53f
+==== 2
+---- file a.azl (no newline at end)
+const LOW = -9223372036854775808
+const NEXT = LOW + 1
+fn main() {
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 4 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 49870ce299859eed0a9c8fdb4282247e7ccce8a1233027724eb77db201390e60
+x86_64-linux 0288724ba7cc389815cbc9c237db32cc2b803d8b6435c2a2816bd5e8725d206d
+aarch64-linux ab405cf4e5feb7adce456b92432f66f5da7c3839ff6da9c334853a8309750876

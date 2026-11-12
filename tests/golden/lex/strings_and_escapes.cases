@@ -1,0 +1,14 @@
+# From the tests of the first compiler: src/lexer.rs, `strings_and_escapes`.
+==== 1
+---- file a.azl (no newline at end)
+print("a \"b\" \n")
+---- run lex a.azl
+---- exit 0
+---- stdout
+   1:1    Ident      print
+   1:6    LParen     (
+   1:7    Str        "a \"b\" \n"
+   1:19   RParen     )
+   1:20   Eof        
+---- stderr
+lexed 19 bytes, 1 lines, 5 tokens

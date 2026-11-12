@@ -1,0 +1,112 @@
+// sha256: block hashing.
+// Algorithm: the SHA-256 compression function over every 64-byte block of
+// a buffer, written the textbook way (a 64-word schedule, eight working
+// values); no padding block, the buffer is a whole number of blocks.
+// azoL has only 64-bit integers: 32-bit values are kept in `i64` and masked.
+// Sizes: 32 MB; small: 1 MB.
+// Output: the eight state words.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+const MASK = 0xFFFFFFFF
+
+fn round_constants() -> List[i64] {
+    return [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    ]
+}
+
+// A 32-bit value turned right by `n` bits.
+fn turn(x: i64, n: i64) -> i64 {
+    return (x >> n | x << (32 - n)) & MASK
+}
+
+fn compress(state: mut List[i64], k: List[i64], w: mut List[i64], data: str, at: i64) {
+    var t = 0
+    while t < 16 {
+        let p = at + t * 4
+        w[t] = data[p] << 24 | data[p + 1] << 16 | data[p + 2] << 8 | data[p + 3]
+        t = t + 1
+    }
+    while t < 64 {
+        let x = w[t - 15]
+        let y = w[t - 2]
+        let s0 = turn(x, 7) ^ turn(x, 18) ^ x >> 3
+        let s1 = turn(y, 17) ^ turn(y, 19) ^ y >> 10
+        w[t] = (w[t - 16] + s0 + w[t - 7] + s1) & MASK
+        t = t + 1
+    }
+    var a = state[0]
+    var b = state[1]
+    var c = state[2]
+    var d = state[3]
+    var e = state[4]
+    var f = state[5]
+    var g = state[6]
+    var h = state[7]
+    t = 0
+    while t < 64 {
+        let s1 = turn(e, 6) ^ turn(e, 11) ^ turn(e, 25)
+        let choose = (e & f) ^ ((e ^ MASK) & g)
+        let t1 = h + s1 + choose + k[t] + w[t]
+        let s0 = turn(a, 2) ^ turn(a, 13) ^ turn(a, 22)
+        let majority = (a & b) ^ (a & c) ^ (b & c)
+        h = g
+        g = f
+        f = e
+        e = (d + t1) & MASK
+        d = c
+        c = b
+        b = a
+        a = (t1 + s0 + majority) & MASK
+        t = t + 1
+    }
+    state[0] = (state[0] + a) & MASK
+    state[1] = (state[1] + b) & MASK
+    state[2] = (state[2] + c) & MASK
+    state[3] = (state[3] + d) & MASK
+    state[4] = (state[4] + e) & MASK
+    state[5] = (state[5] + f) & MASK
+    state[6] = (state[6] + g) & MASK
+    state[7] = (state[7] + h) & MASK
+}
+
+fn main() {
+    let length = size(33554432, 1048576)
+    var data = ""
+    var seed = 43
+    var n = 0
+    while n < length {
+        seed = seed * 48271 % 2147483647
+        data.push(seed >> 8)
+        n = n + 1
+    }
+    var state = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
+    let k = round_constants()
+    var w = 0.filled(64)
+    var at = 0
+    while at < length {
+        compress(mut state, k, mut w, data, at)
+        at = at + 64
+    }
+    var line = ""
+    for word in state {
+        line = line + str(word)
+        line = line + " "
+    }
+    print(line.trim())
+}

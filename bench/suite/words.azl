@@ -1,0 +1,50 @@
+// words: split, join and count.
+// Algorithm: build a text of words, split it, count by length and content,
+// join with commas, split again and count by first letter.
+// Sizes: 4,000,000 words; small: 40,000.
+// Output: a combination of the counts and the joined length.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+fn main() {
+    let count = size(4000000, 40000)
+    let names = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"]
+    var text = ""
+    var seed = 11
+    var n = 0
+    while n < count {
+        seed = seed * 48271 % 2147483647
+        if n > 0 {
+            text = text + " "
+        }
+        text = text + names[seed % 8]
+        n = n + 1
+    }
+    let words = text.split(" ")
+    var long = 0
+    var with_t = 0
+    for word in words {
+        if word.len() > 4 {
+            long = long + 1
+        }
+        if word.contains("t") {
+            with_t = with_t + 1
+        }
+    }
+    let joined = words.join(",")
+    let parts = joined.split(",")
+    var starts = 0
+    for part in parts {
+        if part.starts_with("e") {
+            starts = starts + 1
+        }
+    }
+    print(words.len() + long * 3 + with_t * 5 + starts * 7 + joined.len())
+}

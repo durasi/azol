@@ -1,0 +1,22 @@
+; Only the start of a block can be freed, and a frame object cannot.
+; run: main 0
+; err: ir-interp: `free` of something that is not the start of a live allocated block
+; exit: 3
+; run: main 1
+; err: ir-interp: `free` of something that is not the start of a live allocated block
+; exit: 3
+fn main(p0: i64) {
+    frames 8
+b0:
+    v0 = eq p0, 0
+    br v0, b1, b2
+b1:
+    v1 = callrt alloc(16)
+    v2 = gep v1, 1, 8, 0
+    callrt free(v2)
+    ret
+b2:
+    v3 = frame 0
+    callrt free(v3)
+    ret
+}

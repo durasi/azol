@@ -1,0 +1,85 @@
+// fannkuch: permutations and reversals of a small list.
+// Algorithm: for every permutation of 0..n, count how many prefix
+// reversals bring the first element to 0 (the classic "fannkuch-redux").
+// Sizes: n = 10; small: n = 9.
+// Output: the alternating checksum and the largest number of reversals.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+fn main() {
+    let n = size(10, 9)
+    var first: List[i64] = []
+    var i = 0
+    while i < n {
+        first.push(i)
+        i = i + 1
+    }
+    var perm = 0.filled(n)
+    var count = 0.filled(n)
+    var most = 0
+    var checksum = 0
+    var odd = false
+    var r = n
+    while true {
+        while r != 1 {
+            count[r - 1] = r
+            r = r - 1
+        }
+        i = 0
+        while i < n {
+            perm[i] = first[i]
+            i = i + 1
+        }
+        var flips = 0
+        var k = perm[0]
+        while k != 0 {
+            var low = 0
+            var high = k
+            while low < high {
+                let held = perm[low]
+                perm[low] = perm[high]
+                perm[high] = held
+                low = low + 1
+                high = high - 1
+            }
+            flips = flips + 1
+            k = perm[0]
+        }
+        if flips > most {
+            most = flips
+        }
+        if odd {
+            checksum = checksum - flips
+        } else {
+            checksum = checksum + flips
+        }
+        odd = !odd
+        var turning = true
+        while turning {
+            if r == n {
+                print(str(checksum) + " " + str(most))
+                return
+            }
+            let front = first[0]
+            i = 0
+            while i < r {
+                first[i] = first[i + 1]
+                i = i + 1
+            }
+            first[r] = front
+            count[r] = count[r] - 1
+            if count[r] > 0 {
+                turning = false
+            } else {
+                r = r + 1
+            }
+        }
+    }
+}

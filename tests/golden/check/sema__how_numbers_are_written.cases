@@ -1,0 +1,16 @@
+# From the tests of the first compiler: src/sema.rs, `how_numbers_are_written`.
+==== 1
+---- file a.azl (no newline at end)
+fn main() {
+let a = 0 + 10 + 1_000 + 0x0F + 0xff_ff + 0b0_1 + 'a' + '_'
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 3 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos d48b97d2470449eae92957924779cbc30c5f1633649f74d6d57136028c6c442e
+x86_64-linux 9c7d8a9d9d0ea08c3540aa1e0fd3f134dbcbe745f8edb7bfb821846a4b8c03d2
+aarch64-linux 35cc17051d53de39d7c8e5c9a9fe0df4f92d61f555cc5f5bb68ff0f90811502f

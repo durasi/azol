@@ -208,7 +208,7 @@ fn a_stmt_inner(g: mut AGen, c: Checker, p: Parser, id: i64) {
                 a_leave_loop(mut g)
             }
         }
-        StmtFor(has_index, _, _, iter, body) => a_for_stmt(mut g, c, p, id, has_index, iter, body)
+        StmtFor(index, _, iter, body) => a_for_stmt(mut g, c, p, id, index.len > 0, iter, body)
         StmtBreak => {
             let live = g.loop_live[g.loop_live.len() - 1]
             a_drop_live_from(mut g, c, live)
@@ -1408,7 +1408,8 @@ fn a_condition_jumps(g: mut AGen, c: Checker, p: Parser, cond: i64, when: bool) 
 fn a_arg_by_ref(c: Checker, target: i64, i: i64) -> bool {
     if target >= FIRST_BUILTIN {
         return target == BUILTIN_PRINT_STR || target == BUILTIN_EPRINT || target == BUILTIN_READ_FILE ||
-            target == BUILTIN_WRITE_FILE || target == BUILTIN_SET_EXECUTABLE
+            target == BUILTIN_WRITE_FILE || target == BUILTIN_SET_EXECUTABLE || target == BUILTIN_REMOVE_FILE ||
+            target == BUILTIN_RENAME_FILE || target == BUILTIN_STR_IS_UTF8
     }
     return c.fns[target].param_by_ref[i]
 }
@@ -1778,6 +1779,9 @@ fn a_value(g: mut AGen, c: Checker, p: Parser, id: i64) {
             } else {
                 g.words.push(a_cset_x0(A_NE))
             }
+        } else if lhs_ty == TY_STR && (op == OP_LT || op == OP_LE || op == OP_GT || op == OP_GE) {
+            a_two_addresses(mut g, c, p, lhs, rhs)
+            a_string_order(mut g, op)
         } else if lhs_ty == TY_STR {
             // `==` and `!=` on strings compare the bytes.
             a_two_addresses(mut g, c, p, lhs, rhs)
@@ -1956,6 +1960,10 @@ fn a_call(g: mut AGen, c: Checker, p: Parser, id: i64) {
     if a_kind(g, c, callee) == K_FIELD {
         receiver = g.ea[callee]
     }
+    if target == BUILTIN_STR_PUSH || target == BUILTIN_STR_SET {
+        a_byte_method(mut g, c, p, id, target, receiver)
+        return
+    }
     if target == BUILTIN_LEN || target == BUILTIN_LIST_PUSH || target == BUILTIN_LIST_POP || target == BUILTIN_STR_SLICE {
         a_list_method(mut g, c, p, id, target, receiver)
         return
@@ -2094,7 +2102,12 @@ fn a_call(g: mut AGen, c: Checker, p: Parser, id: i64) {
         a_runtime(mut g, ART_EPRINT_STR)
     } else if target == BUILTIN_EXIT {
         a_runtime(mut g, ART_EXIT)
-    } else if target == BUILTIN_READ_FILE || target == BUILTIN_WRITE_FILE || target == BUILTIN_SET_EXECUTABLE {
+    } else if target == BUILTIN_CLOCK {
+        a_runtime(mut g, ART_CLOCK)
+    } else if target == BUILTIN_STR_IS_UTF8 {
+        a_runtime(mut g, ART_STR_IS_UTF8)
+    } else if target == BUILTIN_READ_FILE || target == BUILTIN_WRITE_FILE || target == BUILTIN_SET_EXECUTABLE ||
+        target == BUILTIN_REMOVE_FILE || target == BUILTIN_RENAME_FILE {
         // The routine fills in what the `Result` holds and says which
         // variant it is: 0 for `Ok`, 1 for `Err`.
         a_frame_address(mut g, X8, tmp + 1)
@@ -2102,6 +2115,10 @@ fn a_call(g: mut AGen, c: Checker, p: Parser, id: i64) {
             a_runtime(mut g, ART_READ_FILE)
         } else if target == BUILTIN_WRITE_FILE {
             a_runtime(mut g, ART_WRITE_FILE)
+        } else if target == BUILTIN_REMOVE_FILE {
+            a_runtime(mut g, ART_REMOVE_FILE)
+        } else if target == BUILTIN_RENAME_FILE {
+            a_runtime(mut g, ART_RENAME_FILE)
         } else {
             a_runtime(mut g, ART_SET_EXECUTABLE)
         }
@@ -2120,6 +2137,137 @@ fn a_call(g: mut AGen, c: Checker, p: Parser, id: i64) {
             a_runtime(mut g, ART_ARGS)
         }
     }
+}
+
+// With the addresses of two strings in x0 and x1: leaves in x0 whether
+// the first comes before, or after, the second, as `op` asks. The bytes
+// are compared as numbers from 0 to 255 up to the first difference; when
+// one string is the start of the other, the shorter one comes first.
+fn a_string_order(g: mut AGen, op: i64) {
+    a_forget(mut g)
+    // the bytes of the first
+    g.words.push(a_ldr(X9, X0, 0))
+    // its length
+    g.words.push(a_ldr(X10, X0, 1))
+    // the bytes of the second
+    g.words.push(a_ldr(X11, X1, 0))
+    // its length
+    g.words.push(a_ldr(X12, X1, 1))
+    g.words.push(a_cmp(X10, X12))
+    // csel x2, x10, x12, lo: the shorter length
+    g.words.push(0x9A8C3142)
+    // mov x3, #0
+    g.words.push(0xD2800003)
+    // compare: cmp x3, x2
+    g.words.push(a_cmp(3, 2))
+    // b.hs lengths
+    g.words.push(0x540000E2)
+    // ldrb w4, [x9, x3]
+    g.words.push(0x38636924)
+    // ldrb w5, [x11, x3]
+    g.words.push(0x38636965)
+    // add x3, x3, #1
+    g.words.push(0x91000463)
+    g.words.push(a_cmp(4, 5))
+    // b.eq compare
+    g.words.push(0x54000000 | ((0 - 6) & 0x7FFFF) << 5)
+    // b over
+    g.words.push(0x14000002)
+    // lengths: every shared byte is equal
+    g.words.push(a_cmp(X10, X12))
+    var cond = A_HS
+    if op == OP_LT {
+        cond = A_LO
+    } else if op == OP_LE {
+        cond = A_LS
+    } else if op == OP_GT {
+        cond = A_HI
+    }
+    g.words.push(a_cset_x0(cond))
+}
+
+// `s.push(byte)` and `s.set(index, byte)` on a string. The numbers are
+// worked out first; the byte is stored right here when the string owns
+// a buffer with room, and the runtime is asked only to give it one.
+fn a_byte_method(g: mut AGen, c: Checker, p: Parser, id: i64, method: i64, base: i64) {
+    let args_start = g.eb[id]
+    let args_len = g.ec[id]
+    let tmp = c.expr_tmp[g.sh_e + id]
+    var i = 0
+    while i < args_len {
+        a_value(mut g, c, p, p.ast.lists[args_start + i])
+        g.words.push(A_PUSH_X0)
+        i = i + 1
+    }
+    a_address(mut g, c, p, base)
+    a_forget(mut g)
+    // the byte
+    g.words.push(a_pop(X11))
+    if method == BUILTIN_STR_PUSH {
+        // length
+        g.words.push(a_ldr(X9, X0, 1))
+        // capacity
+        g.words.push(a_ldr(X10, X0, 2))
+        g.words.push(a_cmp(X9, X10))
+        let grow = a_placeholder(mut g)
+        // buffer
+        g.words.push(a_ldr(X10, X0, 0))
+        // strb w11, [x10, x9]
+        g.words.push(0x3829694B)
+        // add x9, x9, #1
+        g.words.push(0x91000529)
+        g.words.push(a_str(X9, X0, 1))
+        let done = a_placeholder(mut g)
+        a_patch_branch_if(mut g, grow, A_HS)
+        a_one_byte_string(mut g, tmp)
+        a_runtime(mut g, ART_STR_APPEND)
+        a_patch_jump(mut g, done)
+    } else {
+        // the index
+        g.words.push(a_pop(X9))
+        // length
+        g.words.push(a_ldr(X10, X0, 1))
+        g.words.push(a_cmp(X9, X10))
+        // An unsigned compare also rejects negatives.
+        g.words.push(A_SKIP_IF_LOWER)
+        a_runtime(mut g, ART_INDEX_FAIL)
+        // capacity
+        g.words.push(a_ldr(X10, X0, 2))
+        let owned = a_placeholder(mut g)
+        // The bytes live in the executable: adding one byte makes the
+        // runtime copy them into a buffer the string owns, and the
+        // length is then put back.
+        a_store_slot(mut g, tmp + 4, X9)
+        a_store_slot(mut g, tmp + 5, X0)
+        a_one_byte_string(mut g, tmp)
+        a_runtime(mut g, ART_STR_APPEND)
+        a_load(mut g, X0, tmp + 5)
+        a_load(mut g, X9, tmp + 4)
+        a_load(mut g, X11, tmp)
+        g.words.push(a_ldr(X10, X0, 1))
+        // sub x10, x10, #1
+        g.words.push(0xD100054A)
+        g.words.push(a_str(X10, X0, 1))
+        a_patch_cbz_reg(mut g, owned, true, X10)
+        // buffer
+        g.words.push(a_ldr(X10, X0, 0))
+        // strb w11, [x10, x9]
+        g.words.push(0x3829694B)
+    }
+    a_forget(mut g)
+}
+
+// Makes the byte in x11 a string of one byte in the frame slots from
+// `tmp` (the byte, then pointer, length and capacity 0) and leaves its
+// address in x1. x0 is kept.
+fn a_one_byte_string(g: mut AGen, tmp: i64) {
+    a_store_slot(mut g, tmp, X11)
+    a_frame_address(mut g, X9, tmp)
+    a_store_slot(mut g, tmp + 1, X9)
+    a_mov_imm(mut g, X9, 1)
+    a_store_slot(mut g, tmp + 2, X9)
+    a_store_slot(mut g, tmp + 3, XZR)
+    a_frame_address(mut g, X1, tmp + 1)
 }
 
 fn a_list_method(g: mut AGen, c: Checker, p: Parser, id: i64, method: i64, base: i64) {
@@ -2232,6 +2380,32 @@ fn a_list_method(g: mut AGen, c: Checker, p: Parser, id: i64, method: i64, base:
             g.words.push(a_ldr(X10, X0, 0))
             a_load(mut g, X11, tmp)
             g.words.push(a_str_scaled(X11, X10, X9))
+            // add x9, x9, #1
+            g.words.push(0x91000529)
+            g.words.push(a_str(X9, X0, 1))
+            done = a_placeholder(mut g)
+            a_patch_branch_if(mut g, grow, A_HS)
+        } else if elem_size <= INLINE_PUSH {
+            // A small struct, enum, string or list is copied in the
+            // same way, slot by slot.
+            a_forget(mut g)
+            // length
+            g.words.push(a_ldr(X9, X0, 1))
+            // capacity
+            g.words.push(a_ldr(X10, X0, 2))
+            g.words.push(a_cmp(X9, X10))
+            let grow = a_placeholder(mut g)
+            // buffer
+            g.words.push(a_ldr(X10, X0, 0))
+            a_mov_imm(mut g, X11, elem_size * 8)
+            // madd x11, x9, x11, x10
+            g.words.push(0x9B0B292B)
+            var slot = 0
+            while slot < elem_size {
+                a_load(mut g, X12, tmp + slot)
+                g.words.push(a_str(X12, X11, slot))
+                slot = slot + 1
+            }
             // add x9, x9, #1
             g.words.push(0x91000529)
             g.words.push(a_str(X9, X0, 1))

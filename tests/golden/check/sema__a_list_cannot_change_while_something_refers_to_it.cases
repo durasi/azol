@@ -1,0 +1,73 @@
+# From the tests of the first compiler: src/sema.rs, `a_list_cannot_change_while_something_refers_to_it`.
+==== 1
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+var xs = [1]
+var ys = [2]
+for x in xs {
+ys.push(x + xs.len() + total(xs))
+}
+xs.push(3)
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 25 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos b6ddf3d715e453fec986f0d06f2b796600ebe12292a6b55f2b54084d60b2d6de
+x86_64-linux 192bc24687692f09be40a9b4600d21423637fb05cbe34a3e4cf0d3798143556c
+aarch64-linux e5ded541f4dcb0e72c24dd7ee3080d5597c50c69586c8377a7a4ec7e5e6bca6a
+==== 2
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Bag {
+ items: List[i64]
+ name: str
+}
+fn total(xs: List[i64]) -> i64 {
+ return 0
+}
+fn grow(xs: mut List[i64]) {
+ xs.push(1)
+}
+fn make() -> List[i64] {
+ return [1, 2]
+}
+fn main() {
+var b = Bag { items: [1], name: "a" }
+for x in b.items {
+b.name = "c"
+}
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 23 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 5f4ecf501970514b117d26ccb6f1b28e4596faf67e5b01e713505131569b19cf
+x86_64-linux b96aaf2601dc305b8e63f3b65ddaa09d99ef4670e872facf6e2700e0661e3568
+aarch64-linux d2b156ecfea32b35ba41b1ad198a4473f5fcf4e3b92343783bec95eb75344ea8

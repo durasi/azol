@@ -109,8 +109,20 @@ pub const BUILTIN_EPRINT: u32 = u32::MAX - 14;
 /// `slice(start, end)` of a string.
 pub const BUILTIN_STR_SLICE: u32 = u32::MAX - 15;
 pub const BUILTIN_SET_EXECUTABLE: u32 = u32::MAX - 16;
+/// `push(byte)` on a string: one more byte at its end.
+pub const BUILTIN_STR_PUSH: u32 = u32::MAX - 17;
+/// `set(index, byte)` on a string: one byte replaced.
+pub const BUILTIN_STR_SET: u32 = u32::MAX - 18;
+/// `remove_file(path)`.
+pub const BUILTIN_REMOVE_FILE: u32 = u32::MAX - 19;
+/// `rename_file(from, to)`.
+pub const BUILTIN_RENAME_FILE: u32 = u32::MAX - 20;
+/// `clock()`: nanoseconds on a clock that only moves forward.
+pub const BUILTIN_CLOCK: u32 = u32::MAX - 21;
+/// `is_utf8()` on a string: whether its bytes are well-formed UTF-8.
+pub const BUILTIN_STR_IS_UTF8: u32 = u32::MAX - 22;
 /// Resolutions at or above this value are built-ins.
-pub const FIRST_BUILTIN: u32 = u32::MAX - 16;
+pub const FIRST_BUILTIN: u32 = u32::MAX - 22;
 
 /// In `expr_aux` of a name that is a constant: the expression then
 /// stands for a literal of that kind. For a number `expr_res` is its
@@ -122,8 +134,21 @@ pub const CONST_FALSE: u32 = u32::MAX - 2;
 pub const CONST_STR: u32 = u32::MAX - 3;
 
 /// Names of the built-in functions; a program cannot define these.
-const BUILTIN_FUNCTIONS: [&str; 9] =
-    ["print", "eprint", "str", "chr", "args", "read_file", "write_file", "set_executable", "exit"];
+const BUILTIN_FUNCTIONS: [&str; 13] = [
+    "print",
+    "eprint",
+    "str",
+    "chr",
+    "args",
+    "read_file",
+    "write_file",
+    "set_executable",
+    "exit",
+    "remove_file",
+    "rename_file",
+    "clock",
+    "embed",
+];
 /// Where the built-in `Option` and `Result` sit among the enum declarations.
 const OPTION: u32 = 0;
 const RESULT: u32 = 1;
@@ -646,6 +671,9 @@ struct Checker<'a> {
     lists: Vec<Ty>,
     fns: Vec<FnInfo>,
     fn_names: HashMap<&'a str, u32>,
+    /// Where each source file starts in `src`, with its path, in order:
+    /// `embed` reads files relative to the one it is written in.
+    files: &'a [(u32, &'a str)],
     /// Where the standard library's source starts. Functions from there
     /// on are the library's: `str_find` is the method `find`, and a
     /// function without parameters is called by its name.
@@ -719,10 +747,24 @@ pub fn check<'a>(ast: &'a Ast, src: &'a str) -> Result<Program<'a>, SemaError> {
 /// order: the first one among the declarations, or else the first one in
 /// each function. A mistake inside one function does not disturb the
 /// checking of the others, so those are independent of each other.
+#[cfg(test)]
 pub fn check_with_prelude<'a>(ast: &'a Ast, src: &'a str, prelude_start: u32) -> Result<Program<'a>, Vec<SemaError>> {
+    check_with_files(ast, src, prelude_start, &[])
+}
+
+/// Like `check_with_prelude`, for a program whose files are known:
+/// `files` holds where each one starts in `src` and its path, in order.
+/// Without them `embed` reads relative to the current folder.
+pub fn check_with_files<'a>(
+    ast: &'a Ast,
+    src: &'a str,
+    prelude_start: u32,
+    files: &'a [(u32, &'a str)],
+) -> Result<Program<'a>, Vec<SemaError>> {
     let mut c = Checker {
         ast,
         src,
+        files,
         structs: Vec::new(),
         struct_templates: Vec::new(),
         struct_names: HashMap::new(),
@@ -919,6 +961,19 @@ fn number_fault(text: &[u8], digits: usize) -> Result<(), &'static str> {
         return Err("a decimal number does not start with `0`; other bases are written `0x1F` and `0b1010`");
     }
     Ok(())
+}
+
+/// The most bytes of text a program may hold with an embedded file.
+const MAX_EMBED: u64 = 1 << 30;
+
+/// What the system says went wrong with a file, without the error
+/// number Rust adds: `No such file or directory`.
+fn os_reason(problem: &std::io::Error) -> String {
+    let text = problem.to_string();
+    match text.find(" (os error ") {
+        Some(end) => text[..end].to_string(),
+        None => text,
+    }
 }
 
 fn err<T>(offset: u32, message: impl Into<String>) -> SResult<T> {
@@ -1951,7 +2006,50 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            Expr::Call { callee, args } if self.is_embed(callee) => self.embed(id, args),
             _ => err(pos, "a constant must be made of literals and other constants"),
+        }
+    }
+
+    /// Whether `callee` is the name `embed`, the one call a constant may
+    /// contain.
+    fn is_embed(&self, callee: ExprId) -> bool {
+        matches!(self.ast.exprs[callee as usize], Expr::Ident(name) if name.text(self.src) == "embed")
+    }
+
+    /// `embed("path")` in a constant: the bytes of that file, read now,
+    /// as a string constant. The path is relative to the folder of the
+    /// source file the call is written in.
+    fn embed(&mut self, id: ExprId, args: List) -> SResult<ConstValue> {
+        let pos = self.ast.expr_pos[id as usize];
+        let args = self.ast.list(args);
+        if args.len() != 1 {
+            return err(pos, format!("`embed` takes 1 argument but {} were given", args.len()));
+        }
+        let name = match self.const_eval(args[0])? {
+            ConstValue::Str(index) => {
+                let (start, len) = self.strings[index as usize];
+                String::from_utf8_lossy(&self.data[start as usize..(start + len) as usize]).into_owned()
+            }
+            other => {
+                return err(self.ast.expr_pos[args[0] as usize], format!("argument 1 of `embed` needs `str` but this is `{}`", self.ty_name(other.ty())));
+            }
+        };
+        // The file this call is written in is the last one that starts
+        // at or before it.
+        let here = self.files.iter().rev().find(|&&(start, _)| start <= pos).map(|&(_, path)| path).unwrap_or("");
+        let path = std::path::Path::new(here).parent().unwrap_or(std::path::Path::new("")).join(&name);
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let offset = self.data.len() as u32;
+                if bytes.len() as u64 + offset as u64 > MAX_EMBED {
+                    return err(pos, format!("cannot embed `{name}`: the file is too large for now"));
+                }
+                self.data.extend_from_slice(&bytes);
+                self.strings.push((offset, bytes.len() as u32));
+                Ok(ConstValue::Str(self.strings.len() as u32 - 1))
+            }
+            Err(problem) => err(pos, format!("cannot embed `{name}`: {}", os_reason(&problem))),
         }
     }
 
@@ -2926,7 +3024,18 @@ impl<'a> Checker<'a> {
                         Ok(Ty::I64)
                     }
                     BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq => {
-                        self.expect(lhs, Ty::I64, what)?;
+                        // Strings are ordered byte by byte; a string
+                        // that another one starts with comes first.
+                        let left = self.expr_hint(lhs, Some(Ty::I64))?;
+                        if left == Ty::Str {
+                            self.string_operands(lhs, rhs, what)?;
+                            return Ok(Ty::Bool);
+                        }
+                        if left != Ty::I64 {
+                            return err_expr(self.ast, lhs,
+                                format!("`{}` needs `i64` but this is `{}`", op.symbol(), self.ty_name(left)),
+                            );
+                        }
                         self.expect(rhs, Ty::I64, what)?;
                         Ok(Ty::Bool)
                     }
@@ -3362,6 +3471,9 @@ impl<'a> Checker<'a> {
     /// The built-in functions that talk to the system.
     fn builtin(&mut self, id: ExprId, text: &'a str, arg_ids: &[u32]) -> SResult<Ty> {
         let pos = self.ast.expr_pos[id as usize];
+        if text == "embed" {
+            return err(pos, "`embed` works only in a constant: write `const NAME = embed(\"file\")` and use the constant");
+        }
         let (params, target): (&[Ty], u32) = match text {
             "eprint" => (&[Ty::Str], BUILTIN_EPRINT),
             "exit" => (&[Ty::I64], BUILTIN_EXIT),
@@ -3370,6 +3482,9 @@ impl<'a> Checker<'a> {
             "read_file" => (&[Ty::Str], BUILTIN_READ_FILE),
             "write_file" => (&[Ty::Str, Ty::Str], BUILTIN_WRITE_FILE),
             "set_executable" => (&[Ty::Str], BUILTIN_SET_EXECUTABLE),
+            "remove_file" => (&[Ty::Str], BUILTIN_REMOVE_FILE),
+            "rename_file" => (&[Ty::Str, Ty::Str], BUILTIN_RENAME_FILE),
+            "clock" => (&[], BUILTIN_CLOCK),
             _ => unreachable!("`print` and `str` are handled by the caller"),
         };
         if arg_ids.len() != params.len() {
@@ -3384,12 +3499,14 @@ impl<'a> Checker<'a> {
         self.expr_res[self.sh.e(id)] = target;
         let ty = match target {
             BUILTIN_EPRINT | BUILTIN_EXIT => return Ok(Ty::Unit),
+            // A number: nothing to keep in a temporary.
+            BUILTIN_CLOCK => return Ok(Ty::I64),
             BUILTIN_CHR => Ty::Str,
             BUILTIN_ARGS => self.list_of(Ty::Str),
             // The text of the file, or what the system says went wrong.
             BUILTIN_READ_FILE => self.instance(RESULT, vec![Ty::Str, Ty::Str], pos)?,
-            // The number of bytes written (0 for `set_executable`), or
-            // what went wrong.
+            // The number of bytes written (0 for `set_executable`,
+            // `remove_file` and `rename_file`), or what went wrong.
             _ => self.instance(RESULT, vec![Ty::I64, Ty::Str], pos)?,
         };
         self.settle()?;
@@ -3718,6 +3835,37 @@ impl<'a> Checker<'a> {
         self.call_generic(id, generic, text, &all, None, true)
     }
 
+    /// `s.push(byte)` and `s.set(index, byte)`: a string used as a
+    /// buffer of bytes. Both change the string where it is, so it must
+    /// be a variable that can change, like the list of a `push`. The
+    /// byte is the low eight bits of the number.
+    fn byte_method(&mut self, id: ExprId, base: ExprId, text: &str, args: &[u32]) -> SResult<Ty> {
+        let pos = self.ast.expr_pos[id as usize];
+        let expected = if text == "push" { 1 } else { 2 };
+        if args.len() != expected {
+            return err(pos, format!("`{text}` takes {expected} argument{} but {} were given", if expected == 1 { "" } else { "s" }, args.len()));
+        }
+        let Some(place) = self.place(base) else {
+            return err(pos, format!("`{text}` changes its receiver, so it needs a variable or a part of a variable"));
+        };
+        if !place.mutable {
+            let message = format!("cannot change `{}`: {}", self.root_name(base), read_only(&place));
+            return err(pos, message).map_err(|error: SemaError| error.with_fix(self.var_fix(&place)));
+        }
+        // The numbers are computed before the string is looked at.
+        self.late.push(base);
+        for (i, &arg) in args.iter().enumerate() {
+            self.expect(arg, Ty::I64, What::Argument(i + 1, text))?;
+        }
+        self.late.pop();
+        self.check_change(base, &place)?;
+        // Room for what the runtime needs when the string has to get a
+        // buffer of its own or a larger one.
+        self.expr_tmp[self.sh.e(id)] = self.alloc(6, pos)?;
+        self.expr_res[self.sh.e(id)] = if text == "push" { BUILTIN_STR_PUSH } else { BUILTIN_STR_SET };
+        Ok(Ty::Unit)
+    }
+
     /// A call written `value.name(...)`.
     fn method(&mut self, id: ExprId, base: ExprId, name: Span, args: &[u32]) -> SResult<Ty> {
         let pos = self.ast.expr_pos[id as usize];
@@ -3748,6 +3896,12 @@ impl<'a> Checker<'a> {
                     self.expr_tmp[self.sh.e(id)] = self.temp(id, Ty::Str)?;
                     self.expr_res[self.sh.e(id)] = BUILTIN_STR_SLICE;
                     Ok(Ty::Str)
+                }
+                "push" | "set" => self.byte_method(id, base, text, args),
+                "is_utf8" => {
+                    arity(0)?;
+                    self.expr_res[self.sh.e(id)] = BUILTIN_STR_IS_UTF8;
+                    Ok(Ty::Bool)
                 }
                 _ => self.library_method(id, base, base_ty, name, args),
             };
@@ -3817,6 +3971,53 @@ mod tests {
         check_src(src).expect_err("checking should fail").0
     }
 
+    #[test]
+    fn embedded_files() {
+        let folder = std::env::temp_dir().join(format!("azol_embed_test_{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("note.txt");
+        std::fs::write(&file, b"two\nlines \xff\x00").unwrap();
+        // An absolute path is used as it is.
+        let src = format!("const NOTE = embed(\"{0}\")\nconst TWICE = NOTE + embed(\"{0}\")\nfn main() {{\n print(NOTE)\n print(TWICE)\n}}", file.display());
+        let tokens = lex(&src).unwrap();
+        let ast = parse(&src, &tokens).unwrap();
+        let program = check(&ast, &src).unwrap();
+        let text = |index: usize| {
+            let (start, len) = program.strings[index];
+            program.data[start as usize..(start + len) as usize].to_vec()
+        };
+        assert!((0..program.strings.len()).any(|index| text(index) == b"two\nlines \xff\x00"));
+        assert!((0..program.strings.len()).any(|index| text(index) == b"two\nlines \xff\x00two\nlines \xff\x00"));
+        // A relative path starts at the folder of the source file.
+        let src = "const NOTE = embed(\"note.txt\")\nfn main() {\n print(NOTE)\n}";
+        let tokens = lex(src).unwrap();
+        let ast = parse(src, &tokens).unwrap();
+        let path = folder.join("main.azl");
+        let files = [(0, path.to_str().unwrap())];
+        assert!(check_with_files(&ast, src, u32::MAX, &files).is_ok());
+        let elsewhere = [(0, "/azol_no_such_folder/main.azl")];
+        let errors = check_with_files(&ast, src, u32::MAX, &elsewhere).err().unwrap();
+        assert_eq!(errors[0].message, "cannot embed `note.txt`: No such file or directory");
+        std::fs::remove_dir_all(&folder).unwrap();
+
+        assert_eq!(error("const A = embed(\"/azol_no_such_folder/a\")\nfn main() {\n}"), "cannot embed `/azol_no_such_folder/a`: No such file or directory");
+        assert_eq!(error("const A = embed(7)\nfn main() {\n}"), "argument 1 of `embed` needs `str` but this is `i64`");
+        assert_eq!(error("const A = embed()\nfn main() {\n}"), "`embed` takes 1 argument but 0 were given");
+        assert_eq!(error("const A = embed(\"a\", \"b\")\nfn main() {\n}"), "`embed` takes 1 argument but 2 were given");
+        assert_eq!(error("const A = embed(B)\nconst B = embed(A)\nfn main() {\n}"), "constant `A` is defined in terms of itself");
+        let outside = "`embed` works only in a constant: write `const NAME = embed(\"file\")` and use the constant";
+        assert_eq!(error(&in_main("print(embed(\"a.txt\"))")), outside);
+        assert_eq!(error(&in_main("let text = embed(\"a.txt\")")), outside);
+        assert_eq!(error("fn embed() {\n}\nfn main() {\n}"), "`embed` is built in and cannot be redefined");
+    }
+
+    #[test]
+    fn is_utf8_is_a_method_of_strings() {
+        assert!(check_src(&in_main("let s = \"a\"\nlet ok: bool = s.is_utf8()\nif (s + \"b\").is_utf8() && !chr(200).is_utf8() {\n}")).is_ok());
+        assert_eq!(error(&in_main("let ok = \"a\".is_utf8(1)")), "`is_utf8` takes 0 arguments but 1 were given");
+        assert_eq!(error(&in_main("let n: i64 = \"a\".is_utf8()")), "expected `i64` but this is `bool`");
+    }
+
     fn in_main(body: &str) -> String {
         format!("fn main() {{\n{body}\n}}")
     }
@@ -3882,7 +4083,13 @@ mod tests {
         assert_eq!(error(&in_main("let a = true + 1")), "`+` needs `i64` or `str` but this is `bool`");
         assert_eq!(error(&in_main("let a = \"x\" == 1")), "`==` needs `str` but this is `i64`");
         assert_eq!(error(&in_main("let a = \"x\" - \"y\"")), "`-` needs `i64` but this is `str`");
-        assert_eq!(error(&in_main("let a = \"x\" < \"y\"")), "`<` needs `i64` but this is `str`");
+        assert_eq!(error(&in_main("let a = \"x\" < 1")), "`<` needs `str` but this is `i64`");
+        assert_eq!(error(&in_main("let a = [1] < [2]")), "`<` needs `i64` but this is `List[i64]`");
+        assert_eq!(error(&in_main("let a = true >= false")), "`>=` needs `i64` but this is `bool`");
+        assert_eq!(error(&in_main("let s = \"x\"\ns.push(1)")), "cannot change `s`: declare it with `var` to make it changeable");
+        assert_eq!(error(&in_main("var s = \"x\"\ns.set(1)")), "`set` takes 2 arguments but 1 were given");
+        assert_eq!(error(&in_main("var s = \"x\"\ns.push(\"y\")")), "argument 1 of `push` needs `i64` but this is `str`");
+        assert_eq!(error(&in_main("\"x\".push(1)")), "`push` changes its receiver, so it needs a variable or a part of a variable");
         assert_eq!(error(&in_main("let a: str = 1")), "expected `str` but this is `i64`");
         assert_eq!(error(&in_main("let a = print(1)")), "this expression has no value to store");
     }
@@ -4284,7 +4491,7 @@ mod tests {
     /// The same, with declarations before `main`.
     fn library_error_with(declarations: &str, body: &str) -> Option<String> {
         let user = format!("{declarations}\n{}", in_main(body));
-        let src = format!("{user}\n{}", include_str!("prelude.azl"));
+        let src = format!("{user}\n{}", include_str!("../lib/prelude.azl"));
         let tokens = lex(&src).expect("lexing failed");
         let ast = parse(&src, &tokens).expect("parsing failed");
         check_with_prelude(&ast, &src, user.len() as u32 + 1).err().map(|mut errors| errors.remove(0).message)
@@ -4307,7 +4514,17 @@ mod tests {
         assert_eq!(error(&in_main("set_executable(7)")), "argument 1 of `set_executable` needs `str` but this is `i64`");
         assert_eq!(error(&in_main("let r: Result[str, str] = set_executable(\"a\")")), "expected `Result[str, str]` but this is `Result[i64, str]`");
         assert_eq!(error(&in_main("let f = set_executable")), "`set_executable` is a function; call it with `set_executable(...)`");
-        for name in ["print", "eprint", "str", "chr", "args", "read_file", "write_file", "set_executable", "exit"] {
+        assert!(check_src(&in_main("let r: Result[i64, str] = remove_file(\"a\")\nremove_file(\"b\" + \"c\")")).is_ok());
+        assert!(check_src(&in_main("let r: Result[i64, str] = rename_file(\"a\", \"b\")\nrename_file(\"b\" + \"c\", \"d\")")).is_ok());
+        assert!(check_src(&in_main("let t: i64 = clock()\nlet d = clock() - t\nclock()")).is_ok());
+        assert_eq!(error(&in_main("remove_file()")), "`remove_file` takes 1 argument but 0 were given");
+        assert_eq!(error(&in_main("remove_file(7)")), "argument 1 of `remove_file` needs `str` but this is `i64`");
+        assert_eq!(error(&in_main("rename_file(\"a\")")), "`rename_file` takes 2 arguments but 1 were given");
+        assert_eq!(error(&in_main("rename_file(\"a\", 7)")), "argument 2 of `rename_file` needs `str` but this is `i64`");
+        assert_eq!(error(&in_main("let r: Result[str, str] = rename_file(\"a\", \"b\")")), "expected `Result[str, str]` but this is `Result[i64, str]`");
+        assert_eq!(error(&in_main("clock(1)")), "`clock` takes 0 arguments but 1 were given");
+        assert_eq!(error(&in_main("let s: str = clock()")), "expected `str` but this is `i64`");
+        for name in ["print", "eprint", "str", "chr", "args", "read_file", "write_file", "set_executable", "exit", "remove_file", "rename_file", "clock"] {
             assert_eq!(error(&format!("fn {name}() {{\n}}\nfn main() {{\n}}")), format!("`{name}` is built in and cannot be redefined"));
         }
     }
@@ -4346,7 +4563,7 @@ mod tests {
         assert_eq!(library_error("let t = str_find(\"a\", \"a\")").as_deref(), Some("unknown function `str_find`"));
         assert_eq!(library_error("let t = find(\"a\", \"a\")").as_deref(), Some("unknown function `find`"));
         let user = "fn str_find(a: i64) -> i64 {\n return a\n}\nfn find(a: i64) -> i64 {\n return str_find(a)\n}\nfn main() {\n let n = find(1)\n let at = \"abc\".find(\"c\")\n}";
-        let src = format!("{user}\n{}", include_str!("prelude.azl"));
+        let src = format!("{user}\n{}", include_str!("../lib/prelude.azl"));
         let tokens = lex(&src).unwrap();
         let ast = parse(&src, &tokens).unwrap();
         assert!(check_with_prelude(&ast, &src, user.len() as u32 + 1).is_ok());

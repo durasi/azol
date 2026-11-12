@@ -1,0 +1,5 @@
+; parse: 5:1: b3 is used in `main` but never defined
+fn main() {
+b0:
+    jump b3
+}

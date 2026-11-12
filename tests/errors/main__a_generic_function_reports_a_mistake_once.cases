@@ -1,0 +1,26 @@
+# From the tests of the first compiler: src/main.rs, `a_generic_function_reports_a_mistake_once`.
+==== 1
+---- file a.azl
+fn show[T](x: T) {
+    print(nothing)
+}
+
+fn main() {
+    show(1)
+    show(true)
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0201","message":"unknown variable `nothing` (in `show` with `T` = `i64`)","file":"a.azl","line":2,"column":11,"end_line":2,"end_column":18,"source":"    print(nothing)","rule":"A name must be declared before it is used: as a variable, a parameter, a constant or a variant."}
+{"summary":{"errors":1,"files":1}}
+---- reports E0201 2:11
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0201]: unknown variable `nothing` (in `show` with `T` = `i64`)
+ --> a.azl:2:11
+  |
+2 |     print(nothing)
+  |           ^

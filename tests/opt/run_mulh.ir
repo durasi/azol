@@ -1,0 +1,15 @@
+; The high half of a product, for division by constants.
+; umulh(2^63, 2) = 1. umulh(-1, -1) = 2^64 - 2. smulh(-1, -1) = 0.
+; smulh(-2^63, 2) = -1. umulh(2^32, 2^32) = 1. smulh(3, 4) = 0.
+; run:
+; out: => 1, -2, 0, -1, 1, 0
+fn main() -> i64, i64, i64, i64, i64, i64 {
+b0:
+    v0 = umulh -9223372036854775808, 2
+    v1 = umulh -1, -1
+    v2 = smulh -1, -1
+    v3 = smulh -9223372036854775808, 2
+    v4 = umulh 4294967296, 4294967296
+    v5 = smulh 3, 4
+    ret v0, v1, v2, v3, v4, v5
+}

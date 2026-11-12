@@ -1,0 +1,60 @@
+# From the tests of the first compiler: src/main.rs, `every_function_reports_its_first_error`.
+==== three functions with a mistake each; the second mistake of `two` waits
+---- file a.azl
+fn one() -> i64 {
+    return true
+}
+
+fn two() {
+    let a = 1
+    a = 2
+    missing()
+}
+
+fn three() {
+    print(nothing)
+}
+
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0304","message":"this function returns `i64` but this is `bool`","file":"a.azl","line":2,"column":12,"end_line":2,"end_column":16,"source":"    return true","rule":"`return` gives back a value of exactly the type the function declares after `->`, and none when it declares none."}
+{"severity":"error","code":"E0401","message":"cannot change `a`: declare it with `var` to make it changeable","file":"a.azl","line":7,"column":5,"end_line":7,"end_column":6,"source":"    a = 2","rule":"A variable declared with `let` never changes; only one declared with `var` can be assigned, grown or passed as `mut`.","help":"Declare the variable with `var` instead of `let`.","fix":{"file":"a.azl","line":6,"column":5,"end_line":6,"end_column":8,"replacement":"var"}}
+{"severity":"error","code":"E0201","message":"unknown variable `nothing`","file":"a.azl","line":12,"column":11,"end_line":12,"end_column":18,"source":"    print(nothing)","rule":"A name must be declared before it is used: as a variable, a parameter, a constant or a variant."}
+{"summary":{"errors":3,"files":1}}
+---- reports E0304 2:12, E0401 7:5, E0201 12:11
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0304]: this function returns `i64` but this is `bool`
+ --> a.azl:2:12
+  |
+2 |     return true
+  |            ^
+
+error[E0401]: cannot change `a`: declare it with `var` to make it changeable
+ --> a.azl:7:5
+  |
+7 |     a = 2
+  |     ^
+
+error[E0201]: unknown variable `nothing`
+  --> a.azl:12:11
+   |
+12 |     print(nothing)
+   |           ^
+
+found 3 errors
+==== a right program
+---- file a.azl
+fn main() {
+    print(1)
+}
+---- run check --json a.azl
+---- exit 0
+---- stdout
+{"summary":{"errors":0,"files":1}}
+---- reports none

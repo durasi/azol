@@ -5,7 +5,8 @@
 // functions of the macOS system library. This file provides those sixteen
 // functions for Linux, with the same names' meanings, arguments and
 // results, so the same generated code runs on both systems. The list and
-// its order are `IMPORTS` in src/runtime.rs.
+// its order are `IMPORTS` in src/runtime.rs; a few more have joined the
+// sixteen since.
 //
 // It uses no C library. Everything goes through Linux system calls, and
 // memory comes from the allocator the Linux runtimes share.
@@ -24,12 +25,15 @@ typedef unsigned char u8;
 // ---- system calls ---------------------------------------------------------
 
 enum {
+    SYS_unlinkat = 35,
+    SYS_renameat = 38,
     SYS_fchmodat = 53,
     SYS_openat = 56,
     SYS_close = 57,
     SYS_read = 63,
     SYS_write = 64,
     SYS_exit_group = 94,
+    SYS_clock_gettime = 113,
     SYS_sigaltstack = 132,
     SYS_rt_sigaction = 134,
     SYS_rt_sigreturn = 139,
@@ -142,7 +146,7 @@ static i64 checked(i64 result) {
     return result;
 }
 
-// ---- the sixteen functions ------------------------------------------------
+// ---- the functions ------------------------------------------------
 //
 // Each is named after the function of the macOS system library it stands
 // in for.
@@ -301,6 +305,27 @@ EXPORT char ***az_argv(void) {
 // Sets the permissions of a file. Returns 0, or -1 for a failure.
 EXPORT i64 az_chmod(const char *path, i64 mode) {
     return checked(syscall6(SYS_fchmodat, AT_FDCWD, (i64)path, mode & 07777, 0, 0, 0));
+}
+
+// Deletes a file. Returns 0, or -1 for a failure.
+EXPORT i64 az_unlink(const char *path) {
+    return checked(syscall6(SYS_unlinkat, AT_FDCWD, (i64)path, 0, 0, 0, 0));
+}
+
+// Gives a file another name, replacing a file that already has it.
+// Returns 0, or -1 for a failure.
+EXPORT i64 az_rename(const char *from, const char *to) {
+    return checked(syscall6(SYS_renameat, AT_FDCWD, (i64)from, AT_FDCWD, (i64)to, 0, 0));
+}
+
+// Stands in for `clock_gettime_nsec_np`: nanoseconds on a clock that only
+// moves forward. The clock the caller names is a macOS one; here it is
+// always CLOCK_MONOTONIC (1).
+EXPORT i64 az_clock(i64 clock) {
+    i64 time[2] = {0, 0}; // struct timespec: seconds, nanoseconds
+    (void)clock;
+    syscall3(SYS_clock_gettime, 1, (i64)time, 0);
+    return time[0] * 1000000000 + time[1];
 }
 
 // The assembly runtime has a routine that starts a macOS program and

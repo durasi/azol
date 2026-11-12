@@ -1,0 +1,118 @@
+# From the tests of the first compiler: src/sema.rs, `a_string_cannot_change_while_an_operator_still_reads_it`.
+==== 1
+---- file a.azl (no newline at end)
+fn grow(xs: mut List[str]) -> str {
+ xs.push("more")
+ return "x"
+}
+fn set(s: mut str) -> str {
+ s = "new"
+ return s
+}
+fn main() {
+var xs = ["a"]
+let s = xs[0] + grow(mut xs)
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0411]: cannot pass `xs` as `mut` here: it is still being read earlier in the same expression
+  --> a.azl:11:26
+   |
+11 | let s = xs[0] + grow(mut xs)
+   |                          ^
+---- asserted 11:26 cannot pass `xs` as `mut` here: it is still being read earlier in the same expression
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0411","message":"cannot pass `xs` as `mut` here: it is still being read earlier in the same expression","file":"a.azl","line":11,"column":26,"end_line":11,"end_column":28,"source":"let s = xs[0] + grow(mut xs)","rule":"A string cannot be changed while an operator in the same expression is still reading it."}
+{"summary":{"errors":1,"files":1}}
+==== 2
+---- file a.azl (no newline at end)
+fn grow(xs: mut List[str]) -> str {
+ xs.push("more")
+ return "x"
+}
+fn set(s: mut str) -> str {
+ s = "new"
+ return s
+}
+fn main() {
+var s = "a"
+if s == set(mut s) {
+}
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0411]: cannot pass `s` as `mut` here: it is still being read earlier in the same expression
+  --> a.azl:11:17
+   |
+11 | if s == set(mut s) {
+   |                 ^
+---- asserted 11:17 cannot pass `s` as `mut` here: it is still being read earlier in the same expression
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0411","message":"cannot pass `s` as `mut` here: it is still being read earlier in the same expression","file":"a.azl","line":11,"column":17,"end_line":11,"end_column":18,"source":"if s == set(mut s) {","rule":"A string cannot be changed while an operator in the same expression is still reading it."}
+{"summary":{"errors":1,"files":1}}
+==== 3
+---- file a.azl (no newline at end)
+fn grow(xs: mut List[str]) -> str {
+ xs.push("more")
+ return "x"
+}
+fn set(s: mut str) -> str {
+ s = "new"
+ return s
+}
+fn main() {
+var xs = ["a"]
+let s = xs[0] + xs.pop()
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0411]: cannot change `xs` here: it is still being read earlier in the same expression
+  --> a.azl:11:17
+   |
+11 | let s = xs[0] + xs.pop()
+   |                 ^
+---- asserted 11:17 cannot change `xs` here: it is still being read earlier in the same expression
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0411","message":"cannot change `xs` here: it is still being read earlier in the same expression","file":"a.azl","line":11,"column":17,"end_line":11,"end_column":19,"source":"let s = xs[0] + xs.pop()","rule":"A string cannot be changed while an operator in the same expression is still reading it."}
+{"summary":{"errors":1,"files":1}}
+==== 4
+---- file a.azl (no newline at end)
+fn grow(xs: mut List[str]) -> str {
+ xs.push("more")
+ return "x"
+}
+fn set(s: mut str) -> str {
+ s = "new"
+ return s
+}
+fn main() {
+var s = "a"
+let t = s + (s + set(mut s))
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0411]: cannot pass `s` as `mut` here: it is still being read earlier in the same expression
+  --> a.azl:11:26
+   |
+11 | let t = s + (s + set(mut s))
+   |                          ^
+---- asserted 11:26 cannot pass `s` as `mut` here: it is still being read earlier in the same expression
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0411","message":"cannot pass `s` as `mut` here: it is still being read earlier in the same expression","file":"a.azl","line":11,"column":26,"end_line":11,"end_column":27,"source":"let t = s + (s + set(mut s))","rule":"A string cannot be changed while an operator in the same expression is still reading it."}
+{"summary":{"errors":1,"files":1}}

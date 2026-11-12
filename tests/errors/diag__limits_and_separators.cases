@@ -1,0 +1,45 @@
+# Codes that no test of the first compiler reached through a program: E0108 and E0803. (E0802 is
+# checked with generated programs by tests/run.py; E0801 needs a source file of 4 GiB.)
+==== members on one line need commas
+---- file a.azl
+struct P { x: i64 y: i64 }
+
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0108]: expected a new line, `,` or `}` but found a name
+ --> a.azl:1:19
+  |
+1 | struct P { x: i64 y: i64 }
+  |                   ^
+---- contains error[E0108]: expected a new line, `,` or `}` but found
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0108","message":"expected a new line, `,` or `}` but found a name","file":"a.azl","line":1,"column":19,"end_line":1,"end_column":20,"source":"struct P { x: i64 y: i64 }","rule":"The members of a struct or enum and the arms of a `match` are separated by a new line or a comma."}
+{"summary":{"errors":1,"files":1}}
+==== nine parameters
+---- file a.azl
+fn f(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64, i: i64) {
+}
+
+fn main() {
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0803]: function `f` has more than 8 parameters, which is not supported yet
+ --> a.azl:1:4
+  |
+1 | fn f(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64, i: i64) {
+  |    ^
+---- contains error[E0803]: function `f` has more than 8 parameters, which is not supported yet
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0803","message":"function `f` has more than 8 parameters, which is not supported yet","file":"a.azl","line":1,"column":4,"end_line":1,"end_column":5,"source":"fn f(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64, i: i64) {","rule":"The compiler has fixed limits: 8 parameters per function, 1000 variants per enum, 500 slots per struct or enum, 2000 slots of stack per function."}
+{"summary":{"errors":1,"files":1}}

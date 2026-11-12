@@ -1,0 +1,12 @@
+# From the tests of the first compiler: src/diag.rs, `json_strings_are_escaped`: quotes, backslashes,
+# tabs, a carriage return, control characters and characters outside ASCII in a JSON report. The suite
+# also reads every JSON line with a JSON parser and compares `source` with the line of the file.
+==== a source line with every kind of character that needs care
+---- file a.azl (escaped)
+fn main() {\n\tlet s = "plain"\n\ts = "a \\"b\\" \\\\ c \x01\x1f \xc3\xa7ay \xe2\x98\x95"\r\n}\n
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0401","message":"cannot change `s`: declare it with `var` to make it changeable","file":"a.azl","line":3,"column":2,"end_line":3,"end_column":3,"source":"\ts = \"a \\\"b\\\" \\\\ c \u0001\u001f çay ☕\"","rule":"A variable declared with `let` never changes; only one declared with `var` can be assigned, grown or passed as `mut`.","help":"Declare the variable with `var` instead of `let`.","fix":{"file":"a.azl","line":2,"column":2,"end_line":2,"end_column":5,"replacement":"var"}}
+{"summary":{"errors":1,"files":1}}
+---- reports E0401 3:2

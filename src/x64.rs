@@ -29,7 +29,8 @@ use crate::runtime_x64 as runtime;
 use crate::sema::{
     idle_slot, Program, Shift, Ty, APPEND, BUILTIN_ARGS, BUILTIN_CHR, BUILTIN_EPRINT, BUILTIN_EXIT, BUILTIN_LEN,
     BUILTIN_LIST_POP, BUILTIN_LIST_PUSH, BUILTIN_PRINT_BOOL, BUILTIN_PRINT_I64, BUILTIN_PRINT_STR, BUILTIN_READ_FILE,
-    BUILTIN_SET_EXECUTABLE, BUILTIN_STR_FROM_BOOL, BUILTIN_STR_FROM_I64, BUILTIN_STR_SLICE, BUILTIN_VARIANT,
+    BUILTIN_CLOCK, BUILTIN_STR_IS_UTF8, BUILTIN_REMOVE_FILE, BUILTIN_RENAME_FILE, BUILTIN_SET_EXECUTABLE, BUILTIN_STR_FROM_BOOL, BUILTIN_STR_FROM_I64, BUILTIN_STR_PUSH, BUILTIN_STR_SET,
+    BUILTIN_STR_SLICE, BUILTIN_VARIANT,
     BUILTIN_WRITE_FILE, BY_REF,
     COPIED, FIRST_BUILTIN, IN_PLACE, PAT_BIND, PAT_LITERAL, PAT_VARIANT, VARIANT,
 };
@@ -84,9 +85,14 @@ const ARGS: [u8; 8] = [RDI, RSI, RDX, RCX, R8, R9, R10, R11];
 const PARK: [u8; 4] = [R9, R11, RSI, RDI];
 
 // Condition codes, as used in `jcc` and `setcc`.
+/// The largest element, in slots, that `push` copies into a list
+/// with room without calling the runtime.
+const INLINE_PUSH: u32 = 8;
+
 const CC_B: u8 = 0x2;
 const CC_AE: u8 = 0x3;
 const CC_A: u8 = 0x7;
+const CC_BE: u8 = 0x6;
 const CC_E: u8 = 0x4;
 const CC_NE: u8 = 0x5;
 const CC_L: u8 = 0xC;
@@ -2669,6 +2675,14 @@ impl<'a> Gen<'a> {
                 self.byte(0xB6);
                 self.byte(0xC0);
             }
+            Expr::Binary { op: op @ (BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq), lhs, rhs } if self.ty(lhs) == Ty::Str => {
+                self.address(lhs);
+                self.push();
+                self.address(rhs);
+                self.mov(RSI, RAX);
+                self.pop(RDI);
+                self.string_order(op);
+            }
             Expr::Binary { op, lhs, rhs } if self.ty(lhs) == Ty::Str => {
                 // `==` and `!=` on strings compare the bytes.
                 self.address(lhs);
@@ -3082,6 +3096,9 @@ impl<'a> Gen<'a> {
             matches!(
                 target,
                 BUILTIN_PRINT_STR | BUILTIN_EPRINT | BUILTIN_READ_FILE | BUILTIN_WRITE_FILE | BUILTIN_SET_EXECUTABLE
+                    | BUILTIN_REMOVE_FILE
+                    | BUILTIN_RENAME_FILE
+                    | BUILTIN_STR_IS_UTF8
             )
         } else {
             self.prog.fns[target as usize].params[i].by_ref
@@ -3101,6 +3118,10 @@ impl<'a> Gen<'a> {
             Expr::Field { base, .. } => Some(base),
             _ => None,
         };
+        if let BUILTIN_STR_PUSH | BUILTIN_STR_SET = target {
+            let base = receiver.expect("checked: a method call names its receiver");
+            return self.byte_method(id, target, base, arg_ids);
+        }
         if let BUILTIN_LEN | BUILTIN_LIST_PUSH | BUILTIN_LIST_POP | BUILTIN_STR_SLICE = target {
             let base = receiver.expect("checked: a method call names its receiver");
             return self.list_method(id, target, base, arg_ids);
@@ -3164,13 +3185,17 @@ impl<'a> Gen<'a> {
                     _ => runtime::ARGS,
                 });
             }
-            BUILTIN_READ_FILE | BUILTIN_WRITE_FILE | BUILTIN_SET_EXECUTABLE => {
+            BUILTIN_CLOCK => self.runtime(runtime::CLOCK),
+            BUILTIN_STR_IS_UTF8 => self.runtime(runtime::STR_IS_UTF8),
+            BUILTIN_READ_FILE | BUILTIN_WRITE_FILE | BUILTIN_SET_EXECUTABLE | BUILTIN_REMOVE_FILE | BUILTIN_RENAME_FILE => {
                 // The routine fills in what the `Result` holds and says
                 // which variant it is: 0 for `Ok`, 1 for `Err`.
                 self.frame_address(ARGS[count], tmp + 1);
                 self.runtime(match target {
                     BUILTIN_READ_FILE => runtime::READ_FILE,
                     BUILTIN_WRITE_FILE => runtime::WRITE_FILE,
+                    BUILTIN_REMOVE_FILE => runtime::REMOVE_FILE,
+                    BUILTIN_RENAME_FILE => runtime::RENAME_FILE,
                     _ => runtime::SET_EXECUTABLE,
                 });
                 self.op_imm(ADD_I, RAX, 1); // the tag
@@ -3185,6 +3210,119 @@ impl<'a> Gen<'a> {
                 self.calls.push((at, target));
             }
         }
+    }
+
+    /// With the addresses of two strings in rdi and rsi: leaves in rax
+    /// whether the first comes before, or after, the second, as `op`
+    /// asks. The bytes are compared as numbers from 0 to 255 up to the
+    /// first difference; when one string is the start of the other, the
+    /// shorter one comes first.
+    fn string_order(&mut self, op: BinOp) {
+        self.forget();
+        self.load_mem(R8, RDI, 0); // the bytes of the first
+        self.load_mem(RCX, RDI, 8); // its length
+        self.load_mem(R9, RSI, 0); // the bytes of the second
+        self.load_mem(RDX, RSI, 8); // its length
+        self.mov(R10, RCX);
+        self.op(CMP, RDX, R10);
+        for byte in [0x4C, 0x0F, 0x42, 0xD2] {
+            self.byte(byte); // cmovb r10, rdx: the shorter length
+        }
+        self.op(XOR, RAX, RAX);
+        let code: [u8; 30] = [
+            0x4C, 0x39, 0xD0, // compare: cmp rax, r10
+            0x73, 0x13, // jae lengths
+            0x41, 0x0F, 0xB6, 0x3C, 0x00, // movzx edi, byte [r8 + rax]
+            0x41, 0x0F, 0xB6, 0x34, 0x01, // movzx esi, byte [r9 + rax]
+            0x48, 0xFF, 0xC0, // inc rax
+            0x39, 0xF7, // cmp edi, esi
+            0x74, 0xEA, // je compare
+            0xEB, 0x03, // jmp over
+            0x48, 0x39, 0xD1, // lengths: cmp rcx, rdx
+            0x0F, 0x90, 0xC0, // set al
+        ];
+        for (at, byte) in code.into_iter().enumerate() {
+            let cc = match op {
+                BinOp::Lt => CC_B,
+                BinOp::LtEq => CC_BE,
+                BinOp::Gt => CC_A,
+                _ => CC_AE,
+            };
+            self.byte(if at == 28 { byte | cc } else { byte });
+        }
+        for byte in [0x0F, 0xB6, 0xC0] {
+            self.byte(byte); // movzx eax, al
+        }
+    }
+
+    /// `s.push(byte)` and `s.set(index, byte)` on a string. The numbers
+    /// are worked out first; the byte is stored right here when the
+    /// string owns a buffer with room, and the runtime is asked only to
+    /// give it one.
+    fn byte_method(&mut self, id: ExprId, method: u32, base: ExprId, args: &[u32]) {
+        let tmp = self.prog.expr_tmp[self.sh.e(id)];
+        for &arg in args {
+            self.value(arg);
+            self.push();
+        }
+        self.address(base);
+        self.forget();
+        self.mov(RDI, RAX);
+        self.pop(RDX); // the byte
+        if method == BUILTIN_STR_PUSH {
+            self.load_mem(R8, RDI, 8); // length
+            self.cmp_mem(R8, RDI, 16); // capacity
+            let grow = self.jump_if(CC_AE);
+            self.load_mem(R9, RDI, 0); // buffer
+            self.store_byte_index(R9, R8, RDX);
+            self.op_mem_imm(ADD_I, RDI, 8, 1);
+            let done = self.jump();
+            self.patch(grow);
+            self.one_byte_string(tmp);
+            self.runtime(runtime::STR_APPEND);
+            self.patch(done);
+        } else {
+            self.pop(R8); // the index
+            self.cmp_mem(R8, RDI, 8); // length
+            self.runtime_unless(CC_B, runtime::INDEX_FAIL); // unsigned: also rejects negatives
+            self.op_mem_imm(CMP_I, RDI, 16, 0); // capacity
+            let owned = self.jump_if(CC_NE);
+            // The bytes live in the executable: adding one byte makes
+            // the runtime copy them into a buffer the string owns, and
+            // the length is then put back.
+            self.store_slot(tmp + 4, R8);
+            self.store_slot(tmp + 5, RDI);
+            self.one_byte_string(tmp);
+            self.runtime(runtime::STR_APPEND);
+            self.load(RDI, tmp + 5);
+            self.load(R8, tmp + 4);
+            self.load(RDX, tmp);
+            self.op_mem_imm(SUB_I, RDI, 8, 1);
+            self.patch(owned);
+            self.load_mem(R9, RDI, 0); // buffer
+            self.store_byte_index(R9, R8, RDX);
+        }
+        self.forget();
+    }
+
+    /// Makes the byte in rdx a string of one byte in the frame slots
+    /// from `tmp` (the byte, then pointer, length and capacity 0) and
+    /// leaves its address in rsi. rdi is kept.
+    fn one_byte_string(&mut self, tmp: u32) {
+        self.store_slot(tmp, RDX);
+        self.frame_address(RSI, tmp);
+        self.store_slot(tmp + 1, RSI);
+        let disp = self.disp(tmp + 2);
+        self.store_imm(RBP, disp, 1);
+        self.zero_slot(tmp + 3);
+        self.frame_address(RSI, tmp + 1);
+    }
+
+    /// `mov byte [base + index], low byte of src`
+    fn store_byte_index(&mut self, base: u8, index: u8, src: u8) {
+        self.rex_index(src, index, base);
+        self.byte(0x88);
+        self.mem_index(src, base, index, 0, 0);
     }
 
     fn list_method(&mut self, id: ExprId, method: u32, base: ExprId, args: &[u32]) {
@@ -3253,6 +3391,24 @@ impl<'a> Gen<'a> {
                     self.store_slot(tmp, RAX);
                 }
                 self.address(base);
+                if elem.is_aggregate() && elem_size <= INLINE_PUSH {
+                    // A small struct, enum, string or list is copied
+                    // into a list with room right here, slot by slot.
+                    self.forget();
+                    self.load_mem(R8, RAX, 8); // length
+                    self.cmp_mem(R8, RAX, 16); // capacity
+                    let full = self.jump_if(CC_AE);
+                    self.imul_imm(R8, R8, elem_size as i32 * 8);
+                    self.load_mem(R9, RAX, 0); // buffer
+                    self.op(ADD, R8, R9); // where the element goes
+                    for slot in 0..elem_size {
+                        self.load(R9, tmp + slot);
+                        self.store_mem(R8, slot as i32 * 8, R9);
+                    }
+                    self.op_mem_imm(ADD_I, RAX, 8, 1);
+                    done = Some(self.jump());
+                    self.patch(full);
+                }
                 self.mov(RDI, RAX);
                 self.frame_address(RSI, tmp);
                 self.mov_imm(RDX, elem_size as i64 * 8);
@@ -3294,7 +3450,8 @@ mod tests {
     const NAMES: [&str; runtime::ENTRY_COUNT] = [
         "print_i64", "print_bool", "print_str", "div_zero", "index_fail", "pop_empty", "alloc", "free", "list_push",
         "list_clone", "drop", "str_concat", "str_eq", "str_from_i64", "str_from_bool", "eprint_str", "exit",
-        "str_slice", "chr", "args", "read_file", "write_file", "str_append", "set_executable",
+        "str_slice", "chr", "args", "read_file", "write_file", "str_append", "set_executable", "remove_file",
+        "rename_file", "clock", "str_is_utf8",
     ];
 
     /// Compiles a program the way `azol build` does, up to machine code.
@@ -3303,7 +3460,7 @@ mod tests {
         let user_len = src.len();
         let prelude_start = user_len + 1;
         src.push('\n');
-        src.push_str(include_str!("prelude.azl"));
+        src.push_str(include_str!("../lib/prelude.azl"));
         let tokens = lexer::lex(&src[..user_len]).map_err(|e| e.message.to_string())?;
         let ast = parser::parse(&src, &tokens).map_err(|e| e.message)?;
         let mut prelude_tokens = lexer::lex(&src[prelude_start..]).expect("the standard library has valid tokens");

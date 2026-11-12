@@ -1,0 +1,52 @@
+// wordfreq: a map from text to a count.
+// Algorithm: build a text of words drawn from 5,000 different ones, split
+// it, count every word in a map, then report the number of different words,
+// the highest count and the sum of count times word length.
+// Sizes: 4,000,000 words; small: 100,000.
+// Output: the three numbers on one line.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+fn main() {
+    let count = size(4000000, 100000)
+    var text = ""
+    var seed = 5
+    var n = 0
+    while n < count {
+        seed = seed * 48271 % 2147483647
+        if n > 0 {
+            text = text + " "
+        }
+        text = text + "w"
+        text = text + str(seed % 5000)
+        n = n + 1
+    }
+    var counts: Map[i64] = new_map()
+    for word in text.split(" ") {
+        var seen = 0
+        match counts.get(word) {
+            Some(times) => seen = times
+            None => {}
+        }
+        counts.set(word, seen + 1)
+    }
+    var most = 0
+    var weighted = 0
+    for word in counts.keys() {
+        match counts.get(word) {
+            Some(times) => {
+                most = most.max(times)
+                weighted = weighted + times * word.len()
+            }
+            None => {}
+        }
+    }
+    print(str(counts.len()) + " " + str(most) + " " + str(weighted))
+}

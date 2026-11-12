@@ -1,0 +1,25 @@
+# From the tests of the first compiler: src/parser.rs, `logic_and_comparison_precedence`.
+==== 1
+---- file a.azl (no newline at end)
+fn t() {
+x = !a && b || c
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  x = (|| (&& (not a) b) c)
+---- stderr
+parsed 3 lines into 9 nodes
+==== 2
+---- file a.azl (no newline at end)
+fn t() {
+x = a + 1 < b * 2 && c != d
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  x = (&& (< (+ a 1) (* b 2)) (!= c d))
+---- stderr
+parsed 3 lines into 14 nodes

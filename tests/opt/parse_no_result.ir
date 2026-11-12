@@ -1,0 +1,5 @@
+; parse: 4:10: `ret` gives no result
+fn main() {
+b0:
+    v0 = ret
+}

@@ -1,0 +1,418 @@
+# From the tests of the first compiler: src/main.rs, `fixes_resolve_their_errors`.
+==== `let` must be `var`: assigned
+---- file a.azl
+fn main() {
+    let total = 0
+    total = total + 1
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0401","message":"cannot change `total`: declare it with `var` to make it changeable","file":"a.azl","line":3,"column":5,"end_line":3,"end_column":10,"source":"    total = total + 1","rule":"A variable declared with `let` never changes; only one declared with `var` can be assigned, grown or passed as `mut`.","help":"Declare the variable with `var` instead of `let`.","fix":{"file":"a.azl","line":2,"column":5,"end_line":2,"end_column":8,"replacement":"var"}}
+{"summary":{"errors":1,"files":1}}
+---- reports E0401
+---- apply-fix
+---- after a.azl
+fn main() {
+    var total = 0
+    total = total + 1
+}
+---- after-has a.azl
+    var total = 0
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 4 lines in 1 file: no errors
+==== `let` must be `var`: grown
+---- file a.azl
+fn main() {
+    let çay: List[i64] = [1]
+    çay.push(2)
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0401","message":"cannot change `çay`: declare it with `var` to make it changeable","file":"a.azl","line":3,"column":5,"end_line":3,"end_column":8,"source":"    çay.push(2)","rule":"A variable declared with `let` never changes; only one declared with `var` can be assigned, grown or passed as `mut`.","help":"Declare the variable with `var` instead of `let`.","fix":{"file":"a.azl","line":2,"column":5,"end_line":2,"end_column":8,"replacement":"var"}}
+{"summary":{"errors":1,"files":1}}
+---- reports E0401
+---- apply-fix
+---- after a.azl
+fn main() {
+    var çay: List[i64] = [1]
+    çay.push(2)
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 4 lines in 1 file: no errors
+==== `let` must be `var`: passed as `mut`
+---- file a.azl
+fn grow(items: mut List[i64]) {
+    items.push(1)
+}
+
+fn size(items: List[i64]) -> i64 {
+    return items.len()
+}
+
+fn main() {
+    let xs = [1]
+    grow(mut xs)
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0401","message":"cannot pass `xs` as `mut`: declare it with `var` to make it changeable","file":"a.azl","line":11,"column":10,"end_line":11,"end_column":13,"source":"    grow(mut xs)","rule":"A variable declared with `let` never changes; only one declared with `var` can be assigned, grown or passed as `mut`.","help":"Declare the variable with `var` instead of `let`.","fix":{"file":"a.azl","line":10,"column":5,"end_line":10,"end_column":8,"replacement":"var"}}
+{"summary":{"errors":1,"files":1}}
+---- reports E0401
+---- apply-fix
+---- after a.azl
+fn grow(items: mut List[i64]) {
+    items.push(1)
+}
+
+fn size(items: List[i64]) -> i64 {
+    return items.len()
+}
+
+fn main() {
+    var xs = [1]
+    grow(mut xs)
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 12 lines in 1 file: no errors
+==== a `mut` parameter needs `mut` at the call
+---- file a.azl
+fn grow(items: mut List[i64]) {
+    items.push(1)
+}
+
+fn size(items: List[i64]) -> i64 {
+    return items.len()
+}
+
+fn main() {
+    var xs = [1]
+    grow(xs)
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0405","message":"argument 1 of `grow` can be changed by the function, so it must be written `mut <variable>`","file":"a.azl","line":11,"column":10,"end_line":11,"end_column":12,"source":"    grow(xs)","rule":"An argument for a `mut` parameter is written with `mut` in front, so that every place a variable can change is visible in the caller.","help":"Write `mut` in front of the argument.","fix":{"file":"a.azl","line":11,"column":10,"end_line":11,"end_column":10,"replacement":"mut "}}
+{"summary":{"errors":1,"files":1}}
+---- reports E0405
+---- apply-fix
+---- after a.azl
+fn grow(items: mut List[i64]) {
+    items.push(1)
+}
+
+fn size(items: List[i64]) -> i64 {
+    return items.len()
+}
+
+fn main() {
+    var xs = [1]
+    grow(mut xs)
+}
+---- after-has a.azl
+    grow(mut xs)
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 12 lines in 1 file: no errors
+==== `mut` on an argument whose parameter is not `mut`
+---- file a.azl
+fn grow(items: mut List[i64]) {
+    items.push(1)
+}
+
+fn size(items: List[i64]) -> i64 {
+    return items.len()
+}
+
+fn main() {
+    var xs = [1]
+    print(size(mut xs))
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0406","message":"argument 1 of `size` is not a `mut` parameter; remove `mut`","file":"a.azl","line":11,"column":16,"end_line":11,"end_column":19,"source":"    print(size(mut xs))","rule":"`mut` in front of a value is written only for an argument whose parameter is declared `mut`.","help":"Remove `mut`.","fix":{"file":"a.azl","line":11,"column":16,"end_line":11,"end_column":20,"replacement":""}}
+{"summary":{"errors":1,"files":1}}
+---- reports E0406
+---- apply-fix
+---- after a.azl
+fn grow(items: mut List[i64]) {
+    items.push(1)
+}
+
+fn size(items: List[i64]) -> i64 {
+    return items.len()
+}
+
+fn main() {
+    var xs = [1]
+    print(size(xs))
+}
+---- after-has a.azl
+    print(size(xs))
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 12 lines in 1 file: no errors
+==== `mut` on something that is not an argument
+---- file a.azl
+fn main() {
+    var a = 1
+    let b = Some(mut a)
+    match b {
+        Some(v) => print(v)
+        None => {}
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0406","message":"`mut` can only be used on a function argument","file":"a.azl","line":3,"column":18,"end_line":3,"end_column":21,"source":"    let b = Some(mut a)","rule":"`mut` in front of a value is written only for an argument whose parameter is declared `mut`.","help":"Remove `mut`.","fix":{"file":"a.azl","line":3,"column":18,"end_line":3,"end_column":22,"replacement":""}}
+{"summary":{"errors":1,"files":1}}
+---- reports E0406
+---- apply-fix
+---- after a.azl
+fn main() {
+    var a = 1
+    let b = Some(a)
+    match b {
+        Some(v) => print(v)
+        None => {}
+    }
+}
+---- after-has a.azl
+    let b = Some(a)
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 8 lines in 1 file: no errors
+==== `mut` on an argument of `print`
+---- file a.azl
+fn main() {
+    var a = 1
+    print(mut a)
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0406","message":"`mut` can only be used on a function argument","file":"a.azl","line":3,"column":11,"end_line":3,"end_column":14,"source":"    print(mut a)","rule":"`mut` in front of a value is written only for an argument whose parameter is declared `mut`.","help":"Remove `mut`.","fix":{"file":"a.azl","line":3,"column":11,"end_line":3,"end_column":15,"replacement":""}}
+{"summary":{"errors":1,"files":1}}
+---- reports E0406
+---- apply-fix
+---- after a.azl
+fn main() {
+    var a = 1
+    print(a)
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 4 lines in 1 file: no errors
+==== arms missing for variants of an enum
+---- file a.azl
+enum Shape {
+    Circle(i64)
+    Square(i64, i64)
+    Empty
+}
+
+fn main() {
+    let s = Empty
+    match s {
+        Circle(r) => print(r)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0501","message":"this `match` does not handle `Square` and `Empty`; add arms for them or a final `_ =>` arm","file":"a.azl","line":9,"column":5,"end_line":9,"end_column":10,"source":"    match s {","rule":"A `match` handles every case: each variant of an enum, both `true` and `false`, or has a final `_ =>` arm.","help":"Add the missing arms.","fix":{"file":"a.azl","line":11,"column":5,"end_line":11,"end_column":5,"replacement":"    Square(_, _) => {}\n        Empty => {}\n    "}}
+{"summary":{"errors":1,"files":1}}
+---- reports E0501
+---- apply-fix
+---- after a.azl
+enum Shape {
+    Circle(i64)
+    Square(i64, i64)
+    Empty
+}
+
+fn main() {
+    let s = Empty
+    match s {
+        Circle(r) => print(r)
+        Square(_, _) => {}
+        Empty => {}
+    }
+}
+---- after-has a.azl
+        Circle(r) => print(r)
+        Square(_, _) => {}
+        Empty => {}
+    }
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 14 lines in 1 file: no errors
+==== an arm missing for a `bool`
+---- file a.azl
+fn main() {
+    match 1 < 2 {
+        true => print(1)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0501","message":"this `match` does not handle `false`; add an arm for it or a final `_ =>` arm","file":"a.azl","line":2,"column":5,"end_line":2,"end_column":10,"source":"    match 1 < 2 {","rule":"A `match` handles every case: each variant of an enum, both `true` and `false`, or has a final `_ =>` arm.","help":"Add the missing arms.","fix":{"file":"a.azl","line":4,"column":5,"end_line":4,"end_column":5,"replacement":"    false => {}\n    "}}
+{"summary":{"errors":1,"files":1}}
+---- reports E0501
+---- apply-fix
+---- after a.azl
+fn main() {
+    match 1 < 2 {
+        true => print(1)
+        false => {}
+    }
+}
+---- after-has a.azl
+        false => {}
+    }
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 6 lines in 1 file: no errors
+==== the final `_` arm for a number
+---- file a.azl
+fn main() {
+    match args().len() {
+        0 => print(0)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0502","message":"a `match` on `i64` needs a final `_ =>` arm: the arms cannot list every value","file":"a.azl","line":2,"column":5,"end_line":2,"end_column":10,"source":"    match args().len() {","rule":"A `match` on a number or a string ends with a `_ =>` arm, because no list of values covers them all.","help":"Add a final `_ =>` arm.","fix":{"file":"a.azl","line":4,"column":5,"end_line":4,"end_column":5,"replacement":"    _ => {}\n    "}}
+{"summary":{"errors":1,"files":1}}
+---- reports E0502
+---- apply-fix
+---- after a.azl
+fn main() {
+    match args().len() {
+        0 => print(0)
+        _ => {}
+    }
+}
+---- after-has a.azl
+        _ => {}
+    }
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 6 lines in 1 file: no errors
+==== the final `_` arm for a string, indented with tabs
+---- file a.azl
+fn main() {
+	match "a" {
+		"a" => print(1)
+	}
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0502","message":"a `match` on `str` needs a final `_ =>` arm: the arms cannot list every value","file":"a.azl","line":2,"column":2,"end_line":2,"end_column":7,"source":"\tmatch \"a\" {","rule":"A `match` on a number or a string ends with a `_ =>` arm, because no list of values covers them all.","help":"Add a final `_ =>` arm.","fix":{"file":"a.azl","line":4,"column":2,"end_line":4,"end_column":2,"replacement":"    _ => {}\n\t"}}
+{"summary":{"errors":1,"files":1}}
+---- reports E0502
+---- apply-fix
+---- after a.azl
+fn main() {
+	match "a" {
+		"a" => print(1)
+	    _ => {}
+	}
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 6 lines in 1 file: no errors
+==== a variant pattern without its values
+---- file a.azl
+fn main() {
+    let o: Option[i64] = None
+    match o {
+        Some => print(1)
+        None => print(0)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0506","message":"`Some` holds 1 value; write `Some(_)` to match it","file":"a.azl","line":4,"column":9,"end_line":4,"end_column":13,"source":"        Some => print(1)","rule":"A variant pattern lists one name or `_` for each value the variant holds.","fix":{"file":"a.azl","line":4,"column":13,"end_line":4,"end_column":13,"replacement":"(_)"}}
+{"summary":{"errors":1,"files":1}}
+---- reports E0506
+---- apply-fix
+---- after a.azl
+fn main() {
+    let o: Option[i64] = None
+    match o {
+        Some(_) => print(1)
+        None => print(0)
+    }
+}
+---- after-has a.azl
+        Some(_) => print(1)
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 7 lines in 1 file: no errors
+==== `()` after a variant that holds nothing
+---- file a.azl
+fn main() {
+    let o: Option[i64] = None()
+    match o {
+        Some(v) => print(v)
+        None => print(0)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0312","message":"`None` holds no value; write it without `()`","file":"a.azl","line":2,"column":26,"end_line":2,"end_column":30,"source":"    let o: Option[i64] = None()","rule":"A variant is written with one value for each of its fields in `(...)`, and without parentheses when it has none.","fix":{"file":"a.azl","line":2,"column":30,"end_line":2,"end_column":32,"replacement":""}}
+{"summary":{"errors":1,"files":1}}
+---- reports E0312
+---- apply-fix
+---- after a.azl
+fn main() {
+    let o: Option[i64] = None
+    match o {
+        Some(v) => print(v)
+        None => print(0)
+    }
+}
+---- after-has a.azl
+    let o: Option[i64] = None
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 7 lines in 1 file: no errors

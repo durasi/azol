@@ -1,0 +1,21 @@
+# From the tests of the first compiler: src/parser.rs, `error_missing_closing_paren`.
+==== 1
+---- file a.azl (no newline at end)
+fn main() {
+  print(1
+}
+---- run parse a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0106]: expected `)` but found `}`
+ --> a.azl:3:1
+  |
+3 | }
+  | ^
+---- asserted 3:1 expected `)` but found `}`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0106","message":"expected `)` but found `}`","file":"a.azl","line":3,"column":1,"end_line":3,"end_column":2,"source":"}","rule":"The program must follow the grammar; here something else was required."}
+{"summary":{"errors":1,"files":1}}

@@ -1,0 +1,144 @@
+# From the tests of the first compiler: src/main.rs, `a_report_covers_the_whole_expression_or_name`.
+==== a name
+---- file a.azl
+fn main() {
+    print(çay)
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0201","message":"unknown variable `çay`","file":"a.azl","line":2,"column":11,"end_line":2,"end_column":14,"source":"    print(çay)","rule":"A name must be declared before it is used: as a variable, a parameter, a constant or a variant."}
+{"summary":{"errors":1,"files":1}}
+---- reports * 2:11-2:14
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0201]: unknown variable `çay`
+ --> a.azl:2:11
+  |
+2 |     print(çay)
+  |           ^
+==== a whole operand, brackets and call included
+---- file a.azl
+fn f(a: i64) -> bool {
+    return true
+}
+
+fn main() {
+    print(1 + f(2 * (3 + 4)))
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0302","message":"`+` needs `i64` but this is `bool`","file":"a.azl","line":6,"column":15,"end_line":6,"end_column":29,"source":"    print(1 + f(2 * (3 + 4)))","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+---- reports * 6:15-6:29
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0302]: `+` needs `i64` but this is `bool`
+ --> a.azl:6:15
+  |
+6 |     print(1 + f(2 * (3 + 4)))
+  |               ^
+==== parentheses around the whole of it are not part of the tree
+---- file a.azl
+fn main() {
+    let a: i64 = (1 < 2)
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0301","message":"expected `i64` but this is `bool`","file":"a.azl","line":2,"column":19,"end_line":2,"end_column":24,"source":"    let a: i64 = (1 < 2)","rule":"A value stored in a variable or a place has exactly the type of that variable or place; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+---- reports * 2:19-2:24
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0301]: expected `i64` but this is `bool`
+ --> a.azl:2:19
+  |
+2 |     let a: i64 = (1 < 2)
+  |                   ^
+==== a method call and a comparison
+---- file a.azl
+fn main() {
+    let a: i64 = [1, 2].len() == 2
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0301","message":"expected `i64` but this is `bool`","file":"a.azl","line":2,"column":18,"end_line":2,"end_column":35,"source":"    let a: i64 = [1, 2].len() == 2","rule":"A value stored in a variable or a place has exactly the type of that variable or place; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+---- reports * 2:18-2:35
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0301]: expected `i64` but this is `bool`
+ --> a.azl:2:18
+  |
+2 |     let a: i64 = [1, 2].len() == 2
+  |                  ^
+==== an expression that goes on on the next line
+---- file a.azl
+fn main() {
+    let a: bool = 1 +
+        2
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0301","message":"expected `bool` but this is `i64`","file":"a.azl","line":2,"column":19,"end_line":3,"end_column":10,"source":"    let a: bool = 1 +","rule":"A value stored in a variable or a place has exactly the type of that variable or place; nothing is converted silently."}
+{"summary":{"errors":1,"files":1}}
+---- reports * 2:19-3:10
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0301]: expected `bool` but this is `i64`
+ --> a.azl:2:19
+  |
+2 |     let a: bool = 1 +
+  |                   ^
+==== one character where nothing better is known
+---- file a.azl
+fn main() {
+    let a = @
+}
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0101","message":"unexpected character","file":"a.azl","line":2,"column":13,"end_line":2,"end_column":14,"source":"    let a = @","rule":"Source text consists of names, numbers, strings, operators and punctuation that the language knows."}
+{"summary":{"errors":1,"files":1}}
+---- reports * 2:13-2:14
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0101]: unexpected character
+ --> a.azl:2:13
+  |
+2 |     let a = @
+  |             ^
+==== the end of the file
+---- file a.azl
+fn main() {
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0109","message":"expected `}` to close the block but reached end of file","file":"a.azl","line":2,"column":1,"end_line":2,"end_column":1,"source":"","rule":"Every `{` is closed by a `}` in the same file."}
+{"summary":{"errors":1,"files":1}}
+---- reports * 2:1-2:1
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0109]: expected `}` to close the block but reached end of file
+ --> a.azl:2:1
+  |
+2 | 
+  | ^

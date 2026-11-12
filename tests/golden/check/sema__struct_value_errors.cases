@@ -1,0 +1,26 @@
+# From the tests of the first compiler: src/sema.rs, `struct_value_errors`.
+==== 1
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn main() {
+var l = Line { from: Point { x: 1, y: 2 }, to: Point { x: 3, y: 4 } }
+l.to.y = l.from.x
+l.from = l.to
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 13 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 89d36ba24d8a4f06d35b9f5c03b2e8487f5d6ad222afb3c9f08e1dec4256a3b7
+x86_64-linux d4cfe38e6639b106827f3ed8c61bffc72b107ed56d1a2823a3118e90e073cd47
+aarch64-linux ccf0d4d85a53b9a91f37a8f2bd18456f7b93833be61190431c150e47c1f75b92

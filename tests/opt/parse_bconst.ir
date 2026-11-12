@@ -1,0 +1,6 @@
+; parse: 4:17: `bconst` takes 0 or 1
+fn main() -> bool {
+b0:
+    v0 = bconst 2
+    ret v0
+}

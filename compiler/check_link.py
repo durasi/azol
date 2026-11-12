@@ -11,13 +11,17 @@ files must be the same, byte for byte.
     python3 compiler/check_link.py --big    also bench/generated/big.azl, with timings
 
 `azol-link` is built for x86-64 Linux and run directly, so this script
-needs such a machine. Build the Rust compiler first: cargo build --release
+needs such a machine. The compiler it compares with is the oracle: `--oracle <path>`, or see
+compiler/oracle.py for the one taken when none is given.
 """
 import glob, os, platform, shutil, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-AZOL = os.path.join(ROOT, "target", "release", "azol")
+sys.path.insert(0, HERE)
+import oracle  # noqa: E402
+
+AZOL = oracle.path()
 RUNTIME = os.path.join(ROOT, "runtime", "linux_x64", "runtime.bin")
 SOURCES = ["link_main.azl", "code_file.azl", "macho.azl", "elf.azl", "sha256.azl", "bytes.azl"]
 TARGETS = ["aarch64-macos", "x86_64-linux"]
@@ -38,7 +42,7 @@ def main():
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         sys.exit("check_link.py runs azol-link directly and so needs x86-64 Linux")
     if not os.path.exists(AZOL):
-        sys.exit("build the compiler first: cargo build --release")
+        sys.exit(oracle.missing())
     work = tempfile.mkdtemp(prefix="azol-check-link-")
     try:
         return check(work)

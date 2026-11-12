@@ -1,0 +1,9 @@
+; verify: main: b0: switch p0, 1 -> b1, 1 -> b2, default b2: the case 1 is there twice
+fn main(p0: i64) {
+b0:
+    switch p0, 1 -> b1, 1 -> b2, default b2
+b1:
+    ret
+b2:
+    ret
+}

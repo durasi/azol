@@ -1,0 +1,23 @@
+# From the tests of the first compiler: src/sema.rs, `struct_layout`.
+==== 1
+---- file a.azl (no newline at end)
+struct Point {
+ x: i64
+ y: i64
+}
+struct Line {
+ from: Point
+ to: Point
+}
+fn main() {
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 10 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 49870ce299859eed0a9c8fdb4282247e7ccce8a1233027724eb77db201390e60
+x86_64-linux 0288724ba7cc389815cbc9c237db32cc2b803d8b6435c2a2816bd5e8725d206d
+aarch64-linux ab405cf4e5feb7adce456b92432f66f5da7c3839ff6da9c334853a8309750876

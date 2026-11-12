@@ -4,7 +4,7 @@
 // machine code that follows every program's own, where each of its
 // routines starts, what the linker completes in it, and the facts
 // about the library that stands in for the system's on Linux.
-// Generated from `src/runtime.rs` and `src/runtime_linux_arm64.rs` by
+// Generated from `runtime/runtime.facts` and `runtime/linux_arm64/runtime.facts` by
 // `compiler/gen_runtime_azl.py`; edit neither, but the sources in
 // `runtime/`.
 
@@ -33,11 +33,15 @@ const ART_READ_FILE = 436
 const ART_WRITE_FILE = 523
 const ART_STR_APPEND = 583
 const ART_SET_EXECUTABLE = 645
-const ART_START = 669
-const ART_START_MAIN = 702
+const ART_REMOVE_FILE = 669
+const ART_RENAME_FILE = 692
+const ART_CLOCK = 727
+const ART_STR_IS_UTF8 = 735
+const ART_START = 804
+const ART_START_MAIN = 837
 
 // How many instructions the runtime is.
-const ART_WORDS = 725
+const ART_WORDS = 860
 // How many bytes its text is; the text itself is in `embedded.azl`.
 const ART_DATA_SIZE = 448
 
@@ -47,7 +51,7 @@ fn art_imports() -> List[str] {
     return ["_write", "_exit", "_malloc", "_realloc", "_free", "_memcpy",
         "_memcmp", "_open", "_read", "_close", "___error", "_strerror",
         "_strlen", "__NSGetArgc", "__NSGetArgv", "_chmod", "_sigaltstack", "_sigaction",
-        "__exit"]
+        "__exit", "_unlink", "_rename", "_clock_gettime_nsec_np"]
 }
 
 // Where each item of the runtime's text starts in it.
@@ -74,8 +78,9 @@ fn art_relocs() -> List[i64] {
         0, 470, 3, 0, 0, 478, 8, 0, 0, 491, 9, 0, 0, 497, 9, 0,
         0, 510, 3, 0, 0, 537, 7, 0, 0, 557, 0, 0, 0, 567, 9, 0,
         0, 573, 9, 0, 0, 610, 3, 0, 0, 619, 2, 0, 0, 627, 5, 0,
-        0, 636, 5, 0, 0, 652, 15, 0, 0, 680, 16, 0, 0, 692, 17, 0,
-        0, 698, 17, 0, 1, 714, 10, 1, 0, 717, 0, 0, 0, 721, 18, 0]
+        0, 636, 5, 0, 0, 652, 15, 0, 0, 675, 19, 0, 0, 705, 20, 0,
+        0, 730, 21, 0, 0, 815, 16, 0, 0, 827, 17, 0, 0, 833, 17, 0,
+        1, 849, 10, 1, 0, 852, 0, 0, 0, 856, 18, 0]
 }
 
 // The runtime's instructions.
@@ -163,14 +168,31 @@ fn art_words() -> List[i64] {
         0xA94363F7, 0xA9425BF5, 0xA94153F3, 0xA8C47BFD, 0xD65F03C0, 0xA9BE7BFD, 0x910003FD, 0xA90153F3,
         0xAA0803F3, 0x97FFFEF0, 0xAA0003F4, 0xD2803DA1, 0xD42201E0, 0xD503201F, 0xD503201F, 0x340000E0,
         0xAA1303E0, 0x97FFFEFF, 0xAA1403E0, 0x97FFFDD7, 0xD2800020, 0x14000005, 0xAA1403E0, 0x97FFFDD3,
-        0xF900027F, 0xD2800000, 0xA94153F3, 0xA8C27BFD, 0xD65F03C0, 0xA9BF7BFD, 0x910003FD, 0xD14043FF,
-        0xD100C3FF, 0x9100C3E9, 0xF90003E9, 0xD2A00029, 0xF90007E9, 0xF9000BFF, 0x910003E0, 0xD2800001,
-        0xD4220200, 0xD503201F, 0xD503201F, 0x35000240, 0x100002C9, 0xF9000FE9, 0x528008A9, 0xB90023FF,
-        0xB90027E9, 0x52800160, 0x910063E1, 0xD2800002, 0xD4220220, 0xD503201F, 0xD503201F, 0x52800140,
-        0x910063E1, 0xD2800002, 0xD4220220, 0xD503201F, 0xD503201F, 0x9100C3FF, 0xD4210000, 0x910003BF,
-        0xA8C17BFD, 0xD65F03C0, 0xF9400C29, 0xF940184A, 0xF940854A, 0xCB0A0129, 0x91404129, 0xF140813F,
-        0x54000182, 0xD2800040, 0xD4242820, 0xD503201F, 0xD28002A2, 0xD4220000, 0xD503201F, 0xD503201F,
-        0xD2800020, 0xD4220240, 0xD503201F, 0xD503201F, 0xD65F03C0]
+        0xF900027F, 0xD2800000, 0xA94153F3, 0xA8C27BFD, 0xD65F03C0, 0xA9BE7BFD, 0x910003FD, 0xA90153F3,
+        0xAA0803F3, 0x97FFFED8, 0xAA0003F4, 0xD4220260, 0xD503201F, 0xD503201F, 0x340000E0, 0xAA1303E0,
+        0x97FFFEE8, 0xAA1403E0, 0x97FFFDC0, 0xD2800020, 0x14000005, 0xAA1403E0, 0x97FFFDBC, 0xF900027F,
+        0xD2800000, 0xA94153F3, 0xA8C27BFD, 0xD65F03C0, 0xA9BD7BFD, 0x910003FD, 0xA90153F3, 0xF90013F5,
+        0xAA0803F3, 0xAA0103F5, 0x97FFFEBF, 0xAA0003F4, 0xAA1503E0, 0x97FFFEBC, 0xAA0003F5, 0xAA1503E1,
+        0xAA1403E0, 0xD4220280, 0xD503201F, 0xD503201F, 0x34000120, 0xAA1303E0, 0x97FFFECA, 0xAA1403E0,
+        0x97FFFDA2, 0xAA1503E0, 0x97FFFDA0, 0xD2800020, 0x14000007, 0xAA1403E0, 0x97FFFD9C, 0xAA1503E0,
+        0x97FFFD9A, 0xF900027F, 0xD2800000, 0xF94013F5, 0xA94153F3, 0xA8C37BFD, 0xD65F03C0, 0xA9BF7BFD,
+        0x910003FD, 0xD2800100, 0xD42202A0, 0xD503201F, 0xD503201F, 0xA8C17BFD, 0xD65F03C0, 0xA9400801,
+        0x8B020022, 0xB201C3E9, 0xCB010043, 0xF100207F, 0x540000C3, 0xF9400024, 0xEA09009F, 0x54000061,
+        0x91002021, 0x17FFFFF9, 0xEB02003F, 0x540006A2, 0x39400024, 0x7102009F, 0x54000062, 0x91000421,
+        0x17FFFFF2, 0x52801005, 0x528017E6, 0x7103089F, 0x540005C3, 0x7103809F, 0x54000062, 0xD2800027,
+        0x14000014, 0x7103C09F, 0x54000122, 0xD2800047, 0x5280140A, 0x7103809F, 0x1A850145, 0x528013EA,
+        0x7103B49F, 0x1A860146, 0x1400000A, 0x7103D49F, 0x540003C2, 0xD2800067, 0x5280120A, 0x7103C09F,
+        0x1A850145, 0x528011EA, 0x7103D09F, 0x1A860146, 0xCB010043, 0xEB07007F, 0x54000289, 0x39400428,
+        0x6B05011F, 0x54000223, 0x6B06011F, 0x540001E8, 0xD280004A, 0xEB07015F, 0x540000E8, 0x386A6828,
+        0x121A0508, 0x7102011F, 0x54000101, 0x9100054A, 0x17FFFFF9, 0x8B070021, 0x91000421, 0x17FFFFC3,
+        0xD2800020, 0xD65F03C0, 0xD2800000, 0xD65F03C0, 0xA9BF7BFD, 0x910003FD, 0xD14043FF, 0xD100C3FF,
+        0x9100C3E9, 0xF90003E9, 0xD2A00029, 0xF90007E9, 0xF9000BFF, 0x910003E0, 0xD2800001, 0xD4220200,
+        0xD503201F, 0xD503201F, 0x35000240, 0x100002C9, 0xF9000FE9, 0x528008A9, 0xB90023FF, 0xB90027E9,
+        0x52800160, 0x910063E1, 0xD2800002, 0xD4220220, 0xD503201F, 0xD503201F, 0x52800140, 0x910063E1,
+        0xD2800002, 0xD4220220, 0xD503201F, 0xD503201F, 0x9100C3FF, 0xD4210000, 0x910003BF, 0xA8C17BFD,
+        0xD65F03C0, 0xF9400C29, 0xF940184A, 0xF940854A, 0xCB0A0129, 0x91404129, 0xF140813F, 0x54000182,
+        0xD2800040, 0xD4242820, 0xD503201F, 0xD28002A2, 0xD4220000, 0xD503201F, 0xD503201F, 0xD2800020,
+        0xD4220240, 0xD503201F, 0xD503201F, 0xD65F03C0]
 }
 
 // Linux: address the executable file is mapped at.
@@ -178,7 +200,7 @@ const ALR_BASE = 4194304
 // Where in the file, and so after `ALR_BASE`, the library starts.
 const ALR_TEXT_OFFSET = 256
 // Size of the library: the file `runtime/linux_arm64/runtime.bin`.
-const ALR_TEXT_SIZE = 6000
+const ALR_TEXT_SIZE = 6176
 // Offset in it of the code the system starts the process at.
 const ALR_START = 16
 // Address and size of the library's writable memory.
@@ -189,5 +211,5 @@ const ALR_MEMORY_SIZE = 176
 // `art_imports`.
 fn alr_import_offsets() -> List[i64] {
     return [548, 596, 648, 936, 2076, 2156, 3036, 0, 3208, 3256, 3312, 3324,
-        4556, 4580, 4592, 4604, 4664, 4696, 4708]
+        4556, 4580, 4592, 4604, 4840, 4872, 4884, 4664, 4724, 4784]
 }

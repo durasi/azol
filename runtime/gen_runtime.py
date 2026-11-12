@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Assembles runtime.s and writes ../src/runtime.rs.
+"""Assembles runtime.s and writes runtime.facts and runtime_data.bin.
+
+runtime.facts holds the machine code and where everything is in it, in the
+notation of the first compiler's tables (it is also written to
+../src/runtime.rs while that compiler's sources exist).
+compiler/gen_runtime_azl.py makes compiler/runtime_arm64.azl from it.
 
 Needs clang for arm64 macOS (for example `pip install ziglang`) and the
 `lief` and `capstone` Python packages. Run it after editing runtime.s.
@@ -11,6 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 IMPORTS = [
     "_write", "_exit", "_malloc", "_realloc", "_free", "_memcpy", "_memcmp", "_open", "_read", "_close", "___error",
     "_strerror", "_strlen", "__NSGetArgc", "__NSGetArgv", "_chmod", "_sigaltstack", "_sigaction", "__exit",
+    "_unlink", "_rename", "_clock_gettime_nsec_np",
 ]
 TEXT = [
     (None, b"\n"),
@@ -28,7 +34,8 @@ TEXT = [
 ENTRIES = [
     "print_i64", "print_bool", "print_str", "div_zero", "index_fail", "pop_empty", "alloc", "free", "list_push",
     "list_clone", "drop", "str_concat", "str_eq", "str_from_i64", "str_from_bool", "eprint_str", "exit", "str_slice",
-    "chr", "args", "read_file", "write_file", "str_append", "set_executable",
+    "chr", "args", "read_file", "write_file", "str_append", "set_executable", "remove_file", "rename_file", "clock",
+    "str_is_utf8",
 ]
 
 source = open(os.path.join(HERE, "runtime.s")).read()
@@ -112,5 +119,11 @@ pub const RUNTIME: [u32; %d] = [
     symbols["_rt_start"], symbols["_rt_start_main"],
     len(relocs), "\n".join(relocs), len(words), "\n".join(lines),
 )
-open(os.path.join(HERE, "..", "src", "runtime.rs"), "w").write(out)
-print("wrote src/runtime.rs: %d words, %d relocations" % (len(words), len(relocs)))
+facts = os.path.join(HERE, "runtime.facts")
+open(facts, "w").write(out)
+# The same text is a module of the first compiler while its sources exist.
+if os.path.isdir(os.path.join(HERE, "..", "src")):
+    open(os.path.join(HERE, "..", "src", "runtime.rs"), "w").write(out)
+# The text alone, for the compiler written in azoL, which embeds it.
+open(os.path.join(HERE, "runtime_data.bin"), "wb").write(data)
+print("wrote runtime.facts and runtime_data.bin: %d words, %d relocations; now run compiler/gen_runtime_azl.py" % (len(words), len(relocs)))

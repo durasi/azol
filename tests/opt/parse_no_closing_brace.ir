@@ -1,0 +1,4 @@
+; parse: 5:1: the function has no closing `}`
+fn main() {
+b0:
+    ret

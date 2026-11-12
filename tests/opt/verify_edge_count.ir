@@ -1,0 +1,7 @@
+; verify: main: b0: jump b1(1): b1 has 2 parameters and gets 1 arguments
+fn main() -> i64 {
+b0:
+    jump b1(1)
+b1(v0: i64, v1: i64):
+    ret v0
+}

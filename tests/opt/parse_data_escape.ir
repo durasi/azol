@@ -1,0 +1,7 @@
+; parse: 2:9: unknown escape; the escapes are `\"`, `\\` and `\xHH`
+data "ab\n"
+
+fn main() {
+b0:
+    ret
+}

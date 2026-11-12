@@ -1,0 +1,41 @@
+# From the tests of the first compiler: src/sema.rs, `loop_and_literal_errors`.
+==== 1
+---- file a.azl (no newline at end)
+fn main() {
+break
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0316]: `break` and `continue` can only be used inside a loop
+ --> a.azl:2:1
+  |
+2 | break
+  | ^
+---- asserted 2:1 `break` and `continue` can only be used inside a loop
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0316","message":"`break` and `continue` can only be used inside a loop","file":"a.azl","line":2,"column":1,"end_line":2,"end_column":6,"source":"break","rule":"`break` and `continue` belong to the innermost `while` or `for` around them."}
+{"summary":{"errors":1,"files":1}}
+==== 2
+---- file a.azl (no newline at end)
+fn main() {
+let a = 9223372036854775808
+}
+---- run check a.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error[E0317]: this number does not fit in `i64`
+ --> a.azl:2:9
+  |
+2 | let a = 9223372036854775808
+  |         ^
+---- asserted 2:9 this number does not fit in `i64`
+---- run check --json a.azl
+---- exit 1
+---- stdout
+{"severity":"error","code":"E0317","message":"this number does not fit in `i64`","file":"a.azl","line":2,"column":9,"end_line":2,"end_column":28,"source":"let a = 9223372036854775808","rule":"A number literal must fit in 64 bits."}
+{"summary":{"errors":1,"files":1}}

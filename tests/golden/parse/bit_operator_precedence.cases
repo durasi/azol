@@ -1,0 +1,102 @@
+# From the tests of the first compiler: src/parser.rs, `bit_operator_precedence`.
+==== 1
+---- file a.azl (no newline at end)
+fn t() {
+x = a | b ^ c & d << e + f * g
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  x = (| a (^ b (& c (<< d (+ e (* f g))))))
+---- stderr
+parsed 3 lines into 16 nodes
+==== 2
+---- file a.azl (no newline at end)
+fn t() {
+x = a * b + c << d & e ^ f | g
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  x = (| (^ (& (<< (+ (* a b) c) d) e) f) g)
+---- stderr
+parsed 3 lines into 16 nodes
+==== 3
+---- file a.azl (no newline at end)
+fn t() {
+x = a & 0xFF == b | 'c'
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  x = (== (& a 0xFF) (| b 'c'))
+---- stderr
+parsed 3 lines into 10 nodes
+==== 4
+---- file a.azl (no newline at end)
+fn t() {
+x = a << 1 >> 2 << 3
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  x = (<< (>> (<< a 1) 2) 3)
+---- stderr
+parsed 3 lines into 10 nodes
+==== 5
+---- file a.azl (no newline at end)
+fn t() {
+x = a & b & c | d | e
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  x = (| (| (& (& a b) c) d) e)
+---- stderr
+parsed 3 lines into 12 nodes
+==== 6
+---- file a.azl (no newline at end)
+fn t() {
+x = a < b << 1 && c | d != 0 || !e
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  x = (|| (&& (< a (<< b 1)) (!= (| c d) 0)) (not e))
+---- stderr
+parsed 3 lines into 17 nodes
+==== 7
+---- file a.azl (no newline at end)
+fn t() {
+x = -a << b
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  x = (<< (neg a) b)
+---- stderr
+parsed 3 lines into 7 nodes
+==== 8
+---- file a.azl (no newline at end)
+fn t() {
+x = a |
+ b &
+ c <<
+ d ^
+ e >>
+ f
+}
+---- run parse a.azl
+---- exit 0
+---- stdout
+fn t()
+  x = (| a (^ (& b (<< c d)) (>> e f)))
+---- stderr
+parsed 8 lines into 14 nodes

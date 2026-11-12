@@ -1,0 +1,47 @@
+// mandelbrot: escape-time iteration.
+// Algorithm: for every point of a square grid over [-2, 0.5] x [-1.25, 1.25],
+// iterate z = z * z + c up to 200 times.
+// Sizes: 1,400 x 1,400; small: 200 x 200.
+// Output: the points that never escaped and the total number of iterations.
+// NOT YET COMPILABLE: azoL has no `f64` yet. This file is the program as it
+// will be written once docs/design/floats.md is implemented; the gate skips
+// it until then. Rename it to `mandelbrot.azl` when it builds.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+fn main() {
+    let side = size(1400, 200)
+    var inside = 0
+    var total = 0
+    var row = 0
+    while row < side {
+        let ci = -1.25 + 2.5 * row.to_f64() / side.to_f64()
+        var column = 0
+        while column < side {
+            let cr = -2.0 + 2.5 * column.to_f64() / side.to_f64()
+            var zr = 0.0
+            var zi = 0.0
+            var n = 0
+            while n < 200 && zr * zr + zi * zi <= 4.0 {
+                let next = zr * zr - zi * zi + cr
+                zi = 2.0 * zr * zi + ci
+                zr = next
+                n = n + 1
+            }
+            if n == 200 {
+                inside = inside + 1
+            }
+            total = total + n
+            column = column + 1
+        }
+        row = row + 1
+    }
+    print(str(inside) + " " + str(total))
+}

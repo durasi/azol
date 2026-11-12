@@ -1,0 +1,13 @@
+; Arithmetic on two numbers, one result for each operation.
+; run: main 7 3
+; out: => 10, 4, 21, -7
+; run: main -5 9
+; out: => 4, -14, -45, 5
+fn main(p0: i64, p1: i64) -> i64, i64, i64, i64 {
+b0:
+    v0 = add p0, p1
+    v1 = sub p0, p1
+    v2 = mul p0, p1
+    v3 = neg p0
+    ret v0, v1, v2, v3
+}

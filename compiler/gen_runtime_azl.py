@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Writes compiler/runtime_x64.azl from src/runtime_x64.rs, and
-compiler/runtime_arm64.azl from src/runtime.rs and
-src/runtime_linux_arm64.rs.
+"""Writes compiler/runtime_x64.azl from runtime/linux_x64/runtime.facts,
+and compiler/runtime_arm64.azl from runtime/runtime.facts and
+runtime/linux_arm64/runtime.facts.
 
-The compiler written in azoL needs the same facts about the Linux x86-64
-runtime as the Rust one: the ids of its routines, where each starts, and
-where the runtime sits in an executable. They are generated, so they are
-taken from the generated Rust module instead of being typed again.
+The compiler needs facts about each runtime: the ids of its routines,
+where each starts, and where the runtime sits in an executable. The
+`gen_runtime.py` scripts in runtime/ write them down next to the machine
+code, as `runtime.facts`; this script turns those into azoL.
 
     python3 compiler/gen_runtime_azl.py           write the files
     python3 compiler/gen_runtime_azl.py --check   fail if a file is stale
@@ -14,7 +14,7 @@ taken from the generated Rust module instead of being typed again.
 import os, re, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SOURCE = os.path.join(os.path.dirname(HERE), "src", "runtime_x64.rs")
+SOURCE = os.path.join(os.path.dirname(HERE), "runtime", "linux_x64", "runtime.facts")
 OUT = os.path.join(HERE, "runtime_x64.azl")
 
 
@@ -38,7 +38,7 @@ def generate():
         "",
         "// The Linux x86-64 runtime as the compiler written in azoL sees it:",
         "// the ids of its routines, where each starts, and where the runtime",
-        "// sits in an executable. Generated from `src/runtime_x64.rs` by",
+        "// sits in an executable. Generated from `runtime/linux_x64/runtime.facts` by",
         "// `compiler/gen_runtime_azl.py`; edit neither, but the runtime's",
         "// source in `runtime/linux_x64`.",
         "",
@@ -87,7 +87,7 @@ def generate_arm64():
     """The macOS runtime (machine code the generator appends to every
     program) and the facts about the Linux ARM64 library."""
     root = os.path.dirname(HERE)
-    text = open(os.path.join(root, "src", "runtime.rs"), encoding="utf-8").read()
+    text = open(os.path.join(root, "runtime", "runtime.facts"), encoding="utf-8").read()
     imports = re.findall(r'"([^"]+)"', re.search(r"pub const IMPORTS: \[&str; \d+\] = \[([^\]]*)\];", text).group(1))
     offsets = [int(n) for n in re.search(r"RUNTIME_DATA_OFFSETS: \[u32; \d+\] = \[([^\]]*)\];", text).group(1).split(",")]
     data = re.search(r'pub const RUNTIME_DATA: &\[u8\] = b"(.*)";', text).group(1)
@@ -104,7 +104,7 @@ def generate_arm64():
     if len(words) != int(re.search(r"pub const RUNTIME: \[u32; (\d+)\]", text).group(1)):
         sys.exit("gen_runtime_azl.py: RUNTIME was not read completely")
 
-    linux = open(os.path.join(root, "src", "runtime_linux_arm64.rs"), encoding="utf-8").read()
+    linux = open(os.path.join(root, "runtime", "linux_arm64", "runtime.facts"), encoding="utf-8").read()
 
     def number(name, kind):
         return int(re.search(r"pub const %s: %s = (0x[0-9A-Fa-f]+|\d+);" % (name, kind), linux).group(1), 0)
@@ -122,7 +122,7 @@ def generate_arm64():
         "// machine code that follows every program's own, where each of its",
         "// routines starts, what the linker completes in it, and the facts",
         "// about the library that stands in for the system's on Linux.",
-        "// Generated from `src/runtime.rs` and `src/runtime_linux_arm64.rs` by",
+        "// Generated from `runtime/runtime.facts` and `runtime/linux_arm64/runtime.facts` by",
         "// `compiler/gen_runtime_azl.py`; edit neither, but the sources in",
         "// `runtime/`.",
         "",

@@ -1,0 +1,38 @@
+# From the tests of the first compiler: src/sema.rs, `equality_of_enums_without_values`.
+==== 1
+---- file a.azl (no newline at end)
+enum Kind {
+ Ident
+ Number
+ Plus
+}
+enum Shape {
+ Dot
+ Circle(i64)
+}
+enum Flag[T] {
+ On
+ Off
+}
+fn main() {
+let k = Ident
+let same: bool = k == Number
+let other: bool = k != Plus
+if Ident == k && Plus != Number {
+}
+let f: Flag[i64] = On
+let g: bool = f == Off
+var ks = [Ident, Plus]
+while ks[0] == ks[1] {
+}
+}
+---- run check a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+checked 25 lines in 1 file: no errors
+---- run build-all a.azl
+---- executables
+aarch64-macos 4adfd83e2d14c4d73a8e928b90d8f141f365ae9c3f9e6d33b285448e911275d6
+x86_64-linux 5572e40d062914150db62dc603cc23ae71055c74788bcc0bc86bf6f53c4c49ce
+aarch64-linux 3ae4e3b7fa1224a0f49f99123f0c2ce43246ff9d4f806e74c39bffd278ca984c

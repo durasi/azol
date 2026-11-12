@@ -1,0 +1,14 @@
+; run:
+; err: ir-interp: a store through the address of nothing
+; exit: 3
+fn put(p0: ptr [param 0 write]) {
+b0:
+    store i64, p0, 0, 1  [param 0]
+    ret
+}
+
+fn main() {
+b0:
+    call put(0)
+    ret
+}

@@ -1,0 +1,4 @@
+; parse: 3:5: an instruction must be inside a block
+fn main() {
+    ret
+}

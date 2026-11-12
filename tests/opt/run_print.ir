@@ -1,0 +1,21 @@
+; run:
+; out: -12
+; out: true
+; out: false
+; out: hi
+; err: oops
+; out: =>
+data "hioops"
+
+fn main() {
+b0:
+    callrt print_i64(-12)
+    callrt print_bool(1)
+    v0 = bconst 0
+    callrt print_bool(v0)
+    v1 = addr @data+0
+    callrt print_str(v1, 2)
+    v2 = addr @data+2
+    callrt eprint_str(v2, 4)
+    ret
+}

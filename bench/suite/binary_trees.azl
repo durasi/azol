@@ -1,0 +1,61 @@
+// binary_trees: the classic allocation benchmark.
+// Algorithm: build and count a stretch tree, keep one long-lived tree, and
+// for every second depth build and count many short-lived trees.
+// azoL has no boxed pointer: an inner node owns a list of its two children.
+// Sizes: maximum depth 17; small: 12.
+// Output: one line per step: depth, number of trees, total count.
+// `SMALL` selects the small size; the gate changes that one line.
+const SMALL = false
+
+fn size(full: i64, small: i64) -> i64 {
+    if SMALL {
+        return small
+    }
+    return full
+}
+
+enum Tree {
+    Leaf
+    Node(List[Tree])
+}
+
+fn build(depth: i64) -> Tree {
+    if depth == 0 {
+        return Leaf
+    }
+    return Node([build(depth - 1), build(depth - 1)])
+}
+
+fn check(tree: Tree) -> i64 {
+    match tree {
+        Leaf => return 1
+        Node(children) => {
+            var total = 1
+            for child in children {
+                total = total + check(child)
+            }
+            return total
+        }
+    }
+}
+
+fn main() {
+    let max_depth = size(17, 12)
+    let stretch = build(max_depth + 1)
+    print(str(max_depth + 1) + " 1 " + str(check(stretch)))
+    let long_lived = build(max_depth)
+    var depth = 4
+    while depth <= max_depth {
+        let trees = 1 << (max_depth - depth + 4)
+        var total = 0
+        var n = 0
+        while n < trees {
+            let tree = build(depth)
+            total = total + check(tree)
+            n = n + 1
+        }
+        print(str(depth) + " " + str(trees) + " " + str(total))
+        depth = depth + 2
+    }
+    print(str(max_depth) + " 1 " + str(check(long_lived)))
+}
