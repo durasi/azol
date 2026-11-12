@@ -1,0 +1,588 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Diagnostics: what the compiler tells whoever wrote the program, in a
+// form a person can read and in a form a program can act on. It follows
+// `src/diag.rs` function by function.
+//
+// Every kind of message has a stable code and one sentence that states
+// the rule of the language behind it (the table is in
+// `diag_table.azl`). A report says exactly which text is wrong (file,
+// line and column of its start and its end) and, when the repair is
+// mechanical, the exact edit that resolves it. With `--json` each
+// report is one JSON object on a line of its own.
+//
+// Nothing here runs for a program without mistakes.
+
+// One source file inside the whole program text.
+struct SourceFile {
+    path: str
+    start: i64
+    len: i64
+}
+
+// A problem, located and classified, ready to be shown. Lines and
+// columns start at 1; columns count characters; an end is the position
+// just after the last character.
+struct Diagnostic {
+    code: str
+    message: str
+    // Which of the program's files it is in.
+    file: i64
+    // Offset of the problem in its file, for the report a person reads.
+    at: i64
+    line: i64
+    column: i64
+    end_line: i64
+    end_column: i64
+    // The source line the problem starts on.
+    source: str
+    rule: str
+    help: str
+    // The edit that resolves it, when there is one: a replacement for
+    // the text between two positions of the same file.
+    has_fix: bool
+    fix_line: i64
+    fix_column: i64
+    fix_end_line: i64
+    fix_end_column: i64
+    replacement: str
+}
+
+// ---- codes ------------------------------------------------------------
+
+// Whether `message` is `pattern` with each `{}` standing for some text.
+fn diag_fits(pattern: str, message: str) -> bool {
+    let parts = pattern.split("{}")
+    let first = parts[0]
+    if !message.starts_with(first) {
+        return false
+    }
+    var at = first.len()
+    if parts.len() == 1 {
+        // No `{}` at all: the whole text must be the same.
+        return at == message.len()
+    }
+    var k = 1
+    while k < parts.len() - 1 {
+        match message.index_of_from(parts[k], at) {
+            Some(found) => {
+                at = found + parts[k].len()
+            }
+            None => return false
+        }
+        k = k + 1
+    }
+    let last = parts[parts.len() - 1]
+    return message.len() - at >= last.len() && message.ends_with(last)
+}
+
+// The kind of error a message belongs to: its index in `table`, or -1
+// for a message without a code of its own.
+fn diag_classify(table: List[DiagEntry], message: str) -> i64 {
+    // A mistake inside a generic function carries the types it showed
+    // up with: "... (in `name` with `T` = `i64`)".
+    var text = message
+    match message.last_index_of(" (in `") {
+        Some(at) => {
+            if message.ends_with(")") && message.slice(at, message.len()).contains("` with ") {
+                text = message.slice(0, at)
+            }
+        }
+        None => {}
+    }
+    for index, entry in table {
+        for pattern in entry.patterns {
+            if diag_fits(pattern, text) {
+                return index
+            }
+        }
+    }
+    return -1
+}
+
+// The code of a message.
+fn diag_code(table: List[DiagEntry], message: str) -> str {
+    let index = diag_classify(table, message)
+    if index < 0 {
+        return diag_unclassified().code
+    }
+    return table[index].code
+}
+
+// The entries in the order of their codes.
+fn diag_sorted(table: List[DiagEntry]) -> List[i64] {
+    var order: List[i64] = []
+    for index, entry in table {
+        order.push(index)
+        var k = order.len() - 1
+        while k > 0 && table[order[k - 1]].code.compare(entry.code) > 0 {
+            order[k] = order[k - 1]
+            k = k - 1
+        }
+        order[k] = index
+    }
+    return order
+}
+
+// The text of `explain <code>`, or an empty text for an unknown code.
+fn diag_explain(table: List[DiagEntry], code: str) -> str {
+    for entry in table {
+        if entry.code == code {
+            var text = entry.code + ": " + entry.rule + "\n"
+            if entry.help.len() > 0 {
+                text = text + "\nWhat to do: " + entry.help + "\n"
+            }
+            if entry.explain.len() > 0 {
+                text = text + "\n" + entry.explain + "\n"
+            }
+            text = text + "\nMessages with this code:\n"
+            for pattern in entry.patterns {
+                text = text + "    " + pattern.replace("{}", "...") + "\n"
+            }
+            return text
+        }
+    }
+    return ""
+}
+
+// The text of `explain` without a code: every code and its rule.
+fn diag_list(table: List[DiagEntry]) -> str {
+    var text = ""
+    for index in diag_sorted(table) {
+        text = text + table[index].code + "  " + table[index].rule + "\n"
+    }
+    return text
+}
+
+// The contents of `docs/errors.md`.
+fn diag_errors_md(table: List[DiagEntry]) -> str {
+    var text = ERRORS_MD_HEAD
+    for index in diag_sorted(table) {
+        let entry = table[index]
+        text = text + "\n## " + entry.code + "\n\n" + entry.rule + "\n"
+        if entry.help.len() > 0 {
+            text = text + "\nWhat to do: " + entry.help + "\n"
+        }
+        if entry.explain.len() > 0 {
+            text = text + "\n" + entry.explain + "\n"
+        }
+        text = text + "\nMessages:\n\n"
+        for pattern in entry.patterns {
+            text = text + "- " + pattern.replace("{}", "...") + "\n"
+        }
+    }
+    return text
+}
+
+// ---- positions --------------------------------------------------------
+
+fn opens_bracket(kind: i64) -> bool {
+    return kind == TOK_LPAREN || kind == TOK_LBRACKET || kind == TOK_LBRACE
+}
+
+fn closes_bracket(kind: i64) -> bool {
+    return kind == TOK_RPAREN || kind == TOK_RBRACKET || kind == TOK_RBRACE
+}
+
+// Index of the first token that starts at `offset` or later.
+fn first_token_from(tokens: Tokens, offset: i64) -> i64 {
+    var low = 0
+    var high = tokens.starts.len()
+    while low < high {
+        let middle = (low + high) / 2
+        if tokens.starts[middle] < offset {
+            low = middle + 1
+        } else {
+            high = middle
+        }
+    }
+    return low
+}
+
+// Index of the token that starts at `offset`, or -1.
+fn token_at(tokens: Tokens, offset: i64) -> i64 {
+    var low = 0
+    var high = tokens.starts.len()
+    while low < high {
+        let middle = (low + high) / 2
+        let start = tokens.starts[middle]
+        if start == offset {
+            return middle
+        }
+        if start < offset {
+            low = middle + 1
+        } else {
+            high = middle
+        }
+    }
+    return -1
+}
+
+// Index of the bracket that closes the one opened at token `open`, or -1.
+fn closer_of(tokens: Tokens, open: i64) -> i64 {
+    var depth = 0
+    var at = open
+    while at >= 0 && at < tokens.kinds.len() {
+        let kind = tokens.kinds[at]
+        if opens_bracket(kind) {
+            depth = depth + 1
+        } else if closes_bracket(kind) {
+            if depth == 0 {
+                return -1
+            }
+            depth = depth - 1
+            if depth == 0 {
+                return at
+            }
+        }
+        at = at + 1
+    }
+    return -1
+}
+
+// Where the token that starts at `offset` ends; `offset + 1` when no
+// token starts there.
+fn token_end(tokens: Tokens, offset: i64) -> i64 {
+    let at = token_at(tokens, offset)
+    if at >= 0 && tokens.lens[at] > 0 {
+        return offset + tokens.lens[at]
+    }
+    return offset + 1
+}
+
+// Where the bracketed part that follows position `after` ends: the
+// arguments of a call, the index of `list[i]`, the body of a struct
+// literal. `after` itself when no bracket follows directly.
+fn bracket_end(tokens: Tokens, after: i64) -> i64 {
+    let next = first_token_from(tokens, after)
+    if next < tokens.kinds.len() && opens_bracket(tokens.kinds[next]) {
+        let close = closer_of(tokens, next)
+        if close >= 0 {
+            return tokens.starts[close] + tokens.lens[close]
+        }
+    }
+    return after
+}
+
+// Where expression `id` ends, as an offset in the whole program text
+// like every position in the tree. `tokens` are those of its file.
+fn expr_end(ast: Ast, tokens: Tokens, id: i64) -> i64 {
+    let start = ast.expr_pos[id]
+    match ast.exprs[id] {
+        ExprUnary(_, operand) => return expr_end(ast, tokens, operand)
+        ExprBinary(_, _, rhs) => return expr_end(ast, tokens, rhs)
+        ExprMutArg(inner) => return expr_end(ast, tokens, inner)
+        ExprTry(inner) => {
+            // The `?` follows what it is applied to.
+            let after = expr_end(ast, tokens, inner)
+            let next = first_token_from(tokens, after)
+            if next < tokens.kinds.len() && tokens.kinds[next] == TOK_QUESTION {
+                return tokens.starts[next] + 1
+            }
+            return after
+        }
+        ExprField(_, name) => return name.start + name.len
+        ExprCall(callee, _) => return bracket_end(tokens, expr_end(ast, tokens, callee))
+        ExprIndex(base, _) => return bracket_end(tokens, expr_end(ast, tokens, base))
+        ExprStructLit(name, _) => return bracket_end(tokens, name.start + name.len)
+        ExprArrayLit(_) => return bracket_end(tokens, start)
+        _ => return token_end(tokens, start)
+    }
+}
+
+// Extends `end` over the closing brackets of whatever was opened
+// between `start` and `end`: the `)` of `(a + b`.
+fn balance(tokens: Tokens, start: i64, end: i64) -> i64 {
+    var depth = 0
+    var at = first_token_from(tokens, start)
+    let count = tokens.kinds.len()
+    while at < count && tokens.starts[at] < end {
+        let kind = tokens.kinds[at]
+        if opens_bracket(kind) {
+            depth = depth + 1
+        } else if closes_bracket(kind) {
+            depth = depth - 1
+        }
+        at = at + 1
+    }
+    var out = end
+    while depth > 0 && at < count {
+        let kind = tokens.kinds[at]
+        if opens_bracket(kind) {
+            depth = depth + 1
+        } else if closes_bracket(kind) {
+            depth = depth - 1
+        } else if kind == TOK_EOF {
+            break
+        }
+        out = tokens.starts[at] + tokens.lens[at]
+        at = at + 1
+    }
+    return out
+}
+
+// A fix as a replacement of the text from `start` to `end`. `kind` is
+// `FIX_NONE` when the source is not laid out the way the fix needs.
+fn replacement_of(fix: Fix, tokens: Tokens, src: str) -> Fix {
+    if fix.kind == FIX_REPLACE {
+        return fix
+    }
+    if fix.kind == FIX_AFTER_NAME {
+        let end = token_end(tokens, fix.start)
+        return Fix { kind: FIX_REPLACE, start: end, end: end, text: fix.text }
+    }
+    if fix.kind == FIX_EMPTY_PARENS {
+        let name = token_at(tokens, fix.start)
+        if name < 0 || name + 2 >= tokens.kinds.len() {
+            return no_fix()
+        }
+        if tokens.kinds[name + 1] != TOK_LPAREN || tokens.kinds[name + 2] != TOK_RPAREN {
+            return no_fix()
+        }
+        return Fix { kind: FIX_REPLACE, start: tokens.starts[name + 1], end: tokens.starts[name + 2] + tokens.lens[name + 2], text: "" }
+    }
+    if fix.kind == FIX_MATCH_ARMS {
+        // The body is the first `{` after `match` that is not inside
+        // parentheses or brackets of the value being matched.
+        var at = token_at(tokens, fix.start)
+        if at < 0 {
+            return no_fix()
+        }
+        var depth = 0
+        var open = -1
+        while at < tokens.kinds.len() && open < 0 {
+            let kind = tokens.kinds[at]
+            if kind == TOK_LPAREN || kind == TOK_LBRACKET {
+                depth = depth + 1
+            } else if kind == TOK_RPAREN || kind == TOK_RBRACKET {
+                depth = depth - 1
+            } else if kind == TOK_LBRACE && depth == 0 {
+                open = at
+            }
+            at = at + 1
+        }
+        let closing = closer_of(tokens, open)
+        if closing < 0 {
+            return no_fix()
+        }
+        let close = tokens.starts[closing]
+        // New arms go on lines of their own, before a closing brace
+        // that stands first on its line.
+        var line_start = close
+        while line_start > 0 && src[line_start - 1] != '\n' {
+            line_start = line_start - 1
+        }
+        let indent = src.slice(line_start, close)
+        for b in indent.bytes() {
+            if b != ' ' && b != '\t' {
+                return no_fix()
+            }
+        }
+        var text = ""
+        for arm in fix.text.split("\n") {
+            text = text + "    " + arm + "\n" + indent
+        }
+        return Fix { kind: FIX_REPLACE, start: close, end: close, text: text }
+    }
+    return no_fix()
+}
+
+// Line `line` (counted from 1) of `text`, without its line ending; an
+// empty text when there is no such line.
+fn line_of(text: str, line: i64) -> str {
+    var start = 0
+    var seen = 1
+    while seen < line && start < text.len() {
+        if text[start] == '\n' {
+            seen = seen + 1
+        }
+        start = start + 1
+    }
+    if seen < line || start >= text.len() {
+        return ""
+    }
+    var end = start
+    while end < text.len() && text[end] != '\n' {
+        end = end + 1
+    }
+    if end < text.len() && end > start && text[end - 1] == '\r' {
+        end = end - 1
+    }
+    return text.slice(start, end)
+}
+
+// Locates and classifies problems, which come in the order of their
+// positions. `src` is the whole program text and `ast` its syntax tree
+// when parsing got that far (`has_ast`).
+fn diagnose(problems: List[SemaError], files: List[SourceFile], src: str, ast: Ast, has_ast: bool) -> List[Diagnostic] {
+    let table = diag_table()
+    var out: List[Diagnostic] = []
+    // The tokens of the file the last problem was in, at their offsets
+    // in the whole text, and that file's text. Lexed again here, only
+    // for the files that have problems.
+    var tokens = new_tokens()
+    var text = ""
+    var lexed = -1
+    for problem in problems {
+        // The file the position falls in. A position right after a
+        // file's last character (where "end of file" is reported) still
+        // belongs to it.
+        var index = files.len() - 1
+        var k = files.len() - 1
+        while k >= 0 {
+            if problem.offset <= files[k].start + files[k].len {
+                index = k
+            }
+            k = k - 1
+        }
+        let file_start = files[index].start
+        let file_end = file_start + files[index].len
+        if lexed != index {
+            lexed = index
+            text = src.slice(file_start, file_end)
+            tokens = new_tokens()
+            match lex(text, mut tokens) {
+                Some(_) => {
+                    tokens = new_tokens()
+                }
+                None => {}
+            }
+            var i = 0
+            var count = tokens.starts.len()
+            if file_start == 0 {
+                count = 0
+            }
+            while i < count {
+                tokens.starts[i] = tokens.starts[i] + file_start
+                i = i + 1
+            }
+        }
+        var start = problem.offset
+        if start < file_start {
+            start = file_start
+        }
+        if start > file_end {
+            start = file_end
+        }
+        // An error moved to the call that caused it no longer is about
+        // the expression it was found in.
+        var end = start + 1
+        if problem.expr >= 0 && has_ast && ast.expr_pos[problem.expr] == start {
+            end = balance(tokens, start, expr_end(ast, tokens, problem.expr))
+        } else {
+            end = token_end(tokens, start)
+        }
+        if end < start {
+            end = start
+        }
+        if end > file_end {
+            end = file_end
+        }
+        let from = line_column(text, start - file_start)
+        let to = line_column(text, end - file_start)
+        let kind = diag_classify(table, problem.message)
+        var entry = diag_unclassified()
+        if kind >= 0 {
+            entry = table[kind]
+        }
+        var found = Diagnostic {
+            code: entry.code,
+            message: problem.message,
+            file: index,
+            at: start - file_start,
+            line: from.line,
+            column: from.column,
+            end_line: to.line,
+            end_column: to.column,
+            source: line_of(text, from.line),
+            rule: entry.rule,
+            help: entry.help,
+            has_fix: false,
+            fix_line: 0,
+            fix_column: 0,
+            fix_end_line: 0,
+            fix_end_column: 0,
+            replacement: "",
+        }
+        if problem.fix.kind != FIX_NONE {
+            let edit = replacement_of(problem.fix, tokens, src)
+            if edit.kind == FIX_REPLACE && edit.start >= file_start && edit.end <= file_end && edit.start <= edit.end {
+                let fix_from = line_column(text, edit.start - file_start)
+                let fix_to = line_column(text, edit.end - file_start)
+                found.has_fix = true
+                found.fix_line = fix_from.line
+                found.fix_column = fix_from.column
+                found.fix_end_line = fix_to.line
+                found.fix_end_column = fix_to.column
+                found.replacement = edit.text
+            }
+        }
+        out.push(found)
+    }
+    return out
+}
+
+// ---- JSON -------------------------------------------------------------
+
+// Adds `text` as a JSON string, quotes included, to `out`.
+fn json_string(out: mut str, text: str) {
+    let digits = "0123456789abcdef"
+    out = out + "\""
+    var copied = 0
+    var i = 0
+    let n = text.len()
+    while i < n {
+        let b = text[i]
+        if b == '"' || b == '\\' || b < 0x20 {
+            out = out + text.slice(copied, i)
+            copied = i + 1
+            if b == '"' {
+                out = out + "\\\""
+            } else if b == '\\' {
+                out = out + "\\\\"
+            } else if b == '\n' {
+                out = out + "\\n"
+            } else if b == '\r' {
+                out = out + "\\r"
+            } else if b == '\t' {
+                out = out + "\\t"
+            } else {
+                out = out + "\\u00" + digits.slice(b >> 4, (b >> 4) + 1) + digits.slice(b & 15, (b & 15) + 1)
+            }
+        }
+        i = i + 1
+    }
+    out = out + text.slice(copied, n)
+    out = out + "\""
+}
+
+// One diagnostic as a JSON object on one line.
+fn json_line(found: Diagnostic, path: str) -> str {
+    var line = "{\"severity\":\"error\",\"code\":\"" + found.code + "\",\"message\":"
+    json_string(mut line, found.message)
+    line = line + ",\"file\":"
+    json_string(mut line, path)
+    line = line + ",\"line\":" + str(found.line) + ",\"column\":" + str(found.column) + ",\"end_line\":" + str(found.end_line) +
+        ",\"end_column\":" + str(found.end_column) + ",\"source\":"
+    json_string(mut line, found.source)
+    line = line + ",\"rule\":"
+    json_string(mut line, found.rule)
+    if found.help.len() > 0 {
+        line = line + ",\"help\":"
+        json_string(mut line, found.help)
+    }
+    if found.has_fix {
+        line = line + ",\"fix\":{\"file\":"
+        json_string(mut line, path)
+        line = line + ",\"line\":" + str(found.fix_line) + ",\"column\":" + str(found.fix_column) + ",\"end_line\":" +
+            str(found.fix_end_line) + ",\"end_column\":" + str(found.fix_end_column) + ",\"replacement\":"
+        json_string(mut line, found.replacement)
+        line = line + "}"
+    }
+    return line + "}"
+}
+
+// The last line of JSON output.
+fn json_summary(errors: i64, files: i64) -> str {
+    return "{\"summary\":{\"errors\":" + str(errors) + ",\"files\":" + str(files) + "}}"
+}

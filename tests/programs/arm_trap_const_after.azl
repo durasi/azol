@@ -1,0 +1,18 @@
+// expect-exit: 1
+// expect-output: 60 3 2 50
+// expect-stderr: azol: index out of range
+
+// A constant index that was checked is checked again once the list
+// has become shorter without any call.
+fn main() {
+    var xs = [10, 20, 30]
+    var total = xs[2] + xs[0] + xs[1]
+    print(total)
+    print(xs.len())
+    total = xs[2] + xs.pop()
+    print(xs.len())
+    total = total - xs[0]
+    print(total)
+    total = total + xs[2]
+    print(total)
+}

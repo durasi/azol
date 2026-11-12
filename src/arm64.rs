@@ -14,6 +14,17 @@
 //! result, x9-x11 are scratch within one step. The most used numbers
 //! and `bool`s of a function live in x19-x28, which survive calls: every
 //! function saves the ones it uses on entry and restores them on exit.
+//! Registers left over go to the function's `for` loops and, in a
+//! function with a loop, to the addresses that arrived as parameters.
+//! While the right side of an operation, or the later arguments of a
+//! call, call nothing, the value worked out before them waits in x13,
+//! x14 or x15 instead of on the stack.
+//!
+//! Inside straight-line code an index is checked against the length of
+//! its list once: the generator remembers which checks have been made
+//! and what x12 holds (the buffer of a list or the address of one of
+//! its elements), and forgets it wherever the list could have changed
+//! or another path joins. See `Known` and `Held`.
 
 use crate::ast::*;
 use crate::runtime::{self, RuntimeReloc, RUNTIME, RUNTIME_DATA, RUNTIME_DATA_OFFSETS, RUNTIME_RELOCS};
@@ -51,6 +62,14 @@ const X8: u32 = 8;
 const X9: u32 = 9;
 const X10: u32 = 10;
 const X11: u32 = 11;
+/// Holds the buffer of a list or the address of one of its elements
+/// between the steps of straight-line code; see `Held`.
+const X12: u32 = 12;
+/// The first of the registers where a value waits while code that calls
+/// nothing works out the next one: x13, x14, x15.
+const X13: u32 = 13;
+/// How many of them there are.
+const PARKS: u32 = 3;
 const X19: u32 = 19;
 const X20: u32 = 20;
 const X21: u32 = 21;
@@ -87,6 +106,19 @@ fn str(rt: u32, rn: u32, slots: u32) -> u32 {
     0xF900_0000 | slots << 10 | rn << 5 | rt
 }
 
+/// Largest slot offset the first of a pair of loads or stores can carry.
+const MAX_PAIR: u32 = 63;
+
+/// `ldp rt, rt2, [rn, #8 * slots]`
+fn ldp(rt: u32, rt2: u32, rn: u32, slots: u32) -> u32 {
+    0xA940_0000 | slots << 15 | rt2 << 10 | rn << 5 | rt
+}
+
+/// `stp rt, rt2, [rn, #8 * slots]`
+fn stp(rt: u32, rt2: u32, rn: u32, slots: u32) -> u32 {
+    0xA900_0000 | slots << 15 | rt2 << 10 | rn << 5 | rt
+}
+
 /// `add rd, rn, #8 * slots`
 fn add_slots(rd: u32, rn: u32, slots: u32) -> u32 {
     0x9100_0000 | (slots * 8) << 10 | rn << 5 | rd
@@ -101,6 +133,29 @@ fn add_reg(rd: u32, rn: u32, rm: u32) -> u32 {
 fn add_scaled(rd: u32, rn: u32, rm: u32) -> u32 {
     0x8B00_0C00 | rm << 16 | rn << 5 | rd
 }
+
+/// `add rd, rn, rm, lsl #shift`
+fn add_shifted(rd: u32, rn: u32, rm: u32, shift: u32) -> u32 {
+    0x8B00_0000 | rm << 16 | shift << 10 | rn << 5 | rd
+}
+
+/// `ldrb rt, [rn, rm]`: one byte, the rest of the register cleared.
+fn ldrb_index(rt: u32, rn: u32, rm: u32) -> u32 {
+    0x3860_6800 | rm << 16 | rn << 5 | rt
+}
+
+/// `ldrb rt, [rn, #bytes]`
+fn ldrb(rt: u32, rn: u32, bytes: u32) -> u32 {
+    0x3940_0000 | bytes << 10 | rn << 5 | rt
+}
+
+/// `neg rd, rm`
+fn neg(rd: u32, rm: u32) -> u32 {
+    0xCB00_03E0 | rm << 16 | rd
+}
+
+/// `b.hi` over the next instruction.
+const SKIP_IF_HIGHER: u32 = 0x5400_0048;
 
 /// `madd rd, rn, rm, ra`: rd = ra + rn * rm
 fn madd(rd: u32, rn: u32, rm: u32, ra: u32) -> u32 {
@@ -214,9 +269,52 @@ struct LoopFixups {
     live: usize,
 }
 
+/// An index as the generator can remember it: a variable that lives in
+/// a register, or a small constant.
+#[derive(Clone, Copy, PartialEq)]
+enum At {
+    Reg(u32),
+    Constant(u32),
+}
+
+/// A fact about the code generated so far: on every path that reaches
+/// this point, index `at` has been checked against the length of the
+/// list or string in `place`, and neither has changed since. `since` is
+/// where in the code the check ended.
+struct Known {
+    place: Place,
+    at: At,
+    since: usize,
+}
+
+/// What x12 holds: the buffer of the list or string in `place`, or the
+/// address of its element `at`, from position `since` in the code on.
+#[derive(Clone, Copy)]
+struct Held {
+    place: Place,
+    at: Option<At>,
+    since: usize,
+}
+
+/// How many checks are remembered at a time.
+const KNOWN: usize = 4;
+
+/// An element of a list (or a field of one, or a byte of a string) whose
+/// list is in a fixed place and whose index takes no work to evaluate.
+#[derive(Clone, Copy)]
+struct Tracked {
+    place: Place,
+    at: At,
+    /// Slots in one element; 1 for a string, whose elements are bytes.
+    size: u32,
+    /// Slots from the start of the element to the part meant.
+    offset: u32,
+    bytes: bool,
+}
+
 /// Where a variable or field path lives: a frame slot, or an offset from
 /// the pointer stored in a frame slot.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct Place {
     slot: u32,
     by_ref: bool,
@@ -256,12 +354,21 @@ struct Gen<'a> {
     /// Registers the function has to spare, given to its `for` loops for
     /// their position, item and index: slot and register.
     loop_registers: Vec<(u32, u8)>,
+    /// In a function with a loop, the registers still left over hold
+    /// the addresses that arrived as parameters: slot and register.
+    param_registers: Vec<(u32, u8)>,
     /// First frame slot of the area where those registers' old values
     /// are kept.
     saved_slot: u32,
     /// Where the function being generated keeps its entries in the
     /// checker's tables.
     sh: Shift,
+    /// The index checks that need not be made again here.
+    known: Vec<Known>,
+    /// What x12 holds here, when that is worth knowing.
+    held: Option<Held>,
+    /// How many of the waiting registers are taken at this point.
+    parked: u32,
 }
 
 pub fn generate(ast: &Ast, prog: &Program) -> Code {
@@ -285,8 +392,12 @@ pub fn generate(ast: &Ast, prog: &Program) -> Code {
         scratch_slot: 0,
         registers: &[],
         loop_registers: Vec::new(),
+        param_registers: Vec::new(),
         saved_slot: 0,
         sh: Shift::default(),
+        known: Vec::with_capacity(KNOWN),
+        held: None,
+        parked: 0,
     };
     for index in 0..prog.fns.len() as u32 {
         g.function(index);
@@ -349,17 +460,56 @@ impl<'a> Gen<'a> {
         let delta = (self.words.len() - at) as u32;
         let op = if nonzero { 0xB500_0000 } else { 0xB400_0000 };
         self.words[at] = op | (delta & 0x7_FFFF) << 5 | reg;
+        self.forget_since(at);
     }
 
     /// Completes a conditional branch at `at` to jump here.
     fn patch_branch_if(&mut self, at: usize, cond: u32) {
         let delta = (self.words.len() - at) as u32;
         self.words[at] = 0x5400_0000 | (delta & 0x7_FFFF) << 5 | cond;
+        self.forget_since(at);
     }
 
     fn patch_jump(&mut self, at: usize) {
         let delta = (self.words.len() - at) as u32;
         self.words[at] = 0x1400_0000 | (delta & 0x03FF_FFFF);
+        self.forget_since(at);
+    }
+
+    // ---- what is known at this point ------------------------------------
+    //
+    // Inside straight-line code an index is checked against the length
+    // of its list once, and x12 keeps the buffer or the element's address
+    // for the next use. Both are forgotten wherever the list could have
+    // changed (a call, `push`, `pop`, any statement that stores more than
+    // a number or a `bool`), where the index changes, and where another
+    // path joins that has not made the check.
+
+    /// Forgets every index check and what x12 holds.
+    fn forget(&mut self) {
+        self.known.clear();
+        self.held = None;
+    }
+
+    /// Forgets what was learnt after position `from` in the code: it is
+    /// not known on a path that left before, or it concerns a variable
+    /// that no longer exists.
+    fn forget_since(&mut self, from: usize) {
+        if self.known.is_empty() && self.held.is_none() {
+            return;
+        }
+        self.known.retain(|known| known.since <= from);
+        if self.held.is_some_and(|held| held.since > from) {
+            self.held = None;
+        }
+    }
+
+    /// The variable that lives in `reg` has just been given a new value.
+    fn writes(&mut self, reg: u32) {
+        self.known.retain(|known| known.at != At::Reg(reg));
+        if self.held.is_some_and(|held| held.at == Some(At::Reg(reg))) {
+            self.held = None;
+        }
     }
 
     fn jump_back(&mut self, to: usize) {
@@ -369,6 +519,10 @@ impl<'a> Gen<'a> {
 
     /// Calls a runtime routine.
     fn runtime(&mut self, entry: u32) {
+        // Any routine that comes back may have changed a list.
+        if !matches!(entry, runtime::INDEX_FAIL | runtime::POP_EMPTY | runtime::DIV_ZERO) {
+            self.forget();
+        }
         let at = self.placeholder();
         self.runtime_calls.push((at, entry));
     }
@@ -456,14 +610,45 @@ impl<'a> Gen<'a> {
                 }
             }
         }
+        self.param_registers.clear();
+        if next < end && info.params.iter().any(|param| param.by_ref) {
+            let first = nodes.stmts.0 as usize;
+            let stmts = &self.ast.stmts[first..first + nodes.stmts.1 as usize];
+            if stmts.iter().any(|stmt| matches!(stmt, Stmt::While { .. } | Stmt::For { .. })) {
+                // A register costs a save and a restore on every call, so
+                // it goes only to an address the function uses more than once.
+                let exprs = nodes.exprs.0..nodes.exprs.0 + nodes.exprs.1;
+                for (slot, param) in info.params.iter().enumerate() {
+                    if !param.by_ref || next == end {
+                        continue;
+                    }
+                    let res = slot as u32 | BY_REF;
+                    let uses = exprs
+                        .clone()
+                        .filter(|&id| prog.expr_res[self.sh.e(id)] == res && matches!(self.expr(id), Expr::Ident(_)))
+                        .take(2)
+                        .count();
+                    if uses == 2 {
+                        self.param_registers.push((slot as u32, next));
+                        next += 1;
+                    }
+                }
+            }
+        }
         // Above the slots, room for the caller's values of those registers.
         self.saved_slot = info.slots;
-        let saved = (info.registers.len() + self.loop_registers.len()) as u32;
+        let saved = (info.registers.len() + self.loop_registers.len() + self.param_registers.len()) as u32;
         self.frame_bytes = (16 + 8 * (info.slots + saved)).div_ceil(16) * 16;
         self.ret = info.ret;
         self.sret_slot = info.sret_slot;
         self.scratch_slot = info.scratch_slot;
         self.live.clear();
+        self.forget();
+
+        // A function that begins by sending some calls straight back,
+        // `if n < 2 { return n }`, decides that before it sets up its
+        // frame: those calls then cost a compare, a branch and `ret`.
+        let guarded = self.guard(body, info.params.as_slice());
 
         if self.frame_bytes <= SMALL_FRAME {
             // One instruction makes room and saves the two registers.
@@ -478,14 +663,13 @@ impl<'a> Gen<'a> {
             self.emit(0xA900_7BFD); // stp x29, x30, [sp]
         }
         self.emit(0x9100_03FD); // mov x29, sp
-        for i in 0..saved {
-            // The registers in use are x19, x20, ... without gaps.
-            self.emit(str(FIRST_REGISTER as u32 + i, FP, frame(self.saved_slot + i)));
-        }
+        // The registers in use are x19, x20, ... without gaps.
+        self.saved_registers(saved, true);
         // Each parameter arrives in a register as a value or a pointer,
         // and moves to its slot or to the register it lives in.
         for slot in 0..self.ast.list(params).len() as u32 {
-            match self.slot_register(slot) {
+            let param = self.param_registers.iter().find(|&&(taken, _)| taken == slot).map(|&(_, reg)| reg as u32);
+            match self.slot_register(slot).or(param) {
                 Some(reg) => self.emit(mov(reg, slot)),
                 None => self.emit(str(slot, FP, frame(slot))),
             }
@@ -498,7 +682,7 @@ impl<'a> Gen<'a> {
         for &slot in &info.zero_slots {
             self.emit(str(XZR, FP, frame(slot)));
         }
-        self.block(body);
+        self.block_from(body, guarded as usize);
         if self.ret == Ty::Unit {
             self.mov_imm(X0, 0);
             self.epilogue();
@@ -508,10 +692,26 @@ impl<'a> Gen<'a> {
         }
     }
 
-    fn epilogue(&mut self) {
-        for i in 0..(self.registers.len() + self.loop_registers.len()) as u32 {
-            self.emit(ldr(FIRST_REGISTER as u32 + i, FP, frame(self.saved_slot + i)));
+    /// Saves, or brings back, the caller's values of the first `count`
+    /// registers that variables live in, two at a time where the frame
+    /// is small enough for that.
+    fn saved_registers(&mut self, count: u32, save: bool) {
+        let first = FIRST_REGISTER as u32;
+        let mut i = 0;
+        while i < count {
+            let slot = frame(self.saved_slot + i);
+            if i + 1 < count && slot + 1 <= MAX_PAIR {
+                self.emit(if save { stp(first + i, first + i + 1, FP, slot) } else { ldp(first + i, first + i + 1, FP, slot) });
+                i += 2;
+            } else {
+                self.emit(if save { str(first + i, FP, slot) } else { ldr(first + i, FP, slot) });
+                i += 1;
+            }
         }
+    }
+
+    fn epilogue(&mut self) {
+        self.saved_registers((self.registers.len() + self.loop_registers.len() + self.param_registers.len()) as u32, false);
         // Everything parked on the stack during a statement has been
         // taken off again by now, so sp is where the frame starts.
         if self.frame_bytes <= SMALL_FRAME {
@@ -536,13 +736,99 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// The register a parameter arrives in, when `id` names one that is
+    /// a number or a `bool` passed by value.
+    fn arriving(&self, id: ExprId, params: &[crate::sema::ParamInfo]) -> Option<u32> {
+        let Expr::Ident(_) = self.expr(id) else {
+            return None;
+        };
+        let place = self.place(id)?;
+        let param = params.get(place.slot as usize)?;
+        (!place.by_ref && !param.by_ref && matches!(param.ty, Ty::I64 | Ty::Bool)).then_some(place.slot)
+    }
+
+    /// When the function's first statement is `if a < b { return c }`
+    /// with parameters and constants only, generates it ahead of the
+    /// frame, straight from the registers the arguments arrive in, and
+    /// says so: the body then starts at its second statement.
+    fn guard(&mut self, body: List, params: &[crate::sema::ParamInfo]) -> bool {
+        let Some(&first) = self.ast.list(body).first() else {
+            return false;
+        };
+        let Stmt::If { cond, then_block, else_branch: Else::None } = self.ast.stmts[first as usize] else {
+            return false;
+        };
+        let &[only] = self.ast.list(then_block) else {
+            return false;
+        };
+        let Stmt::Return(value) = self.ast.stmts[only as usize] else {
+            return false;
+        };
+        if self.prog.stmt_drops[self.sh.s(first)].1 != 0 || self.prog.stmt_drops[self.sh.s(only)].1 != 0 {
+            return false;
+        }
+        let Expr::Binary { op, lhs, rhs } = self.expr(cond) else {
+            return false;
+        };
+        let (Some(code), Some(left)) = (comparison(op), self.arriving(lhs, params)) else {
+            return false;
+        };
+        // What to compare with: another parameter or a small constant.
+        let right = match self.expr(rhs) {
+            Expr::Int(_) => {
+                let value = self.prog.ints[self.prog.expr_res[self.sh.e(rhs)] as usize];
+                if !(0..4096).contains(&value) {
+                    return false;
+                }
+                Err(value as u32)
+            }
+            _ => match self.arriving(rhs, params) {
+                Some(reg) => Ok(reg),
+                None => return false,
+            },
+        };
+        // What to hand back: nothing, a parameter or a constant.
+        let result = match value {
+            None => Err(0),
+            Some(value) => match self.expr(value) {
+                Expr::Int(_) => Err(self.prog.ints[self.prog.expr_res[self.sh.e(value)] as usize]),
+                Expr::Bool(value) => Err(value as i64),
+                _ => match self.arriving(value, params) {
+                    Some(reg) => Ok(reg),
+                    None => return false,
+                },
+            },
+        };
+        match right {
+            Ok(right) => self.emit(cmp(left, right)),
+            Err(value) => self.emit(0xF100_001F | value << 10 | left << 5), // cmp left, #value
+        }
+        let on = self.placeholder();
+        match result {
+            Ok(X0) => {}
+            Ok(reg) => self.emit(mov(X0, reg)),
+            Err(value) => self.mov_imm(X0, value),
+        }
+        self.emit(RET);
+        self.patch_branch_if(on, code ^ 1);
+        true
+    }
+
     fn block(&mut self, body: List) {
+        self.block_from(body, 0);
+    }
+
+    /// Generates a block from its statement number `skip` on.
+    fn block_from(&mut self, body: List, skip: usize) {
         let outer = self.live.len();
-        for &id in self.ast.list(body) {
+        let start = self.words.len();
+        for &id in &self.ast.list(body)[skip..] {
             self.stmt(id);
         }
         self.drop_live_from(outer);
         self.live.truncate(outer);
+        // Its variables are gone, and their slots may be used again.
+        self.forget_since(start);
     }
 
     // ---- ownership -----------------------------------------------------
@@ -580,6 +866,7 @@ impl<'a> Gen<'a> {
         if id == next {
             self.glue.push((ty, copy));
         }
+        self.forget();
         let at = self.placeholder();
         self.glue_calls.push((at, id));
     }
@@ -757,6 +1044,26 @@ impl<'a> Gen<'a> {
     // ---- statements ----------------------------------------------------
 
     fn stmt(&mut self, id: StmtId) {
+        // Storing a number or a `bool` changes no list, and an `if`
+        // stores nothing itself: what is known about indices carries
+        // over those. Every other statement starts and ends knowing
+        // nothing.
+        let keeps = match self.ast.stmts[id as usize] {
+            Stmt::Let { value, .. } => !self.is_aggregate(value),
+            Stmt::Assign { target, .. } => !self.is_aggregate(target),
+            Stmt::If { .. } => true,
+            _ => false,
+        };
+        if !keeps {
+            self.forget();
+        }
+        self.stmt_inner(id);
+        if !keeps {
+            self.forget();
+        }
+    }
+
+    fn stmt_inner(&mut self, id: StmtId) {
         match self.ast.stmts[id as usize] {
             Stmt::Let { value, .. } => {
                 let slot = self.prog.stmt_slot[self.sh.s(id)];
@@ -804,6 +1111,8 @@ impl<'a> Gen<'a> {
                 // one branch: back up when the condition holds. The loop
                 // is entered by jumping to the test.
                 let enter = self.placeholder();
+                // The code below is reached again from its own end.
+                self.forget();
                 let top = self.words.len();
                 self.loops.push(LoopFixups { start: top, breaks: Vec::new(), continues: Some(Vec::new()), live: self.live.len() });
                 self.block(body);
@@ -824,6 +1133,7 @@ impl<'a> Gen<'a> {
             Stmt::While { cond, body } => {
                 // The condition leaves temporaries to free on every round,
                 // which is simplest with the test on top.
+                self.forget();
                 let start = self.words.len();
                 let exit = self.branch_if_false(id, cond);
                 self.loops.push(LoopFixups { start, breaks: Vec::new(), continues: None, live: self.live.len() });
@@ -865,10 +1175,15 @@ impl<'a> Gen<'a> {
             let Expr::Binary { rhs, .. } = self.expr(value) else {
                 unreachable!("checked: an append adds something");
             };
-            self.address(rhs);
-            self.emit(PUSH_X0);
-            self.address(target);
-            self.emit(pop(X1));
+            if self.place(target).is_some() || self.place(rhs).is_some() {
+                // (`two_addresses` puts the first of its two in x0.)
+                self.two_addresses(target, rhs);
+            } else {
+                self.address(rhs);
+                self.emit(PUSH_X0);
+                self.address(target);
+                self.emit(pop(X1));
+            }
             self.runtime(runtime::STR_APPEND);
             return;
         }
@@ -877,13 +1192,38 @@ impl<'a> Gen<'a> {
         if !ty.is_aggregate() {
             if let Some(reg) = place.and_then(|place| self.register(place)) {
                 self.value_in(value, reg);
+                self.writes(reg);
                 return;
+            }
+            if place.is_none() {
+                if let Some(element) = self.tracked(target) {
+                    // The value first, then the check of the index, as
+                    // when the element's address is worked out.
+                    let from = self.source(value);
+                    self.store_element(element, from);
+                    return;
+                }
+            }
+            if self.is_nothing(value) {
+                // Zero and `false` are stored from the zero register.
+                match place {
+                    Some(place) if place.by_ref => {
+                        let pointer = self.pointer(place.slot, X9);
+                        self.emit(str(XZR, pointer, place.offset));
+                        return;
+                    }
+                    Some(place) => {
+                        self.emit(str(XZR, FP, frame(place.slot + place.offset)));
+                        return;
+                    }
+                    None => {}
+                }
             }
             self.value(value);
             match place {
                 Some(place) if place.by_ref => {
-                    self.emit(ldr(X9, FP, frame(place.slot)));
-                    self.emit(str(X0, X9, place.offset));
+                    let pointer = self.pointer(place.slot, X9);
+                    self.emit(str(X0, pointer, place.offset));
                 }
                 Some(place) => self.emit(str(X0, FP, frame(place.slot + place.offset))),
                 None => {
@@ -905,8 +1245,8 @@ impl<'a> Gen<'a> {
             // Plain data into a fixed place: copy straight across.
             self.address(value);
             if place.by_ref {
-                self.emit(ldr(X9, FP, frame(place.slot)));
-                self.copy_to_pointer(place.offset, size);
+                let pointer = self.pointer(place.slot, X9);
+                self.copy(pointer, place.offset, size);
             } else {
                 self.copy_to_frame(place.slot + place.offset, size);
             }
@@ -1024,6 +1364,7 @@ impl<'a> Gen<'a> {
         // the list's address in x0 and the position in `at` for the top.
         let at = position_reg.unwrap_or(X1);
         let enter = self.placeholder();
+        self.forget();
         let top = self.words.len();
         if has_index {
             match self.slot_register(index_slot) {
@@ -1107,6 +1448,8 @@ impl<'a> Gen<'a> {
             }
         }
         self.emit(str(X0, FP, frame(base)));
+        // Until more code is written, x0 still holds what slot `base` does.
+        let fresh = self.words.len();
         self.drop_temps(id, false);
         if owned {
             self.live.push((base + 1, ty));
@@ -1125,8 +1468,12 @@ impl<'a> Gen<'a> {
             match info.kind {
                 PAT_VARIANT => {
                     if test {
-                        self.emit(ldr(X9, FP, frame(base)));
-                        self.emit(ldr(X9, X9, 0)); // tag
+                        if self.words.len() == fresh {
+                            self.emit(ldr(X9, X0, 0)); // tag
+                        } else {
+                            self.emit(ldr(X9, FP, frame(base)));
+                            self.emit(ldr(X9, X9, 0)); // tag
+                        }
                         self.emit(cmp_x9_imm(info.res + 1));
                         next = Some((self.placeholder(), None));
                     }
@@ -1204,6 +1551,9 @@ impl<'a> Gen<'a> {
             self.moved_out(value);
         } else if let Some(reg) = self.slot_register(slot) {
             self.value_in(value, reg);
+            self.writes(reg);
+        } else if self.is_nothing(value) {
+            self.emit(str(XZR, FP, frame(slot)));
         } else {
             self.value(value);
             self.emit(str(X0, FP, frame(slot)));
@@ -1294,19 +1644,31 @@ impl<'a> Gen<'a> {
 
     /// Copies `size` slots from the address in x0 into the frame.
     fn copy_to_frame(&mut self, slot: u32, size: u32) {
-        for i in 0..size {
-            self.emit(ldr(X10, X0, i));
-            self.emit(str(X10, FP, frame(slot + i)));
+        self.copy(FP, frame(slot), size);
+    }
+
+    /// Copies `size` slots from the address in x0 to `first` slots past
+    /// the address in `to`, two slots at a time where the offsets allow.
+    /// Uses x10 and x11.
+    fn copy(&mut self, to: u32, first: u32, size: u32) {
+        let mut i = 0;
+        while i < size {
+            if i + 1 < size && i + 1 <= MAX_PAIR && first + i + 1 <= MAX_PAIR {
+                self.emit(ldp(X10, X11, X0, i));
+                self.emit(stp(X10, X11, to, first + i));
+                i += 2;
+            } else {
+                self.emit(ldr(X10, X0, i));
+                self.emit(str(X10, to, first + i));
+                i += 1;
+            }
         }
     }
 
     /// Copies `size` slots from the address in x0 to `offset` slots past
     /// the address in x9.
     fn copy_to_pointer(&mut self, offset: u32, size: u32) {
-        for i in 0..size {
-            self.emit(ldr(X10, X0, i));
-            self.emit(str(X10, X9, offset + i));
-        }
+        self.copy(X9, offset, size);
     }
 
     /// `rd = buffer + index * element size`. Uses x10 when the element is
@@ -1314,6 +1676,8 @@ impl<'a> Gen<'a> {
     fn element_address(&mut self, rd: u32, buffer: u32, index: u32, elem_size: u32) {
         if elem_size == 1 {
             self.emit(add_scaled(rd, buffer, index));
+        } else if (elem_size * 8).is_power_of_two() {
+            self.emit(add_shifted(rd, buffer, index, (elem_size * 8).trailing_zeros()));
         } else {
             debug_assert!(buffer != X11 && index != X11);
             self.mov_imm(X11, elem_size as i64 * 8);
@@ -1343,6 +1707,191 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// `id` as an element the generator can keep track of: `xs[i]`,
+    /// `xs[i].field` or a byte `text[i]`, where the list or string is a
+    /// variable or a part of one and the index is a variable that lives
+    /// in a register or a small constant. Reaching such an element
+    /// disturbs only x9 to x12.
+    fn tracked(&self, id: ExprId) -> Option<Tracked> {
+        let mut offset = 0;
+        let mut at = id;
+        loop {
+            match self.expr(at) {
+                Expr::Field { base, .. } => {
+                    offset += self.prog.expr_res[self.sh.e(at)];
+                    at = base;
+                }
+                Expr::Index { base, index } => {
+                    let (size, bytes) = match self.ty(base) {
+                        Ty::Str => (1, true),
+                        Ty::List(list) => (self.prog.size_of(self.prog.lists[list as usize]), false),
+                        _ => return None,
+                    };
+                    let place = self.place(base)?;
+                    let at = match self.in_register(index) {
+                        Some(reg) => At::Reg(reg),
+                        None => {
+                            let Expr::Int(_) = self.expr(index) else {
+                                return None;
+                            };
+                            // Small enough for any offset made from it
+                            // to fit in an instruction; a negative one
+                            // is left to fail its check the long way.
+                            let value = self.prog.ints[self.prog.expr_res[self.sh.e(index)] as usize];
+                            if value < 0 || (value + 1).saturating_mul(size as i64) > MAX_OFFSET as i64 {
+                                return None;
+                            }
+                            At::Constant(value as u32)
+                        }
+                    };
+                    return Some(Tracked { place, at, size, offset, bytes });
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// Checks the index of a tracked element against the length, unless
+    /// that has been done on every path here, and makes x12 hold what
+    /// reaches the element. Returns how to address it from x12: an index
+    /// register (scaled by the element's size) or none, and an offset in
+    /// slots (bytes for a string). Uses x9 to x12 only.
+    fn element(&mut self, element: Tracked) -> (Option<u32>, u32) {
+        let Tracked { place, at, size, offset, .. } = element;
+        // An element of several slots is used through its address; of
+        // any other only the buffer is kept, which serves every index.
+        let whole = size != 1 && matches!(at, At::Reg(_));
+        let wanted = whole.then_some(at);
+        let known = self.known.iter().any(|known| known.place == place && known.at == at);
+        let held = self.held.is_some_and(|held| held.place == place && held.at == wanted);
+        if !known || !held {
+            // The list's three slots: in the frame, or behind a pointer.
+            let (header, first) = if place.by_ref {
+                (self.pointer(place.slot, X10), place.offset)
+            } else {
+                (FP, frame(place.slot + place.offset))
+            };
+            // When both are wanted, one instruction reads the buffer and
+            // the length, which lie side by side.
+            let both = !known && !held && first + 1 <= MAX_PAIR;
+            if !known {
+                if both {
+                    self.emit(ldp(X12, X9, header, first));
+                } else {
+                    self.emit(ldr(X9, header, first + 1)); // length
+                }
+                match at {
+                    At::Reg(reg) => {
+                        self.emit(cmp(reg, X9));
+                        self.emit(0x5400_0043); // b.lo +2: an unsigned compare also rejects negatives
+                    }
+                    At::Constant(value) => {
+                        self.emit(cmp_x9_imm(value));
+                        self.emit(SKIP_IF_HIGHER);
+                    }
+                }
+                self.runtime(runtime::INDEX_FAIL);
+                if self.known.len() == KNOWN {
+                    self.known.remove(0);
+                }
+                self.known.push(Known { place, at, since: self.words.len() });
+            }
+            if !held {
+                match at {
+                    At::Reg(reg) if whole => {
+                        let buffer = if both {
+                            X12
+                        } else {
+                            self.emit(ldr(X9, header, first));
+                            X9
+                        };
+                        let bytes = size * 8;
+                        if bytes.is_power_of_two() {
+                            self.emit(add_shifted(X12, buffer, reg, bytes.trailing_zeros()));
+                        } else {
+                            self.mov_imm(X11, bytes as i64);
+                            self.emit(madd(X12, reg, X11, buffer));
+                        }
+                    }
+                    _ if both => {}
+                    _ => self.emit(ldr(X12, header, first)),
+                }
+                self.held = Some(Held { place, at: wanted, since: self.words.len() });
+            }
+        }
+        match at {
+            At::Reg(_) if whole => (None, offset),
+            At::Reg(reg) => (Some(reg), 0),
+            At::Constant(value) => (None, value * size + offset),
+        }
+    }
+
+    /// Loads a tracked number, `bool` or byte into `reg`.
+    fn load_element(&mut self, element: Tracked, reg: u32) {
+        let (index, offset) = self.element(element);
+        self.emit(match (index, element.bytes) {
+            (Some(index), false) => ldr_scaled(reg, X12, index),
+            (None, false) => ldr(reg, X12, offset),
+            (Some(index), true) => ldrb_index(reg, X12, index),
+            (None, true) => ldrb(reg, X12, offset),
+        });
+    }
+
+    /// Stores the number or `bool` in `reg` into a tracked list element.
+    fn store_element(&mut self, element: Tracked, reg: u32) {
+        let (index, offset) = self.element(element);
+        self.emit(match index {
+            Some(index) => str_scaled(reg, X12, index),
+            None => str(reg, X12, offset),
+        });
+    }
+
+    /// Leaves the address of a tracked list element, or of a part of it,
+    /// in x0.
+    fn element_address_tracked(&mut self, element: Tracked) {
+        let (index, offset) = self.element(element);
+        match index {
+            Some(index) => self.emit(add_scaled(X0, X12, index)),
+            None if offset == 0 => self.emit(mov(X0, X12)),
+            None if offset * 8 < 4096 => self.emit(add_slots(X0, X12, offset)),
+            None => {
+                self.mov_imm(X0, offset as i64 * 8);
+                self.emit(add_reg(X0, X12, X0));
+            }
+        }
+    }
+
+    /// The register holding the address that the by-reference place in
+    /// frame slot `slot` starts from: the register a parameter lives in,
+    /// or `scratch` once the address has been loaded from the frame.
+    fn pointer(&mut self, slot: u32, scratch: u32) -> u32 {
+        if let Some(&(_, reg)) = self.param_registers.iter().find(|&&(taken, _)| taken == slot) {
+            return reg as u32;
+        }
+        self.emit(ldr(scratch, FP, frame(slot)));
+        scratch
+    }
+
+    /// Whether the expression is the constant 0 or `false`.
+    fn is_nothing(&self, id: ExprId) -> bool {
+        match self.expr(id) {
+            Expr::Bool(value) => !value,
+            _ => self.is_zero(id),
+        }
+    }
+
+    /// Works out the number or `bool` `id` and says which register it is
+    /// in: the zero register, the one the variable lives in, or x0.
+    fn source(&mut self, id: ExprId) -> u32 {
+        if self.is_nothing(id) {
+            return XZR;
+        }
+        self.in_register(id).unwrap_or_else(|| {
+            self.value(id);
+            X0
+        })
+    }
+
     /// Leaves the address of a place in x0.
     fn place_address(&mut self, place: Place) {
         self.place_address_in(place, X0);
@@ -1351,9 +1900,11 @@ impl<'a> Gen<'a> {
     /// Leaves the address of a place in `reg`, using no other register.
     fn place_address_in(&mut self, place: Place, reg: u32) {
         if place.by_ref {
-            self.emit(ldr(reg, FP, frame(place.slot)));
+            let pointer = self.pointer(place.slot, reg);
             if place.offset > 0 {
-                self.emit(add_slots(reg, reg, place.offset));
+                self.emit(add_slots(reg, pointer, place.offset));
+            } else if pointer != reg {
+                self.emit(mov(reg, pointer));
             }
         } else {
             self.frame_address(reg, place.slot + place.offset);
@@ -1373,27 +1924,105 @@ impl<'a> Gen<'a> {
     fn is_simple(&self, id: ExprId) -> bool {
         match self.expr(id) {
             Expr::Int(_) | Expr::Bool(_) => true,
-            Expr::Ident(_) | Expr::Field { .. } => !self.is_aggregate(id) && self.place(id).is_some(),
+            Expr::Ident(_) => !self.is_aggregate(id) && self.place(id).is_some(),
+            Expr::Field { .. } | Expr::Index { .. } => {
+                !self.is_aggregate(id) && (self.place(id).is_some() || self.tracked(id).is_some())
+            }
+            Expr::Call { .. } => self.len_of_place(id).is_some(),
             _ => false,
         }
     }
 
-    /// Loads a simple value into `reg`. Uses x9 for a value behind a pointer.
+    /// Loads a simple value into `reg`. Uses x9 for a value behind a
+    /// pointer and x9 to x12 for a list element.
     fn load_simple(&mut self, id: ExprId, reg: u32) {
         match self.expr(id) {
             Expr::Int(_) => self.mov_imm(reg, self.prog.ints[self.prog.expr_res[self.sh.e(id)] as usize]),
             Expr::Bool(value) => self.mov_imm(reg, value as i64),
+            Expr::Call { .. } => {
+                let place = self.len_of_place(id).expect("a simple call is the length of a variable");
+                self.load_len(place, reg);
+            }
             _ => {
-                let place = self.place(id).expect("a simple value that is not a constant is a place");
+                let Some(place) = self.place(id) else {
+                    let element = self.tracked(id).expect("a simple value that is no constant or place is an element");
+                    self.load_element(element, reg);
+                    return;
+                };
                 if place.by_ref {
-                    self.emit(ldr(X9, FP, frame(place.slot)));
-                    self.emit(ldr(reg, X9, place.offset));
+                    let pointer = self.pointer(place.slot, X9);
+                    self.emit(ldr(reg, pointer, place.offset));
                 } else if let Some(home) = self.register(place) {
                     self.emit(mov(reg, home));
                 } else {
                     self.emit(ldr(reg, FP, frame(place.slot + place.offset)));
                 }
             }
+        }
+    }
+
+    /// The variable or part of one whose length `id` asks for, when `id`
+    /// is such a `len()`: one or two loads give it.
+    fn len_of_place(&self, id: ExprId) -> Option<Place> {
+        let Expr::Call { callee, .. } = self.expr(id) else {
+            return None;
+        };
+        if self.prog.expr_res[self.sh.e(id)] != BUILTIN_LEN {
+            return None;
+        }
+        match self.expr(callee) {
+            Expr::Field { base, .. } => self.place(base),
+            _ => None,
+        }
+    }
+
+    /// Loads the length of the list or string in `place` into `reg`.
+    /// Uses x9 for one behind a pointer.
+    fn load_len(&mut self, place: Place, reg: u32) {
+        if place.by_ref {
+            let pointer = self.pointer(place.slot, X9);
+            self.emit(ldr(reg, pointer, place.offset + 1));
+        } else {
+            self.emit(ldr(reg, FP, frame(place.slot + place.offset + 1)));
+        }
+    }
+
+    /// True when evaluating the number or `bool` `id` calls nothing that
+    /// comes back: registers that calls do not preserve keep their
+    /// values across it. (A failed check does not come back.)
+    fn calls_nothing(&self, id: ExprId) -> bool {
+        match self.expr(id) {
+            Expr::Int(_) | Expr::Bool(_) | Expr::Ident(_) => true,
+            Expr::Field { base, .. } => self.calls_nothing(base),
+            Expr::Index { base, index } => self.calls_nothing(base) && self.calls_nothing(index),
+            Expr::Unary { operand, .. } => self.calls_nothing(operand),
+            Expr::Binary { lhs, rhs, .. } => {
+                // Comparing strings is the runtime's work.
+                self.ty(lhs) != Ty::Str && self.calls_nothing(lhs) && self.calls_nothing(rhs)
+            }
+            Expr::Call { .. } => self.len_of_place(id).is_some(),
+            _ => false,
+        }
+    }
+
+    /// Leaves the address of the string `lhs` in x0 and that of `rhs` in
+    /// x1. Finding a variable does nothing that shows, so when one side
+    /// is a variable the other is worked out first and nothing waits on
+    /// the stack.
+    fn two_addresses(&mut self, lhs: ExprId, rhs: ExprId) {
+        if let Some(place) = self.place(rhs) {
+            self.address(lhs);
+            self.place_address_in(place, X1);
+        } else if let Some(place) = self.place(lhs) {
+            self.address(rhs);
+            self.emit(mov(X1, X0));
+            self.place_address_in(place, X0);
+        } else {
+            self.address(lhs);
+            self.emit(PUSH_X0);
+            self.address(rhs);
+            self.emit(mov(X1, X0));
+            self.emit(pop(X0));
         }
     }
 
@@ -1431,17 +2060,27 @@ impl<'a> Gen<'a> {
                 self.load_simple(rhs, X0);
                 Operands::Registers(X1, X0)
             }
+            (None, None) if self.is_simple(rhs) => {
+                // Loading the right one leaves x0 alone.
+                self.value(lhs);
+                self.load_simple(rhs, X1);
+                Operands::Registers(X0, X1)
+            }
+            (None, None) if self.parked < PARKS && self.calls_nothing(rhs) => {
+                // The left one waits in a register that code without
+                // calls leaves alone.
+                let park = X13 + self.parked;
+                self.value_in(lhs, park);
+                self.parked += 1;
+                self.value(rhs);
+                self.parked -= 1;
+                Operands::Registers(park, X0)
+            }
             (None, None) => {
                 self.value(lhs);
-                if self.is_simple(rhs) {
-                    // Nothing runs in between, so the left one can wait in x1.
-                    self.emit(mov(X1, X0));
-                    self.load_simple(rhs, X0);
-                } else {
-                    self.emit(PUSH_X0);
-                    self.value(rhs);
-                    self.emit(pop(X1));
-                }
+                self.emit(PUSH_X0);
+                self.value(rhs);
+                self.emit(pop(X1));
                 Operands::Registers(X1, X0)
             }
         }
@@ -1557,6 +2196,12 @@ impl<'a> Gen<'a> {
     /// Completes one pending branch to jump to instruction `target`,
     /// which may lie before or after it.
     fn patch_one(&mut self, jump: Jump, target: usize) {
+        if target == self.words.len() {
+            // What was learnt after the jump is not known on its path.
+            // (A jump backwards lands where nothing is known.)
+            let (Jump::Zero { at, .. } | Jump::Flags { at, .. } | Jump::Always { at }) = jump;
+            self.forget_since(at);
+        }
         match jump {
             Jump::Zero { at, reg, nonzero } => {
                 let delta = (target as i64 - at as i64) as u32;
@@ -1642,7 +2287,14 @@ impl<'a> Gen<'a> {
             self.place_address(place);
             return;
         }
-        match self.expr(id) {
+        let expr = self.expr(id);
+        if let Expr::Field { .. } | Expr::Index { .. } = expr {
+            if let Some(element) = self.tracked(id).filter(|element| !element.bytes) {
+                self.element_address_tracked(element);
+                return;
+            }
+        }
+        match expr {
             Expr::Str(_) => {
                 let tmp = self.prog.expr_tmp[self.sh.e(id)];
                 self.string_value(self.prog.expr_res[self.sh.e(id)], tmp);
@@ -1652,11 +2304,7 @@ impl<'a> Gen<'a> {
             Expr::Binary { lhs, rhs, .. } => {
                 // `a + b` on strings: a new string in this expression's temporary.
                 let tmp = self.prog.expr_tmp[self.sh.e(id)];
-                self.address(lhs);
-                self.emit(PUSH_X0);
-                self.address(rhs);
-                self.emit(0xAA00_03E1); // mov x1, x0
-                self.emit(pop(X0));
+                self.two_addresses(lhs, rhs);
                 self.frame_address(X8, tmp);
                 self.runtime(runtime::STR_CONCAT);
                 self.frame_address(X0, tmp);
@@ -1705,16 +2353,37 @@ impl<'a> Gen<'a> {
     /// evaluated first, so that nothing runs between reading the buffer
     /// pointer and using it.
     fn checked_index(&mut self, base: ExprId, index: ExprId) -> u32 {
+        if let Some(place) = self.place(base) {
+            // A variable's length and buffer are read where they are; the
+            // index stays in the register it was worked out in.
+            let at = self.in_register(index).unwrap_or_else(|| {
+                self.value(index);
+                X0
+            });
+            let (header, first) = if place.by_ref {
+                (self.pointer(place.slot, X10), place.offset)
+            } else {
+                (FP, frame(place.slot + place.offset))
+            };
+            if first + 1 <= MAX_PAIR {
+                // The buffer and the length in one instruction.
+                self.emit(ldp(X9, X10, header, first));
+                self.emit(cmp(at, X10));
+                self.emit(0x5400_0043); // b.lo +2: an unsigned compare also rejects negatives
+                self.runtime(runtime::INDEX_FAIL);
+            } else {
+                self.emit(ldr(X9, header, first + 1)); // length
+                self.emit(cmp(at, X9));
+                self.emit(0x5400_0043); // b.lo +2
+                self.runtime(runtime::INDEX_FAIL);
+                self.emit(ldr(X9, header, first)); // buffer
+            }
+            return at;
+        }
         let at = if let Some(reg) = self.in_register(index) {
             // A variable in a register stays where it is.
             self.address(base);
             reg
-        } else if self.place(base).is_some() {
-            // Finding a variable takes only x0, so the index can wait in x1.
-            self.value(index);
-            self.emit(mov(X1, X0));
-            self.address(base);
-            X1
         } else {
             self.value(index);
             self.emit(PUSH_X0);
@@ -1851,7 +2520,14 @@ impl<'a> Gen<'a> {
 
     /// Generates code that leaves a scalar value in x0.
     fn value(&mut self, id: ExprId) {
-        match self.expr(id) {
+        let expr = self.expr(id);
+        if let Expr::Field { .. } | Expr::Index { .. } = expr {
+            if let Some(element) = self.tracked(id) {
+                self.load_element(element, X0);
+                return;
+            }
+        }
+        match expr {
             Expr::Try(inner) => self.try_expr(id, inner),
             Expr::Int(_) => self.mov_imm(X0, self.prog.ints[self.prog.expr_res[self.sh.e(id)] as usize]),
             Expr::Bool(value) => self.mov_imm(X0, value as i64),
@@ -1867,8 +2543,8 @@ impl<'a> Gen<'a> {
             }
             Expr::Ident(_) | Expr::Field { .. } | Expr::Index { .. } => match self.place(id) {
                 Some(place) if place.by_ref => {
-                    self.emit(ldr(X9, FP, frame(place.slot)));
-                    self.emit(ldr(X0, X9, place.offset));
+                    let pointer = self.pointer(place.slot, X9);
+                    self.emit(ldr(X0, pointer, place.offset));
                 }
                 Some(place) => match self.register(place) {
                     Some(reg) => self.emit(mov(X0, reg)),
@@ -1908,11 +2584,7 @@ impl<'a> Gen<'a> {
             }
             Expr::Binary { op, lhs, rhs } if self.ty(lhs) == Ty::Str => {
                 // `==` and `!=` on strings compare the bytes.
-                self.address(lhs);
-                self.emit(PUSH_X0);
-                self.address(rhs);
-                self.emit(0xAA00_03E1); // mov x1, x0
-                self.emit(pop(X0));
+                self.two_addresses(lhs, rhs);
                 self.runtime(runtime::STR_EQ);
                 if op == BinOp::NotEq {
                     self.emit(0xD240_0000); // eor x0, x0, #1
@@ -1934,6 +2606,23 @@ impl<'a> Gen<'a> {
             self.emit(cset_x0(code) | dest);
             return;
         }
+        if op == BinOp::Sub && self.is_zero(lhs) {
+            // `0 - x`
+            let right = self.in_register(rhs).unwrap_or_else(|| {
+                self.value(rhs);
+                X0
+            });
+            self.emit(neg(dest, right));
+            return;
+        }
+        // A constant on the left of an operation that can be turned
+        // round goes to the right, where it can stay inside the
+        // instruction. A constant does nothing when it is evaluated, so
+        // the order of the two does not show.
+        let turn = matches!(op, BinOp::Add | BinOp::Mul | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor)
+            && matches!(self.expr(lhs), Expr::Int(_))
+            && !matches!(self.expr(rhs), Expr::Int(_));
+        let (lhs, rhs) = if turn { (rhs, lhs) } else { (lhs, rhs) };
         if let Some(bits) = if matches!(op, BinOp::Mul | BinOp::Div | BinOp::Rem) { self.power_of_two(rhs) } else { None } {
             // By a power of two: shifts and masks instead of multiplying
             // and dividing. Division rounds toward zero and a remainder
@@ -2035,6 +2724,8 @@ impl<'a> Gen<'a> {
             Expr::Binary { op, lhs, rhs } if !matches!(op, BinOp::And | BinOp::Or) && !self.is_aggregate(lhs) => {
                 self.binary(op, lhs, rhs, dest)
             }
+            // A variable or a list element is loaded where it is wanted.
+            _ if self.is_simple(id) => self.load_simple(id, dest),
             _ => {
                 self.value(id);
                 self.emit(mov(dest, X0));
@@ -2071,28 +2762,71 @@ impl<'a> Gen<'a> {
                 worked = i + 1;
             }
         }
+        // From which argument on the rest call nothing that comes back:
+        // a number worked out before those can wait in a register
+        // instead of on the stack.
+        let mut quiet = worked;
+        let first = receiver.is_some() as usize;
+        for i in (0..worked.min(8)).rev() {
+            if worked < 2 {
+                // Nothing waits for a later argument.
+                break;
+            }
+            let arg = if i < first { receiver.expect("just checked") } else { arg_ids[i - first] };
+            let calm = match self.expr(arg) {
+                Expr::MutArg(inner) => self.place(inner).is_some(),
+                _ if self.arg_by_ref(target, i) => self.place(arg).is_some(),
+                _ => self.calls_nothing(arg),
+            };
+            if !calm {
+                break;
+            }
+            quiet = i;
+        }
+        // Where each argument that had to wait is: a register, or the stack.
+        let mut waits = [None; 8];
+        let before = self.parked;
         for (i, arg) in all() {
             let by_ref = self.arg_by_ref(target, i);
             if i >= worked {
                 self.load_simple_arg(arg, by_ref, i as u32);
                 continue;
             }
-            match self.expr(arg) {
-                Expr::MutArg(inner) => self.address(inner),
-                _ if by_ref => self.address(arg),
-                _ => self.value(arg),
-            }
+            let number = !by_ref && !matches!(self.expr(arg), Expr::MutArg(_));
             if i + 1 < worked {
+                if number && i + 1 >= quiet && self.parked < PARKS {
+                    let park = X13 + self.parked;
+                    self.value_in(arg, park);
+                    self.parked += 1;
+                    waits[i] = Some(park);
+                    continue;
+                }
+                match self.expr(arg) {
+                    Expr::MutArg(inner) => self.address(inner),
+                    _ if by_ref => self.address(arg),
+                    _ => self.value(arg),
+                }
                 self.emit(PUSH_X0);
             } else {
-                // The last of them is still in x0: move it into place
-                // and bring the earlier ones back.
-                if i > 0 {
+                // The last of them goes into its place (a number is
+                // worked out there: its register is written last), and
+                // the earlier ones are brought back.
+                match self.expr(arg) {
+                    Expr::MutArg(inner) => self.address(inner),
+                    _ if by_ref => self.address(arg),
+                    _ if i > 0 => self.value_in(arg, i as u32),
+                    _ => self.value(arg),
+                }
+                if i > 0 && !number {
                     self.emit(mov(i as u32, X0));
                 }
-                for reg in (0..i as u32).rev() {
-                    self.emit(pop(reg));
+                for reg in (0..i).rev() {
+                    match waits[reg] {
+                        Some(park) => self.emit(mov(reg as u32, park)),
+                        None => self.emit(pop(reg as u32)),
+                    }
                 }
+                self.parked = before;
             }
         }
         match target {
@@ -2127,6 +2861,8 @@ impl<'a> Gen<'a> {
                     // The callee writes its result where x8 points.
                     self.frame_address(X8, self.prog.expr_tmp[self.sh.e(id)]);
                 }
+                // The called code may change any list.
+                self.forget();
                 let at = self.placeholder();
                 self.calls.push((at, target));
             }
@@ -2136,20 +2872,35 @@ impl<'a> Gen<'a> {
     fn list_method(&mut self, id: ExprId, method: u32, base: ExprId, args: &[u32]) {
         if method == BUILTIN_LEN {
             // Lists and strings keep their length in the same place.
-            self.address(base);
-            self.emit(ldr(X0, X0, 1));
+            match self.place(base) {
+                Some(place) => self.load_len(place, X0),
+                None => {
+                    self.address(base);
+                    self.emit(ldr(X0, X0, 1));
+                }
+            }
             return;
         }
         if method == BUILTIN_STR_SLICE {
             // The bounds are evaluated first, so that nothing runs
             // between finding the string and reading it.
-            self.value(args[0]);
-            self.emit(PUSH_X0);
-            self.value(args[1]);
-            self.emit(PUSH_X0);
-            self.address(base);
-            self.emit(pop(X2));
-            self.emit(pop(X1));
+            match self.place(base) {
+                Some(place) if self.is_simple(args[1]) => {
+                    // Nothing after the first bound disturbs x1.
+                    self.value_in(args[0], X1);
+                    self.load_simple(args[1], X2);
+                    self.place_address(place);
+                }
+                _ => {
+                    self.value(args[0]);
+                    self.emit(PUSH_X0);
+                    self.value(args[1]);
+                    self.emit(PUSH_X0);
+                    self.address(base);
+                    self.emit(pop(X2));
+                    self.emit(pop(X1));
+                }
+            }
             self.frame_address(X8, self.prog.expr_tmp[self.sh.e(id)]);
             self.runtime(runtime::STR_SLICE);
             return;
@@ -2171,6 +2922,39 @@ impl<'a> Gen<'a> {
                         self.clone_frame(tmp, elem);
                     }
                     self.moved_out(args[0]);
+                } else if let Some(place) = self.place(base) {
+                    let from = self.source(args[0]);
+                    // A number or `bool` goes straight into a list
+                    // that has room; it is only put aside when the
+                    // list has to grow.
+                    let (header, first) = if place.by_ref {
+                        (self.pointer(place.slot, X11), place.offset)
+                    } else {
+                        (FP, frame(place.slot + place.offset))
+                    };
+                    if first + 2 <= MAX_PAIR {
+                        self.emit(ldp(X9, X10, header, first + 1)); // length and capacity
+                    } else {
+                        self.emit(ldr(X9, header, first + 1)); // length
+                        self.emit(ldr(X10, header, first + 2)); // capacity
+                    }
+                    self.emit(cmp(X9, X10));
+                    let grow = self.placeholder();
+                    self.emit(ldr(X10, header, first)); // buffer
+                    self.emit(str_scaled(from, X10, X9));
+                    self.emit(0x9100_0529); // add x9, x9, #1
+                    self.emit(str(X9, header, first + 1));
+                    let done = self.placeholder();
+                    self.patch_branch_if(grow, HS);
+                    self.emit(str(from, FP, frame(tmp)));
+                    self.place_address(place);
+                    self.frame_address(X1, tmp);
+                    self.mov_imm(X2, elem_size as i64 * 8);
+                    self.runtime(runtime::LIST_PUSH);
+                    self.patch_jump(done);
+                    // The list is longer now and may have moved.
+                    self.forget();
+                    return;
                 } else {
                     self.value(args[0]);
                     self.emit(str(X0, FP, frame(tmp)));
@@ -2198,6 +2982,8 @@ impl<'a> Gen<'a> {
                 if let Some(done) = done {
                     self.patch_jump(done);
                 }
+                // The list is longer now and may have moved.
+                self.forget();
             }
             _ => {
                 self.address(base);
@@ -2206,6 +2992,8 @@ impl<'a> Gen<'a> {
                 self.runtime(runtime::POP_EMPTY);
                 self.emit(0xD100_0529); // sub x9, x9, #1
                 self.emit(str(X9, X0, 1));
+                // The list is shorter now.
+                self.forget();
                 self.emit(ldr(X10, X0, 0)); // buffer
                 self.element_address(X0, X10, X9, elem_size);
                 if elem.is_aggregate() {
@@ -2255,6 +3043,26 @@ mod tests {
         assert_eq!(add_scaled(X0, X10, X9), 0x8B090D40);
         assert_eq!(madd(X0, X1, X10, X9), 0x9B0A2420);
         assert_eq!(madd(X0, X9, X11, X10), 0x9B0B2920);
+        // Two slots at a time.
+        assert_eq!(ldp(X10, X11, X0, 2), 0xA9412C0A); // ldp x10, x11, [x0, #16]
+        assert_eq!(stp(X10, X11, X9, MAX_PAIR), 0xA91FAD2A); // stp x10, x11, [x9, #504]
+        assert_eq!(stp(X19, X20, FP, 25), 0xA90CD3B3); // stp x19, x20, [x29, #200]
+        assert_eq!(ldp(X21, 22, FP, 0), 0xA9405BB5); // ldp x21, x22, [x29]
+        // List elements through x12, and values that wait in x13.
+        assert_eq!(ldr(X12, X10, 1), 0xF940054C); // ldr x12, [x10, #8]
+        assert_eq!(str_scaled(X0, X12, X19), 0xF8337980); // str x0, [x12, x19, lsl #3]
+        assert_eq!(ldr(X1, X12, 3), 0xF9400D81); // ldr x1, [x12, #24]
+        assert_eq!(mov(X13, X0), 0xAA0003ED); // mov x13, x0
+        assert_eq!(add_reg(X13, X13, X0), 0x8B0001AD); // add x13, x13, x0
+        assert_eq!(cmp_x9_imm(7), 0xF1001D3F); // cmp x9, #7
+        assert_eq!(cmp(X1, X2), 0xEB02003F); // cmp x1, x2
+        assert_eq!(add_shifted(X12, X9, X19, 5), 0x8B13152C); // add x12, x9, x19, lsl #5
+        assert_eq!(add_shifted(X0, X9, X1, 4), 0x8B011120); // add x0, x9, x1, lsl #4
+        assert_eq!(ldrb_index(X0, X12, X19), 0x38736980); // ldrb w0, [x12, x19]
+        assert_eq!(ldrb(X1, X12, 4094), 0x397FF981); // ldrb w1, [x12, #4094]
+        assert_eq!(neg(X20, X21), 0xCB1503F4); // neg x20, x21
+        assert_eq!(neg(X0, X0), 0xCB0003E0); // neg x0, x0
+        assert_eq!(SKIP_IF_HIGHER, 0x54000048); // b.hi .+8
         assert_eq!(add_reg(X9, X9, X10), 0x8B0A0129);
         assert_eq!(str(XZR, FP, 6), 0xF9001BBF);
         assert_eq!(add_slots(X0, X19, 5), 0x9100A260);

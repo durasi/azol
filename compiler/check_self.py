@@ -2,8 +2,10 @@
 """Checks the azoL compiler written in azoL against the one written in Rust.
 
 `azol-self` is the whole compiler in azoL: the lexer, the parser, the
-checker, the x86-64 code generator and the ELF writer in this folder,
-with `self_main.azl` on top. This script proves three things about it.
+checker, the x86-64 code generator, the ELF writer, the diagnostics and
+the formatter in this folder, with `self_main.azl` on top. This script
+proves three things about it; `check_cli.py` compares the rest of the
+command line.
 
 1. The same executables. For every program, `azol-self build` must write
    the file `azol build --target x86_64-linux` writes, byte for byte:
@@ -20,10 +22,8 @@ with `self_main.azl` on top. This script proves three things about it.
 
 3. The same errors. Wrong programs (the ones `check_front.py` and
    `check_sema.py` use, and right programs damaged at regular places)
-   must be refused with the same text on standard error and the same
-   exit code. The Rust compiler puts a code before each message,
-   `error[E0401]:`, from a table this compiler does not have yet; the
-   message itself is compared.
+   must be refused with the same text on standard error, error codes
+   included, and the same exit code.
 
     python3 compiler/check_self.py           everything
     python3 compiler/check_self.py --quick   without bench/generated/big.azl
@@ -40,12 +40,10 @@ import check_front, check_sema  # noqa: E402  (the wrong programs come from them
 
 AZOL = os.path.join(ROOT, "target", "release", "azol")
 BIG = os.path.join(ROOT, "bench", "generated", "big.azl")
-PRELUDE = os.path.join(ROOT, "src", "prelude.azl")
-RUNTIME = os.path.join(ROOT, "runtime", "linux_x64", "runtime.bin")
-SOURCES = ["self_main.azl", "driver.azl", "token.azl", "lexer.azl", "ast.azl", "parser.azl", "sema.azl", "sema_fn.azl",
-           "x64.azl", "x64_gen.azl", "runtime_x64.azl", "code_file.azl", "elf.azl", "bytes.azl"]
+SOURCES = ["self_main.azl", "driver.azl", "token.azl", "lexer.azl", "ast.azl", "parser.azl", "dump.azl", "sema.azl", "sema_fn.azl",
+           "x64.azl", "x64_gen.azl", "runtime_x64.azl", "code_file.azl", "elf.azl", "bytes.azl", "diag.azl", "diag_table.azl",
+           "embedded.azl", "format.azl"]
 SETS = check_sema.SETS + [["compiler/" + name for name in SOURCES]]
-CODE = re.compile(rb"^error\[E\d{4}\]:", re.M)
 
 
 def run(command, **more):
@@ -64,7 +62,7 @@ def rust_build(paths, out):
 
 
 def self_build(tool, paths, out):
-    return run([tool, "build", "-o", out, "--prelude", PRELUDE, "--runtime", RUNTIME] + paths)
+    return run([tool, "build", "-o", out] + paths)
 
 
 def compare(tool, paths, shown, work, counts):
@@ -79,7 +77,7 @@ def compare(tool, paths, shown, work, counts):
         return (f"{shown}: exit code {got.returncode}, expected {want.returncode}\n  azol:      {want.stderr[:300]!r}\n"
                 f"  azol-self: {got.stderr[:300]!r}")
     if want.returncode != 0:
-        a, b = CODE.sub(b"error:", want.stderr), got.stderr
+        a, b = want.stderr, got.stderr
         if a != b:
             at = first_difference(a, b)
             return (f"{shown}: standard error differs at byte {at}\n  azol:      {a[max(0, at - 60):at + 100]!r}\n"
@@ -173,9 +171,10 @@ def write(folder, name, text):
 
 
 def check(work, quick):
-    stale = run([sys.executable, os.path.join(HERE, "gen_runtime_azl.py"), "--check"])
-    if stale.returncode != 0:
-        sys.exit(stale.stderr.decode().strip())
+    for generator in ["gen_runtime_azl.py", "gen_tables_azl.py"]:
+        stale = run([sys.executable, os.path.join(HERE, generator), "--check"])
+        if stale.returncode != 0:
+            sys.exit(stale.stderr.decode().strip())
     sources = [os.path.join(HERE, name) for name in SOURCES]
 
     # The compiler compiles itself.
@@ -268,7 +267,7 @@ def check(work, quick):
         count += 1
 
         out = os.path.join(work, "big")
-        ours = [stage2, "build", "-o", out, "--prelude", PRELUDE, "--runtime", RUNTIME, BIG]
+        ours = [stage2, "build", "-o", out, BIG]
         theirs = [AZOL, "build", "--target", "x86_64-linux", "-o", out, BIG]
         print()
         print("big.azl, source to executable, best of 7, whole process:")

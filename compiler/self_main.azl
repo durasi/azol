@@ -2,29 +2,87 @@
 
 // azol-self: the azoL compiler written in azoL.
 //
-//     azol-self build <file.azl>... [-o <out>] --prelude <prelude.azl> --runtime <runtime.bin>
-//                     [--map <path>]
+// It takes the command lines the compiler written in Rust takes
+// (`src/main.rs`) and answers them the same way: the same text on
+// standard output and standard error, the same exit code, the same
+// files. `compiler/check_cli.py` and `compiler/check_self.py` verify
+// that. Built by itself, it produces itself again.
 //
-// It reads the source files, lexes, parses and checks them, generates
-// x86-64 code and writes a Linux executable: what `azol build --target
-// x86_64-linux` does, with the same bytes as the result, which
-// `compiler/check_self.py` verifies. Built by itself, it produces
-// itself again.
+// What differs, on purpose:
 //
-// Two files the Rust compiler carries inside itself are named on the
-// command line: the standard library's azoL source (`src/prelude.azl`)
-// and the runtime's machine code (`runtime/linux_x64/runtime.bin`).
-// Where the runtime's routines start comes from `runtime_x64.azl`.
+// - It builds for `x86_64-linux` only. Another target is accepted on the
+//   command line and the program is still checked, but then the build
+//   stops with one "not supported yet" error.
+// - It has no clock, so the times in the lines `built ...`,
+//   `checked ...`, `lexed ...` and `parsed ...` are zero.
+// - `build --map <path>` also writes where each function of the program
+//   starts in memory, one `address name` line each, for reading a
+//   profile of the executable. `sema-dump` is not here; the tool
+//   `azol-sema` does that.
 //
-// Without `-o`, the executable is named after the first source file,
-// without its extension. `--target x86_64-linux` is accepted; it is the
-// only target so far. `--map <path>` also writes where each function
-// of the program starts in memory, one `address name` line each, for
-// reading a profile of the executable.
+// The standard library's source and the runtime's machine code, which
+// the Rust compiler carries inside itself, are in `embedded.azl`.
+
+const TARGET_AARCH64_MACOS = 0
+const TARGET_X86_64_LINUX = 1
+const TARGET_AARCH64_LINUX = 2
 
 fn usage() -> i64 {
-    eprint("usage: azol-self build <file.azl>... [-o <out>] --prelude <prelude.azl> --runtime <runtime.bin> [--map <path>]")
+    eprint(USAGE)
     return 2
+}
+
+// What the system says about a failed file operation, with the number
+// of the error after it, as the Rust compiler prints it.
+fn os_error(text: str) -> str {
+    let texts = ["Operation not permitted", "No such file or directory", "Interrupted system call", "Input/output error",
+        "No such device or address", "Bad file descriptor", "Resource temporarily unavailable", "Cannot allocate memory",
+        "Permission denied", "Bad address", "Device or resource busy", "File exists", "No such device", "Not a directory",
+        "Is a directory", "Invalid argument", "Too many open files in system", "Too many open files", "Text file busy",
+        "File too large", "No space left on device", "Read-only file system", "Broken pipe", "File name too long",
+        "Too many levels of symbolic links", "Disk quota exceeded"]
+    let numbers = [1, 2, 4, 5, 6, 9, 11, 12, 13, 14, 16, 17, 19, 20, 21, 22, 23, 24, 26, 27, 28, 30, 32, 36, 40, 122]
+    for index, known in texts {
+        if known == text {
+            return text + " (os error " + str(numbers[index]) + ")"
+        }
+    }
+    return text
+}
+
+// The text of a source file. When it cannot be read, says so and sets
+// `failed`.
+fn read_source(path: str, failed: mut bool) -> str {
+    match read_file(path) {
+        Ok(text) => return text
+        Err(why) => {
+            eprint("error: cannot read '" + path + "': " + os_error(why))
+            failed = true
+            return ""
+        }
+    }
+}
+
+// How many lines the bytes `from..to` of `text` are: a last line counts
+// with or without its line end.
+fn count_lines(text: str, from: i64, to: i64) -> i64 {
+    var lines = 0
+    var i = from
+    while i < to {
+        if text[i] == '\n' {
+            lines = lines + 1
+        }
+        i = i + 1
+    }
+    if to > from && text[to - 1] != '\n' {
+        lines = lines + 1
+    }
+    return lines
+}
+
+// Prints an error with its code, its source line and a caret.
+fn report_coded(path: str, src: str, offset: i64, message: str) {
+    report_error_as("error[" + diag_code(diag_table(), message) + "]", path, src, offset, message)
 }
 
 // `path` without the extension of its file name.
@@ -51,39 +109,272 @@ fn without_extension(path: str) -> str {
     return path.slice(0, dot)
 }
 
-// Prints the mistakes of a program as `azol build` does. Each is at an
-// offset in the whole text; `starts` and `lens` say where each file is.
-fn show_problems(problems: List[ParseError], paths: List[str], starts: List[i64], lens: List[i64], src: str) {
-    for n, problem in problems {
-        if n > 0 {
+// ---- lex and parse ------------------------------------------------------
+
+fn run_lex(path: str, time_only: bool) -> i64 {
+    var failed = false
+    let src = read_source(path, mut failed)
+    if failed {
+        return 1
+    }
+    var tokens = new_tokens()
+    match lex(src, mut tokens) {
+        Some(problem) => {
+            report_coded(path, src, problem.offset, problem.message)
+            return 1
+        }
+        None => {}
+    }
+    if !time_only {
+        print(token_listing(src, tokens))
+    }
+    eprint("lexed " + str(src.len()) + " bytes, " + str(count_lines(src, 0, src.len())) + " lines, " + str(tokens.kinds.len()) +
+            " tokens in 0.000 ms (too fast to measure)")
+    return 0
+}
+
+fn run_parse(path: str, time_only: bool) -> i64 {
+    var failed = false
+    let src = read_source(path, mut failed)
+    if failed {
+        return 1
+    }
+    var p = new_parser(src)
+    match lex(p.src, mut p.tokens) {
+        Some(problem) => {
+            report_coded(path, src, problem.offset, problem.message)
+            return 1
+        }
+        None => {}
+    }
+    parse_tokens(mut p)
+    if p.failed {
+        report_coded(path, src, p.error.offset, p.error.message)
+        return 1
+    }
+    if !time_only {
+        let text = dump_ast(p.ast, p.src)
+        // `print` ends the line itself.
+        if text.len() > 0 {
+            print(text.slice(0, text.len() - 1))
+        }
+    }
+    eprint("parsed " + str(count_lines(src, 0, src.len())) + " lines into " + str(ast_node_count(p.ast)) +
+            " nodes in 0.000 ms (lex 0.000 ms + parse 0.000 ms; too fast to measure)")
+    return 0
+}
+
+// ---- fmt ------------------------------------------------------------------
+
+// Runs `fmt` with the arguments from `first` on.
+fn run_fmt(arguments: List[str], first: i64) -> i64 {
+    if arguments.len() == first + 1 && arguments[first] == "-" {
+        var src = ""
+        match read_file("/dev/stdin") {
+            Ok(text) => {
+                src = text
+            }
+            Err(why) => {
+                eprint("error: cannot read standard input: " + os_error(why))
+                return 1
+            }
+        }
+        let formatted = format_source(src)
+        if !formatted.ok {
+            report_coded("<stdin>", src, formatted.offset, formatted.message)
+            return 1
+        }
+        // `print` ends the line itself.
+        if formatted.text.len() > 0 {
+            print(formatted.text.slice(0, formatted.text.len() - 1))
+        }
+        return 0
+    }
+    var check = false
+    var at = first
+    if at < arguments.len() && arguments[at] == "--check" {
+        check = true
+        at = at + 1
+    }
+    if at >= arguments.len() {
+        return usage()
+    }
+    var k = at
+    while k < arguments.len() {
+        if arguments[k].starts_with("-") {
+            return usage()
+        }
+        k = k + 1
+    }
+    var failed = false
+    while at < arguments.len() {
+        let path = arguments[at]
+        at = at + 1
+        var unread = false
+        let src = read_source(path, mut unread)
+        if unread {
+            failed = true
+            continue
+        }
+        let formatted = format_source(src)
+        if !formatted.ok {
+            report_coded(path, src, formatted.offset, formatted.message)
+            failed = true
+        } else if formatted.text != src {
+            if check {
+                print(path)
+                failed = true
+            } else {
+                match write_file(path, formatted.text) {
+                    Ok(_) => {}
+                    Err(why) => {
+                        eprint("error: cannot write '" + path + "': " + os_error(why))
+                        failed = true
+                    }
+                }
+            }
+        }
+    }
+    if failed {
+        return 1
+    }
+    return 0
+}
+
+// ---- build and check ------------------------------------------------------
+
+// What `build` or `check` was asked to do. `ok` is false for a command
+// line that is not understood.
+struct BuildArguments {
+    ok: bool
+    paths: List[str]
+    // The output path, or empty for the one made from the first source.
+    out: str
+    target: i64
+    // Where to also write the code generator's result as text
+    // (`code_file.azl`), or empty. Not part of the usage text.
+    emit_code: str
+    // Where to also write where each function starts, or empty.
+    map: str
+    // Report errors as JSON on standard output.
+    json: bool
+}
+
+// Reads the arguments from `first` on: the source files, and `-o`,
+// `--target` and the like with their values, in any order.
+fn build_arguments(arguments: List[str], first: i64) -> BuildArguments {
+    var found = BuildArguments { ok: false, paths: [], out: "", target: TARGET_X86_64_LINUX, emit_code: "", map: "", json: false }
+    var has_out = false
+    var at = first
+    while at < arguments.len() {
+        let word = arguments[at]
+        at = at + 1
+        if word == "--json" {
+            found.json = true
+        } else if word == "-o" || word == "--emit-code" || word == "--target" || word == "--map" {
+            if at >= arguments.len() {
+                return found
+            }
+            let value = arguments[at]
+            at = at + 1
+            if word == "-o" {
+                found.out = value
+                has_out = true
+            } else if word == "--emit-code" {
+                found.emit_code = value
+            } else if word == "--map" {
+                found.map = value
+            } else if value == "aarch64-macos" {
+                found.target = TARGET_AARCH64_MACOS
+            } else if value == "x86_64-linux" {
+                found.target = TARGET_X86_64_LINUX
+            } else if value == "aarch64-linux" {
+                found.target = TARGET_AARCH64_LINUX
+            } else {
+                eprint("error: unknown target '" + value + "'; the targets are `aarch64-macos`, `x86_64-linux` and `aarch64-linux`")
+                return found
+            }
+        } else if !word.starts_with("-") {
+            found.paths.push(word)
+        } else {
+            return found
+        }
+    }
+    if found.paths.len() == 0 {
+        return found
+    }
+    if !has_out {
+        found.out = without_extension(found.paths[0])
+    }
+    found.ok = true
+    return found
+}
+
+// Shows the problems of a program: for a person on standard error, or
+// with `json` as one JSON object per line on standard output.
+fn show(found: List[Diagnostic], files: List[SourceFile], src: str, json: bool) {
+    if json {
+        for one in found {
+            print(json_line(one, files[one.file].path))
+        }
+        print(json_summary(found.len(), files.len()))
+        return
+    }
+    var text = ""
+    var shown = -1
+    for index, one in found {
+        if index > 0 {
             eprint("")
         }
-        // The file the position falls in. A position right after a
-        // file's last character still belongs to it.
-        var file = starts.len() - 1
-        var k = starts.len() - 1
-        while k >= 0 {
-            if problem.offset <= starts[k] + lens[k] {
-                file = k
-            }
-            k = k - 1
+        if shown != one.file {
+            shown = one.file
+            text = src.slice(files[shown].start, files[shown].start + files[shown].len)
         }
-        var inside = problem.offset - starts[file]
-        if inside < 0 {
-            inside = 0
-        }
-        if inside > lens[file] {
-            inside = lens[file]
-        }
-        if starts.len() == 1 && lens[0] == src.len() {
-            report_error(paths[file], src, inside, problem.message)
-        } else {
-            report_error(paths[file], src.slice(starts[file], starts[file] + lens[file]), inside, problem.message)
+        report_error_as("error[" + one.code + "]", files[shown].path, text, one.at, one.message)
+    }
+    if found.len() > 1 {
+        eprint("\nfound " + str(found.len()) + " errors")
+    }
+}
+
+// Adds bytes as lines of hexadecimal digits, 32 bytes to a line.
+fn hex_lines(out: mut str, bytes: List[i64]) {
+    let digits = "0123456789abcdef"
+    for index, byte in bytes {
+        out = out + digits.slice(byte >> 4, (byte >> 4) + 1) + digits.slice(byte & 15, (byte & 15) + 1)
+        if index % 32 == 31 {
+            out = out + "\n"
         }
     }
-    if problems.len() > 1 {
-        eprint("\nfound " + str(problems.len()) + " errors")
+    if bytes.len() % 32 != 0 {
+        out = out + "\n"
     }
+}
+
+// The text form of what the code generator hands to the ELF writer,
+// with the facts about the runtime that writer needs. The format is
+// described in `code_file.azl`.
+fn code_text(g: Gen, c: Checker) -> str {
+    let entries = rt_entries()
+    var text = "azol-code 1\ntarget x86_64-linux\nentry " + str(g.fn_starts[c.main]) + "\nruntime " + str(RT_BASE) + " " +
+        str(RT_TEXT_OFFSET) + " " + str(RT_START) + " " + str(RT_MEMORY) + " " + str(RT_MEMORY_SIZE) + "\nentries " +
+        str(entries.len()) + "\n"
+    for offset in entries {
+        text = text + str(offset) + "\n"
+    }
+    text = text + "code " + str(g.code.len()) + "\n"
+    hex_lines(mut text, g.code)
+    text = text + "data " + str(c.data.len()) + "\n"
+    hex_lines(mut text, c.data.bytes())
+    text = text + "calls " + str(g.runtime_calls.len()) + "\n"
+    for call in g.runtime_calls {
+        text = text + str(call.field) + " " + str(call.value) + "\n"
+    }
+    text = text + "refs " + str(g.data_refs.len()) + "\n"
+    for reference in g.data_refs {
+        text = text + str(reference.field) + " " + str(reference.value) + "\n"
+    }
+    return text + "end\n"
 }
 
 // One line per function: the address its code starts at, in hexadecimal,
@@ -109,98 +400,70 @@ fn function_map(g: Gen, c: Checker, p: Parser) -> str {
     return out
 }
 
-fn main() -> i64 {
-    let arguments = args()
-    if arguments.len() < 3 || arguments[1] != "build" {
-        return usage()
-    }
-    var paths: List[str] = []
-    var out = ""
-    var prelude_path = ""
-    var runtime_path = ""
-    var map_path = ""
-    var at = 2
-    while at < arguments.len() {
-        let word = arguments[at]
-        if word == "-o" || word == "--prelude" || word == "--runtime" || word == "--target" || word == "--map" {
-            if at + 1 >= arguments.len() {
-                return usage()
-            }
-            let value = arguments[at + 1]
-            if word == "-o" {
-                out = value
-            } else if word == "--prelude" {
-                prelude_path = value
-            } else if word == "--runtime" {
-                runtime_path = value
-            } else if word == "--map" {
-                map_path = value
-            } else if value != "x86_64-linux" {
-                eprint("error: unknown target '" + value + "'; azol-self builds for `x86_64-linux`")
-                return 1
-            }
-            at = at + 2
-        } else {
-            paths.push(word)
-            at = at + 1
+// Writes a file the compiler makes; says so when it cannot.
+fn write_or_say(path: str, text: str) -> bool {
+    match write_file(path, text) {
+        Ok(_) => return true
+        Err(why) => {
+            eprint("error: cannot write '" + path + "': " + os_error(why))
+            return false
         }
     }
-    if paths.len() == 0 || prelude_path.len() == 0 || runtime_path.len() == 0 {
-        return usage()
-    }
-    if out.len() == 0 {
-        out = without_extension(paths[0])
-    }
-    if out == paths[0] {
-        eprint("error: the output would overwrite the source file; pass `-o <out>`")
-        return 1
-    }
+}
+
+fn run_build(arguments: BuildArguments, check_only: bool) -> i64 {
+    let paths = arguments.paths
+    let json = arguments.json
 
     // All source files, and after them the standard library's source,
     // follow each other in one text, so that every position in any of
     // them is a plain offset.
     var src = ""
-    var starts: List[i64] = []
-    var lens: List[i64] = []
+    var files: List[SourceFile] = []
     for path in paths {
-        let text = read_or_exit(path)
-        lens.push(text.len())
-        if starts.len() == 0 {
+        var failed = false
+        let text = read_source(path, mut failed)
+        if failed {
+            return 1
+        }
+        let len = text.len()
+        if files.len() == 0 {
             // The first file's text is taken over as it is.
-            starts.push(0)
             src = text
+            files.push(SourceFile { path: path, start: 0, len: len })
         } else {
             src = src + "\n"
-            starts.push(src.len())
+            files.push(SourceFile { path: path, start: src.len(), len: len })
             src = src + text
         }
     }
-    let prelude = read_or_exit(prelude_path)
     let prelude_start = src.len() + 1
     src = src + "\n"
-    src = src + prelude
+    src = src + PRELUDE
 
-    // Each file is lexed and parsed on its own, and every file with a
+    // Each file is lexed and parsed on its own: a mistake at the end of
+    // one file is never reported inside the next, and every file with a
     // mistake reports its first one. After a mistake the tree is of no
-    // use any more; the files that follow are still parsed. The parser
-    // takes the text over: from here on it is `p.src`.
+    // use any more; the files that follow are still parsed, for the
+    // mistakes of their own. The parser takes the text over: from here
+    // on it is `p.src`.
     var p = new_parser("")
     p.src = src
-    var problems: List[ParseError] = []
-    for k, start in starts {
-        let problem = parse_part(mut p, start, lens[k])
+    var problems: List[SemaError] = []
+    for file in files {
+        let problem = parse_part(mut p, file.start, file.len)
         if problem.message.len() > 0 {
-            problems.push(problem)
+            problems.push(SemaError { message: problem.message, offset: problem.offset, expr: -1, fix: no_fix() })
             let text = p.src
             p = new_parser("")
             p.src = text
         }
     }
     if problems.len() > 0 {
-        show_problems(problems, paths, starts, lens, p.src)
+        show(diagnose(problems, files, p.src, p.ast, false), files, p.src, json)
         return 1
     }
-    let problem = parse_part(mut p, prelude_start, prelude.len())
+    let problem = parse_part(mut p, prelude_start, PRELUDE.len())
     if problem.message.len() > 0 {
         eprint("error: the standard library does not parse: " + problem.message)
         return 1
@@ -214,21 +477,50 @@ fn main() -> i64 {
                 eprint("error: " + error.message + " (inside the standard library; this is a bug in azoL)")
                 return 1
             }
-            problems.push(ParseError { message: error.message, offset: error.offset })
         }
-        show_problems(problems, paths, starts, lens, p.src)
+        show(diagnose(c.errors, files, p.src, p.ast, true), files, p.src, json)
+        return 1
+    }
+    if check_only {
+        if json {
+            print(json_summary(0, files.len()))
+        } else {
+            var lines = 0
+            for file in files {
+                lines = lines + count_lines(p.src, file.start, file.start + file.len)
+            }
+            var many = "s"
+            if files.len() == 1 {
+                many = ""
+            }
+            eprint("checked " + str(lines) + " lines in " + str(files.len()) + " file" + many + ": no errors (0.000 ms)")
+        }
+        return 0
+    }
+
+    let out = arguments.out
+    if out == paths[0] {
+        eprint("error: the output would overwrite the source file; pass `-o <out>`")
+        return 1
+    }
+    if arguments.target != TARGET_X86_64_LINUX {
+        var name = "aarch64-macos"
+        if arguments.target == TARGET_AARCH64_LINUX {
+            name = "aarch64-linux"
+        }
+        eprint("error: not supported yet: the target `" + name + "`; the compiler written in azoL builds for `x86_64-linux` only")
         return 1
     }
 
     var g = x_new_gen()
     x_generate(mut g, c, p)
     let code_bytes = g.code.len()
-    let runtime = read_or_exit(runtime_path)
-    if runtime.len() != RT_TEXT_SIZE {
-        eprint("error: '" + runtime_path + "' is not the runtime this compiler was made for: it has " + str(runtime.len()) +
-                " bytes, not " + str(RT_TEXT_SIZE))
-        return 1
+    if arguments.emit_code.len() > 0 {
+        if !write_or_say(arguments.emit_code, code_text(g, c)) {
+            return 1
+        }
     }
+    let runtime = embedded_runtime()
     let info = CodeFile {
         target: "x86_64-linux",
         entry: g.fn_starts[c.main],
@@ -247,29 +539,89 @@ fn main() -> i64 {
         refs: g.data_refs,
     }
     let image = build_elf_text(info, mut g.code, c.data, runtime)
-    match write_file(out, image) {
-        Ok(_) => {}
-        Err(why) => {
-            eprint("error: cannot write '" + out + "': " + why)
-            return 1
-        }
+    if !write_or_say(out, image) {
+        return 1
     }
     match set_executable(out) {
         Ok(_) => {}
         Err(why) => {
-            eprint("error: cannot write '" + out + "': " + why)
+            eprint("error: cannot write '" + out + "': " + os_error(why))
             return 1
         }
     }
-    if map_path.len() > 0 {
-        match write_file(map_path, function_map(g, c, p)) {
-            Ok(_) => {}
-            Err(why) => {
-                eprint("error: cannot write '" + map_path + "': " + why)
-                return 1
-            }
+    if arguments.map.len() > 0 {
+        if !write_or_say(arguments.map, function_map(g, c, p)) {
+            return 1
         }
     }
-    eprint("built " + out + " (" + str(code_bytes) + " bytes of code)")
+    if json {
+        print(json_summary(0, files.len()))
+    }
+    eprint("built " + out + " (" + str(code_bytes) + " bytes of code) in 0.000 ms (read 0.000, parse 0.000, check 0.000, " +
+            "codegen 0.000, link 0.000, write 0.000)")
     return 0
+}
+
+// ---- the command line -----------------------------------------------------
+
+fn main() -> i64 {
+    let arguments = args()
+    let count = arguments.len() - 1
+    if count < 1 {
+        return usage()
+    }
+    let command = arguments[1]
+    if command == "--version" && count == 1 {
+        print("azol " + VERSION)
+        return 0
+    }
+    if command == "lex" || command == "parse" {
+        var time_only = false
+        var path = ""
+        if count == 2 {
+            path = arguments[2]
+        } else if count == 3 && arguments[2] == "--time" {
+            time_only = true
+            path = arguments[3]
+        } else {
+            return usage()
+        }
+        if command == "lex" {
+            return run_lex(path, time_only)
+        }
+        return run_parse(path, time_only)
+    }
+    if command == "fmt" {
+        return run_fmt(arguments, 2)
+    }
+    if command == "build" || command == "check" {
+        let found = build_arguments(arguments, 2)
+        if !found.ok {
+            return usage()
+        }
+        return run_build(found, command == "check")
+    }
+    if command == "explain" {
+        if count == 1 {
+            let text = diag_list(diag_table())
+            print(text.slice(0, text.len() - 1))
+            return 0
+        }
+        if count == 2 && arguments[2] == "--markdown" {
+            // How `docs/errors.md` is made; not part of the usage text.
+            let text = diag_errors_md(diag_table())
+            print(text.slice(0, text.len() - 1))
+            return 0
+        }
+        if count == 2 {
+            let text = diag_explain(diag_table(), arguments[2])
+            if text.len() == 0 {
+                eprint("error: there is no error code '" + arguments[2] + "'; `azol explain` lists them all")
+                return 1
+            }
+            print(text.slice(0, text.len() - 1))
+            return 0
+        }
+    }
+    return usage()
 }

@@ -1,0 +1,45 @@
+// expect-exit: 0
+// expect-line: 0: 42
+// expect-line: 1: 77
+// expect-line: 2: none
+// expect-line: 3: none
+// The `?` operator between element reads in one expression.
+struct P { a: i64, name: str, b: i64 }
+
+fn pick(xs: List[i64], i: i64) -> Option[i64] {
+    if i < 0 || i >= xs.len() {
+        return None
+    }
+    return Some(xs[i])
+}
+
+fn named(ps: List[P], i: i64) -> Option[str] {
+    if i >= ps.len() {
+        return None
+    }
+    return Some(ps[i].name)
+}
+
+fn sum3(xs: List[i64], ps: List[P], i: i64) -> Option[i64] {
+    let a = xs[i] + pick(xs, i + 1)? + xs[i]
+    let b = xs[i] * 2 + ps[i].a + pick(xs, ps[i].b)? + ps[i].a
+    let n = named(ps, i)?
+    let c = xs[i] + n.len() + ps[i].b + named(ps, i + 1)?.len() + xs[i]
+    return Some(a + b + c)
+}
+
+fn main() {
+    var xs = [3, 5, 7, 11]
+    var ps: List[P] = []
+    ps.push(P { a: 1, name: "one", b: 2 })
+    ps.push(P { a: 10, name: "three", b: 3 })
+    ps.push(P { a: 100, name: "x", b: 9 })
+    var i = 0
+    while i < 4 {
+        match sum3(xs, ps, i) {
+            Some(v) => print(str(i) + ": " + str(v))
+            None => print(str(i) + ": none")
+        }
+        i = i + 1
+    }
+}

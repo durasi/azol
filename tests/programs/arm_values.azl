@@ -1,0 +1,163 @@
+// expect-exit: 0
+// expect-output: -13576 19301 144115188075825179 239 leftright left! <left 1 1left 2 left2 3 4 34 false true true 5 true 6 true 7 rightleft.7 8 ab8bc 9 x9yx igh.7 51493 2230500472
+// Values that wait in registers while the right side of an operation
+// is worked out, constants on the left, text passed two at a time, and
+// copies made two slots at a time.
+
+struct Five {
+    a: i64
+    b: i64
+    c: i64
+    d: i64
+    e: i64
+}
+
+struct One {
+    only: i64
+}
+
+struct Named {
+    name: str
+    extra: str
+    n: i64
+}
+
+fn deep(a: i64, b: i64, c: i64, xs: List[i64]) -> i64 {
+    // More levels than there are registers to wait in.
+    let product = (a + b) * ((a - c) * ((b + c) * ((a + 1) * ((b + 2) * (c + 3 + xs[1])))))
+    return product + (a * b + (c * a + (b * c + (a * a + (b * b + xs[0] * xs[2])))))
+}
+
+fn left_constants(x: i64) -> i64 {
+    return (0 - x) + (3 + x) * (8 * x) + (7 & x) + (9 | x) + (5 ^ x) + (2 - x) + (100 / x) + (100 % x) + (1 << x) + (4096 + x) + (5000 * x)
+}
+
+fn lengths(s: str, xs: List[i64], n: i64) -> i64 {
+    var i = 0
+    var count = 0
+    while i + n <= s.len() && i < xs.len() + n {
+        count = count + s.len() - i + xs.len()
+        i = i + n
+    }
+    return count * 10 + s.slice(n, s.len() - 1).len() + s.slice(i - n, n + n).len()
+}
+
+fn sounds(n: i64) -> str {
+    print(n)
+    return str(n)
+}
+
+fn texts() {
+    let s = "left"
+    var t = "right"
+    print(s + t)
+    print(s + "!")
+    print("<" + s)
+    print(sounds(1) + s)
+    print(s + sounds(2))
+    print(sounds(3) + sounds(4))
+    print(s == t)
+    print(s == "left")
+    print("right" == t)
+    print(sounds(5) == "5")
+    print(s != sounds(6))
+    t = t + s
+    t = t + "."
+    t = t + sounds(7)
+    print(t)
+    var named = Named { name: "a", extra: "b", n: 1 }
+    named.name = named.name + named.extra
+    named.extra = named.extra + "c"
+    named.name = named.name + sounds(8)
+    print(named.name + named.extra)
+    var names = ["x", "y"]
+    names[1] = names[1] + names[0]
+    names[0] = names[0] + sounds(9)
+    print(names[0] + names[1])
+    print(t.slice(1, 4) + t.slice(t.len() - 2, t.len()))
+}
+
+fn copies() -> i64 {
+    // Enough variables to push later ones far up the frame.
+    let f1 = Five { a: 1, b: 2, c: 3, d: 4, e: 5 }
+    let f2 = f1
+    let f3 = Five { a: f2.e, b: f2.d, c: f2.c, d: f2.b, e: f2.a }
+    let f4 = f3
+    let f5 = f4
+    let f6 = f5
+    let f7 = f6
+    let f8 = f7
+    let f9 = f8
+    let f10 = f9
+    let f11 = f10
+    let f12 = f11
+    let f13 = f12
+    let f14 = f13
+    var fives = [f1, f14]
+    fives[0] = fives[1]
+    fives.push(f2)
+    let one = One { only: 9 }
+    var ones = [one, One { only: 4 }]
+    ones[1] = ones[0]
+    let last = fives.pop()
+    return fives[0].a * 10000 + fives[1].e * 1000 + last.d * 100 + ones[1].only * 10 + f14.c
+}
+
+struct Flags {
+    on: bool
+    count: i64
+}
+
+fn clear(flags: mut Flags, n: mut i64, marks: mut List[bool], nums: mut List[i64]) -> i64 {
+    // Zero and `false` are stored without first being put in a register.
+    let before = flags.count + n + nums[0]
+    flags.on = false
+    flags.count = 0
+    n = 0
+    marks[1] = false
+    nums[0] = 0
+    nums[2] = 0
+    marks.push(false)
+    nums.push(0)
+    var i = nums.len()
+    nums.push(i)
+    nums.push(7)
+    i = 0
+    nums.push(i)
+    return before
+}
+
+fn zeros() -> i64 {
+    var flags = Flags { on: true, count: 9 }
+    var n = 5
+    var marks = [true, true, true]
+    var nums = [4, 5, 6]
+    var total = clear(mut flags, mut n, mut marks, mut nums)
+    var held = 3
+    total = total * 10 + held
+    held = 0
+    var k = 0
+    while k < nums.len() {
+        total = total * 10 + nums[k] + held
+        k = k + 1
+    }
+    for mark in marks {
+        if mark {
+            total = total + 1
+        }
+    }
+    if flags.on {
+        total = total + 1000
+    }
+    return total + flags.count + n + marks.len() * 100000000
+}
+
+fn main() {
+    print(deep(2, 3, 4, [5, 6, 7]))
+    print(left_constants(3))
+    print(left_constants(0 - 7))
+    print(lengths("abcdefghij", [1, 2, 3], 3))
+    texts()
+    print(copies())
+    print(zeros())
+}

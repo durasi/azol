@@ -1,0 +1,152 @@
+// expect-exit: 0
+// expect-output: 610 125 true true false 4107 33 true false 55 2 21 1227 1253 303 730 3 4 7 232 1 2 3 710 233
+// Calls: a guard at the top of a function that is decided before the
+// frame exists, addresses that arrive as parameters and live in
+// registers, and arguments that wait in registers for later ones.
+
+struct Box {
+    items: List[i64]
+    tag: i64
+}
+
+fn below(n: i64) -> i64 {
+    if n < 2 {
+        return n
+    }
+    return below(n - 1) + below(n - 2)
+}
+
+fn at_most(a: i64, b: i64, c: i64) -> i64 {
+    if b <= a {
+        return c
+    }
+    return at_most(a + 1, b, c + b)
+}
+
+fn same(a: i64, b: i64) -> bool {
+    if a == b {
+        return true
+    }
+    return a + 1 == b
+}
+
+fn differs(a: i64, b: i64) -> i64 {
+    if a != 4095 {
+        return 7
+    }
+    return a + b
+}
+
+fn above(a: i64, b: i64) -> i64 {
+    if a > b {
+        return b
+    }
+    return a
+}
+
+fn not_below(flag: bool, a: i64) -> bool {
+    if a >= 10 {
+        return flag
+    }
+    return !flag
+}
+
+fn quiet(n: i64, total: mut i64) {
+    if n == 0 {
+        return
+    }
+    total = total + n
+    quiet(n - 1, mut total)
+}
+
+fn not_a_guard(n: i64, total: mut i64) -> i64 {
+    // Looks like one, but the test reads through an address.
+    if total > 5 {
+        return n
+    }
+    total = total + 10
+    return not_a_guard(n + 1, mut total)
+}
+
+fn big_constant(n: i64) -> i64 {
+    // Too large to sit in the compare: decided inside the frame.
+    if n > 5000 {
+        return 1
+    }
+    return 2
+}
+
+fn fill(box: mut Box, from: List[i64], scale: i64, shift: mut i64) -> i64 {
+    // Two addresses used often and more variables than registers.
+    var a = 1
+    var b = 2
+    var c = 3
+    var d = 4
+    var e = 5
+    var f = 6
+    var g = 7
+    var h = 8
+    var i = 0
+    var total = 0
+    while i < from.len() {
+        box.items.push(from[i] * scale + shift)
+        total = total + box.items[i] + a + b + c + d + e + f + g + h
+        a = a + b
+        b = b + c
+        c = c + d
+        d = d + e
+        e = e + f
+        f = f + g
+        g = g + h
+        h = h + i
+        shift = shift + 1
+        i = i + 1
+    }
+    box.tag = box.tag + total
+    return total + from.len() + box.items.len()
+}
+
+fn eight(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64) -> i64 {
+    return a + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 + g * 7 + h * 8
+}
+
+fn three(xs: List[i64], n: i64, m: i64) -> i64 {
+    return xs[n] * 100 + m
+}
+
+fn noisy(n: i64) -> i64 {
+    print(n)
+    return n * 2
+}
+
+fn main() {
+    print(below(15))
+    print(at_most(0, 5, 100))
+    print(same(3, 3))
+    print(same(3, 4))
+    print(same(3, 5))
+    print(differs(4095, 5) + differs(4094, 5))
+    print(above(3, 9) * 10 + above(9, 3))
+    print(not_below(true, 10))
+    print(not_below(true, 9))
+    var total = 0
+    quiet(10, mut total)
+    print(total)
+    var small = 0
+    print(not_a_guard(1, mut small))
+    print(big_constant(5000) * 10 + big_constant(5001))
+    var box = Box { items: [], tag: 1 }
+    var shift = 3
+    print(fill(mut box, [9, 8, 7, 6, 5], 4, mut shift))
+    print(box.tag + shift + box.items[4])
+    let xs = [5, 6, 7, 8]
+    var k = 1
+    // Numbers that wait in registers while later ones are worked out.
+    print(eight(k + 1, k * 3, xs[k] + 1, xs[k + 1] * xs[k], k - 9, xs.len() + k, (k + 2) * (k + 3), xs[3] / (k + 1)))
+    print(three(xs, k + 1, xs[k] * (k + 4)))
+    // A call among them: the earlier ones wait on the stack instead.
+    print(eight(k + 1, noisy(k * 3), xs[k] + 1, noisy(4), k - 9, 6, noisy(7) + k, 8))
+    print(three(xs, noisy(1) / 2 + 1, noisy(2) + xs[noisy(3) - 6 + k]))
+    k = 3
+    print(eight(1, 2, 3, 4, 5, 6, 7, xs[k]) + eight(xs[0], 0, 0, 0, 0, 0, 0, k))
+}

@@ -1,0 +1,23 @@
+// expect-exit: 1
+// expect-output: 1 2
+// expect-stderr: azol: index out of range
+
+// The same the other way round, in the arguments of a call: the index
+// fails before the division is reached, and after the call before it
+// has printed.
+fn say(n: i64) -> i64 {
+    print(n)
+    return n
+}
+
+fn spread(a: i64, b: i64, c: i64) -> i64 {
+    return a * 100 + b * 10 + c
+}
+
+fn main() {
+    let xs = [4, 5, 6]
+    var zero = 0
+    var i = 1
+    print(spread(say(1) + i, say(2) * xs[i + 2], xs[i] / zero))
+    print(0)
+}

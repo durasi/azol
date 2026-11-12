@@ -1,0 +1,189 @@
+// expect-exit: 0
+// expect-output: 44100 39573 9968 15009 1581 167 5272 414 1545 1525 777 70 91 70 5
+// List elements, fields of elements and bytes of strings, read and
+// written through the address the ARM64 generator keeps at hand. Every
+// part makes what it remembers stale in some way and then uses the
+// list again.
+
+struct Triple {
+    a: i64
+    b: i64
+    c: i64
+}
+
+struct Quad {
+    w: i64
+    x: i64
+    y: i64
+    z: i64
+}
+
+struct Wide {
+    f0: i64
+    f1: i64
+    f2: i64
+    f3: i64
+    f4: i64
+    f5: i64
+    f6: i64
+    f7: i64
+    f8: i64
+}
+
+struct Shelf {
+    label: str
+    counts: List[i64]
+    quads: List[Quad]
+}
+
+fn constants() {
+    var xs: List[i64] = []
+    var n = 0
+    while n < 6000 {
+        xs.push(n * 3)
+        n = n + 1
+    }
+    // Small constants stay inside the instruction; large ones do not.
+    print(xs[0] + xs[1] + xs[511] + xs[4094] + xs[4095] + xs[5999])
+    xs[4094] = xs[4094] + 1
+    xs[4095] = xs[4095] + 2
+    xs[5000] = xs[5000] + 3
+    print(xs[4094] + xs[4095] + xs[5000])
+    var ts: List[Triple] = []
+    n = 0
+    while n < 1500 {
+        ts.push(Triple { a: n, b: n * 2, c: n * 3 })
+        n = n + 1
+    }
+    // Element 1364 of three slots is the last a constant reaches directly.
+    print(ts[0].c + ts[7].b + ts[1364].c + ts[1365].a + ts[1499].c)
+    ts[1364].c = ts[1364].c + ts[1365].b
+    ts[1365].a = ts[1365].a + ts[1364].c
+    print(ts[1364].c + ts[1365].a)
+}
+
+fn sizes() {
+    var ts: List[Triple] = []
+    var qs: List[Quad] = []
+    var ws: List[Wide] = []
+    var i = 0
+    while i < 9 {
+        ts.push(Triple { a: i, b: i + 10, c: i + 20 })
+        qs.push(Quad { w: i, x: i * 2, y: i * 3, z: i * 4 })
+        ws.push(Wide { f0: i, f1: 1, f2: 2, f3: 3, f4: 4, f5: 5, f6: 6, f7: 7, f8: i * i })
+        i = i + 1
+    }
+    var total = 0
+    i = 0
+    while i < 9 {
+        // Three lists by turns: the address at hand changes every time.
+        total = total + ts[i].a + qs[i].z + ws[i].f8 + ts[i].c + qs[i].w + ws[i].f0
+        ts[i].b = qs[i].y + ws[i].f7
+        qs[i].x = ts[i].b + ts[i].c
+        ws[i].f4 = qs[i].x - ts[i].a
+        total = total + ts[i].b + qs[i].x + ws[i].f4
+        i = i + 1
+    }
+    print(total)
+    // The index moves while an element is at hand.
+    var j = 0
+    var sum = 0
+    sum = sum + qs[j].x
+    j = j + 3
+    sum = sum + qs[j].x
+    j = j * 2
+    sum = sum + qs[j].x + qs[j].y
+    j = 8
+    sum = sum + qs[j].z
+    print(sum)
+    // Whole elements copied between places.
+    let held = qs[2]
+    qs[2] = qs[5]
+    qs[5] = held
+    let wide = ws[8]
+    ws[0] = wide
+    print(qs[2].w * 1000 + qs[5].w * 100 + ws[0].f8 + ws[0].f0)
+}
+
+fn many(a: List[i64], b: List[i64], c: List[i64], d: List[i64], e: List[i64], f: List[i64]) -> i64 {
+    var i = 1
+    // More checks than are remembered at a time, then each list again.
+    var total = a[i] + b[i] + c[i] + d[i] + e[i] + f[i]
+    total = total * 2 + a[i] + b[i] + c[i] + d[i] + e[i] + f[i]
+    i = 0
+    total = total * 2 + a[i] + b[i] + c[i] + d[i] + e[i] + f[i] + a[2] + f[2]
+    return total
+}
+
+fn bytes(text: str, other: str) -> i64 {
+    var i = 0
+    var total = 0
+    while i < text.len() && i < other.len() {
+        if text[i] == other[i] {
+            total = total + text[i]
+        } else {
+            total = total + text[i] * 2 - other[i]
+        }
+        i = i + 1
+    }
+    return total + text[0] + other[2] + text[text.len() - 1]
+}
+
+fn through(shelf: mut Shelf, rounds: i64) -> i64 {
+    var total = 0
+    var r = 0
+    while r < rounds {
+        var k = 0
+        while k < shelf.counts.len() {
+            shelf.counts[k] = shelf.counts[k] + shelf.quads[k].w + r
+            shelf.quads[k].z = shelf.counts[k] - shelf.quads[k].x
+            total = total + shelf.quads[k].z + shelf.label[k]
+            k = k + 1
+        }
+        // The lists grow while the loop is away from them.
+        shelf.counts.push(r)
+        shelf.quads.push(Quad { w: r, x: r + 1, y: r + 2, z: r + 3 })
+        shelf.label = shelf.label + "+"
+        r = r + 1
+    }
+    return total
+}
+
+fn joins(xs: mut List[i64], pick: bool, at: i64) -> i64 {
+    var i = at
+    var total = 0
+    if pick {
+        total = xs[i]
+        xs.push(total)
+    } else {
+        total = xs[i] + 1
+        i = i + 1
+    }
+    // Reached from both branches: one grew the list, one moved the index.
+    total = total + xs[i]
+    if total > 100 {
+        return total
+    }
+    total = total + xs[i] + xs[0]
+    return total
+}
+
+fn main() {
+    constants()
+    sizes()
+    print(many([1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12], [13, 14, 15], [16, 17, 18]))
+    print(bytes("hello, world", "help me, world!"))
+    var shelf = Shelf { label: "abc", counts: [5, 6, 7], quads: [] }
+    var q = 0
+    while q < 3 {
+        shelf.quads.push(Quad { w: q, x: q * 5, y: 0, z: 0 })
+        q = q + 1
+    }
+    print(through(mut shelf, 4))
+    print(shelf.counts.len() * 100 + shelf.quads.len() * 10 + shelf.label.len())
+    var xs = [10, 20, 30]
+    print(joins(mut xs, true, 1))
+    print(joins(mut xs, false, 1))
+    print(joins(mut xs, true, 3))
+    print(xs.len())
+}

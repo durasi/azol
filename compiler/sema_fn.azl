@@ -1309,6 +1309,7 @@ fn ck_assign(c: mut Checker, p: Parser, id: i64, target: i64, value: i64) {
     }
     if !place.mutable {
         ck_err(pos, "cannot change `" + ck_root_name(p, target) + "`: " + read_only(place), mut c)
+        ck_var_fix(mut c, p, place, target)
         return
     }
     ck_check_change(mut c, p, target, place)
@@ -1696,6 +1697,7 @@ fn ck_match_stmt(c: mut Checker, p: Parser, id: i64, scrutinee: i64, arms: IdRan
                     let fields = repeated("_", want)
                     ck_err(pat_pos, "`" + sym_text(c, sym) + "` holds " + str(want) + " value" + plural(want) + "; write `" +
                             sym_text(c, sym) + "(" + fields + ")` to match it", mut c)
+                    c.error.fix = Fix { kind: FIX_AFTER_NAME, start: pat_pos, end: 0, text: "(" + fields + ")" }
                     return
                 }
                 if pat_args.len != want {
@@ -1787,13 +1789,29 @@ fn ck_match_stmt(c: mut Checker, p: Parser, id: i64, scrutinee: i64, arms: IdRan
                 missing.push("`" + sym_text(c, c.templates[enum_template].variant_names[variant]) + "`")
             }
         }
+        // The arms that would complete the `match`, doing nothing.
+        var arms: List[str] = []
+        for variant, seen in seen_variants {
+            if !seen {
+                let name = sym_text(c, c.templates[enum_template].variant_names[variant])
+                let fields = c.templates[enum_template].variant_fields[variant].len()
+                if fields == 0 {
+                    arms.push(name + " => {}")
+                } else {
+                    arms.push(name + "(" + repeated("_", fields) + ") => {}")
+                }
+            }
+        }
+        let fix = Fix { kind: FIX_MATCH_ARMS, start: pos, end: 0, text: arms.join("\n") }
         if missing.len() == 1 {
             ck_err(pos, "this `match` does not handle " + missing[0] + "; add an arm for it or a final `_ =>` arm", mut c)
+            c.error.fix = fix
             return
         }
         let last = missing.pop()
         ck_err(pos, "this `match` does not handle " + missing.join(", ") + " and " + last +
                 "; add arms for them or a final `_ =>` arm", mut c)
+        c.error.fix = fix
         return
     }
     if ty == TY_BOOL {
@@ -1801,9 +1819,11 @@ fn ck_match_stmt(c: mut Checker, p: Parser, id: i64, scrutinee: i64, arms: IdRan
             return
         }
         ck_err(pos, "this `match` does not handle `" + str(!seen_true) + "`; add an arm for it or a final `_ =>` arm", mut c)
+        c.error.fix = Fix { kind: FIX_MATCH_ARMS, start: pos, end: 0, text: str(!seen_true) + " => {}" }
         return
     }
     ck_err(pos, "a `match` on `" + ck_ty_name(c, ty) + "` needs a final `_ =>` arm: the arms cannot list every value", mut c)
+    c.error.fix = Fix { kind: FIX_MATCH_ARMS, start: pos, end: 0, text: "_ => {}" }
 }
 
 fn ck_condition(c: mut Checker, p: Parser, cond: i64) {
@@ -2007,8 +2027,9 @@ fn ck_expr_inner(c: mut Checker, p: Parser, id: i64, hint: i64) -> i64 {
         ExprIndex(base, index) => return ck_index(mut c, p, id, base, index)
         ExprArrayLit(items) => return ck_array_literal(mut c, p, id, items, hint)
         ExprStructLit(name, fields) => return ck_struct_literal(mut c, p, id, name, fields, hint)
-        ExprMutArg(_) => {
+        ExprMutArg(inner) => {
             ck_err(p.ast.expr_pos[id], "`mut` can only be used on a function argument", mut c)
+            c.error.fix = Fix { kind: FIX_REPLACE, start: p.ast.expr_pos[id], end: p.ast.expr_pos[inner], text: "" }
             return TY_UNIT
         }
         ExprFloat(_) => {
@@ -2532,6 +2553,10 @@ fn ck_construct(c: mut Checker, p: Parser, id: i64, found: i64, has_args: bool, 
     }
     if has_args && want == 0 {
         ck_err(pos, "`" + sym_text(c, name) + "` holds no value; write it without `()`", mut c)
+        // Without arguments the `()` can simply go.
+        if args.len == 0 {
+            c.error.fix = Fix { kind: FIX_EMPTY_PARENS, start: pos, end: 0, text: "" }
+        }
         return TY_UNIT
     }
     if args.len != want {
@@ -2836,6 +2861,7 @@ fn ck_call_function(c: mut Checker, p: Parser, id: i64, index: i64, text: i64, b
         let number = i + 1 - receivers
         let value = ck_arg_value(mut c, p, text, number, arg, mutable)
         if c.failed {
+            ck_mut_fix(mut c, p, arg, mutable, ty)
             return TY_UNIT
         }
         if base == NO_NODE || i > 0 {
@@ -2884,6 +2910,120 @@ fn ck_arg_value(c: mut Checker, p: Parser, text: i64, number: i64, arg: i64, mut
     return arg
 }
 
+// The repair for the mistake `ck_arg_value` just reported about
+// argument `arg`. Where `mut` is missing, writing it in front is the
+// whole repair when the argument is a changeable variable of the right
+// type (`known`, or `TY_NONE` when the parameter's type is not settled
+// yet). Where there is one too many, it goes.
+fn ck_mut_fix(c: mut Checker, p: Parser, arg: i64, missing: bool, known: i64) {
+    let arg_pos = p.ast.expr_pos[arg]
+    match p.ast.exprs[arg] {
+        ExprMutArg(inner) => {
+            if !missing {
+                c.error.fix = Fix { kind: FIX_REPLACE, start: arg_pos, end: p.ast.expr_pos[inner], text: "" }
+            }
+        }
+        ExprIdent(name) => {
+            if missing {
+                var at = c.locals_len - 1
+                while at >= 0 && !span_is(p.src, name, sym_text(c, c.loc_name[at])) {
+                    at = at - 1
+                }
+                if at >= 0 && (c.loc_flags[at] & LOC_MUTABLE) != 0 && (known == TY_NONE || known == c.loc_ty[at]) {
+                    c.error.fix = Fix { kind: FIX_REPLACE, start: arg_pos, end: arg_pos, text: "mut " }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+// The repair for changing a variable declared with `let`: declare it
+// with `var`. None for parameters, loop variables and bindings, which
+// have no such one-word repair. `id` is the expression that names the
+// place, and the mistake has just been recorded.
+fn ck_var_fix(c: mut Checker, p: Parser, place: Place, id: i64) {
+    if place.is_param || place.is_view {
+        return
+    }
+    let pos = c.error.offset
+    let name = ck_root_name(p, id)
+    // The function the mistake is in: the last one that starts before it.
+    var nodes = Nodes {
+        exprs_start: 0,
+        exprs_len: 0,
+        stmts_start: 0,
+        stmts_len: 0,
+        patterns_start: 0,
+        patterns_len: 0,
+        field_inits_start: 0,
+        field_inits_len: 0,
+    }
+    for item in p.ast.items {
+        match item {
+            ItemFn(fn_name, _, _, _, _, fn_nodes) => {
+                if fn_name.start <= pos {
+                    nodes = fn_nodes
+                }
+            }
+            _ => {}
+        }
+    }
+    // The `let` that declared the variable is the last one before the
+    // mistake with its name and its slot. A `let` whose value is still
+    // being checked has declared nothing yet: that is the last `let`
+    // before the mistake, unless another statement starts after it.
+    var decl = -1
+    var last_let = -1
+    var last_stmt = -1
+    var id_at = nodes.stmts_start
+    let end = nodes.stmts_start + nodes.stmts_len
+    while id_at < end {
+        let at = p.ast.stmt_pos[id_at]
+        if at <= pos {
+            if at > last_stmt {
+                last_stmt = at
+            }
+            match p.ast.stmts[id_at] {
+                StmtLet(_, let_name, _, _) => {
+                    if at > last_let {
+                        last_let = at
+                    }
+                    if at > decl && c.stmt_slot[c.sh_s + id_at] == place.root && span_is(p.src, let_name, name) {
+                        decl = at
+                    }
+                }
+                _ => {}
+            }
+        }
+        id_at = id_at + 1
+    }
+    if decl >= 0 && decl == last_let && last_stmt == last_let {
+        // The variable was declared by an earlier `let` of the same name.
+        let unfinished = decl
+        decl = -1
+        id_at = nodes.stmts_start
+        while id_at < end {
+            let at = p.ast.stmt_pos[id_at]
+            if at < unfinished {
+                match p.ast.stmts[id_at] {
+                    StmtLet(_, let_name, _, _) => {
+                        if at > decl && c.stmt_slot[c.sh_s + id_at] == place.root && span_is(p.src, let_name, name) {
+                            decl = at
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            id_at = id_at + 1
+        }
+    }
+    if decl < 0 || decl + 4 > p.src.len() || p.src.slice(decl, decl + 4) != "let " {
+        return
+    }
+    c.error.fix = Fix { kind: FIX_REPLACE, start: decl, end: decl + 3, text: "var" }
+}
+
 // Reports an argument that lacks `mut` (`missing`) or has one too many.
 fn ck_wrong_mut(c: mut Checker, at: i64, text: i64, number: i64, missing: bool) {
     if missing {
@@ -2918,6 +3058,7 @@ fn ck_arg_pass(c: mut Checker, p: Parser, arg: i64, value: i64, mutable: bool, t
             } else {
                 ck_err(arg_pos, "cannot pass `" + ck_root_name(p, value) + "` as `mut`: " + read_only(place), mut c)
             }
+            ck_var_fix(mut c, p, place, value)
             return
         }
         // The function gets its address, so it must stay in memory.
@@ -2998,6 +3139,7 @@ fn ck_call_generic(c: mut Checker, p: Parser, id: i64, generic: i64, text: i64, 
         }
         let value = ck_arg_value(mut c, p, text, number, arg, mutable)
         if c.failed {
+            ck_mut_fix(mut c, p, arg, mutable, TY_NONE)
             return TY_UNIT
         }
         if base == NO_NODE || i > 0 {
@@ -3292,6 +3434,7 @@ fn ck_method(c: mut Checker, p: Parser, id: i64, base: i64, name: Span, args: Id
     }
     if !place.mutable {
         ck_err(pos, "cannot change `" + ck_root_name(p, base) + "`: " + read_only(place), mut c)
+        ck_var_fix(mut c, p, place, base)
         return TY_UNIT
     }
     if sym == SYM_PUSH {
@@ -3358,7 +3501,7 @@ fn new_checker(p: Parser, prelude_start: i64) -> Checker {
         names: names,
         prelude_start: prelude_start,
         failed: false,
-        error: SemaError { message: "", offset: 0, expr: -1 },
+        error: SemaError { message: "", offset: 0, expr: -1, fix: no_fix() },
         errors: [],
         structs: [],
         struct_templates: [],
@@ -3484,7 +3627,7 @@ fn check_program(c: mut Checker, p: Parser) {
     }
     c.main = tab_get(c.fn_names, SYM_MAIN)
     if c.main < 0 {
-        c.errors.push(SemaError { message: "the program has no `main` function", offset: 0, expr: -1 })
+        c.errors.push(SemaError { message: "the program has no `main` function", offset: 0, expr: -1, fix: no_fix() })
     }
     // In source order; mistakes at the same place keep their order.
     var i = 1

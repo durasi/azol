@@ -1,0 +1,472 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// `fmt`: the one layout of azoL source, written in azoL. It follows
+// `src/format.rs` function by function and writes the same text; the
+// style is described at the top of that file.
+//
+// The formatter works on the tokens of a file, and on the comments,
+// which it finds itself in the text between tokens because the lexer
+// drops them. It never adds, removes or reorders a token; it only
+// decides where lines break, how far they are indented and where the
+// spaces go.
+//
+// Newlines mean something in azoL, so before it hands anything back
+// `format_source` checks its own result: the tokens and the comments
+// must be the same as before and the result must parse to the same
+// syntax tree. Otherwise it reports an internal error and the file is
+// left alone.
+
+// The tokens of a text without its newlines, and its comments, in the
+// order they appear, as parallel lists.
+struct Pieces {
+    // The token kind, or `PIECE_COMMENT`.
+    kinds: List[i64]
+    starts: List[i64]
+    ends: List[i64]
+    // How many newlines the source has between the piece before this
+    // one and this one.
+    newlines: List[i64]
+}
+
+const PIECE_COMMENT = -1
+
+// What a bracket encloses, which decides how it is laid out: `( )`,
+// `[ ]` or a struct literal's `{ }` keep the author's breaks.
+const BRACKET_FREE = 0
+// A block of statements or the arms of a `match`.
+const BRACKET_BODY = 1
+// The members of a struct or enum declaration.
+const BRACKET_MEMBERS = 2
+
+// What is known about each piece before the layout starts.
+struct Shapes {
+    // For a bracket, the piece with the matching bracket, or -1.
+    partner: List[i64]
+    // For an opening bracket, what it encloses.
+    bracket: List[i64]
+    // For an opening bracket, whether its closing bracket goes on a line
+    // of its own.
+    multi: List[bool]
+    // For a comma that separates match arms or declared members, the
+    // opening bracket of that list; -1 for every other piece.
+    separates: List[i64]
+}
+
+// The result of formatting: the new text, or why there is none (a
+// message and where in the source it applies).
+struct Formatted {
+    ok: bool
+    text: str
+    message: str
+    offset: i64
+}
+
+fn format_failed(message: str, offset: i64) -> Formatted {
+    return Formatted { ok: false, text: "", message: message, offset: offset }
+}
+
+// Whether a line that ends in this token continues on the next one.
+fn fmt_continues(kind: i64) -> bool {
+    return (kind >= TOK_ASSIGN && kind <= TOK_PERCENT) || (kind >= TOK_AND_AND && kind <= TOK_SHR)
+}
+
+// Whether an expression can end in this token, so that a `-` right
+// after it on the same line subtracts.
+fn fmt_ends_operand(kind: i64) -> bool {
+    return kind == TOK_IDENT || kind == TOK_INT || kind == TOK_FLOAT || kind == TOK_STR || kind == TOK_TRUE || kind == TOK_FALSE ||
+        kind == TOK_RPAREN || kind == TOK_RBRACKET || kind == TOK_RBRACE || kind == TOK_QUESTION
+}
+
+// Where the text `from..to` of `src` ends once the blanks at its end
+// are left out. A blank is any character Unicode calls white space.
+fn fmt_trimmed_end(src: str, from: i64, to: i64) -> i64 {
+    var end = to
+    while end > from {
+        let b = src[end - 1]
+        if b == ' ' || (b >= 9 && b <= 13) {
+            end = end - 1
+            continue
+        }
+        if end - from >= 2 && src[end - 2] == 0xC2 && (b == 0x85 || b == 0xA0) {
+            end = end - 2
+            continue
+        }
+        if end - from >= 3 {
+            let a = src[end - 3]
+            let m = src[end - 2]
+            // U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F, U+3000.
+            let blank = (a == 0xE1 && m == 0x9A && b == 0x80) ||
+                (a == 0xE2 && m == 0x80 && ((b >= 0x80 && b <= 0x8A) || b == 0xA8 || b == 0xA9 || b == 0xAF)) ||
+                (a == 0xE2 && m == 0x81 && b == 0x9F) ||
+                (a == 0xE3 && m == 0x80 && b == 0x80)
+            if blank {
+                end = end - 3
+                continue
+            }
+        }
+        break
+    }
+    return end
+}
+
+// Finds the comments in the bytes `from..to` of `src`, a stretch between
+// two tokens that holds nothing but blanks, newlines and comments.
+// Returns the number of newlines after the last comment found.
+fn fmt_comments_between(src: str, from: i64, to: i64, before: i64, pieces: mut Pieces) -> i64 {
+    var newlines = before
+    var at = from
+    while at < to {
+        let b = src[at]
+        if b == '\n' {
+            newlines = newlines + 1
+            at = at + 1
+        } else if b == '/' && at + 1 < src.len() && src[at + 1] == '/' {
+            var line_end = at
+            while line_end < to && src[line_end] != '\n' {
+                line_end = line_end + 1
+            }
+            pieces.kinds.push(PIECE_COMMENT)
+            pieces.starts.push(at)
+            pieces.ends.push(fmt_trimmed_end(src, at, line_end))
+            pieces.newlines.push(newlines)
+            newlines = 0
+            at = line_end
+        } else {
+            at = at + 1
+        }
+    }
+    return newlines
+}
+
+// The pieces of `src`, from its tokens.
+fn fmt_pieces(src: str, tokens: Tokens) -> Pieces {
+    var pieces = Pieces { kinds: [], starts: [], ends: [], newlines: [] }
+    var at = 0
+    var newlines = 0
+    var i = 0
+    let count = tokens.kinds.len()
+    while i < count {
+        let kind = tokens.kinds[i]
+        if kind != TOK_NEWLINE {
+            var start = tokens.starts[i]
+            if kind == TOK_EOF {
+                start = src.len()
+            }
+            newlines = fmt_comments_between(src, at, start, newlines, mut pieces)
+            if kind == TOK_EOF {
+                break
+            }
+            let end = start + tokens.lens[i]
+            pieces.kinds.push(kind)
+            pieces.starts.push(start)
+            pieces.ends.push(end)
+            pieces.newlines.push(newlines)
+            newlines = 0
+            at = end
+        }
+        i = i + 1
+    }
+    return pieces
+}
+
+// Matches the brackets and works out what each one encloses.
+fn fmt_shapes(pieces: Pieces) -> Shapes {
+    let count = pieces.kinds.len()
+    var shape = Shapes { partner: [], bracket: [], multi: [], separates: [] }
+    var i = 0
+    while i < count {
+        shape.partner.push(-1)
+        shape.bracket.push(BRACKET_FREE)
+        shape.multi.push(false)
+        shape.separates.push(-1)
+        i = i + 1
+    }
+    // The brackets that are open, and the statements and declarations
+    // whose `{` has not come yet, each with the number of brackets that
+    // were open when its keyword was read.
+    var open: List[i64] = []
+    var awaited: List[i64] = []
+    var awaited_depth: List[i64] = []
+    var previous = -1
+    for index, kind in pieces.kinds {
+        if kind == PIECE_COMMENT {
+            continue
+        }
+        if kind == TOK_FN || kind == TOK_IF || kind == TOK_WHILE || kind == TOK_FOR || kind == TOK_MATCH {
+            awaited.push(BRACKET_BODY)
+            awaited_depth.push(open.len())
+        } else if kind == TOK_STRUCT || kind == TOK_ENUM {
+            awaited.push(BRACKET_MEMBERS)
+            awaited_depth.push(open.len())
+        } else if kind == TOK_LBRACE {
+            if awaited.len() > 0 && awaited_depth[awaited.len() - 1] == open.len() {
+                shape.bracket[index] = awaited.pop()
+                awaited_depth.pop()
+            } else if previous == TOK_IDENT || previous == TOK_RBRACKET {
+                shape.bracket[index] = BRACKET_FREE
+            } else {
+                shape.bracket[index] = BRACKET_BODY
+            }
+            open.push(index)
+        } else if kind == TOK_LPAREN || kind == TOK_LBRACKET {
+            open.push(index)
+        } else if kind == TOK_RPAREN || kind == TOK_RBRACKET || kind == TOK_RBRACE {
+            if open.len() > 0 {
+                let opener = open.pop()
+                shape.partner[opener] = index
+                shape.partner[index] = opener
+            }
+        } else if kind == TOK_COMMA {
+            // The comma of `for i, item in` is not a separator.
+            let in_header = awaited.len() > 0 && awaited_depth[awaited.len() - 1] == open.len()
+            if open.len() > 0 {
+                let opener = open[open.len() - 1]
+                if shape.bracket[opener] != BRACKET_FREE && !in_header {
+                    shape.separates[index] = opener
+                }
+            }
+        }
+        previous = kind
+    }
+    var opener = 0
+    while opener < count {
+        let closer = shape.partner[opener]
+        if opens_bracket(pieces.kinds[opener]) && closer >= 0 {
+            let bracket = shape.bracket[opener]
+            if bracket == BRACKET_BODY {
+                shape.multi[opener] = true
+            } else {
+                // For a free bracket only up to its first token.
+                var last = closer
+                if bracket == BRACKET_FREE {
+                    var first = opener + 1
+                    while first < closer && pieces.kinds[first] == PIECE_COMMENT {
+                        first = first + 1
+                    }
+                    last = first
+                }
+                var k = opener + 1
+                while k <= last {
+                    if pieces.newlines[k] > 0 {
+                        shape.multi[opener] = true
+                    }
+                    k = k + 1
+                }
+            }
+        }
+        opener = opener + 1
+    }
+    return shape
+}
+
+// Whether a space goes between two tokens on the same line.
+fn fmt_space_between(previous: i64, previous_is_unary: bool, kind: i64) -> bool {
+    if previous_is_unary {
+        // `- -a` keeps its space: `--a` would read as one operator.
+        return previous == TOK_MINUS && kind == TOK_MINUS
+    }
+    if previous == TOK_LPAREN || previous == TOK_LBRACKET || previous == TOK_DOT {
+        return false
+    }
+    if kind == TOK_RPAREN || kind == TOK_RBRACKET || kind == TOK_COMMA || kind == TOK_COLON || kind == TOK_DOT || kind == TOK_QUESTION {
+        return false
+    }
+    if kind == TOK_LPAREN {
+        return !(previous == TOK_IDENT || previous == TOK_RPAREN || previous == TOK_RBRACKET)
+    }
+    if kind == TOK_LBRACKET {
+        return !(previous == TOK_IDENT || previous == TOK_RPAREN || previous == TOK_RBRACKET || previous == TOK_STR ||
+                previous == TOK_QUESTION)
+    }
+    if kind == TOK_RBRACE {
+        return previous != TOK_LBRACE
+    }
+    return true
+}
+
+fn fmt_indent(out: mut str, levels: i64) {
+    var i = 0
+    while i < levels {
+        out = out + "    "
+        i = i + 1
+    }
+}
+
+// Lays the pieces out again.
+fn fmt_layout(src: str, pieces: Pieces, shape: Shapes) -> str {
+    var out = ""
+    // The indentation that the closing bracket of each open bracket
+    // returns to.
+    var open: List[i64] = []
+    var line_indent = 0
+    var line_is_empty = true
+    // The last token written, or -1, and whether it was a unary operator.
+    var last_token = -1
+    var last_is_unary = false
+    // True while the last token written is an opening bracket.
+    var after_opener = false
+
+    for index, kind in pieces.kinds {
+        let newlines = pieces.newlines[index]
+        let closes = kind != PIECE_COMMENT && closes_bracket(kind)
+        var breaks = false
+        if index > 0 {
+            let before = pieces.kinds[index - 1]
+            if before == PIECE_COMMENT {
+                breaks = true
+            } else if kind == PIECE_COMMENT {
+                breaks = newlines > 0
+            } else if closes {
+                let partner = shape.partner[index]
+                breaks = partner >= 0 && partner != index - 1 && shape.multi[partner]
+            } else if kind == TOK_ELSE && before == TOK_RBRACE {
+                breaks = false
+            } else {
+                let after_body_opener = opens_bracket(before) && shape.bracket[index - 1] != BRACKET_FREE && shape.multi[index - 1]
+                let separator = shape.separates[index - 1]
+                breaks = newlines > 0 || after_body_opener || (separator >= 0 && shape.multi[separator])
+            }
+        }
+        var base = 0
+        if open.len() > 0 {
+            base = open[open.len() - 1] + 1
+        }
+        if breaks {
+            out = out + "\n"
+            if newlines > 1 && !after_opener && !closes {
+                out = out + "\n"
+            }
+            if kind == PIECE_COMMENT {
+                line_indent = base
+            } else if closes {
+                line_indent = base - 1
+                if line_indent < 0 {
+                    line_indent = 0
+                }
+            } else if kind == TOK_DOT || (last_token >= 0 && fmt_continues(last_token)) {
+                line_indent = base + 1
+            } else {
+                line_indent = base
+            }
+            line_is_empty = true
+        }
+        let text = src.slice(pieces.starts[index], pieces.ends[index])
+        if kind == PIECE_COMMENT {
+            if line_is_empty {
+                fmt_indent(mut out, line_indent)
+                // A comment on its own line ends what an opening bracket
+                // started: a blank line after it is the author's.
+                after_opener = false
+            } else {
+                out = out + " "
+            }
+            out = out + text
+            line_is_empty = false
+            continue
+        }
+        if line_is_empty {
+            fmt_indent(mut out, line_indent)
+        } else if last_token >= 0 && fmt_space_between(last_token, last_is_unary, kind) {
+            out = out + " "
+        }
+        out = out + text
+        if kind == TOK_BANG {
+            last_is_unary = true
+        } else if kind == TOK_MINUS {
+            last_is_unary = line_is_empty || !(last_token >= 0 && fmt_ends_operand(last_token))
+        } else {
+            last_is_unary = false
+        }
+        line_is_empty = false
+        if opens_bracket(kind) {
+            if kind == TOK_LBRACE && shape.bracket[index] != BRACKET_FREE {
+                open.push(base)
+            } else {
+                open.push(line_indent)
+            }
+        } else if closes && open.len() > 0 {
+            open.pop()
+        }
+        after_opener = opens_bracket(kind)
+        last_token = kind
+    }
+    if out.len() > 0 {
+        out = out + "\n"
+    }
+    return out
+}
+
+// What must be the same before and after formatting: every token that
+// is not a newline, and every comment.
+fn fmt_same_pieces(a_src: str, a: Pieces, b_src: str, b: Pieces) -> bool {
+    if a.kinds.len() != b.kinds.len() {
+        return false
+    }
+    for index, kind in a.kinds {
+        let start = a.starts[index]
+        let len = a.ends[index] - start
+        let other = b.starts[index]
+        if kind != b.kinds[index] || len != b.ends[index] - other {
+            return false
+        }
+        var k = 0
+        while k < len {
+            if a_src[start + k] != b_src[other + k] {
+                return false
+            }
+            k = k + 1
+        }
+    }
+    return true
+}
+
+// Lexes and parses `src`. With `ok`, `text` is its syntax tree as
+// `parse` prints it. `tokens` gets its tokens, and stays empty when the
+// text does not lex.
+fn fmt_tree(src: str, tokens: mut Tokens) -> Formatted {
+    match lex(src, mut tokens) {
+        Some(problem) => {
+            tokens = new_tokens()
+            return format_failed(problem.message, problem.offset)
+        }
+        None => {}
+    }
+    var p = new_parser(src)
+    p.tokens = tokens
+    parse_tokens(mut p)
+    if p.failed {
+        return format_failed(p.error.message, p.error.offset)
+    }
+    return Formatted { ok: true, text: dump_ast(p.ast, p.src), message: "", offset: 0 }
+}
+
+fn fmt_internal(what: str) -> Formatted {
+    return format_failed("internal error in the formatter (" + what + "); the file was left as it is", 0)
+}
+
+// Returns `src` in the canonical layout, or the reason it cannot be
+// formatted: it does not lex or it does not parse.
+fn format_source(src: str) -> Formatted {
+    var tokens = new_tokens()
+    let tree_before = fmt_tree(src, mut tokens)
+    if !tree_before.ok {
+        return tree_before
+    }
+    let before = fmt_pieces(src, tokens)
+    let out = fmt_layout(src, before, fmt_shapes(before))
+    var tokens_after = new_tokens()
+    let tree_after = fmt_tree(out, mut tokens_after)
+    if tokens_after.kinds.len() == 0 {
+        return fmt_internal("the result does not lex")
+    }
+    if !fmt_same_pieces(src, before, out, fmt_pieces(out, tokens_after)) {
+        return fmt_internal("the result has other tokens or comments")
+    }
+    if !tree_after.ok {
+        return fmt_internal("the result does not parse")
+    }
+    if tree_after.text != tree_before.text {
+        return fmt_internal("the result parses differently")
+    }
+    return Formatted { ok: true, text: out, message: "", offset: 0 }
+}

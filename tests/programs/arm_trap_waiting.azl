@@ -1,0 +1,21 @@
+// expect-exit: 1
+// expect-output: 26 9
+// expect-stderr: azol: division by zero
+
+// Values wait in registers while the rest of an expression is worked
+// out; what stops the program is still the first thing that goes
+// wrong, reading from the left.
+fn spread(a: i64, b: i64, c: i64) -> i64 {
+    return a * 100 + b * 10 + c
+}
+
+fn main() {
+    let xs = [4, 5, 6]
+    var zero = 0
+    var i = 1
+    print((xs[i] + 1) * (xs[i + 1] - 2) + (i + 1) * (xs.len() - 2))
+    print(spread(i - 1, xs[0] / 5, xs[i] + 4))
+    // The division comes first; the index after it is never checked.
+    print((i + 1) * (xs[i] / zero) + (i + 2) * xs[i + 7])
+    print(0)
+}

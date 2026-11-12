@@ -335,6 +335,34 @@ struct SemaError {
     offset: i64
     // The expression the error is about, or -1.
     expr: i64
+    // An edit that makes this error go away, when one is certain.
+    fix: Fix
+}
+
+// No repair is known.
+const FIX_NONE = 0
+// Put `text` in place of the source text from `start` to `end`.
+const FIX_REPLACE = 1
+// Add the arms in `text`, one on each line of it, at the end of the
+// `match` statement that starts at `start`.
+const FIX_MATCH_ARMS = 2
+// Insert `text` right after the name that starts at `start`.
+const FIX_AFTER_NAME = 3
+// Remove the empty `()` that follows the name that starts at `start`.
+const FIX_EMPTY_PARENS = 4
+
+// A mechanical repair for an error. Some are plain text replacements;
+// the others name a place by its first token and are turned into
+// replacements by whoever has the tokens (`diag.azl`).
+struct Fix {
+    kind: i64
+    start: i64
+    end: i64
+    text: str
+}
+
+fn no_fix() -> Fix {
+    return Fix { kind: FIX_NONE, start: 0, end: 0, text: "" }
 }
 
 // Every distinct name, as a number. `text` holds them one after another.
@@ -688,7 +716,7 @@ fn int_map_set(m: mut IntMap, key: i64, value: i64) {
 fn ck_err(offset: i64, message: str, c: mut Checker) {
     if !c.failed {
         c.failed = true
-        c.error = SemaError { message: message, offset: offset, expr: -1 }
+        c.error = SemaError { message: message, offset: offset, expr: -1, fix: no_fix() }
     }
 }
 
@@ -696,7 +724,7 @@ fn ck_err(offset: i64, message: str, c: mut Checker) {
 fn ck_err_expr(p: Parser, expr: i64, message: str, c: mut Checker) {
     if !c.failed {
         c.failed = true
-        c.error = SemaError { message: message, offset: p.ast.expr_pos[expr], expr: expr }
+        c.error = SemaError { message: message, offset: p.ast.expr_pos[expr], expr: expr, fix: no_fix() }
     }
 }
 
