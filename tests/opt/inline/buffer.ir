@@ -1,0 +1,39 @@
+; The body reads the buffer of a list the caller owns: `buf(param 0)` becomes `buf(frame 0)`.
+; calls: 0
+; text: [buf(frame 0)]
+; run: main 2
+; out: => 44
+; run: main 3
+; err: azol: index out of range
+; exit: 1
+fn item(p0: ptr [param 0 read], p1: i64) -> i64 {
+b0:
+    v0 = load i64, p0, 8  [param 0]
+    v1 = ult p1, v0
+    br v1, b1, b2
+b1:
+    v2 = load ptr, p0, 0  [param 0]
+    v3 = gep v2, p1, 8, 0
+    v4 = load i64, v3, 0  [buf(param 0)]
+    ret v4
+b2:
+    trap index
+}
+
+fn main(p0: i64) -> i64 {
+    frames 24
+b0:
+    v0 = frame 0
+    v1 = callrt alloc(24)
+    store ptr, v0, 0, v1  [frame 0]
+    store i64, v0, 8, 3  [frame 0]
+    store i64, v0, 16, 3  [frame 0]
+    store i64, v1, 0, 11  [buf(frame 0)]
+    store i64, v1, 8, 22  [buf(frame 0)]
+    store i64, v1, 16, 33  [buf(frame 0)]
+    v2 = call item(v0, p0) -> i64
+    v3 = call item(v0, 0) -> i64
+    v4 = add v2, v3
+    callrt free(v1)
+    ret v4
+}

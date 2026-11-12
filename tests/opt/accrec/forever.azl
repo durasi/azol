@@ -1,0 +1,16 @@
+// A recursion without end of the form `1 + f(n + 1)`. Under `-O` the
+// sum is gathered in a counted loop; every 256th round calls for real
+// and the program still runs out of stack.
+// expect-exit: 1
+// expect-line: start
+// expect-stderr: azol: stack overflow
+
+fn count(n: i64) -> i64 {
+    if n == 0 - 1 { return 0 }
+    return 1 + count(n + 1)
+}
+
+fn main() {
+    print("start")
+    print(str(count(0)))
+}

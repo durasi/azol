@@ -1,0 +1,39 @@
+; A small callee goes into a function that calls itself; the recursion stays what it was.
+; calls: 3
+; text: no fn half
+; run: main 40
+; out: 0
+; out: 1
+; out: 2
+; out: 3
+; out: 4
+; out: 0
+; out: => 6
+fn half(p0: i64) -> i64 {
+b0:
+    v0 = sar p0, 1
+    ret v0
+}
+
+fn depth(p0: i64) -> i64 {
+b0:
+    v0 = sle p0, 1
+    br v0, b1, b2
+b1:
+    ret 0
+b2:
+    v1 = call half(p0) -> i64
+    v2 = call depth(v1) -> i64
+    callrt print_i64(v2)
+    v3 = add v2, 1
+    ret v3
+}
+
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = call depth(p0) -> i64
+    v1 = call half(v0) -> i64
+    v2 = call depth(v1) -> i64
+    v3 = add v0, v2
+    ret v3
+}

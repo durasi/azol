@@ -1,0 +1,831 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// What is known about the numbers a function works with
+// (docs/design/optimizer.md, section 5.5). Not a pass: it changes
+// nothing. A pass that wants to know asks:
+//
+//     fn ir_range(f: IrFunc) -> IrRange
+//         Looks at the function once. Out of date as soon as a pass
+//         changes a jump or a block.
+//     fn rg_at(r, f, x, blk, depth) -> RgSpan
+//         The smallest and the largest number operand `x` can be when
+//         block `blk` runs. (`blk` must be a block where `x` exists.)
+//     fn rg_less(r, f, a, ka, b, kb, blk, depth) -> bool
+//         Whether `a + ka < b + kb` is certain when block `blk` runs,
+//         as whole numbers, with no wrapping. `a` or `b` may be -1,
+//         which stands for the number 0. `depth` is how many steps of
+//         reasoning may be chained; 3 is what the passes use.
+//     r.iv_dir[v], r.iv_one[v], r.iv_init[v]
+//         For a parameter of a loop header: 1 when it never gets
+//         smaller from round to round and never wraps, -1 when it
+//         never gets larger and never wraps; whether it has one
+//         starting value, and that operand.
+//
+// Where the knowledge comes from:
+//
+//   constants      themselves.
+//   types          a `bool` is 0 or 1; a `load` of a narrow type is in
+//                  that type's numbers.
+//   arithmetic     `add`, `sub`, `mul`, `shl`, `neg` of spans, when the
+//                  result cannot wrap (when it can: nothing is known);
+//                  `and` with a number that is not negative; `srem` and
+//                  `sdiv` by a positive number; shifts to the right;
+//                  `select` (either arm; the smaller one for the shape
+//                  of `min`, the larger for `max`).
+//   lengths        The right side of an unsigned `<` is a length or a
+//                  capacity: the lowering stage compares unsigned only
+//                  against those. It is never negative and never above
+//                  2^56 (RG_LEN_MAX).
+//   branches       In a block that only one edge leads to, and in all
+//                  it dominates, the condition of that edge holds (or
+//                  does not). `i < n` gives `i` an upper end and `n` a
+//                  lower one, and is a relation between the two that
+//                  `rg_less` chains with others.
+//   induction      A header parameter that every way round the loop
+//                  passes on as itself plus a step which is never
+//                  negative (a constant, or a value from outside the
+//                  loop) never gets smaller, PROVIDED the addition
+//                  cannot wrap: at the place of the addition the
+//                  parameter must be known small enough, which is what
+//                  a `<` test above it says (`i < n` gives room for a
+//                  step of 1; a step of `s` needs `i <= MAX - s`, which
+//                  holds when `n` is a length). The same downwards.
+//                  Without that proof nothing is assumed: a counter
+//                  that may wrap has no lower end.
+//
+// What it does not know: anything about memory (a length is the value
+// of one `load`; two loads of the same length are two values unless a
+// pass before made them one), and relations through a multiplication.
+
+const RG_LEN_MAX = 72057594037927936
+const RG_WALK = 16
+
+struct RgSpan {
+    lo: i64
+    hi: i64
+}
+
+struct IrRange {
+    cfg: IrCfg
+    // For each value, what holds wherever it exists.
+    lo: List[i64]
+    hi: List[i64]
+    // Induction: see above.
+    iv_dir: List[i64]
+    iv_one: List[bool]
+    iv_init: List[i64]
+    // The largest step of one that goes upwards.
+    iv_step: List[i64]
+    // For each block: the condition that is known when it starts (a
+    // value) or -1, and whether it is known to hold or not to hold.
+    cond: List[i64]
+    sense: List[bool]
+    // What those conditions say, as relations `fu < fw + fk` between
+    // operands (-1 stands for 0): for block `b`, `fact_n[b]` of them
+    // from `fact_s[b]`. `above[b]` is the closest block at or above
+    // `b` among its dominators that has any, or -1.
+    fact_s: List[i64]
+    fact_n: List[i64]
+    fu: List[i64]
+    fw: List[i64]
+    fk: List[i64]
+    above: List[i64]
+    // For each value: the value it is a constant away from (itself
+    // when it is no such sum), and whether any relation is about that
+    // value.
+    root: List[i64]
+    told: List[bool]
+}
+
+fn rg_smallest() -> i64 {
+    return 1 << 63
+}
+
+fn rg_largest() -> i64 {
+    return (1 << 63) - 1
+}
+
+fn rg_full() -> RgSpan {
+    return RgSpan { lo: rg_smallest(), hi: rg_largest() }
+}
+
+// Whether `a + b` wraps.
+fn rg_add_wraps(a: i64, b: i64) -> bool {
+    let s = a + b
+    if a >= 0 && b >= 0 { return s < 0 }
+    if a < 0 && b < 0 { return s >= 0 }
+    return false
+}
+
+// Whether `a - b` wraps.
+fn rg_sub_wraps(a: i64, b: i64) -> bool {
+    let s = a - b
+    if a >= 0 && b < 0 { return s < 0 }
+    if a < 0 && b >= 0 { return s >= 0 }
+    return false
+}
+
+fn rg_meet(a: RgSpan, b: RgSpan) -> RgSpan {
+    var s = a
+    if b.lo > s.lo { s.lo = b.lo }
+    if b.hi < s.hi { s.hi = b.hi }
+    return s
+}
+
+fn rg_join(a: RgSpan, b: RgSpan) -> RgSpan {
+    var s = a
+    if b.lo < s.lo { s.lo = b.lo }
+    if b.hi > s.hi { s.hi = b.hi }
+    return s
+}
+
+// Whether both ends are small enough to multiply.
+fn rg_small(s: RgSpan) -> bool {
+    return s.lo >= 0 - 2147483648 && s.hi <= 2147483648
+}
+
+// Whether two operands are the same value or the same number.
+fn rg_same(f: IrFunc, x: i64, y: i64) -> bool {
+    if x == y { return true }
+    return x < -1 && y < -1 && ir_const_value(f, x) == ir_const_value(f, y)
+}
+
+// 1 when `select` instruction `d` gives the smaller of its two arms,
+// 2 when the larger, 0 otherwise.
+fn rg_select_kind(f: IrFunc, d: i64) -> i64 {
+    let c = su_def(f, f.ins_a[d])
+    if c < 0 { return 0 }
+    let op = f.ins_op[c]
+    let x = f.ins_b[d]
+    let y = f.ins_c[d]
+    let straight = rg_same(f, f.ins_a[c], x) && rg_same(f, f.ins_b[c], y)
+    let crossed = rg_same(f, f.ins_a[c], y) && rg_same(f, f.ins_b[c], x)
+    if op == IR_SLT || op == IR_SLE {
+        if straight { return 1 }
+        if crossed { return 2 }
+    }
+    if op == IR_SGT || op == IR_SGE {
+        if straight { return 2 }
+        if crossed { return 1 }
+    }
+    return 0
+}
+
+// What instruction `d` gives when its operands are in `a` and `b` (for
+// `select`: its two arms).
+fn rg_eval(f: IrFunc, d: i64, a: RgSpan, b: RgSpan) -> RgSpan {
+    let op = f.ins_op[d]
+    var s = rg_full()
+    if op == IR_ADD {
+        if !rg_add_wraps(a.lo, b.lo) && !rg_add_wraps(a.hi, b.hi) {
+            s = RgSpan { lo: a.lo + b.lo, hi: a.hi + b.hi }
+        }
+    } else if op == IR_SUB {
+        if !rg_sub_wraps(a.lo, b.hi) && !rg_sub_wraps(a.hi, b.lo) {
+            s = RgSpan { lo: a.lo - b.hi, hi: a.hi - b.lo }
+        }
+    } else if op == IR_MUL {
+        if rg_small(a) && rg_small(b) {
+            s = RgSpan { lo: a.lo * b.lo, hi: a.lo * b.lo }
+            s = rg_join(s, RgSpan { lo: a.lo * b.hi, hi: a.lo * b.hi })
+            s = rg_join(s, RgSpan { lo: a.hi * b.lo, hi: a.hi * b.lo })
+            s = rg_join(s, RgSpan { lo: a.hi * b.hi, hi: a.hi * b.hi })
+        }
+    } else if op == IR_SHL {
+        if b.lo == b.hi && b.lo >= 0 && b.lo <= 61 {
+            let room = 1 << (62 - b.lo)
+            if a.lo >= 0 - room && a.hi <= room {
+                s = RgSpan { lo: a.lo << b.lo, hi: a.hi << b.lo }
+            }
+        }
+    } else if op == IR_NEG {
+        if a.lo > rg_smallest() { s = RgSpan { lo: 0 - a.hi, hi: 0 - a.lo } }
+    } else if op == IR_AND {
+        if f.ins_ty[d] == IR_BOOL { return RgSpan { lo: 0, hi: 1 } }
+        if a.lo >= 0 {
+            s = RgSpan { lo: 0, hi: a.hi }
+            if b.lo >= 0 && b.hi < s.hi { s.hi = b.hi }
+        } else if b.lo >= 0 {
+            s = RgSpan { lo: 0, hi: b.hi }
+        }
+    } else if op == IR_SREM {
+        if b.lo > 0 {
+            s = RgSpan { lo: 1 - b.hi, hi: b.hi - 1 }
+            if a.lo >= 0 {
+                s.lo = 0
+                if a.hi < s.hi { s.hi = a.hi }
+            }
+        }
+    } else if op == IR_SDIV {
+        if b.lo == b.hi && b.lo > 0 { s = RgSpan { lo: a.lo / b.lo, hi: a.hi / b.lo } }
+    } else if op == IR_SAR || op == IR_SHR {
+        if b.lo == b.hi && b.lo >= 1 && b.lo <= 62 {
+            if a.lo >= 0 {
+                let by = 1 << b.lo
+                s = RgSpan { lo: a.lo / by, hi: a.hi / by }
+            } else if op == IR_SHR {
+                s.lo = 0
+            }
+        }
+    } else if op == IR_SELECT {
+        s = rg_join(a, b)
+        let kind = rg_select_kind(f, d)
+        if kind == 1 {
+            if a.hi < b.hi {
+                s.hi = a.hi
+            } else {
+                s.hi = b.hi
+            }
+        } else if kind == 2 {
+            if a.lo > b.lo {
+                s.lo = a.lo
+            } else {
+                s.lo = b.lo
+            }
+        }
+    } else if op == IR_EXT8U {
+        s = RgSpan { lo: 0, hi: 255 }
+    } else if op == IR_EXT8S {
+        s = RgSpan { lo: 0 - 128, hi: 127 }
+    } else if op == IR_EXT32U {
+        s = RgSpan { lo: 0, hi: 4294967295 }
+    } else if op == IR_EXT32S {
+        s = RgSpan { lo: 0 - 2147483648, hi: 2147483647 }
+    } else if op == IR_LOAD {
+        let ty = f.ins_ty[d]
+        if ty == IR_U8 {
+            s = RgSpan { lo: 0, hi: 255 }
+        } else if ty == IR_I8 {
+            s = RgSpan { lo: 0 - 128, hi: 127 }
+        } else if ty == IR_U32 {
+            s = RgSpan { lo: 0, hi: 4294967295 }
+        } else if ty == IR_I32 {
+            s = RgSpan { lo: 0 - 2147483648, hi: 2147483647 }
+        }
+    }
+    return s
+}
+
+// Whether the operands of this operation are followed.
+fn rg_follows(op: i64) -> bool {
+    return op >= IR_ADD && op <= IR_NEG || op == IR_SELECT
+}
+
+// What a condition says, as relations `u < w + k` between operands
+// (-1 stands for 0).
+struct RgFacts {
+    n: i64
+    u: List[i64]
+    w: List[i64]
+    k: List[i64]
+}
+
+fn rg_fact(facts: mut RgFacts, u: i64, w: i64, k: i64) {
+    facts.u.push(u)
+    facts.w.push(w)
+    facts.k.push(k)
+    facts.n = facts.n + 1
+}
+
+// Whether operand `x` is known never to be negative, wherever it is.
+fn rg_never_negative(r: IrRange, f: IrFunc, x: i64) -> bool {
+    if x < -1 { return ir_const_value(f, x) >= 0 }
+    if x < 0 { return true }
+    return r.lo[x] >= 0
+}
+
+// What is known when condition `c` holds (`sense`) or does not.
+fn rg_facts(r: IrRange, f: IrFunc, c: i64, sense: bool) -> RgFacts {
+    var facts = RgFacts { n: 0, u: [], w: [], k: [] }
+    var d = su_def(f, c)
+    var holds = sense
+    // `xor c, 1` is how a condition is turned round.
+    var turns = 0
+    while d >= 0 && f.ins_op[d] == IR_XOR && turns < 4 {
+        let other = f.ins_b[d]
+        if !ir_is_const(other) || ir_const_value(f, other) != 1 || ir_operand_type(f, f.ins_a[d]) != IR_BOOL {
+            return facts
+        }
+        holds = !holds
+        d = su_def(f, f.ins_a[d])
+        turns = turns + 1
+    }
+    if d < 0 { return facts }
+    let op = f.ins_op[d]
+    let a = f.ins_a[d]
+    let b = f.ins_b[d]
+    if op < IR_EQ || op > IR_UGE { return facts }
+    let ta = ir_operand_type(f, a)
+    let tb = ir_operand_type(f, b)
+    if ta == IR_BOOL || ta == IR_PTR || tb == IR_BOOL || tb == IR_PTR { return facts }
+    if op == IR_SLT && holds || op == IR_SGE && !holds {
+        rg_fact(mut facts, a, b, 0)
+    } else if op == IR_SLT || op == IR_SGE {
+        rg_fact(mut facts, b, a, 1)
+    } else if op == IR_SLE && holds || op == IR_SGT && !holds {
+        rg_fact(mut facts, a, b, 1)
+    } else if op == IR_SLE || op == IR_SGT {
+        rg_fact(mut facts, b, a, 0)
+    } else if op == IR_EQ && holds || op == IR_NE && !holds {
+        rg_fact(mut facts, a, b, 1)
+        rg_fact(mut facts, b, a, 1)
+    } else if holds && (op == IR_ULT || op == IR_ULE) {
+        // Unsigned below a number that is not negative: between 0 and
+        // that number.
+        if rg_never_negative(r, f, b) {
+            var k = 0
+            if op == IR_ULE { k = 1 }
+            rg_fact(mut facts, a, b, k)
+            rg_fact(mut facts, -1, a, 1)
+        }
+    } else if holds && (op == IR_UGT || op == IR_UGE) {
+        if rg_never_negative(r, f, a) {
+            var k = 0
+            if op == IR_UGE { k = 1 }
+            rg_fact(mut facts, b, a, k)
+            rg_fact(mut facts, -1, b, 1)
+        }
+    }
+    return facts
+}
+
+// What operand `x` can be when block `blk` runs; with `blk` -1, what
+// it can be anywhere.
+fn rg_at(r: IrRange, f: IrFunc, x: i64, blk: i64, depth: i64) -> RgSpan {
+    if x == -1 { return RgSpan { lo: 0, hi: 0 } }
+    if x < 0 { return RgSpan { lo: ir_const_value(f, x), hi: ir_const_value(f, x) } }
+    var s = RgSpan { lo: r.lo[x], hi: r.hi[x] }
+    if blk < 0 || blk >= r.cond.len() || r.cfg.rpo_at[blk] < 0 { return s }
+    if depth > 0 {
+        let d = su_def(f, x)
+        if d >= 0 && rg_follows(f.ins_op[d]) {
+            var first = f.ins_a[d]
+            var second = f.ins_b[d]
+            if f.ins_op[d] == IR_SELECT {
+                first = second
+                second = f.ins_c[d]
+            }
+            var a = rg_full()
+            var b = rg_full()
+            if first != -1 { a = rg_at(r, f, first, blk, depth - 1) }
+            if second != -1 { b = rg_at(r, f, second, blk, depth - 1) }
+            s = rg_meet(s, rg_eval(f, d, a, b))
+        }
+    }
+    if !r.told[x] { return s }
+    var among = -1
+    if depth > 0 { among = blk }
+    // The closest RG_WALK blocks that say something: a function with
+    // hundreds of tests in a row would otherwise cost their square.
+    var walked = 0
+    var at = r.above[blk]
+    while at >= 0 && walked < RG_WALK {
+        walked = walked + 1
+        var i = r.fact_s[at]
+        let end = i + r.fact_n[at]
+        while i < end {
+            let k = r.fk[i]
+            if r.fu[i] == x && r.fw[i] != x {
+                // x < w + k
+                let w = rg_at(r, f, r.fw[i], among, depth - 1)
+                if w.hi > rg_smallest() && w.hi - 1 + k < s.hi { s.hi = w.hi - 1 + k }
+            } else if r.fw[i] == x && r.fu[i] != x {
+                // u < x + k
+                let u = rg_at(r, f, r.fu[i], among, depth - 1)
+                if u.lo < rg_largest() && u.lo + 1 - k > s.lo { s.lo = u.lo + 1 - k }
+            }
+            if depth > 0 {
+                // A relation about `x` plus a constant says where
+                // that sum is, and so where `x` is: adding a constant
+                // and wrapping loses nothing.
+                var sum = r.fu[i]
+                if sum == x || sum < 0 || r.root[sum] != r.root[x] { sum = r.fw[i] }
+                if sum != x && sum >= 0 && r.root[sum] == r.root[x] {
+                    let d = su_def(f, sum)
+                    var c = 0
+                    var inner = -1
+                    if d >= 0 && f.ins_op[d] == IR_ADD && ir_is_const(f.ins_b[d]) {
+                        inner = f.ins_a[d]
+                        c = ir_const_value(f, f.ins_b[d])
+                    } else if d >= 0 && f.ins_op[d] == IR_ADD && ir_is_const(f.ins_a[d]) {
+                        inner = f.ins_b[d]
+                        c = ir_const_value(f, f.ins_a[d])
+                    } else if d >= 0 && f.ins_op[d] == IR_SUB && ir_is_const(f.ins_b[d]) && ir_const_value(f, f.ins_b[d]) != rg_smallest() {
+                        inner = f.ins_a[d]
+                        c = 0 - ir_const_value(f, f.ins_b[d])
+                    }
+                    if inner == x {
+                        let there = rg_at(r, f, sum, blk, 0)
+                        if !rg_sub_wraps(there.lo, c) && !rg_sub_wraps(there.hi, c) {
+                            s = rg_meet(s, RgSpan { lo: there.lo - c, hi: there.hi - c })
+                        }
+                    }
+                }
+            }
+            i = i + 1
+        }
+        let up = r.cfg.idom[at]
+        if up == at {
+            at = -1
+        } else {
+            at = r.above[up]
+        }
+    }
+    return s
+}
+
+// An operand as a value (or -1 for none) plus a number.
+struct RgTerm {
+    v: i64
+    k: i64
+}
+
+// Takes the constants off: `add x, 3` is `x` plus 3 when the addition
+// cannot wrap for what `x` can be when `blk` runs.
+fn rg_term(r: IrRange, f: IrFunc, x: i64, plus: i64, blk: i64) -> RgTerm {
+    let limit = 1 << 60
+    var t = RgTerm { v: x, k: plus }
+    var steps = 0
+    while steps < 4 {
+        steps = steps + 1
+        if t.v == -1 { return t }
+        if t.v < 0 {
+            let c = ir_const_value(f, t.v)
+            if c > limit || c < 0 - limit || t.k > limit || t.k < 0 - limit { return t }
+            return RgTerm { v: -1, k: t.k + c }
+        }
+        let d = su_def(f, t.v)
+        if d < 0 { return t }
+        let op = f.ins_op[d]
+        var inner = -1
+        var c = 0
+        if op == IR_ADD && ir_is_const(f.ins_b[d]) {
+            inner = f.ins_a[d]
+            c = ir_const_value(f, f.ins_b[d])
+        } else if op == IR_ADD && ir_is_const(f.ins_a[d]) {
+            inner = f.ins_b[d]
+            c = ir_const_value(f, f.ins_a[d])
+        } else if op == IR_SUB && ir_is_const(f.ins_b[d]) {
+            inner = f.ins_a[d]
+            c = 0 - ir_const_value(f, f.ins_b[d])
+        } else {
+            return t
+        }
+        if inner < 0 || c > limit || c < 0 - limit || t.k > limit || t.k < 0 - limit { return t }
+        let s = rg_at(r, f, inner, blk, 1)
+        if rg_add_wraps(s.lo, c) || rg_add_wraps(s.hi, c) { return t }
+        t = RgTerm { v: inner, k: t.k + c }
+    }
+    return t
+}
+
+// For a parameter of a block that is no loop header: the relation
+// holds when it holds for every value passed in, where it is passed.
+// `left` says the parameter is the left side.
+fn rg_param_less(r: IrRange, f: IrFunc, ta: RgTerm, tb: RgTerm, left: bool, depth: i64) -> bool {
+    var p = tb.v
+    if left { p = ta.v }
+    let b = f.val_blk[p]
+    if b < 0 || b >= r.cond.len() || r.cfg.rpo_at[b] < 0 || r.cfg.pred_n[b] == 0 { return false }
+    let l = r.cfg.blk_loop[b]
+    if l >= 0 && r.cfg.loop_header[l] == b { return false }
+    var k = 0
+    while k < f.blk_pn[b] && ir_block_param(f, b, k) != p {
+        k = k + 1
+    }
+    if k == f.blk_pn[b] { return false }
+    var i = 0
+    while i < r.cfg.pred_n[b] {
+        let from = r.cfg.pred_blk[r.cfg.pred_s[b] + i]
+        let x = f.args[f.edge_as[r.cfg.pred_edge[r.cfg.pred_s[b] + i]] + k]
+        if left {
+            if !rg_less(r, f, x, ta.k, tb.v, tb.k, from, depth - 1) { return false }
+        } else if !rg_less(r, f, ta.v, ta.k, x, tb.k, from, depth - 1) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// Whether `a + ka < b + kb` is certain when block `blk` runs.
+fn rg_less(r: IrRange, f: IrFunc, a: i64, ka: i64, b: i64, kb: i64, blk: i64, depth: i64) -> bool {
+    let limit = 1 << 60
+    let ta = rg_term(r, f, a, ka, blk)
+    let tb = rg_term(r, f, b, kb, blk)
+    if ta.k > limit || ta.k < 0 - limit || tb.k > limit || tb.k < 0 - limit { return false }
+    if ta.v == tb.v { return ta.k < tb.k }
+    let sa = rg_at(r, f, ta.v, blk, 2)
+    let sb = rg_at(r, f, tb.v, blk, 2)
+    if rg_sum_less(sa.hi, ta.k, sb.lo, tb.k) { return true }
+    if depth <= 0 { return false }
+    // What `a` is made of.
+    let da = su_def(f, ta.v)
+    if da >= 0 && f.ins_op[da] == IR_SELECT {
+        let x = f.ins_b[da]
+        let y = f.ins_c[da]
+        if rg_select_kind(f, da) == 1 {
+            // The smaller of two: below `b` when either is.
+            if rg_less(r, f, x, ta.k, tb.v, tb.k, blk, depth - 1) || rg_less(r, f, y, ta.k, tb.v, tb.k, blk, depth - 1) {
+                return true
+            }
+        } else if rg_less(r, f, x, ta.k, tb.v, tb.k, blk, depth - 1) && rg_less(r, f, y, ta.k, tb.v, tb.k, blk, depth - 1) {
+            return true
+        }
+    }
+    if ta.v >= 0 && r.iv_dir[ta.v] == -1 && r.iv_one[ta.v] {
+        // Never above where it started.
+        if rg_less(r, f, r.iv_init[ta.v], ta.k, tb.v, tb.k, blk, depth - 1) { return true }
+    }
+    if ta.v >= f.param_count && da < 0 && r.iv_dir[ta.v] == 0 && rg_param_less(r, f, ta, tb, true, depth) {
+        return true
+    }
+    // What `b` is made of.
+    let db = su_def(f, tb.v)
+    if db >= 0 && f.ins_op[db] == IR_SELECT {
+        let x = f.ins_b[db]
+        let y = f.ins_c[db]
+        if rg_select_kind(f, db) == 2 {
+            if rg_less(r, f, ta.v, ta.k, x, tb.k, blk, depth - 1) || rg_less(r, f, ta.v, ta.k, y, tb.k, blk, depth - 1) {
+                return true
+            }
+        } else if rg_less(r, f, ta.v, ta.k, x, tb.k, blk, depth - 1) && rg_less(r, f, ta.v, ta.k, y, tb.k, blk, depth - 1) {
+            return true
+        }
+    }
+    if tb.v >= 0 && r.iv_dir[tb.v] == 1 && r.iv_one[tb.v] {
+        // Never below where it started.
+        if rg_less(r, f, ta.v, ta.k, r.iv_init[tb.v], tb.k, blk, depth - 1) { return true }
+    }
+    if tb.v >= f.param_count && db < 0 && r.iv_dir[tb.v] == 0 && rg_param_less(r, f, ta, tb, false, depth) {
+        return true
+    }
+    // What the branches above say.
+    if blk < 0 || blk >= r.cond.len() || r.cfg.rpo_at[blk] < 0 { return false }
+    var ra = -1
+    var rb = -1
+    if ta.v >= 0 { ra = r.root[ta.v] }
+    if tb.v >= 0 { rb = r.root[tb.v] }
+    if (ra < 0 || !r.told[ra]) && (rb < 0 || !r.told[rb]) { return false }
+    // The closest RG_WALK blocks that say something: a function with
+    // hundreds of tests in a row would otherwise cost their square.
+    var walked = 0
+    var at = r.above[blk]
+    while at >= 0 && walked < RG_WALK {
+        walked = walked + 1
+        var i = r.fact_s[at]
+        let end = i + r.fact_n[at]
+        while i < end {
+            var ru = r.fu[i]
+            var rw = r.fw[i]
+            if ru >= 0 { ru = r.root[ru] }
+            if rw >= 0 { rw = r.root[rw] }
+            if ru >= 0 && ru == ra || rw >= 0 && rw == rb {
+                let tu = rg_term(r, f, r.fu[i], 0, blk)
+                let tw = rg_term(r, f, r.fw[i], r.fk[i], blk)
+                // Known: tu.v + tu.k < tw.v + tw.k.
+                if tu.v == ta.v && tu.v != tw.v {
+                    // a < w + (tw.k - tu.k); enough: w + tw.k - tu.k + ta.k - 1 < b + tb.k.
+                    if rg_less(r, f, tw.v, tw.k - tu.k + ta.k - 1, tb.v, tb.k, blk, depth - 1) {
+                        return true
+                    }
+                }
+                if tw.v == tb.v && tu.v != tw.v {
+                    // b > u + (tu.k - tw.k); enough: a + ta.k < u + tu.k - tw.k + tb.k + 1.
+                    if rg_less(r, f, ta.v, ta.k, tu.v, tu.k - tw.k + tb.k + 1, blk, depth - 1) {
+                        return true
+                    }
+                }
+            }
+            i = i + 1
+        }
+        let up = r.cfg.idom[at]
+        if up == at {
+            at = -1
+        } else {
+            at = r.above[up]
+        }
+    }
+    return false
+}
+
+// Whether `x + kx < y + ky` as whole numbers; the two additions are
+// small.
+fn rg_sum_less(x: i64, kx: i64, y: i64, ky: i64) -> bool {
+    if rg_sub_wraps(x, y) { return x < 0 }
+    return x - y < ky - kx
+}
+
+// Looks at parameter number `k` of the header `h` of loop `l`.
+fn rg_induction(r: mut IrRange, f: IrFunc, h: i64, l: i64, k: i64) {
+    let p = ir_block_param(f, h, k)
+    if f.val_ty[p] != IR_I64 { return }
+    var up = true
+    var down = true
+    var start = RgSpan { lo: rg_largest(), hi: rg_smallest() }
+    var first = -1
+    var one = true
+    var entries = 0
+    var widest = 0
+    var i = 0
+    while i < r.cfg.pred_n[h] {
+        let from = r.cfg.pred_blk[r.cfg.pred_s[h] + i]
+        let x = f.args[f.edge_as[r.cfg.pred_edge[r.cfg.pred_s[h] + i]] + k]
+        i = i + 1
+        if !ir_in_loop(r.cfg, from, l) {
+            start = rg_join(start, rg_at(r, f, x, from, 2))
+            if entries > 0 && x != first { one = false }
+            first = x
+            entries = entries + 1
+            continue
+        }
+        if x == p { continue }
+        let d = su_def(f, x)
+        if d < 0 { return }
+        let op = f.ins_op[d]
+        var step = -1
+        if op == IR_ADD && f.ins_a[d] == p {
+            step = f.ins_b[d]
+        } else if op == IR_ADD && f.ins_b[d] == p {
+            step = f.ins_a[d]
+        } else if op == IR_SUB && f.ins_a[d] == p {
+            step = f.ins_b[d]
+        } else {
+            return
+        }
+        if step == p || step == -1 { return }
+        if step >= f.param_count {
+            // From outside the loop only.
+            var made = f.val_blk[step]
+            if f.val_ins[step] >= 0 { made = f.ins_blk[f.val_ins[step]] }
+            if made < 0 || ir_in_loop(r.cfg, made, l) { return }
+        }
+        let where = f.ins_blk[d]
+        var by = rg_at(r, f, step, where, 2)
+        if op == IR_SUB {
+            if by.lo == rg_smallest() { return }
+            by = RgSpan { lo: 0 - by.hi, hi: 0 - by.lo }
+        }
+        let now = rg_at(r, f, p, where, 2)
+        if by.lo < 0 || rg_add_wraps(now.hi, by.hi) { up = false }
+        if by.hi > widest { widest = by.hi }
+        if by.hi > 0 || rg_add_wraps(now.lo, by.lo) { down = false }
+    }
+    if entries == 0 { return }
+    if up && start.lo > r.lo[p] { r.lo[p] = start.lo }
+    if down && start.hi < r.hi[p] { r.hi[p] = start.hi }
+    if up && !down {
+        r.iv_dir[p] = 1
+        r.iv_step[p] = widest
+    }
+    if down && !up { r.iv_dir[p] = -1 }
+    if (up || down) && one {
+        r.iv_one[p] = true
+        r.iv_init[p] = first
+    }
+}
+
+fn ir_range(f: IrFunc) -> IrRange {
+    let values = f.val_ty.len()
+    let blocks = f.blk_first.len()
+    let none = 0 - 1
+    let smallest = rg_smallest()
+    let largest = rg_largest()
+    var r = IrRange { cfg: ir_cfg(f), lo: smallest.filled(values), hi: largest.filled(values), iv_dir: 0.filled(values), iv_one: false.filled(values), iv_init: none.filled(values), iv_step: 0.filled(values), cond: none.filled(blocks), sense: false.filled(blocks), fact_s: 0.filled(blocks), fact_n: 0.filled(blocks), fu: [], fw: [], fk: [], above: none.filled(blocks), root: 0.filled(values), told: false.filled(values) }
+    var v = 0
+    while v < values {
+        if f.val_ty[v] == IR_BOOL {
+            r.lo[v] = 0
+            r.hi[v] = 1
+        }
+        v = v + 1
+    }
+    // Lengths, and what is known at the start of each block.
+    let rpo = r.cfg.rpo
+    for b in rpo {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            let op = f.ins_op[ins]
+            var length = -1
+            if op == IR_ULT { length = f.ins_b[ins] }
+            if op == IR_UGT { length = f.ins_a[ins] }
+            if length >= 0 && f.val_ty[length] == IR_I64 {
+                if r.lo[length] < 0 { r.lo[length] = 0 }
+                if r.hi[length] > RG_LEN_MAX { r.hi[length] = RG_LEN_MAX }
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    v = 0
+    while v < values {
+        r.root[v] = v
+        let d = su_def(f, v)
+        if d >= 0 {
+            // Operands are made before their users, but not always
+            // numbered before them: one step only, the walk does the
+            // rest.
+            let op = f.ins_op[d]
+            if op == IR_ADD && ir_is_const(f.ins_b[d]) && f.ins_a[d] >= 0 { r.root[v] = f.ins_a[d] }
+            if op == IR_ADD && ir_is_const(f.ins_a[d]) && f.ins_b[d] >= 0 { r.root[v] = f.ins_b[d] }
+            if op == IR_SUB && ir_is_const(f.ins_b[d]) && f.ins_a[d] >= 0 { r.root[v] = f.ins_a[d] }
+        }
+        v = v + 1
+    }
+    v = 0
+    while v < values {
+        var at = r.root[v]
+        var steps = 0
+        while r.root[at] != at && steps < 8 {
+            at = r.root[at]
+            steps = steps + 1
+        }
+        if r.root[at] == at {
+            r.root[v] = at
+        } else {
+            r.root[v] = v
+        }
+        v = v + 1
+    }
+    for b in rpo {
+        r.fact_s[b] = r.fu.len()
+        if r.cfg.pred_n[b] == 1 {
+            let from = r.cfg.pred_blk[r.cfg.pred_s[b]]
+            let e = r.cfg.pred_edge[r.cfg.pred_s[b]]
+            let t = f.blk_last[from]
+            if f.ins_op[t] == IR_BR && f.ins_a[t] >= 0 {
+                r.cond[b] = f.ins_a[t]
+                r.sense[b] = e == f.ins_es[t]
+                let facts = rg_facts(r, f, r.cond[b], r.sense[b])
+                var i = 0
+                while i < facts.n {
+                    r.fu.push(facts.u[i])
+                    r.fw.push(facts.w[i])
+                    r.fk.push(facts.k[i])
+                    if facts.u[i] >= 0 {
+                        r.told[facts.u[i]] = true
+                        r.told[r.root[facts.u[i]]] = true
+                    }
+                    if facts.w[i] >= 0 {
+                        r.told[facts.w[i]] = true
+                        r.told[r.root[facts.w[i]]] = true
+                    }
+                    i = i + 1
+                }
+            }
+        }
+        r.fact_n[b] = r.fu.len() - r.fact_s[b]
+        if r.fact_n[b] > 0 {
+            r.above[b] = b
+        } else if r.cfg.idom[b] != b {
+            r.above[b] = r.above[r.cfg.idom[b]]
+        }
+    }
+    for b in rpo {
+        if r.cfg.pred_n[b] > 0 {
+            let l = r.cfg.blk_loop[b]
+            let header = l >= 0 && r.cfg.loop_header[l] == b
+            var k = 0
+            while k < f.blk_pn[b] {
+                let p = ir_block_param(f, b, k)
+                if header {
+                    if r.cfg.irreducible == 0 { rg_induction(mut r, f, b, l, k) }
+                } else if f.val_ty[p] == IR_I64 {
+                    var s = RgSpan { lo: largest, hi: smallest }
+                    var i = 0
+                    while i < r.cfg.pred_n[b] {
+                        let x = f.args[f.edge_as[r.cfg.pred_edge[r.cfg.pred_s[b] + i]] + k]
+                        s = rg_join(s, rg_at(r, f, x, r.cfg.pred_blk[r.cfg.pred_s[b] + i], 1))
+                        i = i + 1
+                    }
+                    if s.lo > r.lo[p] { r.lo[p] = s.lo }
+                    if s.hi < r.hi[p] { r.hi[p] = s.hi }
+                }
+                k = k + 1
+            }
+        }
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            if f.ins_rn[ins] == 1 && f.val_ty[f.ins_res[ins]] == IR_I64 {
+                let op = f.ins_op[ins]
+                var first = f.ins_a[ins]
+                var second = f.ins_b[ins]
+                if op == IR_SELECT {
+                    first = second
+                    second = f.ins_c[ins]
+                }
+                var a = rg_full()
+                var c = rg_full()
+                if rg_follows(op) {
+                    if first != -1 { a = rg_at(r, f, first, -1, 0) }
+                    if second != -1 { c = rg_at(r, f, second, -1, 0) }
+                }
+                let s = rg_eval(f, ins, a, c)
+                let x = f.ins_res[ins]
+                if s.lo > r.lo[x] { r.lo[x] = s.lo }
+                if s.hi < r.hi[x] { r.hi[x] = s.hi }
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    return r
+}

@@ -1,0 +1,20 @@
+; `fib(n - 1) + fib(n - 2)`: the second call becomes the loop, the first stays a call.
+; calls: 1
+; run: fib 20
+; out: => 6765
+; run: fib 1
+; out: => 1
+fn fib(p0: i64) -> i64 {
+b0:
+    v2 = slt p0, 2
+    br v2, b2, b3
+b2:
+    ret p0
+b3:
+    v5 = add p0, -1
+    v6 = call fib(v5) -> i64
+    v8 = add p0, -2
+    v9 = call fib(v8) -> i64
+    v10 = add v6, v9
+    ret v10
+}

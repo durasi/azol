@@ -1,0 +1,15 @@
+// A recursion three million calls deep that ends: `i` goes up by one
+// and the call is reached only while `i < n`, so under `-O` it is a
+// loop with no count and needs no stack. (Without `-O` this program
+// runs out of stack: the one difference `tailcall` makes that a
+// program can see.)
+// expect-line: 4500001500000
+
+fn sum(i: i64, n: i64, total: i64) -> i64 {
+    if i >= n { return total }
+    return sum(i + 1, n, total + i)
+}
+
+fn main() {
+    print(str(sum(0, 3000001, 0)))
+}

@@ -1,0 +1,28 @@
+; The caller's own result place handed on: the body's `ret` stays `ret`.
+; calls: 0
+; text: [ret]
+; run: start 4
+; out: => 4, 8
+fn fill(p0: i64, p1: ptr [param 1 read write writebuf resize free]) {
+b0:
+    store i64, p1, 0, p0  [ret]
+    ret
+}
+
+fn outer(p0: i64, p1: ptr [param 1 read write writebuf resize free]) {
+b0:
+    v0 = add p0, p0
+    store i64, p1, 8, v0  [ret]
+    call fill(p0, p1)
+    ret
+}
+
+fn start(p0: i64) -> i64, i64 {
+    frames 16
+b0:
+    v0 = frame 0
+    call outer(p0, v0)
+    v1 = load i64, v0, 0  [frame 0]
+    v2 = load i64, v0, 8  [frame 0]
+    ret v1, v2
+}

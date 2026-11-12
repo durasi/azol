@@ -1,0 +1,32 @@
+// Helpers go into a function that calls itself through another one;
+// the two stay two functions, and a chain of them without end still
+// runs out of stack.
+// expect-exit: 1
+// expect-line: 12 21
+// expect-stderr: azol: stack overflow
+
+struct Pair { a: i64, b: i64 }
+
+fn swap(p: Pair) -> Pair {
+    return Pair { a: p.b, b: p.a }
+}
+
+fn weight(p: Pair) -> i64 {
+    return p.a * 10 + p.b
+}
+
+fn down(p: Pair, n: i64) -> i64 {
+    if n == 0 { return weight(p) }
+    let q = swap(p)
+    return up(q, n - 1) + 0 * weight(q)
+}
+
+fn up(p: Pair, n: i64) -> i64 {
+    if n == 0 { return weight(p) }
+    return down(swap(p), n - 1) - 0 * weight(p)
+}
+
+fn main() {
+    print(str(down(Pair { a: 1, b: 2 }, 4)) + " " + str(down(Pair { a: 1, b: 2 }, 3)))
+    print(str(down(Pair { a: 1, b: 2 }, 0 - 1)))
+}

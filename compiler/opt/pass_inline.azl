@@ -1,0 +1,792 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The pass `inline` (docs/design/optimizer.md, section 5.2): the body
+// of a function takes the place of a call of it.
+//
+//     fn ir_inline_module(m: mut IrModule, stats: mut InlStats) -> i64
+//
+// gives how many calls were replaced plus how many functions went.
+//
+// The order. The functions are taken callees first (the strongly
+// connected components of the call graph, as Tarjan's walk finishes
+// them), so a body is in its final form, with its own calls already
+// replaced and cleaned up, when a caller looks at it. A function that
+// can reach itself is never put anywhere: not into a member of its own
+// component, which would unroll a recursion, and not into anything
+// else either, so every cycle of calls the program has it still has,
+// and a recursion that runs out of stack still does.
+//
+// The decision is `inl_wants`; the numbers are the INL_* constants and
+// the measurements behind them are in docs/design/optimizer-notes.md.
+//
+// What replacing a call does (`inl_expand`):
+//
+//   - The block of the call ends at the call. What came after it moves
+//     to a new block, the continuation, whose parameters are the values
+//     the call gave. Every `ret` of the body becomes a jump there.
+//   - The blocks of the body are copied with new values. A parameter
+//     is the argument itself. A `bool` parameter that gets a constant
+//     gets a `bconst` first, because the type of `xor 1, 1` is `i64`.
+//   - The frame objects of the body become new frame objects of the
+//     caller, and its `frame` instructions go to the caller's entry
+//     block, where `sroa` looks for them. An object is not fresh for
+//     every time round a loop of the caller, as it was for every call,
+//     which nothing can tell: a body never reads what it has not
+//     written, and no address of a frame object outlives its call.
+//   - Regions. `frame N` is the new object. `param K` and `ret` are the
+//     region the caller itself uses for what the argument points to:
+//     the argument is followed down its `gep`s to its root, and the
+//     root says (a `frame`: that object; a parameter of the caller:
+//     its region; a loaded address: the buffer of the place it was
+//     loaded from; anything else: the region of an access the caller
+//     already makes through that root). When nothing says, the call
+//     stays. Every pointer root has one region in the lowered form, so
+//     the copied accesses and the caller's own name the same memory by
+//     the same region, which is all `sroa`, `dse` and `gvn` rely on.
+//   - A `trap` of the body is a `trap` of the caller, in a block of its
+//     own: the same stop with the same message.
+//
+// Afterwards the functions nothing can reach from `main` are removed.
+// A module with no `main` (a test of single functions) keeps them all.
+
+// A callee of at most this many instructions always goes in.
+const INL_SMALL = 20
+// What a callee may have more for every argument that is a constant,
+// for every argument that is the address of a frame object of the
+// caller (the object can then become values), and when the call is in
+// a loop.
+const INL_PER_CONST = 4
+const INL_PER_FRAME = 8
+const INL_IN_LOOP = 30
+// A callee with a single call disappears when it is put there, so it
+// may be this large.
+const INL_ONCE = 400
+// A caller does not grow beyond this many instructions.
+const INL_CALLER_MAX = 800
+// The program does not grow by more than this many hundredths of its
+// size, or this many instructions when it is small, through callees
+// that stay.
+const INL_PROGRAM_PCT = 60
+const INL_PROGRAM_MIN = 2000
+// A function that calls itself keeps a small frame: all the callees put
+// into it together may bring this many bytes of frame objects, and no
+// more, so a recursion that fitted the stack still fits.
+const INL_REC_FRAME = 96
+
+struct InlStats {
+    // Calls of functions of the module seen, replaced, and kept
+    // because no region could be named.
+    sites: i64
+    inlined: i64
+    unnamed: i64
+    // Functions removed, and instructions copied.
+    removed: i64
+    copied: i64
+}
+
+fn inl_new_stats() -> InlStats {
+    return InlStats { sites: 0, inlined: 0, unnamed: 0, removed: 0, copied: 0 }
+}
+
+fn inl_size(f: IrFunc) -> i64 {
+    var n = 0
+    for b in f.order {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            n += 1
+            ins = f.ins_next[ins]
+        }
+    }
+    return n
+}
+
+// The strongly connected components of a graph of `n` nodes whose
+// edges out of node `v` are the `cn[v]` entries of `edges` from
+// `cs[v]`. `comp[v]` becomes the component of `v`, and `order` the
+// nodes with every component after all those it reaches.
+fn inl_components(n: i64, cs: List[i64], cn: List[i64], edges: List[i64], comp: mut List[i64], order: mut List[i64]) -> i64 {
+    var index = (-1).filled(n)
+    var low = 0.filled(n)
+    var on = false.filled(n)
+    var open: List[i64] = []
+    var walk_node: List[i64] = []
+    var walk_edge: List[i64] = []
+    var next = 0
+    var count = 0
+    var root = 0
+    while root < n {
+        if index[root] < 0 {
+            index[root] = next
+            low[root] = next
+            next += 1
+            open.push(root)
+            on[root] = true
+            walk_node.push(root)
+            walk_edge.push(0)
+        }
+        while walk_node.len() > 0 {
+            let top = walk_node.len() - 1
+            let v = walk_node[top]
+            let i = walk_edge[top]
+            if i < cn[v] {
+                walk_edge[top] = i + 1
+                let w = edges[cs[v] + i]
+                if index[w] < 0 {
+                    index[w] = next
+                    low[w] = next
+                    next += 1
+                    open.push(w)
+                    on[w] = true
+                    walk_node.push(w)
+                    walk_edge.push(0)
+                } else if on[w] && index[w] < low[v] {
+                    low[v] = index[w]
+                }
+            } else {
+                walk_node.pop()
+                walk_edge.pop()
+                if walk_node.len() > 0 {
+                    let u = walk_node[walk_node.len() - 1]
+                    if low[v] < low[u] { low[u] = low[v] }
+                }
+                if low[v] == index[v] {
+                    var done = false
+                    while !done {
+                        let x = open[open.len() - 1]
+                        open.pop()
+                        on[x] = false
+                        comp[x] = count
+                        order.push(x)
+                        done = x == v
+                    }
+                    count += 1
+                }
+            }
+        }
+        root += 1
+    }
+    return count
+}
+
+// The value an address is made from: down the `gep`s.
+fn inl_root(f: IrFunc, x: i64) -> i64 {
+    var v = x
+    while v >= f.param_count && f.val_ins[v] >= 0 && f.ins_op[f.val_ins[v]] == IR_GEP {
+        v = f.ins_a[f.val_ins[v]]
+    }
+    return v
+}
+
+// For every value, the region of the accesses made through addresses
+// with that root: -1 when there is none, -2 when they do not agree.
+fn inl_evidence(f: IrFunc) -> List[i64] {
+    var ev = (-1).filled(f.val_ty.len())
+    for b in f.order {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            let op = f.ins_op[ins]
+            if (op == IR_LOAD || op == IR_STORE) && f.ins_a[ins] >= 0 {
+                let root = inl_root(f, f.ins_a[ins])
+                if ev[root] == -1 {
+                    ev[root] = f.ins_reg[ins]
+                } else if ev[root] != f.ins_reg[ins] {
+                    ev[root] = -2
+                }
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    return ev
+}
+
+// The region the caller `f` uses for what the address `x` points to,
+// or -1 when nothing says.
+fn inl_pointee(f: mut IrFunc, ev: mut List[i64], x: i64) -> i64 {
+    if x < 0 { return -1 }
+    let root = inl_root(f, x)
+    var def = -1
+    if root >= f.param_count { def = f.val_ins[root] }
+    if def >= 0 && f.ins_op[def] == IR_FRAME {
+        return ir_region(mut f, IR_REGION_FRAME, f.ins_imm[def])
+    }
+    if root < ev.len() {
+        if ev[root] >= 0 { return ev[root] }
+        if ev[root] == -2 { return -1 }
+    }
+    var region = -1
+    if root < f.param_count {
+        // The last parameter of a function that gives an aggregate is
+        // where the result goes, and its region is `ret`.
+        var has_ret = false
+        for kind in f.reg_kind {
+            has_ret = has_ret || kind == IR_REGION_RET
+        }
+        if has_ret && root == f.param_count - 1 && f.ret_ty.len() == 0 {
+            region = ir_region(mut f, IR_REGION_RET, 0)
+        } else {
+            region = ir_region(mut f, IR_REGION_PARAM, root)
+        }
+    } else if def >= 0 && f.ins_op[def] == IR_LOAD && f.ins_ty[def] == IR_PTR {
+        region = ir_region(mut f, IR_REGION_BUF, f.ins_reg[def])
+    } else if def >= 0 && f.ins_op[def] == IR_ADDR {
+        region = ir_region(mut f, IR_REGION_DATA, 0)
+    }
+    if region >= 0 && root < ev.len() { ev[root] = region }
+    return region
+}
+
+// The region of the caller that stands for region `r` of the callee.
+// `preg[k]` is the region for what parameter `k` points to, `base` the
+// number of the callee's first frame object in the caller.
+fn inl_region(f: mut IrFunc, g: IrFunc, r: i64, preg: List[i64], base: i64, memo: mut List[i64]) -> i64 {
+    if memo[r] >= 0 { return memo[r] }
+    let kind = g.reg_kind[r]
+    var out = -1
+    if kind == IR_REGION_FRAME {
+        out = ir_region(mut f, IR_REGION_FRAME, base + g.reg_n[r])
+    } else if kind == IR_REGION_BUF {
+        let inner = inl_region(mut f, g, g.reg_n[r], preg, base, mut memo)
+        out = ir_region(mut f, IR_REGION_BUF, inner)
+    } else if kind == IR_REGION_PARAM {
+        out = preg[g.reg_n[r]]
+    } else if kind == IR_REGION_RET {
+        out = preg[g.param_count - 1]
+    } else {
+        out = ir_region(mut f, kind, 0)
+    }
+    memo[r] = out
+    return out
+}
+
+// The parameter of the callee at the bottom of region `r`, or -1.
+fn inl_region_param(g: IrFunc, r: i64) -> i64 {
+    var at = r
+    while g.reg_kind[at] == IR_REGION_BUF {
+        at = g.reg_n[at]
+    }
+    if g.reg_kind[at] == IR_REGION_PARAM { return g.reg_n[at] }
+    if g.reg_kind[at] == IR_REGION_RET { return g.param_count - 1 }
+    return -1
+}
+
+// An operand of the callee as an operand of the caller.
+fn inl_operand(f: mut IrFunc, g: IrFunc, vmap: List[i64], x: i64) -> i64 {
+    if x >= 0 { return vmap[x] }
+    if x == -1 { return -1 }
+    return ir_const(mut f, ir_const_value(g, x))
+}
+
+// A copy in `f` of instruction `ins` of `g`, in no block yet: `vmap`
+// and `bmap` give the values and blocks of `f` that stand for those of
+// `g`, `cmap` the names of callees (filled as they are met), and
+// `base` is added to the number of a frame object. The region of a
+// `load` or `store` is copied as it is.
+fn inl_copy(f: mut IrFunc, g: IrFunc, ins: i64, vmap: List[i64], bmap: List[i64], cmap: mut List[i64], base: i64) -> i64 {
+    let op = g.ins_op[ins]
+    let a = inl_operand(mut f, g, vmap, g.ins_a[ins])
+    let b = inl_operand(mut f, g, vmap, g.ins_b[ins])
+    let c = inl_operand(mut f, g, vmap, g.ins_c[ins])
+    var imm = g.ins_imm[ins]
+    if op == IR_FRAME {
+        imm = base + imm
+    } else if op == IR_CALL {
+        if cmap[imm] < 0 { cmap[imm] = ir_callee(mut f, g.callees[imm]) }
+        imm = cmap[imm]
+    }
+    let made = ir_make(mut f, op, g.ins_ty[ins], a, b, c, imm)
+    f.ins_imm2[made] = g.ins_imm2[ins]
+    f.ins_reg[made] = g.ins_reg[ins]
+    var k = 0
+    while k < g.ins_rn[ins] {
+        ir_add_result_value(mut f, made, vmap[g.results[g.ins_rs[ins] + k]])
+        k += 1
+    }
+    k = 0
+    while k < g.ins_an[ins] {
+        let x = inl_operand(mut f, g, vmap, g.args[g.ins_as[ins] + k])
+        ir_add_arg(mut f, made, x)
+        k += 1
+    }
+    var e = g.ins_es[ins]
+    let end = e + g.ins_en[ins]
+    while e < end {
+        let ne = ir_add_edge(mut f, made, bmap[g.edge_blk[e]], g.edge_key[e])
+        k = 0
+        while k < g.edge_an[e] {
+            let x = inl_operand(mut f, g, vmap, g.args[g.edge_as[e] + k])
+            ir_add_edge_arg(mut f, ne, x)
+            k += 1
+        }
+        e += 1
+    }
+    return made
+}
+
+// Puts the body of `g` in the place of the call `call` of `f`. Gives
+// false, and leaves `f` as it was, when a region cannot be named.
+fn inl_expand(f: mut IrFunc, g: IrFunc, call: i64, ev: mut List[i64]) -> bool {
+    let as = f.ins_as[call]
+    // The regions behind the parameters the body reaches through.
+    var preg = (-1).filled(g.param_count)
+    var k = 0
+    while k < g.param_count {
+        if g.val_ty[k] == IR_PTR && ir_is_const(f.args[as + k]) { return false }
+        k += 1
+    }
+    var needed = false.filled(g.param_count)
+    for b in g.order {
+        var ins = g.blk_first[b]
+        while ins >= 0 {
+            if g.ins_op[ins] == IR_LOAD || g.ins_op[ins] == IR_STORE {
+                let p = inl_region_param(g, g.ins_reg[ins])
+                if p >= 0 { needed[p] = true }
+            }
+            ins = g.ins_next[ins]
+        }
+    }
+    k = 0
+    while k < g.param_count {
+        if needed[k] {
+            if g.val_ty[k] != IR_PTR { return false }
+            preg[k] = inl_pointee(mut f, mut ev, f.args[as + k])
+            if preg[k] < 0 { return false }
+        }
+        k += 1
+    }
+    let base = f.frames.len()
+    var memo = (-1).filled(g.reg_kind.len())
+    // What the body does through a parameter of the caller, the caller
+    // must be allowed to do.
+    for b in g.order {
+        var ins = g.blk_first[b]
+        while ins >= 0 {
+            let op = g.ins_op[ins]
+            if (op == IR_LOAD || op == IR_STORE) && inl_region_param(g, g.ins_reg[ins]) >= 0 {
+                let r = inl_region(mut f, g, g.ins_reg[ins], preg, base, mut memo)
+                let problem = irv_region(f, r, op == IR_STORE)
+                if problem.len() > 0 { return false }
+            }
+            ins = g.ins_next[ins]
+        }
+    }
+
+    // From here on the call is replaced.
+    for bytes in g.frames {
+        ir_add_frame(mut f, bytes)
+    }
+    let home = f.ins_blk[call]
+    let entry = f.order[0]
+    var vmap = (-1).filled(g.val_ty.len())
+    k = 0
+    while k < g.param_count {
+        let x = f.args[as + k]
+        if g.val_ty[k] == IR_BOOL && ir_is_const(x) {
+            let bit = ir_const_value(f, x)
+            let made = ir_make(mut f, IR_BCONST, IR_BOOL, -1, -1, -1, bit)
+            vmap[k] = ir_add_result(mut f, made, IR_BOOL)
+            ir_link_before(mut f, call, made)
+        } else {
+            vmap[k] = x
+        }
+        k += 1
+    }
+    // The continuation: its parameters are the results of the call.
+    let old_order = f.order.len()
+    let cont = ir_add_block(mut f)
+    f.blk_ps[cont] = f.bparams.len()
+    k = 0
+    while k < f.ins_rn[call] {
+        let v = f.results[f.ins_rs[call] + k]
+        f.val_ins[v] = -1
+        f.val_blk[v] = cont
+        f.bparams.push(v)
+        f.blk_pn[cont] = f.blk_pn[cont] + 1
+        k += 1
+    }
+    f.ins_rn[call] = 0
+    f.ins_res[call] = -1
+    var rest = f.ins_next[call]
+    while rest >= 0 {
+        let after = f.ins_next[rest]
+        ir_unlink(mut f, rest)
+        ir_link_end(mut f, cont, rest)
+        rest = after
+    }
+    // Blocks and values of the body.
+    var bmap = (-1).filled(g.blk_first.len())
+    for b in g.order {
+        let nb = ir_add_block(mut f)
+        bmap[b] = nb
+        k = 0
+        while k < g.blk_pn[b] {
+            let v = g.bparams[g.blk_ps[b] + k]
+            vmap[v] = ir_add_block_param(mut f, nb, g.val_ty[v])
+            k += 1
+        }
+    }
+    for b in g.order {
+        var ins = g.blk_first[b]
+        while ins >= 0 {
+            k = 0
+            while k < g.ins_rn[ins] {
+                let v = g.results[g.ins_rs[ins] + k]
+                vmap[v] = ir_new_value(mut f, g.val_ty[v])
+                k += 1
+            }
+            ins = g.ins_next[ins]
+        }
+    }
+    var cmap = (-1).filled(g.callees.len())
+    // Where a `frame` of the body goes: the end of the caller's entry
+    // block, which is the call itself when the call is in that block.
+    for b in g.order {
+        let nb = bmap[b]
+        var ins = g.blk_first[b]
+        while ins >= 0 {
+            let op = g.ins_op[ins]
+            if op == IR_RET {
+                let made = ir_make(mut f, IR_JUMP, IR_I64, -1, -1, -1, 0)
+                let e = ir_add_edge(mut f, made, cont, 0)
+                k = 0
+                while k < g.ins_an[ins] {
+                    let x = inl_operand(mut f, g, vmap, g.args[g.ins_as[ins] + k])
+                    ir_add_edge_arg(mut f, e, x)
+                    k += 1
+                }
+                ir_link_end(mut f, nb, made)
+            } else {
+                let made = inl_copy(mut f, g, ins, vmap, bmap, mut cmap, base)
+                if op == IR_LOAD || op == IR_STORE {
+                    f.ins_reg[made] = inl_region(mut f, g, g.ins_reg[ins], preg, base, mut memo)
+                }
+                if op == IR_FRAME {
+                    if home == entry {
+                        ir_link_before(mut f, call, made)
+                    } else {
+                        ir_link_before(mut f, f.blk_last[entry], made)
+                    }
+                } else {
+                    ir_link_end(mut f, nb, made)
+                }
+            }
+            ins = g.ins_next[ins]
+        }
+    }
+    // The call becomes the jump into the body.
+    ir_remove(mut f, call)
+    let into = ir_make(mut f, IR_JUMP, IR_I64, -1, -1, -1, 0)
+    ir_add_edge(mut f, into, bmap[g.order[0]], 0)
+    ir_link_end(mut f, home, into)
+    // The layout: the body after the block of the call, then the
+    // continuation.
+    var order: List[i64] = []
+    var at = 0
+    while at < old_order {
+        order.push(f.order[at])
+        if f.order[at] == home {
+            for b in g.order {
+                order.push(bmap[b])
+            }
+            order.push(cont)
+        }
+        at += 1
+    }
+    f.order = order
+    return true
+}
+
+// What the pass knows of every function while it works.
+struct Inl {
+    comp: List[i64]
+    recursive: List[bool]
+    // Calls of each function left in the module.
+    sites: List[i64]
+    size: List[i64]
+    frame_bytes: List[i64]
+    // Bytes of frame objects callees have brought into each function.
+    frame_added: List[i64]
+    // Instructions callees that stay may still add, in all.
+    budget: i64
+}
+
+// Whether the call `call` of function `fi` is to be replaced by the
+// body of function `gi`. `depth` is how many loops the call is in.
+fn inl_wants(inl: Inl, f: IrFunc, fi: i64, gi: i64, call: i64, depth: i64) -> bool {
+    if gi == fi || inl.comp[gi] == inl.comp[fi] || inl.recursive[gi] { return false }
+    let size = inl.size[gi]
+    if inl.size[fi] + size > INL_CALLER_MAX { return false }
+    if inl.recursive[fi] && inl.frame_added[fi] + inl.frame_bytes[gi] > INL_REC_FRAME {
+        return false
+    }
+    if inl.sites[gi] == 1 { return size <= INL_ONCE }
+    var limit = INL_SMALL
+    if depth > 0 { limit += INL_IN_LOOP }
+    var k = 0
+    while k < f.ins_an[call] {
+        let x = f.args[f.ins_as[call] + k]
+        if ir_is_const(x) {
+            limit += INL_PER_CONST
+        } else if f.val_ty[x] == IR_PTR {
+            let root = inl_root(f, x)
+            if root >= f.param_count && f.val_ins[root] >= 0 && f.ins_op[f.val_ins[root]] == IR_FRAME {
+                limit += INL_PER_FRAME
+            }
+        }
+        k += 1
+    }
+    if size > limit { return false }
+    return size <= INL_SMALL || size <= inl.budget
+}
+
+// The calls of functions of the module in `f`, and the loop depth of
+// each.
+fn inl_calls(f: IrFunc, calls: mut List[i64], depths: mut List[i64]) {
+    var any = false
+    for b in f.order {
+        var ins = f.blk_first[b]
+        while ins >= 0 && !any {
+            any = f.ins_op[ins] == IR_CALL
+            ins = f.ins_next[ins]
+        }
+    }
+    if !any { return }
+    let cfg = ir_cfg(f)
+    for b in f.order {
+        var depth = 0
+        if cfg.blk_loop[b] >= 0 { depth = cfg.loop_depth[cfg.blk_loop[b]] }
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            if f.ins_op[ins] == IR_CALL {
+                calls.push(ins)
+                depths.push(depth)
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+}
+
+fn inl_frame_bytes(f: IrFunc) -> i64 {
+    var n = 0
+    for bytes in f.frames {
+        n += bytes
+    }
+    return n
+}
+
+// Replaces what calls of function `fi` are worth replacing. Gives how
+// many.
+fn inl_function(m: mut IrModule, fi: i64, inl: mut Inl, stats: mut InlStats) -> i64 {
+    var calls: List[i64] = []
+    var depths: List[i64] = []
+    inl_calls(m.funcs[fi], mut calls, mut depths)
+    if calls.len() == 0 { return 0 }
+    var done = 0
+    var ev: List[i64] = []
+    var g = ir_new_func("")
+    var have = -1
+    // Twice over the calls: one that stays because its callee has other
+    // calls may be the only one left once those are replaced.
+    var round = 0
+    while round < 2 && calls.len() > 0 {
+        round += 1
+        var kept: List[i64] = []
+        var kept_depths: List[i64] = []
+        var s = 0
+        while s < calls.len() {
+            let call = calls[s]
+            let depth = depths[s]
+            s += 1
+            let gi = ir_find_func(m, m.funcs[fi].callees[m.funcs[fi].ins_imm[call]])
+            if gi < 0 { continue }
+            if round == 1 { stats.sites += 1 }
+            if !inl_wants(inl, m.funcs[fi], fi, gi, call, depth) {
+                kept.push(call)
+                kept_depths.push(depth)
+                continue
+            }
+            if have != gi {
+                g = m.funcs[gi]
+                have = gi
+            }
+            if done == 0 { ev = inl_evidence(m.funcs[fi]) }
+            if !inl_expand(mut m.funcs[fi], g, call, mut ev) {
+                stats.unnamed += 1
+                continue
+            }
+            done += 1
+            stats.inlined += 1
+            stats.copied += inl.size[gi]
+            inl.size[fi] = inl.size[fi] + inl.size[gi]
+            inl.frame_bytes[fi] = inl.frame_bytes[fi] + inl.frame_bytes[gi]
+            inl.frame_added[fi] = inl.frame_added[fi] + inl.frame_bytes[gi]
+            inl.sites[gi] = inl.sites[gi] - 1
+            if inl.sites[gi] > 0 && inl.size[gi] > INL_SMALL {
+                inl.budget = inl.budget - inl.size[gi]
+            }
+            // The calls of the body are there once more.
+            for b in g.order {
+                var ins = g.blk_first[b]
+                while ins >= 0 {
+                    if g.ins_op[ins] == IR_CALL {
+                        let hi = ir_find_func(m, g.callees[g.ins_imm[ins]])
+                        if hi >= 0 { inl.sites[hi] = inl.sites[hi] + 1 }
+                    }
+                    ins = g.ins_next[ins]
+                }
+            }
+        }
+        calls = kept
+        depths = kept_depths
+    }
+    return done
+}
+
+// Leaves in the list of names `f` calls only those a call still has:
+// the back end looks every one of them up.
+fn inl_prune_callees(f: mut IrFunc) {
+    var to = (-1).filled(f.callees.len())
+    var names: List[str] = []
+    var at = 0
+    while at < f.order.len() {
+        var ins = f.blk_first[f.order[at]]
+        at += 1
+        while ins >= 0 {
+            if f.ins_op[ins] == IR_CALL {
+                let old = f.ins_imm[ins]
+                if to[old] < 0 {
+                    to[old] = names.len()
+                    names.push(f.callees[old])
+                }
+                f.ins_imm[ins] = to[old]
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    f.callees = names
+}
+
+// Removes the functions `main` cannot reach. Gives how many.
+fn inl_sweep(m: mut IrModule) -> i64 {
+    let start = ir_find_func(m, "main")
+    if start < 0 { return 0 }
+    let n = m.funcs.len()
+    var keep = false.filled(n)
+    var work: List[i64] = [start]
+    keep[start] = true
+    while work.len() > 0 {
+        let fi = work[work.len() - 1]
+        work.pop()
+        var at = 0
+        while at < m.funcs[fi].order.len() {
+            var ins = m.funcs[fi].blk_first[m.funcs[fi].order[at]]
+            at += 1
+            while ins >= 0 {
+                if m.funcs[fi].ins_op[ins] == IR_CALL {
+                    let gi = ir_find_func(m, m.funcs[fi].callees[m.funcs[fi].ins_imm[ins]])
+                    if gi >= 0 && !keep[gi] {
+                        keep[gi] = true
+                        work.push(gi)
+                    }
+                }
+                ins = m.funcs[fi].ins_next[ins]
+            }
+        }
+    }
+    var gone = 0
+    var i = 0
+    while i < n {
+        if !keep[i] { gone += 1 }
+        i += 1
+    }
+    if gone == 0 { return 0 }
+    // The functions are moved, last first, and not copied.
+    var back: List[IrFunc] = []
+    while m.funcs.len() > 0 {
+        if keep[m.funcs.len() - 1] {
+            back.push(m.funcs.pop())
+        } else {
+            let dropped = m.funcs.pop()
+        }
+    }
+    while back.len() > 0 {
+        m.funcs.push(back.pop())
+    }
+    m.index = new_map()
+    i = 0
+    while i < m.funcs.len() {
+        m.index.set(m.funcs[i].name, i)
+        inl_prune_callees(mut m.funcs[i])
+        i += 1
+    }
+    return gone
+}
+
+fn ir_inline_module(m: mut IrModule, stats: mut InlStats) -> i64 {
+    let n = m.funcs.len()
+    var cs: List[i64] = []
+    var cn: List[i64] = []
+    var edges: List[i64] = []
+    var inl = Inl { comp: 0.filled(n), recursive: false.filled(n), sites: 0.filled(n), size: [], frame_bytes: [], frame_added: 0.filled(n), budget: 0 }
+    var total = 0
+    var fi = 0
+    while fi < n {
+        cs.push(edges.len())
+        var size = 0
+        var at = 0
+        while at < m.funcs[fi].order.len() {
+            var ins = m.funcs[fi].blk_first[m.funcs[fi].order[at]]
+            at += 1
+            while ins >= 0 {
+                size += 1
+                if m.funcs[fi].ins_op[ins] == IR_CALL {
+                    let gi = ir_find_func(m, m.funcs[fi].callees[m.funcs[fi].ins_imm[ins]])
+                    if gi >= 0 {
+                        edges.push(gi)
+                        inl.sites[gi] = inl.sites[gi] + 1
+                        if gi == fi { inl.recursive[fi] = true }
+                    }
+                }
+                ins = m.funcs[fi].ins_next[ins]
+            }
+        }
+        cn.push(edges.len() - cs[fi])
+        inl.size.push(size)
+        inl.frame_bytes.push(inl_frame_bytes(m.funcs[fi]))
+        total += size
+        fi += 1
+    }
+    var order: List[i64] = []
+    let count = inl_components(n, cs, cn, edges, mut inl.comp, mut order)
+    var members = 0.filled(count)
+    for c in inl.comp {
+        members[c] = members[c] + 1
+    }
+    fi = 0
+    while fi < n {
+        if members[inl.comp[fi]] > 1 { inl.recursive[fi] = true }
+        fi += 1
+    }
+    inl.budget = total * INL_PROGRAM_PCT / 100
+    if inl.budget < INL_PROGRAM_MIN { inl.budget = INL_PROGRAM_MIN }
+    // A function that has no caller and is not `main` is not worth the
+    // work: it goes at the end.
+    let main = ir_find_func(m, "main")
+    let effects = sroa_effects(m)
+    var changed = 0
+    for at in order {
+        if main >= 0 && at != main && inl.sites[at] == 0 { continue }
+        let done = inl_function(mut m, at, mut inl, mut stats)
+        if done > 0 {
+            // The body as its own callers will see it. (`dce` after
+            // them changed no decision in the suite or the compiler.)
+            var numbers = sroa_new_stats()
+            ir_sroa(mut m.funcs[at], effects, mut numbers)
+            ir_simplify(mut m.funcs[at])
+            inl.size[at] = inl_size(m.funcs[at])
+            inl.frame_bytes[at] = inl_frame_bytes(m.funcs[at])
+            changed += done
+        }
+    }
+    stats.removed = inl_sweep(mut m)
+    return changed + stats.removed
+}

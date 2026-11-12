@@ -1,0 +1,17 @@
+; A small function with two calls goes into both and is removed.
+; calls: 0
+; run: main 5
+; out: => 88
+fn add3(p0: i64) -> i64 {
+b0:
+    v0 = add p0, 3
+    ret v0
+}
+
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = call add3(p0) -> i64
+    v1 = call add3(v0) -> i64
+    v2 = mul v0, v1
+    ret v2
+}

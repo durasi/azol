@@ -1,0 +1,20 @@
+; Nothing shows that this ends: the loop is counted, and after 255 rounds the call is made for real.
+; calls: 1
+; text: ne
+; run: gcd 1071 462
+; out: => 21
+; run: gcd 17 0
+; out: => 17
+; run: gcd 832040 514229
+; out: => 1
+fn gcd(p0: i64, p1: i64) -> i64 {
+b0:
+    v0 = eq p1, 0
+    br v0, b1, b2
+b1:
+    ret p0
+b2:
+    v1 = srem p0, p1
+    v2 = call gcd(p1, v1) -> i64
+    ret v2
+}

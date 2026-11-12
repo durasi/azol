@@ -1,0 +1,443 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The pass `bce` (docs/design/optimizer.md, section 5.5): a bounds
+// check that cannot fail goes, and one that a loop makes in every
+// round is made once.
+//
+//     fn ir_bce(f: mut IrFunc) -> i64        how many checks went
+//
+// A check is a `br` on `ult index, len` whose other way leads to a
+// block that holds only `trap index`.
+//
+//   B1  The check goes when `0 <= index` and `index < len` are certain
+//       where it stands (`rg_at`, `rg_less` of pass_range.azl): the
+//       counter of a loop that starts at 0 or above, steps upwards
+//       without wrapping and is tested against the same length, or
+//       against a number known to be no larger (`n - 1`, the smaller
+//       of two lengths, the counter of the loop around); a counter
+//       that steps downwards from `len - 1` and is tested `>= 0`; an
+//       index tested by hand; the same index checked before.
+//
+//   B2  The limit of a loop takes the check in. For
+//
+//           while j < n { ... xs[j] ... ; j = j + s }
+//
+//       where the check of `xs[j]` is the first thing a round does
+//       (between the loop's test and the check there is nothing that
+//       writes, calls or can stop), `j` is the loop's counter and
+//       never gets smaller, and `n` and `len` come from outside the
+//       loop: the loop is tested against `min(n, len)`, worked out
+//       once before it, the check in the round goes, and on the way
+//       out of the loop one test asks whether the old test `j < n`
+//       would have gone on; if so the program stops with the same
+//       `trap index` the check led to.
+//
+//       This is the only form of moving a check that the rule of
+//       order allows (O1: a program that stops must stop at the same
+//       point, with the same message, after the same output). The
+//       rounds before the failing one run in full, with everything
+//       they print; the failing round does nothing before the check
+//       but reckon, so stopping in front of it is the same. Testing
+//       the whole range before the loop would not be: the loop may
+//       leave early, or print before the round that fails.
+//
+//       The index may be (`bc_limit` says exactly when):
+//
+//       1  the counter `j` itself. When it may start below 0 the limit
+//          is the smallest number in that case: no round runs, and the
+//          test on the way out stops the program as the first check
+//          would have.
+//       2  a value from outside the loop, the same in every round. The
+//          check is worked out once before the loop; when it would
+//          fail, the limit lets no round run. Here `j` need not be a
+//          counter at all.
+//       3  the counter plus a value from outside the loop and
+//          constants (`xs[base + j - 1]`), for a counter with a small
+//          start. The first index is start + base; when that is in
+//          0..len the counter has room up to len - first + start, and
+//          when it is not the limit is the start: no round runs.
+//
+//       Two checks in a row at the start of the round go one after
+//       the other; the limit becomes the smallest of all.
+//
+// What it leaves: a check whose index changes in any other way than
+// by the loop's own step; a check against a length that is loaded
+// inside the loop (the list may grow or be replaced there; `licm`
+// moves the load out when nothing in the loop can write the header);
+// a check with a call, a store or another check's failure before it
+// in the round; a counter that could wrap.
+
+struct BcCheck {
+    ok: bool
+    index: i64
+    len: i64
+    // The edges of the `br`: on, and to the `trap`.
+    pass: i64
+    fail: i64
+}
+
+// Whether block `b` holds only `trap index`.
+fn bc_is_trap(f: IrFunc, b: i64) -> bool {
+    let t = f.blk_first[b]
+    return t >= 0 && f.ins_op[t] == IR_TRAP && f.ins_imm[t] == IR_TRAP_INDEX && f.blk_pn[b] == 0
+}
+
+// The check block `b` ends in, if it ends in one.
+fn bc_check(f: IrFunc, b: i64) -> BcCheck {
+    var none = BcCheck { ok: false, index: -1, len: -1, pass: -1, fail: -1 }
+    let t = f.blk_last[b]
+    if t < 0 || f.ins_op[t] != IR_BR { return none }
+    let d = su_def(f, f.ins_a[t])
+    if d < 0 { return none }
+    let op = f.ins_op[d]
+    let first = f.ins_es[t]
+    var check = BcCheck { ok: true, index: f.ins_a[d], len: f.ins_b[d], pass: first, fail: first + 1 }
+    if op == IR_UGT || op == IR_ULE {
+        check.index = f.ins_b[d]
+        check.len = f.ins_a[d]
+    } else if op != IR_ULT && op != IR_UGE {
+        return none
+    }
+    if op == IR_UGE || op == IR_ULE {
+        check.pass = first + 1
+        check.fail = first
+    }
+    if check.index == -1 || check.len == -1 || f.edge_an[check.fail] != 0 || !bc_is_trap(f, f.edge_blk[check.fail]) {
+        return none
+    }
+    return check
+}
+
+// B1 on every check of the function, or with `only` not -1 on those
+// of that loop.
+fn bc_prove(f: mut IrFunc, r: IrRange, only: i64) -> i64 {
+    var gone = 0
+    for b in r.cfg.rpo {
+        if only >= 0 && !ir_in_loop(r.cfg, b, only) { continue }
+        let check = bc_check(f, b)
+        if !check.ok { continue }
+        if rg_at(r, f, check.index, -1, 0).lo < 0 && rg_at(r, f, check.index, b, 2).lo < 0 {
+            continue
+        }
+        if !rg_less(r, f, check.index, 0, check.len, 0, b, 3) { continue }
+        su_to_jump(mut f, f.blk_last[b], check.pass)
+        gone = gone + 1
+    }
+    return gone
+}
+
+// Whether operand `x` is made outside loop `l`.
+fn bc_outside(f: IrFunc, cfg: IrCfg, x: i64, l: i64) -> bool {
+    if x < f.param_count { return true }
+    var made = f.val_blk[x]
+    if f.val_ins[x] >= 0 { made = f.ins_blk[f.val_ins[x]] }
+    return made >= 0 && !ir_in_loop(cfg, made, l)
+}
+
+// A value with the constants that were added to it taken off (at most
+// three, none of them huge; `ok` says so).
+struct BcSum {
+    v: i64
+    k: i64
+    ok: bool
+}
+
+fn bc_strip(f: IrFunc, x: i64) -> BcSum {
+    let small = 2147483648
+    var sum = BcSum { v: x, k: 0, ok: true }
+    var steps = 0
+    while steps < 3 {
+        steps = steps + 1
+        let d = su_def(f, sum.v)
+        if d < 0 { return sum }
+        var c = 0
+        var inner = -1
+        if f.ins_op[d] == IR_ADD && ir_is_const(f.ins_b[d]) {
+            inner = f.ins_a[d]
+            c = ir_const_value(f, f.ins_b[d])
+        } else if f.ins_op[d] == IR_ADD && ir_is_const(f.ins_a[d]) {
+            inner = f.ins_b[d]
+            c = ir_const_value(f, f.ins_a[d])
+        } else if f.ins_op[d] == IR_SUB && ir_is_const(f.ins_b[d]) {
+            inner = f.ins_a[d]
+            c = 0 - ir_const_value(f, f.ins_b[d])
+        } else {
+            return sum
+        }
+        if inner < 0 || c > small || c < 0 - small {
+            sum.ok = false
+            return sum
+        }
+        sum = BcSum { v: inner, k: sum.k + c, ok: true }
+    }
+    return sum
+}
+
+// Adds an instruction with one result in front of the last one of
+// block `b`.
+fn bc_before_end(f: mut IrFunc, b: i64, op: i64, x: i64, y: i64, z: i64) -> i64 {
+    let ins = ir_make(mut f, op, IR_I64, x, y, z, 0)
+    var ty = ir_result_type(f, op, IR_I64, x, y)
+    if op == IR_SELECT { ty = IR_I64 }
+    f.ins_ty[ins] = ty
+    let end = f.blk_last[b]
+    ir_link_before(mut f, end, ins)
+    return ir_add_result(mut f, ins, ty)
+}
+
+// The end of B2: the check at the end of block `at` goes, and on the
+// way out of the loop (the edge of `test` that is not `on`) the old
+// test `g` is made again; when it would have gone on, the program
+// stops at `trap`.
+fn bc_finish(f: mut IrFunc, at: i64, pass: i64, test: i64, on: i64, g: i64, trap: i64, on_first: bool) {
+    su_to_jump(mut f, f.blk_last[at], pass)
+    let out_edge = f.ins_es[test] + 1 - (on - f.ins_es[test])
+    let way = ir_split_edge(mut f, out_edge)
+    let onward = f.blk_last[way]
+    let after = f.edge_blk[f.ins_es[onward]]
+    var passed: List[i64] = []
+    var k = 0
+    while k < f.edge_an[f.ins_es[onward]] {
+        passed.push(f.args[f.edge_as[f.ins_es[onward]] + k])
+        k = k + 1
+    }
+    ir_remove(mut f, onward)
+    let x = f.ins_a[g]
+    let y = f.ins_b[g]
+    let again = ir_binary(mut f, way, f.ins_op[g], x, y)
+    let nothing: List[i64] = []
+    if on_first {
+        ir_br(mut f, way, again, trap, nothing, after, passed)
+    } else {
+        ir_br(mut f, way, again, after, passed, trap, nothing)
+    }
+}
+
+// B2 on loop `l`, if it has the shape. Gives 1 when a check went.
+fn bc_limit(f: mut IrFunc, r: IrRange, l: i64) -> i64 {
+    let h = r.cfg.loop_header[l]
+    let test = f.blk_last[h]
+    if test < 0 || f.ins_op[test] != IR_BR { return 0 }
+    let old = f.ins_a[test]
+    let g = su_def(f, old)
+    if g < 0 || f.ins_blk[g] != h { return 0 }
+    // The loop's test as "goes on while j < n" (or `<=`), and which
+    // edge goes on.
+    let op = f.ins_op[g]
+    var j = f.ins_a[g]
+    var n = f.ins_b[g]
+    var strict = true
+    var on_first = true
+    if op == IR_SLT || op == IR_ULT {} else if op == IR_SLE {
+        strict = false
+    } else if op == IR_SGT {
+        j = f.ins_b[g]
+        n = f.ins_a[g]
+    } else if op == IR_SGE {
+        j = f.ins_b[g]
+        n = f.ins_a[g]
+        strict = false
+    } else {
+        return 0
+    }
+    var on = f.ins_es[test]
+    var out = on + 1
+    if !ir_in_loop(r.cfg, f.edge_blk[on], l) {
+        // The other way round: goes on while not (j op n), which for
+        // `>=` and `>` is `j < n` and `j <= n` with the sides as they
+        // are named in the instruction.
+        if op == IR_ULT { return 0 }
+        on_first = false
+        on = out
+        out = f.ins_es[test]
+        strict = !strict
+        let swap = j
+        j = n
+        n = swap
+    }
+    if j < 0 || !bc_outside(f, r.cfg, n, l) { return 0 }
+    // Whether `j` is the loop's counter and never gets smaller.
+    var counter = j >= f.param_count && f.val_blk[j] == h && f.val_ins[j] < 0 && r.iv_dir[j] == 1
+    if op == IR_ULT && (r.lo[j] < 0 || !rg_never_negative(r, f, n)) { counter = false }
+    if !ir_in_loop(r.cfg, f.edge_blk[on], l) || ir_in_loop(r.cfg, f.edge_blk[out], l) { return 0 }
+    // From the test to the first check: nothing but reckoning.
+    var cur = f.edge_blk[on]
+    var hops = 0
+    var check = bc_check(f, cur)
+    while true {
+        if cur == h || r.cfg.pred_n[cur] != 1 || !ir_in_loop(r.cfg, cur, l) { return 0 }
+        var ins = f.blk_first[cur]
+        while ins >= 0 && ins != f.blk_last[cur] {
+            if !ir_is_pure(f.ins_op[ins]) { return 0 }
+            ins = f.ins_next[ins]
+        }
+        check = bc_check(f, cur)
+        if check.ok { break }
+        if f.ins_op[f.blk_last[cur]] != IR_JUMP || hops >= 4 { return 0 }
+        cur = f.edge_blk[f.ins_es[f.blk_last[cur]]]
+        hops = hops + 1
+    }
+    var len = check.len
+    if !bc_outside(f, r.cfg, len, l) || !rg_never_negative(r, f, len) { return 0 }
+    // Which of the three shapes: the counter itself (1), an index that
+    // is the same in every round (2), the counter plus a number from
+    // outside the loop (3).
+    var shape = 0
+    var base = -1
+    var plus = 0
+    if check.index == j {
+        if counter { shape = 1 }
+    } else if bc_outside(f, r.cfg, check.index, l) {
+        // With `<=` the limit that lets no round run is the smallest
+        // number, which works when the counter is known to be above it.
+        if on_first && (strict || r.lo[j] > rg_smallest()) { shape = 2 }
+    } else if counter && r.iv_one[j] && r.iv_step[j] <= RG_LEN_MAX {
+        // index = j + base + plus, in whatever order it was added up
+        // (additions wrap, so the order does not matter).
+        let whole = bc_strip(f, check.index)
+        var found = false
+        if whole.v == j {
+            found = whole.ok
+            plus = whole.k
+        } else {
+            let d = su_def(f, whole.v)
+            if d >= 0 && f.ins_op[d] == IR_ADD {
+                let left = bc_strip(f, f.ins_a[d])
+                let right = bc_strip(f, f.ins_b[d])
+                if left.v == j && left.ok {
+                    base = f.ins_b[d]
+                    plus = whole.k + left.k
+                    found = whole.ok
+                } else if right.v == j && right.ok {
+                    base = f.ins_a[d]
+                    plus = whole.k + right.k
+                    found = whole.ok
+                }
+            }
+        }
+        // The start is small, so that start plus base cannot wrap
+        // into the list; the steps are not huge, so that the counter
+        // plus base cannot wrap before it is past the length.
+        let first = rg_at(r, f, r.iv_init[j], -1, 0)
+        let small = 2147483648
+        if found && (base == -1 || base >= 0 && bc_outside(f, r.cfg, base, l)) && first.lo >= 0 - small && first.hi <= small && plus >= 0 - small && plus <= small {
+            shape = 3
+        }
+    }
+    if shape == 0 { return 0 }
+    let trap = f.edge_blk[check.fail]
+    var st = lc_new_state(f, r.cfg)
+    let pre = lc_preheader(mut f, r.cfg, mut st, l, true)
+    if pre < 0 { return 0 }
+    if shape == 2 {
+        // The loop's own test with a limit that lets no round run
+        // when the check would fail.
+        let inside = bc_before_end(mut f, pre, IR_ULT, check.index, len, -1)
+        var never = ir_const(mut f, rg_smallest())
+        if op == IR_ULT { never = ir_const(mut f, 0) }
+        let bound = bc_before_end(mut f, pre, IR_SELECT, inside, n, never)
+        var x = f.ins_a[g]
+        var y = f.ins_b[g]
+        if op == IR_SGT || op == IR_SGE {
+            x = bound
+        } else {
+            y = bound
+        }
+        f.ins_a[test] = bc_before_end(mut f, h, op, x, y, -1)
+        bc_finish(mut f, cur, check.pass, test, on, g, trap, on_first)
+        return 1
+    }
+    // Where the counter starts, as the preheader passes it on.
+    var start = -1
+    if shape == 3 || r.lo[j] < 0 {
+        var position = 0
+        while ir_block_param(f, h, position) != j {
+            position = position + 1
+        }
+        start = f.args[f.edge_as[f.ins_es[f.blk_last[pre]]] + position]
+    }
+    if shape == 3 {
+        // The first index is start + base + plus. When that is in
+        // 0..len, the counter has room up to len - first + start; when
+        // it is not, the first round would stop the program, and the
+        // limit is the start itself: no round runs.
+        var away = base
+        if base == -1 {
+            away = ir_const(mut f, plus)
+        } else if plus != 0 {
+            let more = ir_const(mut f, plus)
+            away = bc_before_end(mut f, pre, IR_ADD, base, more, -1)
+        }
+        let first = bc_before_end(mut f, pre, IR_ADD, away, start, -1)
+        let fits = bc_before_end(mut f, pre, IR_ULE, first, len, -1)
+        let room = bc_before_end(mut f, pre, IR_SUB, len, first, -1)
+        let upto = bc_before_end(mut f, pre, IR_ADD, room, start, -1)
+        len = bc_before_end(mut f, pre, IR_SELECT, fits, upto, start)
+    }
+    // The limit.
+    var limit = len
+    if strict {
+        if n != len {
+            let smaller = bc_before_end(mut f, pre, IR_SLT, n, len, -1)
+            limit = bc_before_end(mut f, pre, IR_SELECT, smaller, n, len)
+        }
+    } else {
+        // j <= n and j < len: j < min(n, len - 1) + 1.
+        let one = ir_const(mut f, 1)
+        let last = bc_before_end(mut f, pre, IR_SUB, len, one, -1)
+        let smaller = bc_before_end(mut f, pre, IR_SLT, n, last, -1)
+        let least = bc_before_end(mut f, pre, IR_SELECT, smaller, n, last)
+        limit = bc_before_end(mut f, pre, IR_ADD, least, one, -1)
+    }
+    if shape == 1 && r.lo[j] < 0 {
+        let zero = ir_const(mut f, 0)
+        let bottom = ir_const(mut f, rg_smallest())
+        let below = bc_before_end(mut f, pre, IR_SLT, start, zero, -1)
+        limit = bc_before_end(mut f, pre, IR_SELECT, below, bottom, limit)
+    }
+    // The loop's new test.
+    var how = IR_SLT
+    if !on_first { how = IR_SGE }
+    let now = bc_before_end(mut f, h, how, j, limit, -1)
+    f.ins_a[test] = now
+    bc_finish(mut f, cur, check.pass, test, on, g, trap, on_first)
+    return 1
+}
+
+fn ir_bce(f: mut IrFunc) -> i64 {
+    // Nothing to do, and nothing to work out, without a check.
+    var any = false
+    for b in f.order {
+        if bc_is_trap(f, b) { any = true }
+    }
+    if !any { return 0 }
+    var gone = 0
+    var rounds = 0
+    var focus = 0 - 1
+    while rounds < 64 {
+        rounds = rounds + 1
+        let r = ir_range(f)
+        if focus < 0 {
+            gone = gone + bc_prove(mut f, r, -1)
+        } else {
+            // Only the loop that was just given a limit can have
+            // changed: its other checks may be certain now.
+            var l = 0
+            while l < r.cfg.loop_header.len() {
+                if r.cfg.loop_header[l] == focus { gone = gone + bc_prove(mut f, r, l) }
+                l = l + 1
+            }
+        }
+        if r.cfg.irreducible > 0 { return gone }
+        var done = 0
+        var l = 0
+        while l < r.cfg.loop_header.len() && done == 0 {
+            focus = r.cfg.loop_header[l]
+            done = bc_limit(mut f, r, l)
+            l = l + 1
+        }
+        if done == 0 { return gone }
+        gone = gone + done
+    }
+    return gone
+}

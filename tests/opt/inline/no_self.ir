@@ -1,0 +1,27 @@
+; A function that calls itself is put nowhere, however small it is.
+; calls: 2
+; run: main 5
+; out: 1
+; out: 2
+; out: 6
+; out: 24
+; out: => 120
+fn fact(p0: i64) -> i64 {
+b0:
+    v0 = sle p0, 1
+    br v0, b1, b2
+b1:
+    ret 1
+b2:
+    v1 = add p0, -1
+    v2 = call fact(v1) -> i64
+    callrt print_i64(v2)
+    v3 = mul p0, v2
+    ret v3
+}
+
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = call fact(p0) -> i64
+    ret v0
+}

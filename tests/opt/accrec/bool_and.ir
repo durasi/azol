@@ -1,0 +1,19 @@
+; `and` on `bool`: the neutral element is true, and the accumulator is a `bool`.
+; calls: 0
+; run: all_small 5
+; out: => true
+; run: all_small 12
+; out: => false
+fn all_small(p0: i64) -> bool {
+b0:
+    v0 = sle p0, 0
+    br v0, b1, b2
+b1:
+    ret 1
+b2:
+    v1 = add p0, -1
+    v2 = slt p0, 10
+    v3 = call all_small(v1) -> bool
+    v4 = and v2, v3
+    ret v4
+}

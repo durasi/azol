@@ -907,6 +907,12 @@ def main():
     # The passes `effects` and `gvn`: tests/opt/run_gvn_tests.py.
     import run_gvn_tests
     run_gvn_tests.run(azol, folder, min(total, 3000), seed, problems)
+    # The loop passes `licm` and `bce`: tests/opt/run_loop_tests.py.
+    import run_loop_tests
+    run_loop_tests.run(azol, folder, min(total, 1500), seed, problems)
+    # The passes `inline`, `tailcall` and `accrec`: tests/opt/run_inline_tests.py.
+    import run_inline_tests
+    run_inline_tests.run(azol, folder, min(total, 1500), seed, problems)
     # The back end for ARM64, in emulators: tests/opt/run_back_arm64_tests.py.
     import run_back_arm64_tests
     run_back_arm64_tests.run(azol, binary, folder, total, seed, problems)

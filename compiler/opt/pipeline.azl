@@ -20,10 +20,26 @@
 
 // The order of the design with the passes that exist:
 //
-//     early   simplify, sroa, effects, gvn, dce
+//     early   simplify, sroa, simplify
+//             tailcall, accrec, dce
+//             inline
 //     middle  (range, gvn, licm, bce, ...), dse, dce
 //     late    simplify
-const PL_ORDER = "simplify,sroa,simplify,effects,gvn,simplify,dce,dse,dce,simplify"
+//
+// `tailcall` and `accrec` come before `inline`: a function they free of
+// its last call of itself is no longer recursive and can be put into
+// its callers. What they leave to tidy up the last `simplify` takes.
+//
+// `inline` runs `sroa` and `simplify` itself on every function it has
+// changed, as soon as it has changed it, because the size a caller
+// sees must be the size after them. Running `simplify, sroa, simplify,
+// dce` on the whole module once more after it changed no instruction
+// count of the benchmark suite and none of the compiler, so they are
+// not in the order a second time.
+//
+// After `inline`: `effects` and `gvn` (loads and checks that repeat), then
+// the loop passes twice.
+const PL_ORDER = "simplify,sroa,simplify,tailcall,accrec,dce,inline,effects,gvn,simplify,dce,dse,dce,simplify,licm,bce,simplify,dce,licm,bce,simplify,dce"
 
 // Runs one pass on one function. Gives what the pass gives, or -1 for
 // a name that is no pass.
@@ -31,6 +47,10 @@ fn pl_run_pass(name: str, f: mut IrFunc) -> i64 {
     if name == "simplify" { return ir_simplify(mut f) }
     if name == "dce" { return ir_dce(mut f) }
     if name == "dse" { return ir_dse(mut f) }
+    if name == "licm" { return ir_licm(mut f) }
+    if name == "bce" { return ir_bce(mut f) }
+    if name == "tailcall" { return ir_tailcall(mut f) }
+    if name == "accrec" { return ir_accrec(mut f) }
     return -1
 }
 
@@ -45,11 +65,15 @@ fn pl_run_module_pass(name: str, m: mut IrModule) -> i64 {
     }
     if name == "effects" { return ir_effects_module(mut m) }
     if name == "gvn" { return ir_gvn_module(mut m) }
+    if name == "inline" {
+        var numbers = inl_new_stats()
+        return ir_inline_module(mut m, mut numbers)
+    }
     return -1
 }
 
 // The names `pl_run_module_pass` knows, with a comma after each.
-const PL_MODULE_PASSES = "sroa,effects,gvn,"
+const PL_MODULE_PASSES = "sroa,effects,gvn,inline,"
 
 fn pl_is_module_pass(name: str) -> bool {
     return PL_MODULE_PASSES.contains(name + ",")

@@ -1,0 +1,27 @@
+; The argument is one of two addresses, and the caller makes no access through it: nothing says which region the body's accesses have, so the call stays.
+; calls: 2
+; run: main 0
+; out: => 20
+; run: main 1
+; out: => 40
+fn peek(p0: ptr [param 0 read]) -> i64 {
+b0:
+    v0 = load i64, p0, 0  [param 0]
+    ret v0
+}
+
+fn main(p0: i64) -> i64 {
+    frames 8, 8
+b0:
+    v0 = frame 0
+    v1 = frame 1
+    store i64, v0, 0, 10  [frame 0]
+    store i64, v1, 0, 20  [frame 1]
+    v2 = eq p0, 0
+    br v2, b1(v0), b1(v1)
+b1(v3: ptr):
+    v4 = call peek(v3) -> i64
+    v5 = call peek(v3) -> i64
+    v6 = add v4, v5
+    ret v6
+}

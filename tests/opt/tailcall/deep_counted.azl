@@ -1,0 +1,13 @@
+// Three million calls deep with a test that shows no end (`!=`): the
+// loop is counted, and 3,000,000 rounds are 11,719 real calls, which
+// fit the stack.
+// expect-line: 4500001500000
+
+fn sum(n: i64, total: i64) -> i64 {
+    if n != 0 { return sum(n - 1, total + n) }
+    return total
+}
+
+fn main() {
+    print(str(sum(3000000, 0)))
+}

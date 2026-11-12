@@ -1,0 +1,19 @@
+// The same with a function that gives nothing and hands a list on:
+// the list is a parameter no round changes, the count is the only
+// thing the loop carries.
+// expect-exit: 1
+// expect-line: start
+// expect-stderr: azol: stack overflow
+
+fn spin(seen: mut List[i64], n: i64) {
+    if n < 0 { return }
+    seen[n % seen.len()] = n
+    spin(mut seen, n + 1)
+}
+
+fn main() {
+    print("start")
+    var seen = [0, 0, 0]
+    spin(mut seen, 0)
+    print(str(seen[0]))
+}

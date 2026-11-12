@@ -1,0 +1,31 @@
+; The caller hands on its own parameter: `param 0` of the body is `param 1` of the caller.
+; calls: 0
+; text: [param 1]
+; run: start
+; out: => 32, 16
+fn bump(p0: ptr [param 0 read write], p1: i64) -> i64 {
+b0:
+    v0 = load i64, p0, 0  [param 0]
+    v1 = add v0, p1
+    store i64, p0, 0, v1  [param 0]
+    ret v1
+}
+
+fn twice(p0: i64, p1: ptr [param 1 read write]) -> i64 {
+b0:
+    v0 = call bump(p1, p0) -> i64
+    v1 = call bump(p1, v0) -> i64
+    v2 = load i64, p1, 0  [param 1]
+    v3 = add v1, v2
+    ret v3
+}
+
+fn start() -> i64, i64 {
+    frames 8
+b0:
+    v0 = frame 0
+    store i64, v0, 0, 5  [frame 0]
+    v1 = call twice(3, v0) -> i64
+    v2 = load i64, v0, 0  [frame 0]
+    ret v1, v2
+}

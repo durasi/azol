@@ -1,0 +1,35 @@
+; The remainder by 5 of any number can be -4.
+fn w(p0: ptr [param 0 read], p1: i64) -> i64 {
+b0:
+    v0 = load i64, p0, 8  [param 0]
+    v1 = load ptr, p0, 0  [param 0]
+    v3 = srem p1, 5
+    v5 = ult v3, 5
+    br v5, b3, b5
+b3:
+    v6 = gep v1, v3, 8, 0
+    v7 = load i64, v6, 0  [buf(param 0)]
+    ret v7
+b4:
+    ret -1
+b5:
+    trap index
+}
+
+fn main(p0: i64, p1: i64) -> i64 {
+    frames 24
+b0:
+    v0 = frame 0
+    v1 = callrt alloc(40)
+    store i64, v1, 0, 10  [buf(frame 0)]
+    store i64, v1, 8, 20  [buf(frame 0)]
+    store i64, v1, 16, 30  [buf(frame 0)]
+    store i64, v1, 24, 40  [buf(frame 0)]
+    store i64, v1, 32, 50  [buf(frame 0)]
+    store ptr, v0, 0, v1  [frame 0]
+    store i64, v0, 8, 5  [frame 0]
+    store i64, v0, 16, 5  [frame 0]
+    v2 = call w(v0, p1) -> i64
+    callrt free(v1)
+    ret v2
+}

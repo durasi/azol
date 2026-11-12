@@ -1,0 +1,306 @@
+{
+  "date": "2026-11-12",
+  "runs": 10,
+  "mode": "default build (this compiler has no `-O` yet)",
+  "machine": {
+    "cpu": "Apple M5",
+    "system": "Darwin",
+    "release": "27.2.0",
+    "arch": "arm64",
+    "azol": "azol 0.1.0",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
+  },
+  "programs": [
+    {
+      "name": "append",
+      "same_output": true,
+      "azol": 0.08351804100000004,
+      "rust": 0.07953212500000006,
+      "native": 0.07884445899999992,
+      "ratio": 1.050117056472463,
+      "native_ratio": 1.0592759727097643,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "bfs",
+      "same_output": true,
+      "azol": 0.36870758400000003,
+      "rust": 0.22058366600000134,
+      "native": 0.22196962499999984,
+      "ratio": 1.6715090046603804,
+      "native_ratio": 1.6610722480609692,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "bignum",
+      "same_output": true,
+      "azol": 0.3211376250000022,
+      "rust": 0.16723849999999985,
+      "native": 0.1672971249999975,
+      "ratio": 1.9202374154276827,
+      "native_ratio": 1.9195645173221418,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "binary_trees",
+      "same_output": true,
+      "azol": 0.3462607079999991,
+      "rust": 0.3017896670000013,
+      "native": 0.30249325000000127,
+      "ratio": 1.147357732430241,
+      "native_ratio": 1.1446890401686571,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "bits",
+      "same_output": true,
+      "azol": 0.4737259999999992,
+      "rust": 0.11516337499999452,
+      "native": 0.11643941699999516,
+      "ratio": 4.113512651049188,
+      "native_ratio": 4.068433286642263,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "crc32",
+      "same_output": true,
+      "azol": 0.36475716599999686,
+      "rust": 0.317726332999996,
+      "native": 0.31732508300000006,
+      "ratio": 1.1480230881587064,
+      "native_ratio": 1.14947473597603,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "dijkstra",
+      "same_output": true,
+      "azol": 0.18884233400000028,
+      "rust": 0.07623729099999821,
+      "native": 0.07615995799999808,
+      "ratio": 2.4770336343667396,
+      "native_ratio": 2.4795488201294047,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "dp_lcs",
+      "same_output": true,
+      "azol": 0.3903533330000002,
+      "rust": 0.09196491699999854,
+      "native": 0.09183979200000181,
+      "ratio": 4.244589629760732,
+      "native_ratio": 4.250372572707835,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "fannkuch",
+      "same_output": true,
+      "azol": 0.15489704200000176,
+      "rust": 0.1322071660000006,
+      "native": 0.13178358400000434,
+      "ratio": 1.1716236470873376,
+      "native_ratio": 1.1753895083017067,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "fib40",
+      "same_output": true,
+      "azol": 0.24785545800000364,
+      "rust": 0.1476227080000001,
+      "native": 0.14737612499999386,
+      "ratio": 1.678979212330961,
+      "native_ratio": 1.6817884036509574,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "json",
+      "same_output": true,
+      "azol": 0.08407170799999619,
+      "rust": 0.05766425000000197,
+      "native": 0.05838029099999176,
+      "ratio": 1.4579519893173556,
+      "native_ratio": 1.4400700400758204,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "knapsack",
+      "same_output": true,
+      "azol": 0.20512408300000118,
+      "rust": 0.12666833400000144,
+      "native": 0.127968041999992,
+      "ratio": 1.6193793391172167,
+      "native_ratio": 1.6029321055018877,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "loops",
+      "same_output": true,
+      "azol": 0.21751895900000306,
+      "rust": 0.2544687919999973,
+      "native": 0.25454237499999977,
+      "ratio": 0.8547962101380407,
+      "native_ratio": 0.8545491060182151,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "lru",
+      "same_output": true,
+      "azol": 0.18227320799999802,
+      "rust": 0.12492204200000856,
+      "native": 0.1261716249999978,
+      "ratio": 1.4590956494289897,
+      "native_ratio": 1.4446450063554401,
+      "rust_variant": "fx.rs"
+    },
+    {
+      "name": "map_int",
+      "same_output": true,
+      "azol": 0.2257455839999949,
+      "rust": 0.04161416599998802,
+      "native": 0.04161108399999591,
+      "ratio": 5.424729261666806,
+      "native_ratio": 5.425131054024381,
+      "rust_variant": "fx.rs"
+    },
+    {
+      "name": "matcher",
+      "same_output": true,
+      "azol": 0.19027499999999975,
+      "rust": 0.13961887499999648,
+      "native": 0.1393252089999919,
+      "ratio": 1.3628171692402231,
+      "native_ratio": 1.3656896793171924,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "matmul",
+      "same_output": true,
+      "azol": 0.17845187499999327,
+      "rust": 0.1264010420000119,
+      "native": 0.12645670899999573,
+      "ratio": 1.4117911702023507,
+      "native_ratio": 1.411169691281459,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "particles",
+      "same_output": true,
+      "azol": 0.37838279199999647,
+      "rust": 0.1539990830000022,
+      "native": 0.15516145899999856,
+      "ratio": 2.457045747473646,
+      "native_ratio": 2.4386390437331475,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "prefix",
+      "same_output": true,
+      "azol": 0.16899366699999518,
+      "rust": 0.05911633300001995,
+      "native": 0.058975666999998566,
+      "ratio": 2.8586628842478805,
+      "native_ratio": 2.865481233132968,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "sha256",
+      "same_output": true,
+      "azol": 0.45855804199999284,
+      "rust": 0.1872248749999983,
+      "native": 0.18320562499999937,
+      "ratio": 2.449236737372622,
+      "native_ratio": 2.502969229247161,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "sieve",
+      "same_output": true,
+      "azol": 0.246877000000012,
+      "rust": 0.07012208399999054,
+      "native": 0.06876795799999513,
+      "ratio": 3.520674029026937,
+      "native_ratio": 3.590000447592605,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "soa",
+      "same_output": true,
+      "azol": 0.4774974580000162,
+      "rust": 0.12112275000001205,
+      "native": 0.12108341600000472,
+      "ratio": 3.9422607065969744,
+      "native_ratio": 3.94354135169095,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "sort",
+      "same_output": true,
+      "azol": 0.1874249169999871,
+      "rust": 0.16050370900001099,
+      "native": 0.1606873329999985,
+      "ratio": 1.167729507110482,
+      "native_ratio": 1.1663950947520478,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "sort_lib",
+      "same_output": true,
+      "azol": 0.8139248329999873,
+      "rust": 0.08721104099998911,
+      "native": 0.08776912499999412,
+      "ratio": 9.33281868519479,
+      "native_ratio": 9.273475530262399,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "tokenizer",
+      "same_output": true,
+      "azol": 0.3880597499999965,
+      "rust": 0.06959049999997546,
+      "native": 0.06513141600001404,
+      "ratio": 5.5763322579969,
+      "native_ratio": 5.958103997000661,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "tree",
+      "same_output": true,
+      "azol": 0.14563308399999642,
+      "rust": 0.08705662500000244,
+      "native": 0.0878704579999976,
+      "ratio": 1.6728546965838882,
+      "native_ratio": 1.65736115771697,
+      "rust_variant": "rs"
+    },
+    {
+      "name": "wordfreq",
+      "same_output": true,
+      "azol": 0.26962458299999525,
+      "rust": 0.09117308300000104,
+      "native": 0.09240966700002673,
+      "ratio": 2.957282721260969,
+      "native_ratio": 2.9177097132047587,
+      "rust_variant": "fx.rs"
+    },
+    {
+      "name": "words",
+      "same_output": true,
+      "azol": 0.32957429199998955,
+      "rust": 0.13548900000000685,
+      "native": 0.1359521659999814,
+      "ratio": 2.432480068492445,
+      "native_ratio": 2.42419302094852,
+      "rust_variant": "rs"
+    }
+  ],
+  "pending": [
+    "mandelbrot",
+    "nbody",
+    "spectral"
+  ],
+  "mean": 2.1497514845562207,
+  "native_mean": 2.152447162206178,
+  "instruction_mean": null,
+  "bound": 1.1,
+  "verdict": "GATE: NO VERDICT (the machine is busy: the load average is 2.7 (limit for a verdict here: 2.5))",
+  "failures": []
+}

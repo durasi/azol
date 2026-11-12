@@ -1,0 +1,46 @@
+; A body with a loop and two ways out, called in a loop: every `ret` jumps to the continuation with its value.
+; calls: 0
+; run: main 10
+; out: => 67
+fn steps(p0: i64) -> i64 {
+b0:
+    jump b1(p0, 0)
+b1(v0: i64, v1: i64):
+    v2 = sle v0, 1
+    br v2, b2, b3
+b2:
+    ret v1
+b3:
+    v3 = sgt v1, 100
+    br v3, b4, b5
+b4:
+    ret -1
+b5:
+    v4 = and v0, 1
+    v5 = eq v4, 0
+    br v5, b6, b7
+b6:
+    v6 = sar v0, 1
+    v7 = add v1, 1
+    jump b1(v6, v7)
+b7:
+    v8 = mul v0, 3
+    v9 = add v8, 1
+    v10 = add v1, 1
+    jump b1(v9, v10)
+}
+
+fn main(p0: i64) -> i64 {
+b0:
+    jump b1(1, 0)
+b1(v0: i64, v1: i64):
+    v2 = sle v0, p0
+    br v2, b2, b3
+b2:
+    v3 = call steps(v0) -> i64
+    v4 = add v1, v3
+    v5 = add v0, 1
+    jump b1(v5, v4)
+b3:
+    ret v1
+}

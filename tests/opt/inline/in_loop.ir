@@ -1,0 +1,60 @@
+; A callee over the plain limit goes into the call in the loop and stays a call at the two places outside it.
+; calls: 2
+; text: fn mix
+; text: no fn side
+; run: main 4
+; out: => 37746
+fn mix(p0: i64, p1: i64) -> i64 {
+b0:
+    v0 = add p0, p1
+    v1 = mul v0, p0
+    v2 = xor v1, 85
+    v3 = add v2, v0
+    v4 = mul v3, 3
+    v5 = sub v4, v1
+    v6 = xor v5, v2
+    v7 = add v6, v3
+    v8 = mul v7, 5
+    v9 = sub v8, v4
+    v10 = xor v9, v5
+    v11 = add v10, v6
+    v12 = mul v11, 7
+    v13 = sub v12, v7
+    v14 = xor v13, v8
+    v15 = add v14, v9
+    v16 = mul v15, 9
+    v17 = sub v16, v10
+    v18 = xor v17, v11
+    v19 = add v18, v12
+    v20 = mul v19, 11
+    v21 = sub v20, v13
+    v22 = xor v21, v14
+    v23 = add v22, v15
+    v24 = and v23, 65535
+    ret v24
+}
+
+fn side(p0: i64, p1: i64) -> i64 {
+b0:
+    v0 = call mix(p0, p1) -> i64
+    v1 = call mix(v0, p0) -> i64
+    ret v1
+}
+
+fn main(p0: i64) -> i64 {
+b0:
+    v8 = callrt clock()
+    v9 = and v8, 0
+    v10 = add p0, v9
+    v11 = call side(v10, v9) -> i64
+    jump b1(0, v11)
+b1(v0: i64, v1: i64):
+    v2 = slt v0, v10
+    br v2, b2, b3
+b2:
+    v3 = call mix(v1, v0) -> i64
+    v4 = add v0, 1
+    jump b1(v4, v3)
+b3:
+    ret v1
+}

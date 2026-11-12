@@ -1,0 +1,151 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The pass `accrec` (docs/design/optimizer.md, section 5.3): a
+// function that returns `x OP F(a)`, with F the function itself, gets
+// an accumulator and a loop in the place of that call.
+//
+//     fn ir_accrec(f: mut IrFunc) -> i64        how many calls went
+//
+// The pattern, exactly: function F gives one `i64` (for `and`, `or`
+// and `xor` also one `bool`), and a block of it ends
+//
+//     r = call F(a1, ..., am)
+//     v = OP x, r          or      v = OP r, x
+//     ret v
+//
+// where OP is `add`, `mul`, `and`, `or` or `xor`, `r` is used by that
+// one instruction and `v` by that one `ret`, and `x` is not `r`. In
+// `return F(a) + F(b)` this is the second call, with the result of the
+// first as `x`; the first stays a call. The arguments obey the rule of
+// `tailcall`: a `ptr` parameter gets itself.
+//
+// What must hold, and why it does. Write F(a) for what the function
+// gives and E for the neutral element of OP (0 for `add`, `or` and
+// `xor`, 1 for `mul` and for `and` on `bool`, all ones for `and` on
+// `i64`). The new body computes G(a, acc) = acc OP F(a), and F(a) is
+// G(a, E). Where the old body returned `v`, the new one returns
+// `acc OP v`. Where it returned `x OP F(a')`, the new one must give
+// `acc OP (x OP F(a'))`, and goes round with `a'` and `acc OP x`,
+// which gives `(acc OP x) OP F(a')`. The two are the same because OP
+// is associative, and `F(a') OP x` is `x OP F(a')` because it is
+// commutative; both hold for these five on 64 bits that wrap, and for
+// no other operation of the form (`sub`, `sdiv`, `srem`, the shifts).
+// Nothing the program can see moves: `x` was computed before the call,
+// and between the call and the `ret` there was only OP, which cannot
+// stop and touches no memory.
+//
+// A call of F whose result is returned as it is (the pattern of
+// `tailcall`) goes round as well, with the accumulator unchanged.
+//
+// The loop, the count that keeps a recursion without end running out
+// of stack, and the proof that leaves the count out, are those of
+// `tailcall`; this pass only adds the accumulator.
+
+// The neutral element of `op` on values of type `ty`.
+fn ar_neutral(op: i64, ty: i64) -> i64 {
+    if op == IR_MUL { return 1 }
+    if op == IR_AND {
+        if ty == IR_BOOL { return 1 }
+        return -1
+    }
+    return 0
+}
+
+fn ar_is_op(op: i64, ty: i64) -> bool {
+    if op == IR_ADD || op == IR_MUL { return ty == IR_I64 }
+    if op == IR_AND || op == IR_OR || op == IR_XOR { return ty == IR_I64 || ty == IR_BOOL }
+    return false
+}
+
+// The call of the pattern when block `b` ends in it, or -1.
+fn ar_site(f: IrFunc, uses: IrUses, me: i64, b: i64) -> i64 {
+    let last = f.blk_last[b]
+    if last < 0 || f.ins_op[last] != IR_RET || f.ins_an[last] != 1 { return -1 }
+    let op = f.ins_prev[last]
+    if op < 0 || !ar_is_op(f.ins_op[op], f.ret_ty[0]) { return -1 }
+    let v = f.ins_res[op]
+    if f.args[f.ins_as[last]] != v || f.val_ty[v] != f.ret_ty[0] || uses.count[v] != 1 { return -1 }
+    let call = f.ins_prev[op]
+    if call < 0 || f.ins_op[call] != IR_CALL || f.ins_imm[call] != me || f.ins_rn[call] != 1 {
+        return -1
+    }
+    let r = f.ins_res[call]
+    if uses.count[r] != 1 { return -1 }
+    if f.ins_a[op] != r && f.ins_b[op] != r { return -1 }
+    if !tc_arguments_fit(f, call) { return -1 }
+    return call
+}
+
+fn ir_accrec(f: mut IrFunc) -> i64 {
+    let me = tc_self(f)
+    if me < 0 || f.ret_ty.len() != 1 { return 0 }
+    let ty = f.ret_ty[0]
+    if ty != IR_I64 && ty != IR_BOOL { return 0 }
+    var any = false
+    for b in f.order {
+        let last = f.blk_last[b]
+        if last >= 0 && f.ins_op[last] == IR_RET {
+            let op = f.ins_prev[last]
+            if op >= 0 && f.ins_prev[op] >= 0 && f.ins_op[f.ins_prev[op]] == IR_CALL { any = true }
+        }
+    }
+    if !any { return 0 }
+    let uses = ir_uses(f)
+    let cfg = ir_cfg(f)
+    // The sites of the pattern with the operation of the first one,
+    // and the calls that are simply returned.
+    var op = -1
+    var folded: List[i64] = []
+    var plain: List[i64] = []
+    var sites: List[i64] = []
+    for b in f.order {
+        if cfg.rpo_at[b] < 0 || tc_is_slow(f, cfg, b) { continue }
+        let call = ar_site(f, uses, me, b)
+        if call >= 0 {
+            let this = f.ins_op[f.ins_next[call]]
+            if op < 0 { op = this }
+            if this == op {
+                folded.push(call)
+                sites.push(call)
+            }
+        } else {
+            let tail = tc_site(f, me, b)
+            if tail >= 0 {
+                plain.push(tail)
+                sites.push(tail)
+            }
+        }
+    }
+    if folded.len() == 0 { return 0 }
+    let fixed = tc_fixed(f, sites)
+    let counted = !tc_ends(f, cfg, sites, fixed)
+    let start = ir_const(mut f, ar_neutral(op, ty))
+    let shape = tc_make_loop(mut f, sites, fixed, counted, ty, start)
+    for call in folded {
+        let fold = f.ins_next[call]
+        var x = f.ins_a[fold]
+        if x == f.ins_res[call] { x = f.ins_b[fold] }
+        let made = ir_make(mut f, op, ty, shape.acc, x, -1, 0)
+        let acc = ir_add_result(mut f, made, ty)
+        ir_link_before(mut f, call, made)
+        tc_close(mut f, shape, call, acc)
+    }
+    for call in plain {
+        tc_close(mut f, shape, call, shape.acc)
+    }
+    // What is returned anywhere else is put together with what was
+    // gathered.
+    var at = 0
+    while at < f.order.len() {
+        let last = f.blk_last[f.order[at]]
+        at += 1
+        if f.ins_op[last] == IR_RET {
+            let v = f.args[f.ins_as[last]]
+            let made = ir_make(mut f, op, ty, shape.acc, v, -1, 0)
+            let all = ir_add_result(mut f, made, ty)
+            ir_link_before(mut f, last, made)
+            f.args[f.ins_as[last]] = all
+        }
+    }
+    return sites.len()
+}

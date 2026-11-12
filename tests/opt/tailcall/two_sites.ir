@@ -1,0 +1,26 @@
+; Two sites, one parameter that neither changes: it stays a parameter, the others go round; nothing shows an end, so each site keeps its call for when the count is used up.
+; calls: 2
+; run: walk 27 0 3
+; out: => 3
+; run: walk 1 5 3
+; out: => 5
+fn walk(p0: i64, p1: i64, p2: i64) -> i64 {
+b0:
+    v0 = sle p0, 1
+    br v0, b1, b2
+b1:
+    ret p1
+b2:
+    v1 = srem p0, p2
+    v2 = eq v1, 0
+    v3 = add p1, 1
+    br v2, b3, b4
+b3:
+    v4 = sdiv p0, p2
+    v5 = call walk(v4, v3, p2) -> i64
+    ret v5
+b4:
+    v6 = add p0, -1
+    v7 = call walk(v6, v3, p2) -> i64
+    ret v7
+}

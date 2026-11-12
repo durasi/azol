@@ -1,0 +1,24 @@
+; A counted loop that goes round more often than the count allows: 3000 levels are 12 real calls.
+; calls: 1
+; run: down 3000 0
+; out: => 4501500
+; run: down 255 0
+; out: => 32640
+; run: down 256 0
+; out: => 32896
+; run: down 257 0
+; out: => 33153
+; run: down 0 5
+; out: => 5
+fn down(p0: i64, p1: i64) -> i64 {
+b0:
+    v0 = eq p0, 0
+    br v0, b1, b2
+b1:
+    ret p1
+b2:
+    v1 = add p0, -1
+    v2 = add p1, p0
+    v3 = call down(v1, v2) -> i64
+    ret v3
+}

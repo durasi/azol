@@ -1,0 +1,31 @@
+; The body changes an aggregate the caller reads before and after: the stores keep their order with the caller's loads.
+; calls: 0
+; run: main 6
+; out: => 6, 212, 106
+fn push_down(p0: ptr [param 0 read write], p1: ptr [param 1 read]) {
+b0:
+    v0 = load i64, p0, 0  [param 0]
+    v1 = load i64, p1, 0  [param 1]
+    v2 = add v0, v1
+    store i64, p0, 8, v0  [param 0]
+    store i64, p0, 0, v2  [param 0]
+    ret
+}
+
+fn main(p0: i64) -> i64, i64, i64 {
+    frames 16, 8
+b0:
+    v0 = frame 0
+    v1 = frame 1
+    store i64, v0, 0, p0  [frame 0]
+    store i64, v0, 8, 0  [frame 0]
+    store i64, v1, 0, 100  [frame 1]
+    v2 = load i64, v0, 0  [frame 0]
+    call push_down(v0, v1)
+    v3 = load i64, v0, 0  [frame 0]
+    store i64, v1, 0, v3  [frame 1]
+    call push_down(v0, v1)
+    v4 = load i64, v0, 0  [frame 0]
+    v5 = load i64, v0, 8  [frame 0]
+    ret v2, v4, v5
+}

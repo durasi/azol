@@ -1731,3 +1731,498 @@ was not measured.
 - The cost. Half as much again for the whole order is more than these
   two passes should take; reusing the tables from one function to the
   next, and one `dse` instead of two, are the first things to do.
+
+## Loops: range facts, `licm`, `bce` (wave 3)
+
+Files: `compiler/opt/pass_range.azl` (no pass: a set of facts others ask
+for), `pass_licm.azl`, `pass_bce.azl`. Tests: `tests/opt/range`,
+`tests/opt/licm`, `tests/opt/bce` and `tests/opt/run_loop_tests.py`
+(called from `run_opt_tests.py`). In the pipeline's order they come
+after the first clean-up:
+
+    ..., simplify, licm, bce, simplify, dce, licm, bce, simplify, dce
+
+The second round is there because each half feeds the other: `bce`
+needs lengths that `licm` moved out of the loop, and `licm` can move a
+header load once `simplify` has merged the blocks a removed check stood
+between; the limits `bce` works out in front of an inner loop are moved
+further out by the second `licm`.
+
+### Range facts (`ir_range`, `rg_at`, `rg_less`)
+
+For every value a span `lo..hi` that holds wherever the value exists,
+and on top of it two questions answered for a block: `rg_at(x, blk)`,
+the span of `x` when `blk` runs, and `rg_less(a, ka, b, kb, blk)`,
+whether `a + ka < b + kb` is certain there as whole numbers.
+
+- Spans come from constants, types (a `bool`, a narrow `load`),
+  arithmetic that provably does not wrap (a result that may wrap has no
+  span at all), `and` with a non-negative number, `srem`/`sdiv` by a
+  positive one, `select` (the smaller arm's upper end for the shape of
+  `min`, the larger's lower end for `max`).
+- A length is the right side of an unsigned `<`: 0 to 2^56. This rests
+  on an invariant of the lowering stage that nothing checks: **it
+  compares unsigned only against lengths and capacities**. A pass that
+  makes an unsigned comparison against anything else breaks `range`.
+- A branch gives facts to the block only it leads to and to everything
+  that block dominates, as relations `u < w + k`. They are stored per
+  block once (`fact_s`, `fu`, `fw`, `fk`); a question walks up the
+  dominators through the blocks that have any (`above`), at most
+  `RG_WALK` = 16 of them, and not at all for a value no relation is
+  about (`told`). Before these three the pass took minutes on the
+  compiler's large functions.
+- A relation about `x + c` also places `x` (adding a constant and
+  wrapping loses nothing): the check of `xs[j - 1]` bounds `j`.
+- Induction: a header parameter passed round as itself plus a step that
+  is never negative never gets smaller, **if the addition cannot wrap
+  where it stands**; that needs an upper end for the parameter at the
+  addition (a `<` test, or a bounds check, above it) with room for the
+  step. `i < n` gives room for a step of 1; a step `s` from outside
+  needs a length-sized bound. The same downwards. A counter that could
+  wrap gets nothing (case `bce/no_wrap_counter`: a step of 2^62 under a
+  test against the largest number wraps below 0, where the check must
+  still fail).
+- `rg_less` chains: constants taken off both sides (when that cannot
+  wrap), spans, the arms of a `select`, the values passed into a block
+  that is no loop header (each where it is passed: this is how the
+  smaller of two lengths chosen by an `if` is below both), the start of
+  a counter (a counter going down is never above its start), and the
+  relations of the branches above, to depth 3.
+
+### `licm`
+
+Rules L1 to L4 are in the file's first comment. What deserves a note:
+
+- Preheaders are made only when something moves; an empty one would be
+  folded away by `simplify` and make the pipeline's fixed point
+  oscillate. A made preheader takes the header's parameters, because
+  the blocks outside may pass different values.
+- What the loop may write is decided by regions: a `store` writes its
+  region; a call writes, through each address it is given, that region
+  and everything below it (`lc_call_arg_fx` is the one place to plug
+  summaries in: today a function is assumed to do everything through
+  every address, a runtime routine what `ir_rt_arg_fx` says). A call
+  that is given no address writes nothing a loop can load (fact M9).
+  Two different buffers are taken as not overlapping (fact M2), which
+  is more than `dse` assumes; the argument is that a moved buffer's old
+  owner is dead, so a loop cannot read through both names.
+- **A load is made early only when the bytes are certain to be stored
+  and to mean what the type says.** The first version moved any load
+  from a frame object or from behind a parameter; the fuzzer (seed
+  880345) found a `bool` field of one variant loaded in front of a loop
+  while the memory held another variant. The rule now: in the header
+  block any load may move (it runs whenever the preheader does); from
+  anywhere else only the slots of a list header (`lc_header_slot`).
+- L4 (the preheader already has the same instruction) is a small piece
+  of value numbering; it is what lets `rows[i][j]` lose its check
+  before a `gvn` pass exists, and costs nothing when one does.
+
+### `bce`
+
+B1 removes a check that `0 <= index` and `index < len` prove. B2 is the
+only way a check is moved, and its shape is forced by the rule of order
+(O1: a program that stops must stop at the same point, with the same
+message, after the same output):
+
+    before the loop:   limit = min(n, len)          (or the forms below)
+    the loop's test:   j < limit                    instead of j < n
+    in the round:      no check
+    on the way out:    if j < n { trap index }      the old test, made once
+
+It applies when the check is the first thing a round does: between the
+loop's test and the check there are only instructions that change
+nothing (no store, no call, no other check, no way out), so stopping in
+front of the round is the same as stopping at its check. All rounds
+before the failing one run in full. The three index shapes (the counter;
+a value from outside the loop; the counter plus a value from outside
+and constants) and their limits are in the file's first comment.
+
+What is deliberately not done:
+
+- **No test of the whole range before the loop.** `for i in 0..n {
+  print(xs[i]) }` with a list that is too short must print the first
+  elements and then stop; a test in front would stop before the first
+  print, or (as a version of the loop) cost code size. B2 gets the same
+  inner loop without either.
+- No move of a check across a call, a store, another check, or an
+  earlier way out of the round (cases `bce/no_*`).
+- No reasoning about a length that is loaded inside the loop: if `licm`
+  could not move the load, something in the loop may write the header.
+
+### Proof
+
+    python3 tests/opt/run_loop_tests.py
+
+- 58 hand-written cases (`.ir`, `.expected.ir`, `.runs`), 25 of them
+  where a rule must not fire; each first line says what the case shows.
+- 1,500 random loops over one or two lists (counters up and down, steps
+  from outside, starts that may be negative, tests against a number, a
+  length, the smaller of two; rounds that print, store or leave early;
+  lists that are too short): the same before and after in the
+  interpreter for seven argument rows each, 750 runs also as native
+  code; about 4,700 of the runs stop with an index out of range, with
+  the same output before it.
+- 8 azoL programs of loop shapes, 7 of which stop with an index out of
+  range after printing: default build against `azol-opt` (also to a
+  fixed point, with three registers, and interpreted).
+- Through `run_pass_tests.py`, which uses the pipeline's order: the 145
+  whole programs (interpreted after the passes, native, three
+  registers), random modules with a second run that must change
+  nothing, and the compiler built by `azol-opt`, which builds
+  `examples/hello.azl` and itself into the bytes `azol` writes.
+- The fuzzer of tests/fuzz with `--lower` and `--opt` (every program
+  also through the passes: interpreted, native, three registers):
+  5,200 programs (seeds 880001 to 885437), 0 findings. Its one finding on the way (seed 880345, the early `bool`
+  load above) is now the case `licm/no_bool_elsewhere`.
+- ARM64: the 8 loop programs and the small `sieve` and `matmul`, their
+  optimised IR built by `azol-back` for aarch64-macos and
+  aarch64-linux, with all registers and with three: 40 runs in the
+  checking emulators the same as `azol build --target`, the stops
+  included.
+- `sh build.sh` reaches its fixed point (823,296 bytes, no seed note)
+  and `sh test.sh` passes: nothing outside `compiler/opt` changed.
+
+### Measurements
+
+Instructions executed on the small sizes (`python3 bench/gate.py
+--instructions --no-time --azol-opt ...`, callgrind), `azol-opt` with
+the pass list before this wave and with it:
+
+| Program | default azoL | azol-opt before | azol-opt after | after / before | Rust `-O` | after / Rust |
+|---|---|---|---|---|---|---|
+| `append` | 46,499,388 | 45,509,389 | 45,479,392 | 1.00 | 28,876,752 | 1.57 |
+| `bfs` | 27,824,558 | 21,150,997 | 20,760,442 | 0.98 | 19,536,751 | 1.06 |
+| `bignum` | 16,720,320 | 12,544,672 | 9,004,098 | 0.72 | 9,138,150 | 0.99 |
+| `binary_trees` | 98,131,889 | 81,318,924 | 82,667,880 | 1.02 | 171,954,449 | 0.48 |
+| `bits` | 223,001,019 | 139,001,003 | 139,001,003 | 1.00 | 47,442,108 | 2.93 |
+| `crc32` | 103,161,283 | 75,897,779 | 65,412,022 | 0.86 | 60,740,965 | 1.08 |
+| `dijkstra` | 133,587,177 | 98,839,075 | 86,194,303 | 0.87 | 31,869,075 | 2.70 |
+| `dp_lcs` | 107,259,354 | 70,057,524 | 66,145,174 | 0.94 | 28,651,375 | 2.31 |
+| `fannkuch` | 164,840,557 | 167,334,500 | 146,751,461 | 0.88 | 106,700,741 | 1.38 |
+| `fib40` | 36,349,435 | 33,656,893 | 33,656,893 | 1.00 | 26,854,963 | 1.25 |
+| `json` | 76,057,789 | 67,463,748 | 67,056,926 | 0.99 | 67,909,128 | 0.99 |
+| `knapsack` | 70,810,081 | 64,133,921 | 56,218,157 | 0.88 | 76,174,863 | 0.74 |
+| `loops` | 43,536,458 | 30,363,016 | 30,363,016 | 1.00 | 38,222,815 | 0.79 |
+| `lru` | 77,599,843 | 64,631,742 | 62,672,311 | 0.97 | 100,614,845 | 0.62 |
+| `map_int` | 86,809,454 | 74,120,785 | 71,843,329 | 0.97 | 34,312,314 | 2.09 |
+| `matcher` | 99,557,762 | 79,664,938 | 80,609,776 | 1.01 | 80,962,402 | 1.00 |
+| `matmul` | 72,039,898 | 59,599,824 | 44,332,613 | 0.74 | 37,856,942 | 1.17 |
+| `particles` | 89,014,861 | 168,651,963 | 116,631,677 | 0.69 | 60,815,262 | 1.92 |
+| `prefix` | 48,525,007 | 43,723,094 | 30,726,061 | 0.70 | 21,530,612 | 1.43 |
+| `sha256` | 416,214,736 | 248,540,656 | 243,740,131 | 0.98 | 95,152,755 | 2.56 |
+| `sieve` | 69,691,579 | 63,790,802 | 51,839,925 | 0.81 | 49,554,528 | 1.05 |
+| `soa` | 93,341,623 | 123,294,537 | 60,340,584 | 0.49 | 23,085,066 | 2.61 |
+| `sort` | 64,098,134 | 55,347,623 | 47,242,426 | 0.85 | 50,939,116 | 0.93 |
+| `sort_lib` | 171,701,091 | 134,621,991 | 123,288,236 | 0.92 | 40,767,417 | 3.02 |
+| `tokenizer` | 41,699,672 | 36,255,223 | 34,922,223 | 0.96 | 10,023,249 | 3.48 |
+| `tree` | 21,364,019 | 16,973,257 | 17,235,393 | 1.02 | 26,699,743 | 0.65 |
+| `wordfreq` | 126,818,951 | 112,108,898 | 111,259,094 | 0.99 | 58,934,612 | 1.89 |
+| `words` | 49,096,060 | 43,890,710 | 46,315,474 | 1.06 | 18,478,995 | 2.51 |
+
+Geometric means over the 28 programs: after / before 0.89; azol-opt / Rust `-O` 1.57 before and 1.40 after; azol-opt / default azoL 0.85 before and 0.76 after.
+
+The five programs looked at closely:
+
+| Program | before | after | after / Rust `-O` (was) | what happened |
+|---|---|---|---|---|
+| `sieve` | 63.8 M | 51.8 M | 1.05 (1.29) | Both checks became limits. The marking loop is `store; add; cmp; jl`: 4 instructions a round, 6 before (`cmp; jae` gone). |
+| `sort` | 55.3 M | 47.2 M | 0.93 (1.09) | 10 checks in rounds, 3 left: those behind a comparison of two elements. |
+| `particles` | 168.7 M | 116.6 M | 1.92 (2.77) | All 12 checks gone (counted loops over lists of one length); the headers' lengths and addresses are loaded once. Still above the default build (1.31): that gap is older than this wave. |
+| `soa` | 123.3 M | 60.3 M | 2.61 (5.34) | 11 checks, 2 left; the loads of six list headers left the inner loop. |
+| `matmul` | 59.6 M | 44.3 M | 1.17 (1.57) | `a[i * n + k]` lost its check to a limit (third shape); `b[k * n + j]` keeps its own (see below); `c[i * n + j]` is checked once per row element, at the end of the round. |
+
+Checks, counted in the optimised IR of the 28 programs as branches on an
+unsigned comparison that lead to `trap index`: 272 before, 132 after
+(the tests B2 puts on the way out of a loop are not counted: they run
+once per loop, not once per round). How many checks a run executes was
+not counted separately; the instruction counts above are the measure.
+
+Cost, on the compiler itself (19,731 lines, 760 functions; best of 12
+runs of `azol-opt build --stats` on a busy machine): all passes 222 ms
+before, 396 ms after. Of the difference `bce` is about 90 ms in its two
+runs (372 checks removed or made limits), `licm` 17 ms (975 instructions
+moved), and the second round's `simplify` and `dce` about 45 ms. In
+lines per second for the passes alone that is 89,000 before and 50,000
+after. `bce` is expensive for what it is: three quarters of its time is
+answering `rg_at` and `rg_less` for checks that turn out not to be
+provable.
+
+### For `ivsr` and `unroll`
+
+- `r.iv_dir`, `r.iv_one`, `r.iv_init`, `r.iv_step` say which header
+  parameters are counters, where they start and how large a step is;
+  `lc_preheader` gives (or makes) the block to put a new value in;
+  `bc_outside` and `lc_invariant` say what is the same in every round.
+- After B2 a loop's test is `j < limit` with `limit` at most the length:
+  an address `base + 8 * j` is in the buffer for every round, so a
+  pointer that steps by 8 can replace the index without a check of its
+  own, and the trip count is `(limit - start + step - 1) / step` when
+  the step is a constant.
+- What `bce` leaves for want of a derived counter: an index `k * n + j`
+  (matmul's second factor). With `t = k * n` as a counter of its own
+  (`t += n`), B2's third shape applies to `t + j` once a limit for `t`
+  can be put in terms of the loop's own counter; that needs a division
+  before the loop.
+- What it leaves for want of a loop that is known to run a round: a
+  check or a load behind another in the first round (`a[i][k]` in a
+  third loop: the row's length is loaded from a buffer element, which
+  `licm` may not load early). Turning the loop (test before it, body
+  first) makes the first round certain; `licm`'s rule L3 then covers the
+  body's first block.
+
+### Doubts
+
+- The unsigned-comparison invariant above is assumed, not verified.
+- 2^56 as the largest length is an assumption about the allocator, not
+  a checked fact; a list of elements of size 0 could in principle be
+  longer.
+- Facts M2 and M9 (buffers do not overlap; a call writes only through
+  what it is given) are relied on for loads; `dse` is more careful.
+- `RG_WALK` cuts off facts more than 16 fact-bearing dominators above;
+  in the compiler it changed nothing, in other code it may.
+- `bce` works the ranges out again after every loop it rewrites; a
+  function with very many such loops pays that many times.
+
+## Inlining, tail calls and accumulators (wave 3)
+
+Files: `pass_inline.azl` (a pass on the whole module,
+`ir_inline_module(m: mut IrModule, stats: mut InlStats) -> i64`),
+`pass_tailcall.azl` (`ir_tailcall(f: mut IrFunc) -> i64`) and
+`pass_accrec.azl` (`ir_accrec(f: mut IrFunc) -> i64`, built from the
+helpers of `pass_tailcall.azl`); the tests `tests/opt/run_inline_tests.py`
+with the cases in `tests/opt/inline`, `tailcall` and `accrec`. The order is
+now
+
+    simplify, sroa, simplify, tailcall, accrec, dce, inline, dse, dce, simplify
+
+### inline
+
+**Order.** Tarjan's components of the call graph, callees first. A
+function that can reach itself (alone or through others) is never put
+anywhere, so every cycle of calls a program has it keeps, and a recursion
+that ran out of stack still does. As soon as a function has taken its
+callees in, `inline` runs `sroa` and `simplify` on it, so that its own
+callers see the size it really has; a function nothing calls any more is
+skipped, and at the end everything `main` cannot reach is removed (a
+module without `main` keeps all its functions).
+
+**What replacing a call does.** The block of the call is cut at the call
+and the rest becomes a continuation block whose parameters are the call's
+results; the body's blocks are copied with new values, a parameter being
+the argument itself (a `bool` parameter bound to a constant gets a `bconst`
+first, since the verifier types `xor 1, 1` as `i64`; a `ptr` parameter
+bound to a constant keeps the call); each `ret` jumps to the continuation;
+a `trap` stays a `trap` in a block of its own. The callee's frame objects
+become new frame objects of the caller and their `frame` instructions go to
+the caller's entry block, which is where `sroa` looks for the root of an
+object.
+
+**Regions.** `frame N` of the body is the new object. `param K` and `ret`
+are replaced by the region the *caller* uses for what the argument points
+to. The argument is followed down its `gep`s to its root: a `frame`
+instruction gives `frame N`; otherwise an access the caller already makes
+through that root gives its region; otherwise a parameter of the caller
+gives `param K` (or `ret` for the place of the result); a loaded address
+gives `buf(region of the load)`; `addr` gives `data`. When nothing says,
+the call stays (`unnamed` in `InlStats`). `buf(r)` maps to `buf` of what
+`r` maps to. This is exact because lowering gives every pointer root one
+region; two regions of the body that land on one region of the caller only
+make later passes more careful. What the body does through a parameter of
+the caller must be within the effects that parameter declares, or the call
+stays. In the compiler (4,332 calls seen) and the suite (235) no call was
+kept for want of a region.
+
+**When.** `inl_wants`, with the numbers at the top of the file:
+
+| | |
+|---|---|
+| a callee with one call | goes in when it has at most 400 instructions (it then disappears) |
+| any other callee | goes in when it has at most 20 instructions, plus 4 for each constant argument, plus 8 for each argument that is the address of a frame object of the caller, plus 30 when the call is in a loop |
+| a caller | stops growing at 800 instructions |
+| the program | callees that stay may add 60% of its size in all (never reached in the measurements) |
+| a caller that calls itself | all bodies put into it may bring 96 bytes of frame objects, no more |
+
+Size is counted in IR instructions after `sroa` and `simplify`. The calls
+a function keeps are looked at a second time, because a callee may have
+one call left once the others are replaced.
+
+The numbers were chosen from these measurements (instructions, callgrind;
+"suite" is the geometric mean of the 28 programs against the order without
+`inline`; "compiler" is the compiler built by `azol-opt` compiling
+`bench/generated/big.azl`, 132,004 lines):
+
+| plain limit / in a loop | suite | compiler: code | compiler: on `big.azl` |
+|---|---|---|---|
+| no inlining | 1.000 | 578,526 | 666.9 M |
+| 14 / +12 | 0.935 | 604,382 | 628.3 M |
+| 14 / +40 | 0.928 | 623,934 | 620.8 M |
+| **20 / +30** | 0.927 | 651,038 | 612.8 M |
+| 30 / +12 | 0.926 | 665,294 | 607.7 M |
+| 50 / +12 | 0.922 | 805,854 | 590.8 M |
+| 80 / +12 | 0.920 | 888,862 | 586.2 M |
+
+(these with a caller limit of 2,500). Past 20/+30 the compiler grows much
+faster than it gains. The single-call limit: 60 gives 657,646 bytes and
+616.3 M, 400 gives 651,038 and 612.8 M, 2,000 the same as 400. The caller
+limit, with 20/+30, and what `azol-opt` itself needs to build the compiler:
+
+| caller limit | suite | compiler: code | on `big.azl` | building the compiler |
+|---|---|---|---|---|
+| 400 | 0.929 | 614,590 | 632.1 M | 3,085 M |
+| **800** | 0.927 | 635,102 | 616.7 M | 3,355 M |
+| 1,200 | 0.927 | 643,422 | 613.4 M | 3,465 M |
+| 2,500 | 0.927 | 651,006 | 612.9 M | 3,615 M |
+
+The passes are not linear in the size of a function (`sroa`'s flow of
+loads behind parameters is blocks times cells), so large callers cost
+compile time out of proportion; 800 keeps nearly all the gain. With the
+frame cap for recursive callers counted in all (the last change) the final
+numbers are 621,470 bytes and 618.8 M.
+
+**Why `sroa` and `simplify` are not in the order a second time.** They run
+inside `inline` on exactly the functions it changed. Running `simplify,
+sroa, simplify, dce` on the whole module after `inline` as well gave the
+same instruction counts for every program of the suite and for the
+compiler, to the instruction, and cost another pass over everything.
+
+### tailcall
+
+The pattern is a block that ends `r... = call F(a...)` then `ret r...` in
+function F itself, with nothing between. A value dropped after the call
+keeps the call a call: the drop is not moved. An argument for a `ptr`
+parameter must be that parameter itself, so no address of this round's
+frame objects lives into the next round (which uses the same frame) and
+every access through a parameter keeps its region. The old entry block
+becomes the top of a loop; only parameters some site changes become block
+parameters; the `frame` instructions move to the new entry block.
+
+**Running out of stack.** A recursion without end must still stop with
+`azol: stack overflow`, so the loop is counted: 255 rounds are jumps, the
+256th is the call itself, kept in a block of its own. A recursion then uses
+1/256 of the stack it used, and one without end still reaches the guard
+page (67 million rounds for a small frame, a fraction of a second). The
+count is left out when the recursion is seen to end: one `i64` parameter
+moves by a constant in one direction at every site, and every site is
+dominated by a branch that keeps that parameter on the far side of a bound:
+a constant (bound and step within 2^62, so nothing wraps), or a parameter
+no site changes when the comparison is strict and the step is 1 (`i < n`
+with `i + 1`; `i <= n` could wrap at the largest number, and is counted).
+`==` and `!=` prove nothing. This is the one place where `-O` changes what
+a program does: a recursion that ends but is deeper than the stack now
+runs. The slow path is recognised by its shape (`tc_is_slow`), so a second
+run of the pass leaves it alone.
+
+### accrec
+
+The pattern is a block that ends `r = call F(a...)`, `v = OP x, r` or
+`OP r, x`, `ret v`, with OP one of `add`, `mul`, `and`, `or`, `xor`, `r`
+used once, `v` used once, and `x` not `r`; F gives one `i64` (`and`, `or`,
+`xor` also one `bool`). In `F(a) + F(b)` that is the second call. The new
+body computes G(a, acc) = acc OP F(a) and F(a) is G(a, E) with E the
+neutral element (0, 1, all ones or `true`, 0, 0): every other `ret v`
+becomes `ret (acc OP v)`, and the site goes round with `acc OP x`. The
+proof obligation is that OP is associative and commutative on wrapping
+64-bit numbers, which holds for these five and for nothing else the IR has;
+`x` was computed before the call and only OP stood between the call and
+the `ret`, so no effect moves. Calls that are simply returned in the same
+function go round too. The loop, the count and the proof of an end are
+`tailcall`'s.
+
+### Proof (x86-64 Linux, 12 November 2026)
+
+`python3 tests/opt/run_inline_tests.py`: 44 hand-written cases, 14 of them
+where a pass must do nothing (mutual recursion, a callee that calls itself,
+a callee over the limit, an argument whose region nothing names, `sub`,
+`sdiv` and a shift, something printed or freed after the call, a result
+used twice, the address of a frame object of the same call, two address
+parameters that change places), each checked before the pass, after it,
+after the whole order to a fixed point, and as native code (146 native
+runs); 1,500 random functions that call themselves, up to 3,000 deep (895
+became loops, 543 of them counted), the same before and after, 1,081 runs
+also as native code; 1,502 random functions in 281 modules the same after
+`inline` alone, `tailcall,accrec` alone and both; 7 programs with
+recursions that end three million calls deep and recursions without end
+(which must print `azol: stack overflow`), 21 runs interpreted, native and
+with three registers; for ARM64, 14 optimised programs as 56 executables
+in the emulators like their default builds. Through the whole order in
+`run_pass_tests.py`: the programs of tests/programs and the examples
+interpreted, native and with three registers like their default builds
+(the three `stack_overflow` programs among them), and the compiler built by
+`azol-opt` builds `hello` and itself into the bytes `azol` writes.
+`python3 tests/opt/run_opt_tests.py` passes as a whole. Fuzzer with
+`--lower --opt`: 5,200 programs (seeds 40000 to 45399) lowered, through
+the whole order, interpreted and as native code with all registers and
+with three, 0 findings, on the final sources. (An earlier run on the same
+seeds reported program 40705, which recurses until the stack ends: the
+interpreter was killed for lack of memory, with the tool from before these
+passes as well; the machine was short of memory then, and the run on the
+final sources has no finding.)
+
+### Measurements
+
+`python3 bench/gate.py --instructions --azol-opt <tool>`, small sizes:
+
+| Program | default | `azol-opt` before | `azol-opt` now | Rust `-O` | now / Rust |
+|---|---|---|---|---|---|
+| `fib40` | 36.35 M | 33.66 M | 23.40 M | 26.85 M | 0.87 |
+| `sha256` | 416.2 M | 248.5 M | 173.1 M | 95.2 M | 1.82 |
+| `bits` | 223.0 M | 139.0 M | 65.0 M | 47.4 M | 1.37 |
+| `tokenizer` | 41.70 M | 36.26 M | 36.16 M | 10.02 M | 3.61 |
+| `dijkstra` | 133.6 M | 98.8 M | 78.8 M | 31.9 M | 2.47 |
+| `sort` | 64.10 M | 55.35 M | 54.38 M | 50.94 M | 1.07 |
+| `binary_trees` | 98.13 M | 81.32 M | 81.32 M | 171.95 M | 0.47 |
+
+Geometric means over the 28 programs: `azol-opt` against the default build
+0.85 before and **0.79** now; against `rustc -O` 1.57 before and **1.45**
+now. Also changed by more than 2%: `map_int` 74.1 M to 63.3 M, `matmul`
+59.6 M to 53.4 M, `bfs`, `crc32`, `lru`, `wordfreq`, `words`. `fib40` is
+`accrec` (the second call of each level is a loop). `tokenizer` has every
+function in `main` now and is no faster: its cost is not in calls.
+`binary_trees` and `sort` have one recursive function each that stays.
+
+The compiler: 760 functions, 4,332 calls, 1,583 replaced, 270 functions
+gone. Built by `azol-opt` it compiles `big.azl` in 618.8 M instructions,
+666.9 M before (-7.2%); the compiler `azol` builds by default takes
+852.3 M. Its code grows from 578,526 to 621,470 bytes (+7.4%); the code of
+the 28 programs of the suite shrinks from 59,972 to 57,972 bytes.
+
+The cost: `azol-opt` building the compiler (19,731 lines) takes 3,301 M
+instructions, 2,392 M before, so 38% more. Of the difference, the `inline`
+pass is about two thirds (its `sroa` 240 M and `simplify` 225 M on the
+functions it changed, its own work 140 M), the rest is the back end and the
+later passes on code that is a tenth larger. `tailcall` and `accrec`
+together are 3 M.
+
+### What later passes should know
+
+- After `inline` a function's entry block may hold `frame` instructions
+  for objects that are used only in one branch or one loop, and an object
+  that came from a callee in a loop is the same memory in every round.
+- A module after `inline` has no function `main` cannot reach, and the
+  list of names a function calls holds only names it still calls.
+- A loop made by `tailcall` or `accrec` has a new entry block that only
+  jumps; a counted one carries a count down from 256 as a block parameter.
+  `licm` and `range` meet it like any other loop.
+
+### Doubts
+
+- Compile time. The order now costs 38% more instructions on the compiler.
+  Every function that takes a callee in is run through `sroa` and
+  `simplify` again; I found no cheaper way to keep both the sizes right and
+  the result as good, only smaller limits.
+- The bound on stack growth is on frame objects (96 bytes for a caller
+  that calls itself). Values kept in registers across calls spill to the
+  frame too, and that part is not bounded: a recursive function with
+  bodies put into it can have a larger frame than before, so a recursion
+  very close to the end of the stack could now pass it.
+- The count of 256 is a choice, not a measurement: the two instructions it
+  costs a round did not show in the suite, and any number above about 16
+  makes the calls that remain invisible in the profile.
+- `tc_is_slow` knows the slow path by its shape. If a later pass rewrites
+  that branch and the order runs again (`--fixpoint`), the path would be
+  wrapped a second time: still correct, larger. It did not happen in any
+  test, which run with `--fixpoint`.
+- `tokenizer` (3.61 of Rust), `sort_lib`, `soa` and `particles` did not
+  move: what they need is `gvn`, `licm` and `bce`.
+- Wall times were not usable on the machine these numbers come from (two
+  other builds were running), so the cost is given in instructions only.

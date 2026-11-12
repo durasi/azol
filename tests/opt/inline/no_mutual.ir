@@ -1,0 +1,36 @@
+; Two functions that call each other: neither goes into the other, and neither into `main`.
+; calls: 4
+; run: main 7
+; out: => false, true
+; run: main 10
+; out: => true, false
+fn is_even(p0: i64) -> bool {
+b0:
+    v0 = eq p0, 0
+    br v0, b1, b2
+b1:
+    ret 1
+b2:
+    v1 = add p0, -1
+    v2 = call is_odd(v1) -> bool
+    ret v2
+}
+
+fn is_odd(p0: i64) -> bool {
+b0:
+    v0 = eq p0, 0
+    br v0, b1, b2
+b1:
+    ret 0
+b2:
+    v1 = add p0, -1
+    v2 = call is_even(v1) -> bool
+    ret v2
+}
+
+fn main(p0: i64) -> bool, bool {
+b0:
+    v0 = call is_even(p0) -> bool
+    v1 = call is_odd(p0) -> bool
+    ret v0, v1
+}

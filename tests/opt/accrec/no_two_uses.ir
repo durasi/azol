@@ -1,0 +1,31 @@
+; The result of the call is used twice (`r + r`, and `r * n` returned next to `r`): not the pattern.
+; calls: 2
+; run: dbl 10
+; out: => 1024
+; run: both 5
+; out: => 120, 1
+fn dbl(p0: i64) -> i64 {
+b0:
+    v0 = sle p0, 0
+    br v0, b1, b2
+b1:
+    ret 1
+b2:
+    v1 = add p0, -1
+    v2 = call dbl(v1) -> i64
+    v3 = add v2, v2
+    ret v3
+}
+
+fn both(p0: i64) -> i64, i64 {
+b0:
+    v0 = sle p0, 0
+    br v0, b1, b2
+b1:
+    ret 1, 1
+b2:
+    v1 = add p0, -1
+    v2, v3 = call both(v1) -> i64, i64
+    v4 = mul v2, p0
+    ret v4, v3
+}

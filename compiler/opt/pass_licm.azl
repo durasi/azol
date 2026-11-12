@@ -1,0 +1,530 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The pass `licm` (docs/design/optimizer.md, section 5.6): what a loop
+// works out again in every round and gets the same answer for is
+// worked out once, before the loop.
+//
+//     fn ir_licm(f: mut IrFunc) -> i64        how many instructions moved
+//
+// What moves, from the innermost loop outwards, to the loop's
+// preheader (the one block outside the loop that jumps to its header;
+// made when the loop has none and something is there to move):
+//
+//   L1  An instruction that changes nothing and cannot stop the
+//       program, whose operands are all made outside the loop. A
+//       division moves only when the divisor is a constant other than
+//       0 and -1.
+//   L2  A `load` whose address is made outside the loop, from a region
+//       nothing in the loop may write (`lc_loop_writes`), and that
+//       reads a slot of a list's header which is there whether or not
+//       the loop runs a round (`lc_header_slot`): the buffer's address
+//       or the length of a list that is a `ptr` parameter, a part of
+//       one, or a variable of the function. (A loop that runs no round
+//       did not load at all; the load before it must read bytes that
+//       were stored and mean what the type says.)
+//   L4  An instruction that moves to a preheader which already has
+//       the same instruction (for a load: with nothing that writes
+//       after it there) is not kept; its users take the one that is
+//       there.
+//   L3  A `load` in the header block with no call before it. The
+//       header runs whenever the preheader does, so the load is one the
+//       function would have done; the address need not be known safe.
+//
+// What never moves: a store, a call, a `trap` or the test before one
+// (the pass `bce` is the one that reasons about checks), a load in
+// the body of a loop of anything but a header slot (an element of a
+// buffer: the loop may run no round and the buffer may be empty; a
+// field: it may be the field of a variant that is not the one in
+// memory), a load from a region the loop may write.
+//
+// What a call may write is asked in one place, `lc_call_arg_fx`. Until
+// the summaries of the pass `effects` exist it says: everything the
+// call was given an address of, and all that hangs below it.
+
+// What call `ins` does through its argument `k` when that is an
+// address: IR_FX_* bits. This is where summaries plug in.
+fn lc_call_arg_fx(f: IrFunc, ins: i64, k: i64) -> i64 {
+    if f.ins_op[ins] == IR_CALLRT { return ir_rt_arg_fx(f.ins_imm[ins], k) }
+    return IR_FX_ALL
+}
+
+// The region of that kind, or -1 when the function has none (nothing
+// loads from it or stores to it).
+fn lc_find_region(f: IrFunc, kind: i64, n: i64) -> i64 {
+    var i = 0
+    while i < f.reg_kind.len() {
+        if f.reg_kind[i] == kind && f.reg_n[i] == n { return i }
+        i = i + 1
+    }
+    return -1
+}
+
+// What the loop may write.
+struct LcWrites {
+    // Any memory at all.
+    all: bool
+    // Any buffer.
+    buffers: bool
+    // Region `r` itself.
+    exact: List[bool]
+    // Everything owned by region `r`: its buffer, the buffers of the
+    // values in that buffer, and so on.
+    below: List[bool]
+}
+
+fn lc_written(f: IrFunc, w: LcWrites, r: i64) -> bool {
+    if w.all || w.exact[r] { return true }
+    if f.reg_kind[r] == IR_REGION_DATA { return false }
+    var at = r
+    while f.reg_kind[at] == IR_REGION_BUF {
+        if w.buffers { return true }
+        at = f.reg_n[at]
+        if w.below[at] { return true }
+    }
+    return false
+}
+
+// Notes what a call does with effects `fx` through address `x`.
+fn lc_note_address(f: IrFunc, w: mut LcWrites, x: i64, fx: i64) {
+    if fx & (IR_FX_WRITE | IR_FX_WRITEBUF | IR_FX_RESIZE | IR_FX_FREE) == 0 { return }
+    var cur = x
+    var d = su_def(f, cur)
+    while d >= 0 && f.ins_op[d] == IR_GEP {
+        cur = f.ins_a[d]
+        d = su_def(f, cur)
+    }
+    if cur < 0 { return }
+    let deep = fx & (IR_FX_WRITEBUF | IR_FX_RESIZE | IR_FX_FREE) != 0
+    if cur < f.param_count {
+        // The parameter's own region, or the place for the result.
+        var r = 0
+        while r < f.reg_kind.len() {
+            if f.reg_kind[r] == IR_REGION_PARAM && f.reg_n[r] == cur || f.reg_kind[r] == IR_REGION_RET {
+                w.exact[r] = true
+                if deep { w.below[r] = true }
+            }
+            r = r + 1
+        }
+        return
+    }
+    if d < 0 {
+        w.all = true
+        return
+    }
+    let op = f.ins_op[d]
+    if op == IR_FRAME {
+        let r = lc_find_region(f, IR_REGION_FRAME, f.ins_imm[d])
+        if r >= 0 {
+            w.exact[r] = true
+            if deep { w.below[r] = true }
+        }
+    } else if op == IR_LOAD {
+        // An address read from a header: it points into that header's
+        // buffer.
+        let r = lc_find_region(f, IR_REGION_BUF, f.ins_reg[d])
+        if r >= 0 {
+            w.exact[r] = true
+            if deep { w.below[r] = true }
+        }
+    } else if op == IR_CALLRT && (f.ins_imm[d] == IR_RT_ALLOC || f.ins_imm[d] == IR_RT_REALLOC) {
+        w.buffers = true
+    } else {
+        w.all = true
+    }
+}
+
+// What block `b` may write, added to `w`.
+fn lc_block_writes(f: IrFunc, w: mut LcWrites, b: i64) {
+    var ins = f.blk_first[b]
+    while ins >= 0 {
+        let op = f.ins_op[ins]
+        if op == IR_STORE {
+            w.exact[f.ins_reg[ins]] = true
+        } else if op == IR_CALL || op == IR_CALLRT {
+            var k = 0
+            while k < f.ins_an[ins] {
+                let x = f.args[f.ins_as[ins] + k]
+                if ir_operand_type(f, x) == IR_PTR {
+                    lc_note_address(f, mut w, x, lc_call_arg_fx(f, ins, k))
+                }
+                k = k + 1
+            }
+            if op == IR_CALL || ir_rt_touches_rt(f.ins_imm[ins]) {
+                var r = 0
+                while r < f.reg_kind.len() {
+                    if f.reg_kind[r] == IR_REGION_RT { w.exact[r] = true }
+                    r = r + 1
+                }
+            }
+        }
+        ins = f.ins_next[ins]
+    }
+}
+
+// The loops and the blocks made since `cfg` was computed.
+struct LcState {
+    // The innermost loop of each block, as `cfg.blk_loop`, with the
+    // preheaders made since.
+    home: List[i64]
+    // For a header, the preheader this pass made for it, or -1.
+    made: List[i64]
+    // For a value whose instruction turned out to be in the preheader
+    // already: the value to use instead; -1 for the others. And those
+    // instructions, which go at the end.
+    twin: List[i64]
+    gone: List[i64]
+    // For each value: whether an unsigned comparison takes it as a
+    // length. For each parameter: the lowest place behind it from
+    // which a number is loaded and then tested as the tag of a variant
+    // is (compared with a constant, switched on, branched on).
+    length: List[bool]
+    tag: List[i64]
+}
+
+fn lc_new_state(f: IrFunc, cfg: IrCfg) -> LcState {
+    var home: List[i64] = []
+    var made: List[i64] = []
+    var b = 0
+    while b < f.blk_first.len() {
+        if b < cfg.blk_loop.len() {
+            home.push(cfg.blk_loop[b])
+        } else {
+            home.push(-1)
+        }
+        made.push(-1)
+        b = b + 1
+    }
+    let none = 0 - 1
+    var st = LcState { home: home, made: made, twin: none.filled(f.val_ty.len()), gone: [], length: false.filled(f.val_ty.len()), tag: rg_largest().filled(f.param_count) }
+    for at in f.order {
+        var ins = f.blk_first[at]
+        while ins >= 0 {
+            let op = f.ins_op[ins]
+            let x = f.ins_a[ins]
+            let y = f.ins_b[ins]
+            if op == IR_ULT && y >= 0 { st.length[y] = true }
+            if op == IR_UGT && x >= 0 { st.length[x] = true }
+            if op == IR_SWITCH || op == IR_BR { lc_note_tag(f, mut st, x) }
+            if op == IR_EQ || op == IR_NE {
+                if ir_is_const(y) { lc_note_tag(f, mut st, x) }
+                if ir_is_const(x) { lc_note_tag(f, mut st, y) }
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    return st
+}
+
+// Whether block `b` is in loop `l` or in a loop inside it.
+fn lc_inside(cfg: IrCfg, st: LcState, b: i64, l: i64) -> bool {
+    if b < 0 { return false }
+    var at = st.home[b]
+    while at >= 0 {
+        if at == l { return true }
+        at = cfg.loop_parent[at]
+    }
+    return false
+}
+
+// Whether operand `x` has the same value in every round of loop `l`:
+// a constant, a parameter, or a value made outside the loop.
+fn lc_invariant(f: IrFunc, cfg: IrCfg, st: LcState, x: i64, l: i64) -> bool {
+    if x < f.param_count { return true }
+    let d = f.val_ins[x]
+    if d >= 0 { return !lc_inside(cfg, st, f.ins_blk[d], l) }
+    return !lc_inside(cfg, st, f.val_blk[x], l)
+}
+
+// What loop `l` may write.
+fn lc_loop_writes(f: IrFunc, cfg: IrCfg, st: LcState, l: i64) -> LcWrites {
+    var w = LcWrites { all: false, buffers: false, exact: false.filled(f.reg_kind.len()), below: false.filled(f.reg_kind.len()) }
+    var i = 0
+    while i < cfg.loop_bn[l] {
+        lc_block_writes(f, mut w, cfg.loop_blocks[cfg.loop_bs[l] + i])
+        i = i + 1
+    }
+    // The preheaders made for the loops inside hold only what moved,
+    // and nothing that writes moves.
+    return w
+}
+
+// The block outside loop `l` that alone jumps to its header and to
+// nothing else, making one when `make` and there is none. -1 when the
+// loop has none and none can be made.
+fn lc_preheader(f: mut IrFunc, cfg: IrCfg, st: mut LcState, l: i64, make: bool) -> i64 {
+    let h = cfg.loop_header[l]
+    if st.made[h] >= 0 { return st.made[h] }
+    if h == f.order[0] { return -1 }
+    var outside = 0
+    var from = -1
+    var i = 0
+    while i < cfg.pred_n[h] {
+        let p = cfg.pred_blk[cfg.pred_s[h] + i]
+        if !lc_inside(cfg, st, p, l) {
+            outside = outside + 1
+            from = p
+        }
+        i = i + 1
+    }
+    if outside == 0 { return -1 }
+    if outside == 1 && f.ins_op[f.blk_last[from]] == IR_JUMP { return from }
+    if !make { return -1 }
+    let p = ir_add_block(mut f)
+    var passed: List[i64] = []
+    var k = 0
+    while k < f.blk_pn[h] {
+        let ty = f.val_ty[ir_block_param(f, h, k)]
+        passed.push(ir_add_block_param(mut f, p, ty))
+        k = k + 1
+    }
+    i = 0
+    while i < cfg.pred_n[h] {
+        let at = cfg.pred_s[h] + i
+        if !lc_inside(cfg, st, cfg.pred_blk[at], l) { f.edge_blk[cfg.pred_edge[at]] = p }
+        i = i + 1
+    }
+    ir_jump(mut f, p, h, passed)
+    // In the layout it goes right before the header.
+    var order: List[i64] = []
+    for b in f.order {
+        if b == h { order.push(p) }
+        if b != p { order.push(b) }
+    }
+    f.order = order
+    st.home.push(cfg.loop_parent[l])
+    st.made.push(-1)
+    st.made[h] = p
+    return p
+}
+
+// Where an address points: `root` is the parameter or the result of
+// the `frame` it starts from and `off` the constant distance; `ok` is
+// false for anything else.
+struct LcPlace {
+    ok: bool
+    root: i64
+    off: i64
+}
+
+fn lc_place(f: IrFunc, x: i64, offset: i64) -> LcPlace {
+    var place = LcPlace { ok: false, root: x, off: offset }
+    var d = su_def(f, place.root)
+    while d >= 0 && f.ins_op[d] == IR_GEP {
+        if !ir_is_const(f.ins_b[d]) { return place }
+        place.off = place.off + f.ins_imm[d] + ir_const_value(f, f.ins_b[d]) * f.ins_imm2[d]
+        place.root = f.ins_a[d]
+        d = su_def(f, place.root)
+    }
+    if place.root < 0 || place.off < 0 { return place }
+    if place.root < f.param_count {
+        place.ok = f.val_ty[place.root] == IR_PTR
+    } else {
+        place.ok = d >= 0 && f.ins_op[d] == IR_FRAME
+    }
+    return place
+}
+
+// Notes that value `x` is tested as a tag, when it is a number loaded
+// from behind a parameter.
+fn lc_note_tag(f: IrFunc, st: mut LcState, x: i64) {
+    let d = su_def(f, x)
+    if d < 0 || f.ins_op[d] != IR_LOAD || f.ins_ty[d] == IR_PTR { return }
+    let place = lc_place(f, f.ins_a[d], f.ins_imm[d])
+    if place.ok && place.root < f.param_count && place.off < st.tag[place.root] {
+        st.tag[place.root] = place.off
+    }
+}
+
+// Whether `load` instruction `ins` reads a slot of a list's or a
+// string's header that is there, and holds what the type says,
+// whenever the function runs: the load may then be made where the
+// program did not make it (in front of a loop that runs no round).
+//
+// The slot is the buffer's address (a `ptr`; no other address is ever
+// in memory) or a length (a number that an unsigned comparison takes
+// as one). The header is a whole value of its own, not a part of a
+// variant that may not be the one in memory: behind a parameter, no
+// number at a lower place is tested as a tag; in a frame object, the
+// header is the object (a variable that is a list; a variant's fields
+// come after its tag).
+//
+// Nothing else is loaded early: the bytes of a field of another
+// variant may never have been stored, or hold a number where a `bool`
+// is read.
+fn lc_header_slot(f: IrFunc, st: LcState, ins: i64) -> bool {
+    let ty = f.ins_ty[ins]
+    let v = f.ins_res[ins]
+    let place = lc_place(f, f.ins_a[ins], f.ins_imm[ins])
+    if !place.ok { return false }
+    var slot = false
+    if ty == IR_PTR {
+        slot = lc_find_region(f, IR_REGION_BUF, f.ins_reg[ins]) >= 0
+    } else if ty == IR_I64 {
+        slot = v < st.length.len() && st.length[v]
+    }
+    if !slot { return false }
+    if place.root < f.param_count { return place.off < st.tag[place.root] }
+    let d = su_def(f, place.root)
+    if place.off + 8 > f.frames[f.ins_imm[d]] { return false }
+    if ty == IR_PTR { return place.off == 0 }
+    return place.off == 8 || place.off == 16
+}
+
+// Whether instruction `ins` of loop `l` may move in front of the loop.
+// `sure` says it runs whenever the loop is entered.
+fn lc_may_move(f: IrFunc, cfg: IrCfg, st: LcState, w: LcWrites, l: i64, ins: i64, sure: bool) -> bool {
+    let op = f.ins_op[ins]
+    if !ir_is_pure(op) || f.ins_rn[ins] != 1 { return false }
+    let n = ir_operand_count(f, ins)
+    var k = 0
+    while k < n {
+        let x = ir_operand(f, ins, k)
+        if x >= 0 && !lc_invariant(f, cfg, st, x, l) { return false }
+        k = k + 1
+    }
+    if op == IR_SDIV || op == IR_SREM {
+        let by = f.ins_b[ins]
+        if !ir_is_const(by) { return false }
+        return ir_const_value(f, by) != 0 && ir_const_value(f, by) != -1
+    }
+    if op == IR_LOAD {
+        if lc_written(f, w, f.ins_reg[ins]) { return false }
+        return sure || lc_header_slot(f, st, ins)
+    }
+    return true
+}
+
+// The value of an instruction in block `p` that does what `ins` does,
+// or -1. For a `load`, nothing after that instruction in `p` writes.
+fn lc_twin(f: IrFunc, p: i64, ins: i64) -> i64 {
+    var q = f.ins_prev[f.blk_last[p]]
+    var quiet = true
+    var seen = 0
+    while q >= 0 && seen < 48 {
+        let op = f.ins_op[q]
+        if op == f.ins_op[ins] && f.ins_rn[q] == 1 && f.ins_ty[q] == f.ins_ty[ins] && f.ins_a[q] == f.ins_a[ins] && f.ins_b[q] == f.ins_b[ins] && f.ins_c[q] == f.ins_c[ins] {
+            if f.ins_imm[q] == f.ins_imm[ins] && f.ins_imm2[q] == f.ins_imm2[ins] && f.ins_reg[q] == f.ins_reg[ins] && (quiet || op != IR_LOAD) {
+                return f.ins_res[q]
+            }
+        }
+        if op == IR_STORE || op == IR_CALL || op == IR_CALLRT { quiet = false }
+        q = f.ins_prev[q]
+        seen = seen + 1
+    }
+    return -1
+}
+
+// Makes instruction `ins` use the twins of its operands.
+fn lc_use_twins(f: mut IrFunc, st: LcState, ins: i64) {
+    let n = ir_operand_count(f, ins)
+    var k = 0
+    while k < n {
+        let x = ir_operand(f, ins, k)
+        if x >= 0 && x < st.twin.len() && st.twin[x] >= 0 {
+            ir_set_operand(mut f, ins, k, st.twin[x])
+        }
+        k = k + 1
+    }
+}
+
+// Moves what may move out of block `b` of loop `l`. Gives how many.
+fn lc_block(f: mut IrFunc, cfg: IrCfg, st: mut LcState, w: LcWrites, l: i64, b: i64) -> i64 {
+    var moved = 0
+    var sure = b == cfg.loop_header[l]
+    var ins = f.blk_first[b]
+    while ins >= 0 {
+        let next = f.ins_next[ins]
+        let op = f.ins_op[ins]
+        if op == IR_CALL || op == IR_CALLRT { sure = false }
+        if st.gone.len() > 0 { lc_use_twins(mut f, st, ins) }
+        if lc_may_move(f, cfg, st, w, l, ins, sure) {
+            let p = lc_preheader(mut f, cfg, mut st, l, true)
+            if p < 0 { return moved }
+            let twin = lc_twin(f, p, ins)
+            ir_unlink(mut f, ins)
+            if twin >= 0 && f.ins_res[ins] < st.twin.len() {
+                // The preheader has it already.
+                st.twin[f.ins_res[ins]] = twin
+                st.gone.push(ins)
+            } else {
+                let end = f.blk_last[p]
+                ir_link_before(mut f, end, ins)
+            }
+            moved = moved + 1
+        } else if op == IR_LOAD && lc_may_move(f, cfg, st, w, l, ins, true) {
+            // Not known to be harmless before the loop, but the
+            // preheader may have loaded the same already.
+            let p = lc_preheader(mut f, cfg, mut st, l, false)
+            if p >= 0 && f.ins_res[ins] < st.twin.len() {
+                let twin = lc_twin(f, p, ins)
+                if twin >= 0 {
+                    ir_unlink(mut f, ins)
+                    st.twin[f.ins_res[ins]] = twin
+                    st.gone.push(ins)
+                    moved = moved + 1
+                }
+            }
+        }
+        ins = next
+    }
+    return moved
+}
+
+fn lc_loop(f: mut IrFunc, cfg: IrCfg, st: mut LcState, l: i64) -> i64 {
+    let w = lc_loop_writes(f, cfg, st, l)
+    var moved = 0
+    // In reverse postorder, so that what a value is made from has
+    // moved before the value is looked at.
+    var at = cfg.rpo_at[cfg.loop_header[l]]
+    var left = cfg.loop_bn[l]
+    while at < cfg.rpo.len() && left > 0 {
+        let b = cfg.rpo[at]
+        at = at + 1
+        if !ir_in_loop(cfg, b, l) { continue }
+        left = left - 1
+        // What moved out of a loop inside this one may move on.
+        if b != cfg.loop_header[l] && st.made[b] >= 0 {
+            moved = moved + lc_block(mut f, cfg, mut st, w, l, st.made[b])
+        }
+        moved = moved + lc_block(mut f, cfg, mut st, w, l, b)
+    }
+    return moved
+}
+
+fn ir_licm(f: mut IrFunc) -> i64 {
+    let cfg = ir_cfg(f)
+    let loops = cfg.loop_header.len()
+    if loops == 0 || cfg.irreducible > 0 { return 0 }
+    var st = lc_new_state(f, cfg)
+    var deepest = 0
+    var l = 0
+    while l < loops {
+        if cfg.loop_depth[l] > deepest { deepest = cfg.loop_depth[l] }
+        l = l + 1
+    }
+    var moved = 0
+    var depth = deepest
+    while depth >= 1 {
+        l = 0
+        while l < loops {
+            if cfg.loop_depth[l] == depth { moved = moved + lc_loop(mut f, cfg, mut st, l) }
+            l = l + 1
+        }
+        depth = depth - 1
+    }
+    if st.gone.len() > 0 {
+        var at = 0
+        while at < f.order.len() {
+            var ins = f.blk_first[f.order[at]]
+            while ins >= 0 {
+                lc_use_twins(mut f, st, ins)
+                ins = f.ins_next[ins]
+            }
+            at = at + 1
+        }
+        for ins in st.gone {
+            ir_remove(mut f, ins)
+        }
+    }
+    return moved
+}

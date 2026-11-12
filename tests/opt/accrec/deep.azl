@@ -1,0 +1,27 @@
+// `n + tri(n - 1)` three million deep with a test that shows no end:
+// counted, 11,719 real calls. And the same with `n <= 0`, where the
+// recursion is seen to end and there is no count.
+// expect-line: 4500001500000
+// expect-line: 4500001500000
+// expect-line: 2432902008176640000
+
+fn tri(n: i64) -> i64 {
+    if n == 0 { return 0 }
+    return n + tri(n - 1)
+}
+
+fn tri_bounded(n: i64) -> i64 {
+    if n <= 0 { return 0 }
+    return tri_bounded(n - 1) + n
+}
+
+fn fact(n: i64) -> i64 {
+    if n <= 1 { return 1 }
+    return n * fact(n - 1)
+}
+
+fn main() {
+    print(str(tri(3000000)))
+    print(str(tri_bounded(3000000)))
+    print(str(fact(20)))
+}

@@ -1,0 +1,378 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The pass `tailcall` (docs/design/optimizer.md, section 5.3): a call
+// of the function itself whose results are returned as they are, with
+// nothing in between, becomes a jump back to the top of the function.
+//
+//     fn ir_tailcall(f: mut IrFunc) -> i64        how many calls went
+//
+// The pattern, exactly: a block that ends
+//
+//     r1, ..., rn = call F(a1, ..., am)
+//     ret r1, ..., rn
+//
+// in function F (n may be 0). Nothing may stand between the two: a
+// value that is dropped after the call keeps the call a call, and the
+// pass does not try to move the drop.
+//
+// The rule for addresses: an argument for a `ptr` parameter must be
+// that same parameter. Then no address of a frame object of this
+// round is alive in the next one, which uses the same frame, and every
+// access through a parameter keeps the region it has.
+//
+// What is built:
+//
+//     b_new:   (the `frame` instructions)   jump top(p..., 256)
+//     top(h..., left):                       the old entry block
+//     ...
+//     site:    l2 = add left, -1
+//              t = ne l2, 0
+//              br t, top(a..., l2), slow
+//     slow:    r = call F(a...)              the call as it was
+//              ret r
+//
+// Only the parameters that some site changes become parameters of
+// `top`; the others stay what they are.
+//
+// Running out of stack. A recursion without end must still stop with
+// `azol: stack overflow`, and a loop never would. So the jump is taken
+// TC_ROUNDS - 1 times and then the call is made for real: a recursion
+// uses 1/TC_ROUNDS of the stack it used, and one without end still
+// reaches the guard page. The count is left out when the pass can see
+// that the recursion ends (`tc_ends`): one `i64` parameter moves by a
+// constant at every site in one direction, and every site is reached
+// only over a branch that compares that parameter with a bound on the
+// right side. Such a recursion, however deep, then no longer needs
+// stack at all, which is the one place where `-O` lets a program run
+// that would have stopped without it.
+//
+// The helpers here are also what `accrec` is made of.
+
+// How many rounds a counted loop makes before it calls for real.
+const TC_ROUNDS = 256
+
+// Bounds and steps the proof of an end accepts: no sum of two of them
+// leaves the range of `i64`.
+const TC_FAR = 4611686018427387904
+
+// The place of the function's own name in its list of callees, or -1.
+fn tc_self(f: IrFunc) -> i64 {
+    var at = 0
+    while at < f.callees.len() {
+        if f.callees[at] == f.name { return at }
+        at += 1
+    }
+    return -1
+}
+
+// Whether block `b` is the slow path an earlier run of this pass or of
+// `accrec` made: reached only as the second way out of a `br` on
+// `ne (add left, -1), 0` whose first way goes to the block `left` is a
+// parameter of.
+fn tc_is_slow(f: IrFunc, cfg: IrCfg, b: i64) -> bool {
+    if cfg.pred_n[b] != 1 { return false }
+    let from = cfg.pred_blk[cfg.pred_s[b]]
+    let last = f.blk_last[from]
+    if f.ins_op[last] != IR_BR || f.ins_en[last] != 2 { return false }
+    let first = f.ins_es[last]
+    if f.edge_blk[first + 1] != b || f.edge_blk[first] == b { return false }
+    let cond = f.ins_a[last]
+    if cond < f.param_count || f.val_ins[cond] < 0 { return false }
+    let test = f.val_ins[cond]
+    if f.ins_op[test] != IR_NE || !ir_is_const(f.ins_b[test]) || ir_const_value(f, f.ins_b[test]) != 0 {
+        return false
+    }
+    let left = f.ins_a[test]
+    if left < f.param_count || f.val_ins[left] < 0 { return false }
+    let step = f.val_ins[left]
+    if f.ins_op[step] != IR_ADD || !ir_is_const(f.ins_b[step]) || ir_const_value(f, f.ins_b[step]) != -1 {
+        return false
+    }
+    let counter = f.ins_a[step]
+    return counter >= f.param_count && f.val_blk[counter] == f.edge_blk[first]
+}
+
+// Whether every argument of the call `call` of the function itself may
+// become the value of its parameter in a jump: see the rule for
+// addresses above.
+fn tc_arguments_fit(f: IrFunc, call: i64) -> bool {
+    if f.ins_an[call] != f.param_count { return false }
+    var k = 0
+    while k < f.param_count {
+        if f.val_ty[k] == IR_PTR && f.args[f.ins_as[call] + k] != k { return false }
+        k += 1
+    }
+    return true
+}
+
+// The call of the function itself that block `b` ends in when its
+// results are what the block returns, or -1.
+fn tc_site(f: IrFunc, me: i64, b: i64) -> i64 {
+    let last = f.blk_last[b]
+    if last < 0 || f.ins_op[last] != IR_RET { return -1 }
+    let call = f.ins_prev[last]
+    if call < 0 || f.ins_op[call] != IR_CALL || f.ins_imm[call] != me { return -1 }
+    if f.ins_rn[call] != f.ins_an[last] { return -1 }
+    var k = 0
+    while k < f.ins_rn[call] {
+        if f.args[f.ins_as[last] + k] != f.results[f.ins_rs[call] + k] { return -1 }
+        k += 1
+    }
+    if !tc_arguments_fit(f, call) { return -1 }
+    return call
+}
+
+// What is known of parameter `k` and a bound where block `b` is
+// reached: 1 when the parameter is on the side of a constant bound
+// that `dir` moves it towards (above it for -1, below it for 1), 2
+// when it is strictly on that side of a parameter no site changes, 0
+// when neither is known.
+fn tc_guard(f: IrFunc, cfg: IrCfg, fixed: List[bool], b: i64, k: i64, dir: i64) -> i64 {
+    var at = b
+    let entry = f.order[0]
+    while at != entry && cfg.rpo_at[at] >= 0 {
+        if cfg.pred_n[at] == 1 {
+            let from = cfg.pred_blk[cfg.pred_s[at]]
+            let e = cfg.pred_edge[cfg.pred_s[at]]
+            let last = f.blk_last[from]
+            let cond = f.ins_a[last]
+            if f.ins_op[last] == IR_BR && f.edge_blk[f.ins_es[last]] != f.edge_blk[f.ins_es[last] + 1] && cond >= f.param_count && f.val_ins[cond] >= 0 {
+                let test = f.val_ins[cond]
+                var op = f.ins_op[test]
+                var x = f.ins_a[test]
+                var y = f.ins_b[test]
+                if op >= IR_SLT && op <= IR_SGE {
+                    if e != f.ins_es[last] {
+                        // The way taken when the comparison is false.
+                        if op == IR_SLT {
+                            op = IR_SGE
+                        } else if op == IR_SLE {
+                            op = IR_SGT
+                        } else if op == IR_SGT {
+                            op = IR_SLE
+                        } else {
+                            op = IR_SLT
+                        }
+                    }
+                    if y == k && x != k {
+                        y = x
+                        x = k
+                        if op == IR_SLT {
+                            op = IR_SGT
+                        } else if op == IR_SLE {
+                            op = IR_SGE
+                        } else if op == IR_SGT {
+                            op = IR_SLT
+                        } else {
+                            op = IR_SLE
+                        }
+                    }
+                    let towards = dir < 0 && (op == IR_SGT || op == IR_SGE) || dir > 0 && (op == IR_SLT || op == IR_SLE)
+                    if x == k && y != k && towards {
+                        if ir_is_const(y) {
+                            let bound = ir_const_value(f, y)
+                            if bound >= 0 - TC_FAR && bound <= TC_FAR { return 1 }
+                        } else if y >= 0 && y < f.param_count && fixed[y] && f.val_ty[y] == IR_I64 {
+                            if op == IR_SGT || op == IR_SLT { return 2 }
+                        }
+                    }
+                }
+            }
+        }
+        at = cfg.idom[at]
+    }
+    return 0
+}
+
+// Whether the recursion through the calls `calls` is certain to end:
+// see the head of the file. `fixed[k]` says that no site changes
+// parameter `k`.
+fn tc_ends(f: IrFunc, cfg: IrCfg, calls: List[i64], fixed: List[bool]) -> bool {
+    var k = 0
+    while k < f.param_count {
+        if f.val_ty[k] == IR_I64 && !fixed[k] {
+            var dir = 0
+            var ok = true
+            for call in calls {
+                let x = f.args[f.ins_as[call] + k]
+                var step = 0
+                if x >= f.param_count && f.val_ins[x] >= 0 && f.ins_op[f.val_ins[x]] == IR_ADD {
+                    let add = f.val_ins[x]
+                    if f.ins_a[add] == k && ir_is_const(f.ins_b[add]) {
+                        step = ir_const_value(f, f.ins_b[add])
+                    } else if f.ins_b[add] == k && ir_is_const(f.ins_a[add]) {
+                        step = ir_const_value(f, f.ins_a[add])
+                    }
+                }
+                var way = 0
+                if step > 0 && step <= TC_FAR { way = 1 }
+                if step < 0 && step >= 0 - TC_FAR { way = -1 }
+                if way == 0 || dir != 0 && way != dir {
+                    ok = false
+                } else {
+                    dir = way
+                    let known = tc_guard(f, cfg, fixed, f.ins_blk[call], k, dir)
+                    if known == 0 || known == 2 && step != dir { ok = false }
+                }
+            }
+            if ok && dir != 0 { return true }
+        }
+        k += 1
+    }
+    return false
+}
+
+// The loop both passes build.
+struct TcLoop {
+    // The block the jumps go back to, and the parameters of it that
+    // stand for the function's: -1 for one no site changes.
+    top: i64
+    stands: List[i64]
+    // The rounds left, a parameter of `top`; -1 when nothing is counted.
+    left: i64
+    // The accumulator, a parameter of `top`; -1 without one.
+    acc: i64
+}
+
+// Makes the old entry block the top of a loop: a new entry block
+// jumps to it with the function's parameters, the count when
+// `counted`, and `start` for an accumulator of type `acc_ty` (-1 for
+// none). Every use of a parameter that a site changes becomes a use
+// of the top's parameter.
+fn tc_make_loop(f: mut IrFunc, calls: List[i64], fixed: List[bool], counted: bool, acc_ty: i64, start: i64) -> TcLoop {
+    let top = f.order[0]
+    var shape = TcLoop { top: top, stands: [], left: -1, acc: -1 }
+    let entry = ir_add_block(mut f)
+    var k = 0
+    while k < f.param_count {
+        if fixed[k] {
+            shape.stands.push(-1)
+        } else {
+            shape.stands.push(ir_add_block_param(mut f, top, f.val_ty[k]))
+        }
+        k += 1
+    }
+    if counted { shape.left = ir_add_block_param(mut f, top, IR_I64) }
+    if acc_ty >= 0 { shape.acc = ir_add_block_param(mut f, top, acc_ty) }
+    k = 0
+    while k < f.param_count {
+        if !fixed[k] { ir_replace_value(mut f, k, shape.stands[k]) }
+        k += 1
+    }
+    // `sroa` looks for the `frame` instructions in the entry block.
+    var ins = f.blk_first[top]
+    while ins >= 0 {
+        let next = f.ins_next[ins]
+        if f.ins_op[ins] == IR_FRAME {
+            ir_unlink(mut f, ins)
+            ir_link_end(mut f, entry, ins)
+        }
+        ins = next
+    }
+    let jump = ir_make(mut f, IR_JUMP, IR_I64, -1, -1, -1, 0)
+    let e = ir_add_edge(mut f, jump, top, 0)
+    k = 0
+    while k < f.param_count {
+        if !fixed[k] { ir_add_edge_arg(mut f, e, k) }
+        k += 1
+    }
+    if counted {
+        let rounds = ir_const(mut f, TC_ROUNDS)
+        ir_add_edge_arg(mut f, e, rounds)
+    }
+    if acc_ty >= 0 { ir_add_edge_arg(mut f, e, start) }
+    ir_link_end(mut f, entry, jump)
+    var order: List[i64] = [entry]
+    var at = 0
+    while at + 1 < f.order.len() {
+        order.push(f.order[at])
+        at += 1
+    }
+    f.order = order
+    return shape
+}
+
+// Ends the block of the site `call` with the way back to the top:
+// the instructions from `call` on are `tail` (the call, what follows
+// it and the `ret`). Without a count they go and the block jumps; with
+// one they move to a new block, the slow path, taken when the rounds
+// are used up. `acc` is the accumulator's next value, or -1.
+fn tc_close(f: mut IrFunc, shape: TcLoop, call: i64, acc: i64) {
+    let b = f.ins_blk[call]
+    var next: List[i64] = []
+    var k = 0
+    while k < f.param_count {
+        if shape.stands[k] >= 0 { next.push(f.args[f.ins_as[call] + k]) }
+        k += 1
+    }
+    if shape.left < 0 {
+        // The last instruction first: each uses the one before it.
+        var ins = f.blk_last[b]
+        var more = true
+        while more {
+            let before = f.ins_prev[ins]
+            more = ins != call
+            ir_remove(mut f, ins)
+            ins = before
+        }
+        if acc >= 0 { next.push(acc) }
+        ir_jump(mut f, b, shape.top, next)
+        return
+    }
+    let slow = ir_add_block(mut f)
+    var ins = call
+    while ins >= 0 {
+        let after = f.ins_next[ins]
+        ir_unlink(mut f, ins)
+        ir_link_end(mut f, slow, ins)
+        ins = after
+    }
+    let minus = ir_const(mut f, -1)
+    let left = ir_binary(mut f, b, IR_ADD, shape.left, minus)
+    let zero = ir_const(mut f, 0)
+    let more = ir_binary(mut f, b, IR_NE, left, zero)
+    next.push(left)
+    if acc >= 0 { next.push(acc) }
+    let none: List[i64] = []
+    ir_br(mut f, b, more, shape.top, next, slow, none)
+}
+
+// For each parameter, whether every one of the calls passes the
+// parameter itself for it.
+fn tc_fixed(f: IrFunc, calls: List[i64]) -> List[bool] {
+    var fixed = true.filled(f.param_count)
+    for call in calls {
+        var k = 0
+        while k < f.param_count {
+            if f.args[f.ins_as[call] + k] != k { fixed[k] = false }
+            k += 1
+        }
+    }
+    return fixed
+}
+
+fn ir_tailcall(f: mut IrFunc) -> i64 {
+    let me = tc_self(f)
+    if me < 0 { return 0 }
+    var calls: List[i64] = []
+    for b in f.order {
+        let call = tc_site(f, me, b)
+        if call >= 0 { calls.push(call) }
+    }
+    if calls.len() == 0 { return 0 }
+    let cfg = ir_cfg(f)
+    var sites: List[i64] = []
+    for call in calls {
+        if cfg.rpo_at[f.ins_blk[call]] >= 0 && !tc_is_slow(f, cfg, f.ins_blk[call]) {
+            sites.push(call)
+        }
+    }
+    if sites.len() == 0 { return 0 }
+    let fixed = tc_fixed(f, sites)
+    let counted = !tc_ends(f, cfg, sites, fixed)
+    let shape = tc_make_loop(mut f, sites, fixed, counted, -1, -1)
+    for call in sites {
+        tc_close(mut f, shape, call, -1)
+    }
+    return sites.len()
+}

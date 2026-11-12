@@ -1,0 +1,32 @@
+; Two address parameters change places: an access through `param 0` would reach what `param 1` names, so the call stays.
+; calls: 2
+; run: main 3
+; out: => 5202
+fn swap_walk(p0: ptr [param 0 read write], p1: ptr [param 1 read write], p2: i64) -> i64 {
+b0:
+    v0 = load i64, p0, 0  [param 0]
+    v1 = add v0, 1
+    store i64, p0, 0, v1  [param 0]
+    v2 = sle p2, 0
+    br v2, b1, b2
+b1:
+    v3 = load i64, p1, 0  [param 1]
+    v4 = mul v1, 100
+    v5 = add v4, v3
+    ret v5
+b2:
+    v6 = add p2, -1
+    v7 = call swap_walk(p1, p0, v6) -> i64
+    ret v7
+}
+
+fn main(p0: i64) -> i64 {
+    frames 8, 8
+b0:
+    v0 = frame 0
+    v1 = frame 1
+    store i64, v0, 0, 0  [frame 0]
+    store i64, v1, 0, 50  [frame 1]
+    v2 = call swap_walk(v0, v1, p0) -> i64
+    ret v2
+}

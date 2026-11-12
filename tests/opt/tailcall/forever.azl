@@ -1,0 +1,16 @@
+// A recursion without end whose call is returned as it is. Under `-O`
+// the call is a jump, counted: every 256th round calls for real, so
+// the program still runs out of stack, as it does without `-O`.
+// expect-exit: 1
+// expect-line: start
+// expect-stderr: azol: stack overflow
+
+fn forever(n: i64, total: i64) -> i64 {
+    if n == 0 - 1 { return total }
+    return forever(n + 1, total + n)
+}
+
+fn main() {
+    print("start")
+    print(str(forever(0, 0)))
+}

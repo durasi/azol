@@ -1,0 +1,47 @@
+; What `main` cannot reach goes, whether or not anything was put anywhere; a function that calls itself stays while it is called.
+; calls: 3
+; text: no fn unused
+; text: no fn helper
+; text: fn count
+; run: main 5
+; out: 0
+; out: 1
+; out: 2
+; out: 3
+; out: 4
+; out: 0
+; out: => 6
+fn helper(p0: i64) -> i64 {
+b0:
+    v0 = add p0, 1
+    ret v0
+}
+
+fn unused(p0: i64) -> i64 {
+b0:
+    v0 = call helper(p0) -> i64
+    v1 = call unused(v0) -> i64
+    ret v1
+}
+
+fn count(p0: i64) -> i64 {
+b0:
+    v0 = sle p0, 0
+    br v0, b1, b2
+b1:
+    ret 0
+b2:
+    v1 = add p0, -1
+    v2 = call count(v1) -> i64
+    callrt print_i64(v2)
+    v3 = add v2, 1
+    ret v3
+}
+
+fn main(p0: i64) -> i64 {
+b0:
+    v0 = call count(p0) -> i64
+    v1 = call count(1) -> i64
+    v2 = add v0, v1
+    ret v2
+}

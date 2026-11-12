@@ -1,0 +1,27 @@
+; The call that is returned is of another function: this pass only knows a function's calls of itself.
+; calls: 2
+; run: ping 5
+; out: => 1
+fn ping(p0: i64) -> i64 {
+b0:
+    v0 = sle p0, 0
+    br v0, b1, b2
+b1:
+    ret 1
+b2:
+    v1 = add p0, -1
+    v2 = call pong(v1) -> i64
+    ret v2
+}
+
+fn pong(p0: i64) -> i64 {
+b0:
+    v0 = sle p0, 0
+    br v0, b1, b2
+b1:
+    ret 2
+b2:
+    v1 = add p0, -2
+    v2 = call ping(v1) -> i64
+    ret v2
+}

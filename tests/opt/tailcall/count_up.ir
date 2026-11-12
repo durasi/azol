@@ -1,0 +1,21 @@
+; `i` goes up by one towards `n` and the site is reached only when `i < n`: the recursion ends, so the loop is not counted.
+; calls: 0
+; text: no ne
+; run: sum 0 10 0
+; out: => 45
+; run: sum 5 5 7
+; out: => 7
+; run: sum 0 3000 1
+; out: => 4498501
+fn sum(p0: i64, p1: i64, p2: i64) -> i64 {
+b0:
+    v0 = sge p0, p1
+    br v0, b1, b2
+b1:
+    ret p2
+b2:
+    v1 = add p2, p0
+    v2 = add p0, 1
+    v3 = call sum(v2, p1, v1) -> i64
+    ret v3
+}
