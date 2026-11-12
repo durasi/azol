@@ -127,7 +127,7 @@ Underneath, large values are passed by reference for speed, and the compiler gua
 
 When a rule is broken you get a plain sentence, not a puzzle:
 
-    error: cannot change `xs` while a loop is going through it
+    error[E0408]: cannot change `xs` while a loop is going through it
      --> loop.azl:4:9
       |
     4 |         xs.push(x)
@@ -136,6 +136,36 @@ When a rule is broken you get a plain sentence, not a puzzle:
 Memory is managed by ownership. Every buffer has exactly one owner, a variable or a temporary. A temporary hands its buffer over when it is stored; a variable is duplicated when it is stored again, unless that is the last time it is used, in which case it hands its buffer over too; and each buffer is freed when its owner goes out of scope. Copies exist in the meaning of the program, not necessarily in the machine: `text = text + more` adds to `text` in place. This works at any depth: a tree of nodes that each own a list of nodes is copied and freed correctly with nothing written by hand. An enum owns whatever its current variant holds, and only that.
 
 Out-of-range indexes and slices, `pop` on an empty list and division by zero stop the program with a message. They never read or write memory they should not.
+
+## Built for AI agents
+
+An agent that edits azoL code should not have to guess from prose what went wrong. The compiler tells it everything it knows, in a form it can act on:
+
+- `azol check a.azl b.azl` checks a whole program without writing an executable.
+- One run reports every independent error: the first one of each function, or the first syntax error of each file. An error that might only be a result of an earlier one is left for the next run, so nothing reported is noise.
+- Every kind of error has a stable code, and `azol explain E0408` states the rule behind it with a wrong and a right example. All codes are listed in [docs/errors.md](docs/errors.md).
+- `--json` (for `check` and `build`) prints one JSON object per error on standard output and a summary on the last line: the exact start and end of the offending text, the source line, the rule that was broken, and, when the repair is mechanical, the edit that makes it.
+
+For this program
+
+    fn main() {
+        let total = 0
+        total = total + 1
+        print(total)
+    }
+
+`azol check --json total.azl` prints (wrapped here; lines and columns start at 1, the end is exclusive):
+
+    {"severity":"error","code":"E0401",
+     "message":"cannot change `total`: declare it with `var` to make it changeable",
+     "file":"total.azl","line":3,"column":5,"end_line":3,"end_column":10,
+     "source":"    total = total + 1",
+     "rule":"A variable declared with `let` never changes; only one declared with `var` can be assigned, grown or passed as `mut`.",
+     "help":"Declare the variable with `var` instead of `let`.",
+     "fix":{"file":"total.azl","line":2,"column":5,"end_line":2,"end_column":8,"replacement":"var"}}
+    {"summary":{"errors":1,"files":1}}
+
+A `fix` is only given when applying exactly that edit resolves the error; the tests apply each kind and check the result. Today that covers `let` that must be `var`, a missing or misplaced `mut` on an argument, missing `match` arms, a variant pattern without its values and `()` after a variant that holds none. Other errors come with the rule and no edit.
 
 ## Numbers
 
@@ -172,12 +202,14 @@ In loops azoL is level with optimized Rust; in code dominated by small function 
 - structs, including structs inside structs
 - `List[T]` for any `T`, including lists of lists and lists of structs: `push`, `pop`, `len`, indexing
 - enums whose variants carry values, with type parameters if you want them, and recursive ones through a list
+- `==` and `!=` on enums whose variants hold no values
 - generic functions and structs: `fn pop[T](stack: mut Stack[T]) -> Option[T]`, with the types worked out at each call
 - list methods `contains`, `first`, `last` and `reversed`
 - `Option[T]` and `Result[T, E]` built in: `Some`, `None`, `Ok`, `Err`
 - `match` on enums, numbers, booleans and text, checked to cover every case
 - functions and recursion, read-only parameters and `mut` parameters
 - `let` (fixed) and `var` (changeable) variables
+- constants computed while compiling: `const MASK = (1 << 4) - 1`, usable everywhere, also as `match` patterns
 - `if` / `else`, `while`, `for ... in`, `match`, `break`, `continue`
 - `print` for integers, booleans and text, `eprint` for standard error
 - files with `read_file`, `write_file` and `set_executable`, which return a `Result` instead of failing silently
@@ -208,7 +240,11 @@ More to run: `examples/generics.azl`, `examples/bank.azl`, `examples/tree.azl`, 
 
     azol build <file.azl>    compile to an executable
     azol build --target x86_64-linux <file.azl>
-                             compile for Linux from a Mac (or `aarch64-macos` the other way)
+                             compile for Linux from a Mac (also `aarch64-linux`,
+                             and `aarch64-macos` the other way)
+    azol fmt <files...>      rewrite source files in the one canonical layout (`--check` to only list)
+    azol check <file.azl>    report every independent error, write nothing (`--json` for tools)
+    azol explain <code>      explain an error code
     azol parse <file.azl>    print the syntax tree
     azol lex <file.azl>      print the tokens
     cargo test               run the test suite
@@ -236,8 +272,7 @@ The compiler is written in Rust with no dependencies, SHA-256 included. A small 
 ## Roadmap
 
 1. Inlining small functions, to close the rest of the run-time gap
-2. Variables in registers on x86-64, as on ARM64, and Linux on ARM64
-3. **The azoL compiler written in azoL.** Rust is scaffolding; the goal is to remove it.
+2. **The azoL compiler written in azoL.** Rust is scaffolding; the goal is to remove it. The lexer, the parser and both linkers are already written in azoL (`compiler/`) and produce output identical to the Rust ones; the checker and the code generators are next.
 
 ## Name
 

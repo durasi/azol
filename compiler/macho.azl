@@ -1,0 +1,400 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Writes a macOS executable for Apple Silicon (Mach-O, arm64) directly,
+// including the ad-hoc code signature the system requires. No external
+// linker or `codesign` run is involved.
+
+// constants
+
+fn macho_page() -> i64 {
+    return 0x4000
+}
+
+fn text_vmaddr() -> i64 {
+    return 0x100000000
+}
+
+// The signature hashes the file in pages of 1 << 12 bytes.
+fn sign_page_shift() -> i64 {
+    return 12
+}
+
+fn lc_segment_64() -> i64 {
+    return 0x19
+}
+
+fn lc_symtab() -> i64 {
+    return 0x2
+}
+
+fn lc_dysymtab() -> i64 {
+    return 0xB
+}
+
+fn lc_load_dylib() -> i64 {
+    return 0xC
+}
+
+fn lc_load_dylinker() -> i64 {
+    return 0xE
+}
+
+fn lc_code_signature() -> i64 {
+    return 0x1D
+}
+
+fn lc_dyld_info_only() -> i64 {
+    return 0x80000022
+}
+
+fn lc_main() -> i64 {
+    return 0x80000028
+}
+
+fn lc_build_version() -> i64 {
+    return 0x32
+}
+
+// Number of load commands and their total size in bytes.
+fn macho_command_count() -> i64 {
+    return 12
+}
+
+fn macho_commands_size() -> i64 {
+    return 72 + 232 + 152 + 72 + 48 + 24 + 80 + 32 + 24 + 24 + 56 + 16
+}
+
+// The segment the import slots live in, counted from zero.
+fn data_const_segment() -> i64 {
+    return 2
+}
+
+// A name in a 16-byte field, padded with zeros.
+fn put_name16(out: mut List[i64], name: str) {
+    let end = out.len() + 16
+    put_text(mut out, name)
+    pad_to(mut out, end, 0)
+}
+
+// A string followed by zeros, `total` bytes in all.
+fn put_padded_text(out: mut List[i64], text: str, total: i64) {
+    let end = out.len() + total
+    put_text(mut out, text)
+    pad_to(mut out, end, 0)
+}
+
+// A segment command, up to but not including its last field, the flags,
+// which the caller writes next. (A function takes at most eight values.)
+fn put_segment(out: mut List[i64], name: str, address: i64, size: i64, offset: i64, file_size: i64, protection: i64, sections: i64) {
+    put32(mut out, lc_segment_64())
+    put32(mut out, 72 + 80 * sections)
+    put_name16(mut out, name)
+    put64(mut out, address)
+    put64(mut out, size)
+    put64(mut out, offset)
+    put64(mut out, file_size)
+    put32(mut out, protection)
+    put32(mut out, protection)
+    put32(mut out, sections)
+}
+
+fn put_section(out: mut List[i64], name: str, segment: str, address: i64, size: i64, offset: i64, align: i64, flags: i64) {
+    put_name16(mut out, name)
+    put_name16(mut out, segment)
+    put64(mut out, address)
+    put64(mut out, size)
+    put32(mut out, offset)
+    put32(mut out, align)
+    put32(mut out, 0) // relocations
+    put32(mut out, 0)
+    put32(mut out, flags)
+    put32(mut out, 0) // reserved1: index into the indirect symbol table
+    put32(mut out, 0)
+    put32(mut out, 0)
+}
+
+// Size in bytes of the signature for a file whose signed part is
+// `code_limit` bytes long.
+fn signature_size(code_limit: i64, ident: str) -> i64 {
+    let page = 1 << sign_page_shift()
+    let pages = (code_limit + page - 1) / page
+    return 20 + 88 + ident.len() + 1 + pages * 32
+}
+
+// Appends the embedded signature for everything already in `out`: a
+// SuperBlob holding one CodeDirectory with a SHA-256 hash of every page
+// of the file. All fields are big-endian.
+fn put_code_signature(out: mut List[i64], ident: str, text_file_size: i64) {
+    let page_size = 1 << sign_page_shift()
+    let signed = out.len()
+    let pages = (signed + page_size - 1) / page_size
+    let ident_offset = 88
+    let hash_offset = ident_offset + ident.len() + 1
+    let directory_size = hash_offset + pages * 32
+    let total = 20 + directory_size
+
+    var blob: List[i64] = []
+    // SuperBlob header and its single index entry.
+    put32_be(mut blob, 0xFADE0CC0)
+    put32_be(mut blob, total)
+    put32_be(mut blob, 1)
+    put32_be(mut blob, 0)
+    put32_be(mut blob, 20)
+    // CodeDirectory, version 0x20400.
+    put32_be(mut blob, 0xFADE0C02)
+    put32_be(mut blob, directory_size)
+    put32_be(mut blob, 0x00020400)
+    put32_be(mut blob, 0x00020002) // adhoc | linker-signed
+    put32_be(mut blob, hash_offset)
+    put32_be(mut blob, ident_offset)
+    put32_be(mut blob, 0) // special slots
+    put32_be(mut blob, pages)
+    put32_be(mut blob, signed)
+    put8(mut blob, 32) // hash size
+    put8(mut blob, 2) // SHA-256
+    put8(mut blob, 0) // platform
+    put8(mut blob, sign_page_shift()) // page size
+    put32_be(mut blob, 0) // spare2
+    put32_be(mut blob, 0) // scatter offset
+    put32_be(mut blob, 0) // team offset
+    put32_be(mut blob, 0) // spare3
+    put64_be(mut blob, 0) // code limit 64
+    put64_be(mut blob, 0) // exec segment base
+    put64_be(mut blob, text_file_size) // exec segment limit
+    put64_be(mut blob, 1) // exec segment flags: main binary
+    put_text(mut blob, ident)
+    put8(mut blob, 0)
+
+    // One hash per page; the last page may be short.
+    let k = sha256_round_constants()
+    var at = 0
+    while at < signed {
+        var end = at + page_size
+        if end > signed {
+            end = signed
+        }
+        sha256_into(mut blob, out, at, end, k)
+        at = end
+    }
+    put_bytes(mut out, blob)
+}
+
+// `adrp register, target`: the 4 KiB page of `target`, relative to `pc`.
+fn adrp(register: i64, pc: i64, target: i64) -> i64 {
+    let delta = (target >> 12) - (pc >> 12)
+    return 0x90000000 | ((delta & 3) << 29) | (((delta >> 2) & 0x7FFFF) << 5) | register
+}
+
+// A number in the loader's variable-length form: seven bits per byte,
+// lowest first, the top bit set on all but the last.
+fn put_uleb(out: mut List[i64], number: i64) {
+    var value = number
+    while true {
+        let byte = value & 0x7F
+        value = value >> 7
+        if value == 0 {
+            out.push(byte)
+            break
+        }
+        out.push(byte | 0x80)
+    }
+}
+
+// Lays out, links and signs an executable.
+//
+// The file has three mapped parts: `__TEXT` (headers, code, read-only
+// data), `__DATA_CONST` (one pointer per imported function, filled in by
+// the system loader) and `__LINKEDIT` (the loader's instructions for
+// those pointers, the symbol table and the signature).
+fn build_macho(code: CodeFile) -> List[i64] {
+    let page = macho_page()
+    let base = text_vmaddr()
+    let import_count = code.imports.len()
+
+    let code_off = align_up(32 + macho_commands_size(), 16)
+    let code_size = code.code.len()
+    let const_off = code_off + code_size
+    let const_size = code.data.len()
+    let text_size = align_up(const_off + const_size, page)
+    let got_off = text_size
+    let got_addr = base + got_off
+    let got_size = import_count * 8
+    let linkedit_off = got_off + page
+
+    // Loader instructions: bind each import slot to its symbol in libSystem.
+    var bind: List[i64] = []
+    for i, name in code.imports {
+        bind.push(0x70 | data_const_segment()) // set segment and offset
+        put_uleb(mut bind, i * 8)
+        bind.push(0x40) // symbol name follows
+        put_text(mut bind, name)
+        bind.push(0)
+        bind.push(0x51) // type: pointer
+        bind.push(0x11) // library ordinal 1
+        bind.push(0x90) // bind
+    }
+    bind.push(0x00) // done
+    pad_to(mut bind, align_up(bind.len(), 8), 0)
+
+    // The string table starts with a space and a zero; each name follows.
+    var strtab: List[i64] = [' ', 0]
+    var name_offsets: List[i64] = []
+    for name in code.imports {
+        name_offsets.push(strtab.len())
+        put_text(mut strtab, name)
+        strtab.push(0)
+    }
+
+    let bind_off = linkedit_off
+    let symtab_off = bind_off + bind.len()
+    let indirect_off = symtab_off + import_count * 16
+    let strtab_off = align_up(indirect_off + import_count * 4, 8)
+    let sig_off = align_up(strtab_off + strtab.len(), 16)
+    let strtab_size = sig_off - strtab_off
+    let sig_size = align_up(signature_size(sig_off, code.ident), 16)
+    let linkedit_size = sig_off + sig_size - linkedit_off
+
+    var out: List[i64] = []
+    // mach_header_64
+    put32(mut out, 0xFEEDFACF)
+    put32(mut out, 0x0100000C) // CPU_TYPE_ARM64
+    put32(mut out, 0)
+    put32(mut out, 2) // MH_EXECUTE
+    put32(mut out, macho_command_count())
+    put32(mut out, macho_commands_size())
+    put32(mut out, 0x00200085) // NOUNDEFS | DYLDLINK | TWOLEVEL | PIE
+    put32(mut out, 0)
+
+    put_segment(mut out, "__PAGEZERO", 0, base, 0, 0, 0, 0)
+    put32(mut out, 0)
+
+    put_segment(mut out, "__TEXT", base, text_size, 0, text_size, 5, 2)
+    put32(mut out, 0)
+    put_section(mut out, "__text", "__TEXT", base + code_off, code_size, code_off, 2, 0x80000400) // pure instructions
+    put_section(mut out, "__const", "__TEXT", base + const_off, const_size, const_off, 0, 0)
+
+    put_segment(mut out, "__DATA_CONST", got_addr, page, got_off, page, 3, 1)
+    put32(mut out, 0x10) // read-only after loading
+    put_section(mut out, "__got", "__DATA_CONST", got_addr, got_size, got_off, 3, 0x6) // non-lazy symbol pointers
+
+    put_segment(mut out, "__LINKEDIT", base + linkedit_off, align_up(linkedit_size, page), linkedit_off, linkedit_size, 1, 0)
+    put32(mut out, 0)
+
+    put32(mut out, lc_dyld_info_only())
+    put32(mut out, 48)
+    put32(mut out, 0) // rebase
+    put32(mut out, 0)
+    put32(mut out, bind_off)
+    put32(mut out, bind.len())
+    var zeros = 0
+    while zeros < 6 {
+        put32(mut out, 0) // weak bind, lazy bind, export
+        zeros = zeros + 1
+    }
+
+    put32(mut out, lc_symtab())
+    put32(mut out, 24)
+    put32(mut out, symtab_off)
+    put32(mut out, import_count)
+    put32(mut out, strtab_off)
+    put32(mut out, strtab_size)
+
+    put32(mut out, lc_dysymtab())
+    put32(mut out, 80)
+    put32(mut out, 0) // local symbols
+    put32(mut out, 0)
+    put32(mut out, 0) // defined external symbols
+    put32(mut out, 0)
+    put32(mut out, 0) // undefined symbols
+    put32(mut out, import_count)
+    zeros = 0
+    while zeros < 6 {
+        put32(mut out, 0) // table of contents, modules, external references
+        zeros = zeros + 1
+    }
+    put32(mut out, indirect_off)
+    put32(mut out, import_count)
+    zeros = 0
+    while zeros < 4 {
+        put32(mut out, 0) // relocations
+        zeros = zeros + 1
+    }
+
+    put32(mut out, lc_load_dylinker())
+    put32(mut out, 32)
+    put32(mut out, 12)
+    put_padded_text(mut out, "/usr/lib/dyld", 20)
+
+    put32(mut out, lc_build_version())
+    put32(mut out, 24)
+    put32(mut out, 1) // macOS
+    put32(mut out, 0x000B0000) // minimum OS 11.0
+    put32(mut out, 0x000B0000) // SDK 11.0
+    put32(mut out, 0)
+
+    put32(mut out, lc_main())
+    put32(mut out, 24)
+    put64(mut out, code_off + code.entry * 4)
+    put64(mut out, 0)
+
+    put32(mut out, lc_load_dylib())
+    put32(mut out, 56)
+    put32(mut out, 24)
+    put32(mut out, 2)
+    put32(mut out, 0x00010000)
+    put32(mut out, 0x00010000)
+    put_padded_text(mut out, "/usr/lib/libSystem.B.dylib", 32)
+
+    put32(mut out, lc_code_signature())
+    put32(mut out, 16)
+    put32(mut out, sig_off)
+    put32(mut out, sig_size)
+
+    // Code, then the instructions that depend on final addresses are
+    // filled in where they now sit in the file.
+    pad_to(mut out, code_off, 0)
+    put_bytes(mut out, code.code)
+    for reloc in code.relocs {
+        match reloc {
+            Import(at, import) => {
+                let pc = base + code_off + at * 4
+                let target = got_addr + import * 8
+                let field = code_off + at * 4
+                patch32(mut out, field, adrp(16, pc, target))
+                patch32(mut out, field + 4, 0xF9400210 | (((target & 0xFFF) / 8) << 10)) // ldr x16, [x16, #lo12]
+                patch32(mut out, field + 8, 0xD63F0200) // blr x16
+            }
+            Data(at, offset, register) => {
+                let pc = base + code_off + at * 4
+                let target = base + const_off + offset
+                let field = code_off + at * 4
+                patch32(mut out, field, adrp(register, pc, target))
+                patch32(mut out, field + 4, 0x91000000 | ((target & 0xFFF) << 10) | (register << 5) | register) // add reg, reg, #lo12
+            }
+        }
+    }
+    put_bytes(mut out, code.data)
+
+    // The page of import slots is all zeros in the file; the loader fills it.
+    pad_to(mut out, linkedit_off, 0)
+    put_bytes(mut out, bind)
+    for name_offset in name_offsets {
+        put32(mut out, name_offset)
+        put8(mut out, 0x01) // undefined, external
+        put8(mut out, 0)
+        put16(mut out, 0x0100) // from library 1
+        put64(mut out, 0)
+    }
+    var index = 0
+    while index < import_count {
+        put32(mut out, index)
+        index = index + 1
+    }
+    pad_to(mut out, strtab_off, 0)
+    put_bytes(mut out, strtab)
+    pad_to(mut out, sig_off, 0)
+
+    put_code_signature(mut out, code.ident, text_size)
+    pad_to(mut out, linkedit_off + linkedit_size, 0)
+    return out
+}

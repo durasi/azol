@@ -11,6 +11,7 @@ pub enum TokenKind {
     Fn,
     Struct,
     Enum,
+    Const,
     Let,
     Var,
     Mut,

@@ -1,0 +1,285 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Flat syntax tree. Nodes live in lists, one list per kind of node, and
+// refer to each other by index, so building the tree allocates nothing
+// per node. An id is a plain number; which list it indexes follows from
+// where it is stored. `NO_NODE` stands for "none" where a node is
+// optional.
+//
+// No node holds text. A name is a `Span`, a range of the source, and is
+// compared with `span_is` and `spans_equal` without being copied.
+
+const NO_NODE = -1
+
+// A range of bytes in the source text.
+struct Span {
+    start: i64
+    len: i64
+}
+
+// A run of ids stored in `Ast.lists`: `len` of them, from `start` on.
+struct IdRange {
+    start: i64
+    len: i64
+}
+
+enum UnOp {
+    OpNeg
+    OpNot
+}
+
+enum BinOp {
+    BinOr
+    BinAnd
+    BinEq
+    BinNotEq
+    BinLt
+    BinLtEq
+    BinGt
+    BinGtEq
+    BinAdd
+    BinSub
+    BinMul
+    BinDiv
+    BinRem
+    BinBitAnd
+    BinBitOr
+    BinBitXor
+    // Shifts use the low 6 bits of the count; `>>` keeps the sign.
+    BinShl
+    BinShr
+}
+
+fn binop_symbol(op: BinOp) -> str {
+    match op {
+        BinOr => return "||"
+        BinAnd => return "&&"
+        BinEq => return "=="
+        BinNotEq => return "!="
+        BinLt => return "<"
+        BinLtEq => return "<="
+        BinGt => return ">"
+        BinGtEq => return ">="
+        BinAdd => return "+"
+        BinSub => return "-"
+        BinMul => return "*"
+        BinDiv => return "/"
+        BinRem => return "%"
+        BinBitAnd => return "&"
+        BinBitOr => return "|"
+        BinBitXor => return "^"
+        BinShl => return "<<"
+        BinShr => return ">>"
+    }
+}
+
+enum Expr {
+    ExprInt(Span)
+    ExprFloat(Span)
+    ExprStr(Span)
+    ExprBool(bool)
+    ExprIdent(Span)
+    // Operator, operand.
+    ExprUnary(UnOp, i64)
+    // Operator, left, right.
+    ExprBinary(BinOp, i64, i64)
+    // Callee, arguments (expression ids).
+    ExprCall(i64, IdRange)
+    // `mut value` in argument position.
+    ExprMutArg(i64)
+    // Base, field name.
+    ExprField(i64, Span)
+    // Base, index.
+    ExprIndex(i64, i64)
+    // Struct name, fields (ids into `Ast.field_inits`).
+    ExprStructLit(Span, IdRange)
+    // Items (expression ids).
+    ExprArrayLit(IdRange)
+}
+
+enum ElseBranch {
+    ElseNone
+    // Statement ids.
+    ElseBlock(IdRange)
+    // The id of a `StmtIf`.
+    ElseIf(i64)
+}
+
+enum Stmt {
+    // Declared with `var`, name, type or `NO_NODE`, value.
+    StmtLet(bool, Span, i64, i64)
+    // Target, value.
+    StmtAssign(i64, i64)
+    StmtExpr(i64)
+    // Value or `NO_NODE`.
+    StmtReturn(i64)
+    // Condition, then block (statement ids), else branch.
+    StmtIf(i64, IdRange, ElseBranch)
+    // Condition, body.
+    StmtWhile(i64, IdRange)
+    // Has an index variable, its name (meaningless without one), item
+    // name, the list expression, body.
+    StmtFor(bool, Span, Span, i64, IdRange)
+    // Value matched on, arms (ids into `Ast.arms`).
+    StmtMatch(i64, IdRange)
+    StmtBreak
+    StmtContinue
+}
+
+struct Arm {
+    pattern: i64
+    // Statement ids.
+    body: IdRange
+}
+
+enum Pattern {
+    PatWildcard
+    // A binding or a variant without fields; name resolution decides.
+    PatName(Span)
+    // Variant name, sub-patterns (pattern ids).
+    PatVariant(Span, IdRange)
+    // Written with a `-` in front, the digits.
+    PatInt(bool, Span)
+    PatStr(Span)
+    PatBool(bool)
+}
+
+struct TypeNode {
+    name: Span
+    // Type ids.
+    args: IdRange
+}
+
+struct Param {
+    name: Span
+    mutable: bool
+    ty: i64
+}
+
+struct FieldDecl {
+    name: Span
+    ty: i64
+}
+
+struct VariantDecl {
+    name: Span
+    // Type ids.
+    fields: IdRange
+}
+
+struct FieldInit {
+    name: Span
+    value: i64
+}
+
+// The nodes one function is made of: where they start in each list and
+// how many there are. The parser creates a function's nodes one after
+// another, so each is a single run.
+struct Nodes {
+    exprs_start: i64
+    exprs_len: i64
+    stmts_start: i64
+    stmts_len: i64
+    patterns_start: i64
+    patterns_len: i64
+    field_inits_start: i64
+    field_inits_len: i64
+}
+
+enum Item {
+    // Name, type parameters (ids into `Ast.names`), parameters (ids into
+    // `Ast.params`), return type or `NO_NODE`, body (statement ids), nodes.
+    ItemFn(Span, IdRange, IdRange, i64, IdRange, Nodes)
+    // Name, type parameters, fields (ids into `Ast.fields`).
+    ItemStruct(Span, IdRange, IdRange)
+    // Name, type parameters, variants (ids into `Ast.variants`).
+    ItemEnum(Span, IdRange, IdRange)
+    // `const NAME = value` or `const NAME: Type = value`: name, type or
+    // `NO_NODE`, value.
+    ItemConst(Span, i64, i64)
+}
+
+struct Ast {
+    items: List[Item]
+    exprs: List[Expr]
+    // Source offset where each expression starts, parallel to `exprs`.
+    expr_pos: List[i64]
+    stmts: List[Stmt]
+    // Source offset where each statement starts, parallel to `stmts`.
+    stmt_pos: List[i64]
+    types: List[TypeNode]
+    patterns: List[Pattern]
+    // Source offset where each pattern starts, parallel to `patterns`.
+    pat_pos: List[i64]
+    params: List[Param]
+    fields: List[FieldDecl]
+    variants: List[VariantDecl]
+    arms: List[Arm]
+    field_inits: List[FieldInit]
+    names: List[Span]
+    lists: List[i64]
+}
+
+fn new_ast() -> Ast {
+    return Ast {
+        items: [],
+        exprs: [],
+        expr_pos: [],
+        stmts: [],
+        stmt_pos: [],
+        types: [],
+        patterns: [],
+        pat_pos: [],
+        params: [],
+        fields: [],
+        variants: [],
+        arms: [],
+        field_inits: [],
+        names: [],
+        lists: [],
+    }
+}
+
+fn ast_node_count(ast: Ast) -> i64 {
+    return ast.items.len() + ast.exprs.len() + ast.stmts.len() + ast.types.len() + ast.patterns.len() +
+        ast.params.len() + ast.fields.len() + ast.variants.len() + ast.arms.len() + ast.field_inits.len()
+}
+
+// The text a span covers, as a new string. For printing; to compare
+// names use `span_is` and `spans_equal`, which copy nothing.
+fn span_text(src: str, span: Span) -> str {
+    return src.slice(span.start, span.start + span.len)
+}
+
+// True when the span's text is exactly `text`.
+fn span_is(src: str, span: Span, text: str) -> bool {
+    if span.len != text.len() {
+        return false
+    }
+    var i = 0
+    while i < span.len {
+        if src[span.start + i] != text[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// True when two spans of the same source cover the same text.
+fn spans_equal(src: str, a: Span, b: Span) -> bool {
+    if a.len != b.len {
+        return false
+    }
+    if a.start == b.start {
+        return true
+    }
+    var i = 0
+    while i < a.len {
+        if src[a.start + i] != src[b.start + i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}

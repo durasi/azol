@@ -1,0 +1,20 @@
+// expect-exit: 1
+// expect-output: 30 2
+// expect-stderr: azol: index out of range
+
+// A call may shorten the list between two uses of the same element.
+fn shrink(xs: mut List[i64]) -> i64 {
+    xs.pop()
+    return xs.len()
+}
+
+fn main() {
+    var xs = [10, 20, 30]
+    var i = 2
+    var total = 0
+    total = total + xs[i]
+    print(total)
+    print(shrink(mut xs))
+    total = total + xs[i]
+    print(total)
+}

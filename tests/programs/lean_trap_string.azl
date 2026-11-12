@@ -1,0 +1,14 @@
+// expect-exit: 1
+// expect-output: 108 108
+// expect-stderr: azol: index out of range
+
+// A string replaced by a shorter one between two uses of an index.
+fn main() {
+    var word = "hello"
+    var w = 3
+    print(word[w])
+    word = word + "!"
+    print(word[w])
+    word = "hi"
+    print(word[w])
+}

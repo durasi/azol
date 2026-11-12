@@ -1,0 +1,37 @@
+// Run-time benchmark: the same computation as bench/words.rs.
+// Text work: build a text, split it, look at the words, join them again.
+
+fn main() {
+    let names = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"]
+    var text = ""
+    var seed = 11
+    var n = 0
+    while n < 400000 {
+        seed = seed * 48271 % 2147483647
+        if n > 0 {
+            text = text + " "
+        }
+        text = text + names[seed % 8]
+        n = n + 1
+    }
+    let words = text.split(" ")
+    var long = 0
+    var with_t = 0
+    for word in words {
+        if word.len() > 4 {
+            long = long + 1
+        }
+        if word.contains("t") {
+            with_t = with_t + 1
+        }
+    }
+    let joined = words.join(",")
+    let parts = joined.split(",")
+    var starts = 0
+    for part in parts {
+        if part.starts_with("e") {
+            starts = starts + 1
+        }
+    }
+    print(words.len() + long * 3 + with_t * 5 + starts * 7 + joined.len())
+}

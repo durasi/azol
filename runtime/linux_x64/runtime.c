@@ -117,149 +117,18 @@ static NORETURN void panic(const char *message) {
 }
 
 // ---- memory ---------------------------------------------------------------
-//
-// Every block has a 16-byte header in front of it. Blocks up to 64 KB
-// come in sizes that are powers of two, are cut from 1 MB chunks taken
-// from the system, and go on a list for their size when freed, to be
-// handed out again. Larger blocks are mapped and unmapped one by one.
 
-#define HEADER 16
-#define SMALLEST_SHIFT 5            // 32 bytes, header included
-#define LARGEST_SHIFT 16            // 64 KB, header included
-#define CLASSES (LARGEST_SHIFT - SMALLEST_SHIFT + 1)
-#define CHUNK (1 << 20)
-#define LARGE 0xFFFF                // class number of a block mapped on its own
-#define PAGE 4096
-
-typedef struct Block {
-    // For a small block the class; for a large one `LARGE`.
-    u64 class;
-    // For a large block the size of its mapping, header included.
-    u64 mapped;
-} Block;
-
-typedef struct Free {
-    struct Free *next;
-} Free;
+#include "../linux_common/memory.h"
 
 // The only writable memory the runtime has. It starts out as zeros.
 static struct {
-    Free *free[CLASSES];
-    u8 *chunk;
-    u64 chunk_left;
+    Memory memory;
     i64 argc;
     char **argv;
 } state;
 
-static NORETURN void out_of_memory(void) {
-    panic("azol: out of memory\n");
-}
-
-static u8 *map(u64 bytes) {
-    // PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS
-    i64 result = syscall6(SYS_mmap, 0, (i64)bytes, 3, 0x22, -1, 0);
-    if (failed(result)) {
-        out_of_memory();
-    }
-    return (u8 *)result;
-}
-
-static u64 class_of(u64 total) {
-    u64 class = 0;
-    while (((u64)1 << (class + SMALLEST_SHIFT)) < total) {
-        class++;
-    }
-    return class;
-}
-
-// How many bytes the caller may use in `block`.
-static u64 room(const u8 *block) {
-    const Block *header = (const Block *)(block - HEADER);
-    if (header->class == LARGE) {
-        return header->mapped - HEADER;
-    }
-    return ((u64)1 << (header->class + SMALLEST_SHIFT)) - HEADER;
-}
-
-static u8 *allocate(i64 bytes) {
-    if (bytes <= 0) {
-        bytes = 1;
-    }
-    if ((u64)bytes > ((u64)1 << 62)) {
-        out_of_memory();
-    }
-    u64 total = (u64)bytes + HEADER;
-    if (total > ((u64)1 << LARGEST_SHIFT)) {
-        u64 mapped = (total + PAGE - 1) & ~(u64)(PAGE - 1);
-        Block *header = (Block *)map(mapped);
-        header->class = LARGE;
-        header->mapped = mapped;
-        return (u8 *)header + HEADER;
-    }
-    u64 class = class_of(total);
-    Block *header;
-    if (state.free[class]) {
-        Free *first = state.free[class];
-        state.free[class] = first->next;
-        header = (Block *)((u8 *)first - HEADER);
-    } else {
-        u64 size = (u64)1 << (class + SMALLEST_SHIFT);
-        if (state.chunk_left < size) {
-            // What is left of the old chunk is smaller than this block
-            // and stays unused; chunks are never given back.
-            state.chunk = map(CHUNK);
-            state.chunk_left = CHUNK;
-        }
-        header = (Block *)state.chunk;
-        state.chunk += size;
-        state.chunk_left -= size;
-    }
-    header->class = class;
-    header->mapped = 0;
-    return (u8 *)header + HEADER;
-}
-
-static void release(u8 *block) {
-    if (!block) {
-        return;
-    }
-    Block *header = (Block *)(block - HEADER);
-    if (header->class == LARGE) {
-        syscall3(SYS_munmap, (i64)header, (i64)header->mapped, 0);
-        return;
-    }
-    Free *freed = (Free *)block;
-    freed->next = state.free[header->class];
-    state.free[header->class] = freed;
-}
-
-// Returns a block of at least `bytes` bytes that starts with what `block`
-// held. `block` may be null. The old block is no longer valid afterwards.
-static u8 *resize(u8 *block, i64 bytes) {
-    if (!block) {
-        return allocate(bytes);
-    }
-    u64 old = room(block);
-    if ((u64)bytes <= old) {
-        return block;
-    }
-    Block *header = (Block *)(block - HEADER);
-    if (header->class == LARGE) {
-        // A mapping can grow without its contents being copied.
-        u64 mapped = ((u64)bytes + HEADER + PAGE - 1) & ~(u64)(PAGE - 1);
-        // MREMAP_MAYMOVE
-        i64 result = syscall6(SYS_mremap, (i64)header, (i64)header->mapped, (i64)mapped, 1, 0, 0);
-        if (failed(result)) {
-            out_of_memory();
-        }
-        header = (Block *)result;
-        header->mapped = mapped;
-        return (u8 *)header + HEADER;
-    }
-    u8 *bigger = allocate(bytes);
-    copy(bigger, block, (i64)old);
-    release(block);
-    return bigger;
+static inline Memory *memory(void) {
+    return &state.memory;
 }
 
 EXPORT void *rt_alloc(i64 bytes) {
@@ -517,38 +386,12 @@ EXPORT void rt_args(Buf *out) {
     set(out, (u8 *)items, count, count);
 }
 
-// What the system's C library says for each error number, for the ones
-// that reading and writing files run into.
+#include "../linux_common/errors.h"
+
+// Describes an error number as a string.
 static void describe(i64 error, Buf *out) {
-    const char *text;
-    switch (error) {
-    case 1: text = "Operation not permitted"; break;
-    case 2: text = "No such file or directory"; break;
-    case 4: text = "Interrupted system call"; break;
-    case 5: text = "Input/output error"; break;
-    case 6: text = "No such device or address"; break;
-    case 9: text = "Bad file descriptor"; break;
-    case 11: text = "Resource temporarily unavailable"; break;
-    case 12: text = "Cannot allocate memory"; break;
-    case 13: text = "Permission denied"; break;
-    case 14: text = "Bad address"; break;
-    case 16: text = "Device or resource busy"; break;
-    case 17: text = "File exists"; break;
-    case 19: text = "No such device"; break;
-    case 20: text = "Not a directory"; break;
-    case 21: text = "Is a directory"; break;
-    case 22: text = "Invalid argument"; break;
-    case 23: text = "Too many open files in system"; break;
-    case 24: text = "Too many open files"; break;
-    case 26: text = "Text file busy"; break;
-    case 27: text = "File too large"; break;
-    case 28: text = "No space left on device"; break;
-    case 30: text = "Read-only file system"; break;
-    case 32: text = "Broken pipe"; break;
-    case 36: text = "File name too long"; break;
-    case 40: text = "Too many levels of symbolic links"; break;
-    case 122: text = "Disk quota exceeded"; break;
-    default: {
+    const char *text = error_text(error);
+    if (!text) {
         // "Unknown error " and the number, as a string of its own.
         const char *prefix = "Unknown error ";
         i64 prefix_len = text_len(prefix);
@@ -561,7 +404,6 @@ static void describe(i64 error, Buf *out) {
         copy(fresh + prefix_len, start, end - start);
         set(out, fresh, len, len);
         return;
-    }
     }
     fixed(out, text);
 }

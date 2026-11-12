@@ -1,0 +1,21 @@
+// expect-exit: 1
+// expect-output: 10 40
+// expect-stderr: azol: index out of range
+
+// A check made in one round of a loop does not count in the next.
+fn main() {
+    let xs = [10, 20, 30]
+    var i = 0
+    var total = 0
+    while xs[i] > 0 {
+        total = total + xs[i]
+        print(total)
+        if i == 2 {
+            i = i + 5
+        } else {
+            i = i + 2
+        }
+        total = total + 0
+    }
+    print(total)
+}

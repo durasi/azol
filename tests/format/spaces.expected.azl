@@ -1,0 +1,28 @@
+const LIMIT: i64 = 10
+const MASK: i64 = 0xFF_FF
+
+fn add[T](a: T, b: T) -> T {
+    return a + b
+}
+
+fn main() {
+    let xs: List[i64] = [1, 2, 3]
+    var total = add(1, 2) * 3 - LIMIT / 2 % 7
+    total = total << 2 >> 1 & MASK | 1 ^ 3
+    let ok = total >= 1 && total <= 9 || total == 3 && total != 4 || !(total < 0)
+    let neg = -total + -1
+    let twice = - -total
+    let first = xs[0] + xs[xs.len() - 1]
+    let nested = [[1, 2], []]
+    let p = Point { x: 1, y: -2 }
+    let empty = Nothing {}
+    update(mut total, p.x)
+    for i, item in xs {
+        print(i, item)
+    }
+    if (first > 0) {
+        print("a,b:c", 'x', ' ')
+    }
+    let wide = (1 + 2) * (3 - 4)
+    return
+}

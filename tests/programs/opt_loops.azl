@@ -1,0 +1,205 @@
+// expect-exit: 0
+// expect-line: 5
+// expect-line: 42
+// expect-line: 205
+// expect-line: 108
+// expect-line: 0
+// expect-line: 0
+// expect-line: 21
+// expect-line: 30
+// expect-line: -1
+// expect-line: 0
+// expect-line: 405
+// expect-line: 610
+// expect-line: 0
+// expect-line: 2
+// expect-line: red
+// expect-line: blue
+// expect-line: green
+// expect-line: blue
+// expect-line: 3
+// expect-line: 398
+// expect-line: one
+// expect-line: three
+// expect-line: 79980
+// expect-line: 117
+// expect-line: false
+// expect-line: 98
+
+// Loops tested at the bottom: none, one and many rounds, and leaving
+// from inside nested `match` and `for`.
+
+enum Step {
+    Go(i64)
+    Skip
+    Stop
+    Leave(i64)
+}
+
+enum Color {
+    Red
+    Green
+    Blue
+}
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+fn range(n: i64) -> List[i64] {
+    var out: List[i64] = []
+    var i = 0
+    while i < n {
+        out.push(i)
+        i = i + 1
+    }
+    return out
+}
+
+fn walk(steps: List[Step]) -> i64 {
+    var total = 0
+    for i, step in steps {
+        match step {
+            Go(n) => {
+                for inner in range(n) {
+                    if inner == 2 {
+                        continue
+                    }
+                    if inner == 4 {
+                        break
+                    }
+                    total = total + inner
+                }
+            }
+            Skip => continue
+            Stop => break
+            Leave(code) => return code + total + i
+        }
+        total = total + 100
+    }
+    return total
+}
+
+fn find(rows: List[List[i64]], wanted: i64) -> i64 {
+    for r, row in rows {
+        for c, value in row {
+            match value == wanted {
+                true => return r * 10 + c
+                false => {}
+            }
+        }
+    }
+    return -1
+}
+
+fn count_while(limit: i64) -> i64 {
+    var i = 0
+    var seen = 0
+    while i < limit {
+        i = i + 1
+        match i % 3 {
+            0 => continue
+            1 => {
+                if i > 7 {
+                    break
+                }
+            }
+            _ => {}
+        }
+        seen = seen + 1
+    }
+    return seen * 100 + i
+}
+
+fn name(color: Color) -> str {
+    match color {
+        Red => return "red"
+        Green => return "green"
+        Blue => return "blue"
+    }
+}
+
+fn main() {
+    var none: List[i64] = []
+    for x in none {
+        print(x)
+    }
+    for i, x in none {
+        print(i + x)
+    }
+    for x in range(0) {
+        print(x)
+    }
+    var w = 5
+    while w < 5 {
+        print(w)
+        w = w + 1
+    }
+    while w < 6 {
+        print(w)
+        w = w + 1
+    }
+    for x in [42] {
+        print(x)
+    }
+    print(walk([Go(3), Skip, Go(9), Stop, Go(1)]))
+    print(walk([Go(1), Leave(7), Go(1)]))
+    print(walk([Skip, Skip]))
+    var no_steps: List[Step] = []
+    print(walk(no_steps))
+    let rows = [[1, 2, 3], [], [4, 5], [6]]
+    print(find(rows, 5))
+    print(find(rows, 6))
+    print(find(rows, 7))
+    print(count_while(0))
+    print(count_while(5))
+    print(count_while(50))
+    for i, flag in [true, false, true] {
+        if flag {
+            print(i)
+        }
+    }
+    for i, color in [Red, Blue, Green, Blue] {
+        print(name(color))
+        if color == Blue && i > 1 {
+            print(i)
+        }
+    }
+    var points = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }, Point { x: 5, y: 6 }]
+    var sum = 0
+    for i, p in points {
+        sum = sum + p.x * p.y + i
+    }
+    for p in points {
+        sum = sum * 2 + p.y
+    }
+    print(sum)
+    for word in ["one", "two", "three"] {
+        if word == "two" {
+            continue
+        }
+        print(word)
+    }
+    // A list that grows by pushes, read and written by index.
+    var grown: List[i64] = []
+    for x in range(40) {
+        grown.push(x * 3)
+    }
+    var k = 0
+    while k < grown.len() {
+        grown[k] = grown[k] + grown[grown.len() - 1 - k]
+        k = k + 2
+    }
+    var check = 0
+    for i, x in grown {
+        check = check + x * (i + 1)
+    }
+    print(check)
+    print(grown[39])
+    var flags: List[bool] = []
+    flags.push(true)
+    flags.push(false)
+    print(flags[1])
+    print("abc"[1])
+}

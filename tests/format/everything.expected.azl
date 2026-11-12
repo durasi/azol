@@ -1,0 +1,46 @@
+// expect-exit: 0
+enum Kind { Num(i64), Op(Text), End } // tokens
+struct Lexer {
+    src: Text,
+    pos: i64
+}
+
+fn next(lx: mut Lexer) -> Kind {
+    if lx.pos >= lx.src.len() {
+        return End
+    }
+
+    let c = lx.src[lx.pos] // current
+    lx.pos = lx.pos + 1
+    match c {
+        '+' => return Op("+"),
+        '-' => {
+            return Op("-")
+        }
+        // digits
+        _ => {
+            var n = c - '0'
+            while lx.pos < lx.src.len() && lx.src[lx.pos] >= '0' &&
+                lx.src[lx.pos] <= '9' {
+                n = n * 10 + (lx.src[lx.pos] - '0')
+                lx.pos = lx.pos + 1
+            }
+            return Num(n)
+        }
+    }
+}
+fn main() {
+    var lx = Lexer { src: "12+3", pos: 0 }
+    var sum = 0
+    while true {
+        match next(mut lx) {
+            Num(n) => sum = sum + n,
+            Op(_) => {},
+            End => break
+        }
+    }
+
+    print(sum, -sum, !true, [sum,
+        -sum], lx
+            .pos)
+}

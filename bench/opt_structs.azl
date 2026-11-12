@@ -1,0 +1,41 @@
+// Measuring program: structs updated in loops and passed to functions.
+
+struct Body {
+    x: i64
+    y: i64
+    vx: i64
+    vy: i64
+}
+
+fn step(body: mut Body) {
+    body.x = body.x + body.vx
+    body.y = body.y + body.vy
+    if body.x < 0 || body.x > 1000 {
+        body.vx = 0 - body.vx
+    }
+    if body.y < 0 || body.y > 1000 {
+        body.vy = 0 - body.vy
+    }
+}
+
+fn energy(body: Body) -> i64 {
+    return body.vx * body.vx + body.vy * body.vy
+}
+
+fn main() {
+    var bodies = [Body { x: 1, y: 2, vx: 3, vy: 4 }, Body { x: 500, y: 20, vx: -7, vy: 9 }, Body { x: 900, y: 900, vx: 11, vy: -5 }]
+    var total = 0
+    var round = 0
+    while round < 8000 {
+        var i = 0
+        while i < bodies.len() {
+            step(mut bodies[i])
+            i = i + 1
+        }
+        for body in bodies {
+            total = total + energy(body) % 3
+        }
+        round = round + 1
+    }
+    print(total + bodies[0].x + bodies[2].y)
+}

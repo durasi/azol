@@ -84,25 +84,13 @@ fn signature_size(code_limit: u64, ident: &str) -> usize {
 }
 
 /// Writes the SHA-256 of every `page_size` chunk of `data` into `out`,
-/// 32 bytes each. Pages are independent, so a large file is hashed on
-/// several threads.
+/// 32 bytes each. With the processor's own SHA-256 instructions this is
+/// quick enough to do on one thread: starting more would cost more
+/// processor time than it saves.
 fn hash_pages(data: &[u8], page_size: usize, out: &mut [u8]) {
-    let pages = data.len().div_ceil(page_size);
-    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(8).min(pages / 64).max(1);
-    let per_thread = pages.div_ceil(threads).max(1);
-    let hash = |data: &[u8], out: &mut [u8]| {
-        for (page, slot) in data.chunks(page_size).zip(out.chunks_mut(32)) {
-            slot.copy_from_slice(&sha256(page));
-        }
-    };
-    if threads == 1 {
-        return hash(data, out);
+    for (page, slot) in data.chunks(page_size).zip(out.chunks_mut(32)) {
+        slot.copy_from_slice(&sha256(page));
     }
-    std::thread::scope(|scope| {
-        for (data, out) in data.chunks(per_thread * page_size).zip(out.chunks_mut(per_thread * 32)) {
-            scope.spawn(move || hash(data, out));
-        }
-    });
 }
 
 /// Builds the embedded signature: a SuperBlob holding one CodeDirectory
@@ -310,28 +298,34 @@ pub fn build_executable(code: &Code, imports: &[&str], ident: &str) -> Vec<u8> {
 
     debug_assert_eq!(b.0.len() as u32, 32 + SIZEOFCMDS);
 
-    // Code, with the instructions that depend on final addresses filled in.
-    b.0.resize(code_off as usize, 0);
-    let mut words = code.words.clone();
+    // Code: the words go in as they are, in one pass over the buffer,
+    // and then the few instructions that depend on final addresses are
+    // filled in where they landed. No second copy of the code is made.
+    b.0.resize((code_off + code_size) as usize, 0);
+    let code_bytes = &mut b.0[code_off as usize..];
+    for (bytes, word) in code_bytes.chunks_exact_mut(4).zip(&code.words) {
+        bytes.copy_from_slice(&word.to_le_bytes());
+    }
+    let mut put = |at: u32, word: u32| {
+        let start = at as usize * 4;
+        code_bytes[start..start + 4].copy_from_slice(&word.to_le_bytes());
+    };
     for reloc in &code.relocs {
         match *reloc {
             Reloc::Import { at, import } => {
                 let pc = TEXT_VMADDR + code_off + at as u64 * 4;
                 let target = got_addr + import as u64 * 8;
-                words[at as usize] = adrp(16, pc, target);
-                words[at as usize + 1] = 0xF940_0210 | (((target & 0xFFF) / 8) as u32) << 10; // ldr x16, [x16, #lo12]
-                words[at as usize + 2] = 0xD63F_0200; // blr x16
+                put(at, adrp(16, pc, target));
+                put(at + 1, 0xF940_0210 | (((target & 0xFFF) / 8) as u32) << 10); // ldr x16, [x16, #lo12]
+                put(at + 2, 0xD63F_0200); // blr x16
             }
             Reloc::Data { at, offset, reg } => {
                 let pc = TEXT_VMADDR + code_off + at as u64 * 4;
                 let target = TEXT_VMADDR + const_off + offset as u64;
-                words[at as usize] = adrp(reg, pc, target);
-                words[at as usize + 1] = 0x9100_0000 | ((target & 0xFFF) as u32) << 10 | reg << 5 | reg; // add reg, reg, #lo12
+                put(at, adrp(reg, pc, target));
+                put(at + 1, 0x9100_0000 | ((target & 0xFFF) as u32) << 10 | reg << 5 | reg); // add reg, reg, #lo12
             }
         }
-    }
-    for word in &words {
-        b.u32(*word);
     }
     b.0.extend_from_slice(&code.data);
 
@@ -421,13 +415,16 @@ mod tests {
     }
 
     #[test]
-    fn large_files_hash_the_same_on_many_threads() {
-        // 1000 pages and a partial one: enough to use every thread.
+    fn every_page_gets_its_own_hash() {
+        // 1000 pages and a partial one.
         let data: Vec<u8> = (0..4096 * 1000 + 123).map(|i| (i * 31 % 251) as u8).collect();
-        let mut threaded = vec![0u8; 1001 * 32];
-        hash_pages(&data, 4096, &mut threaded);
-        let serial: Vec<u8> = data.chunks(4096).flat_map(|page| sha256(page)).collect();
-        assert_eq!(threaded, serial);
+        let mut hashes = vec![0u8; 1001 * 32];
+        hash_pages(&data, 4096, &mut hashes);
+        for (number, page) in data.chunks(4096).enumerate() {
+            assert_eq!(&hashes[number * 32..number * 32 + 32], &sha256(page), "page {number}");
+        }
+        // The last, short page is hashed as it is, not padded.
+        assert_eq!(&hashes[1000 * 32..], &sha256(&data[4096 * 1000..]));
     }
 
     #[test]

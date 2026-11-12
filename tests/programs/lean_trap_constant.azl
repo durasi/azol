@@ -1,0 +1,12 @@
+// expect-exit: 1
+// expect-output: 2 3 5
+// expect-stderr: azol: index out of range
+
+// One constant index in range says nothing about a larger one.
+fn main() {
+    let xs = [1, 2, 3]
+    print(xs[1])
+    print(xs[2])
+    print(xs[1] + xs[2])
+    print(xs[1] + xs[3])
+}

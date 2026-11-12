@@ -1,0 +1,13 @@
+// expect-exit: 1
+// expect-output: 30 20 10
+// expect-stderr: azol: index out of range
+
+// A variable that counts down below zero, used as an index each time.
+fn main() {
+    let xs = [10, 20, 30]
+    var i = 2
+    while i >= 0 - 1 {
+        print(xs[i])
+        i = i - 1
+    }
+}

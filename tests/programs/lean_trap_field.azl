@@ -1,0 +1,21 @@
+// expect-exit: 1
+// expect-output: 3 7
+// expect-stderr: azol: index out of range
+
+// The address of an element is not that of the next one: after the
+// index changes the check is made again.
+struct Pair {
+    left: i64
+    right: i64
+}
+
+fn main() {
+    var ps = [Pair { left: 1, right: 2 }, Pair { left: 3, right: 4 }]
+    var i = 0
+    print(ps[i].left + ps[i].right)
+    i = i + 1
+    print(ps[i].left + ps[i].right)
+    i = i + 1
+    ps[i].left = 5
+    print(ps[0].left)
+}

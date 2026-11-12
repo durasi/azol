@@ -1,0 +1,12 @@
+// Measuring program: multiplying, dividing and taking remainders by constants.
+
+fn main() {
+    var total = 0
+    var i = 0 - 40000
+    while i < 40000 {
+        total = total + i / 2 + i % 2 + i / 8 + i % 16 + i * 4 + i * 16
+        total = total + i / 3 + i % 10 + i / 1024 + i % 1024
+        i = i + 1
+    }
+    print(total)
+}

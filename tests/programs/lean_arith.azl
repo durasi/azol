@@ -1,0 +1,162 @@
+// expect-exit: 0
+// expect-output: 287 107 -93 21 93 -7 18 12 -9223372036854775808 -9223372036854775808 9223372036854775807 1428977 -1428977 -2 -6 86633921 37218113 87654321 32 340 -1305 -2542 -633 -598 32 12429 3 3 2303 14 76 -54 7 9 -61 -98 -42 37 610 1
+// Arithmetic as the x86-64 generator shapes it: more busy variables
+// than registers, results computed straight into a register, operands
+// read from memory, operands that wait while a call runs, and
+// expressions nested deeper than there are registers to wait in.
+
+struct Vec3 {
+    x: i64
+    y: i64
+    z: i64
+}
+
+fn id(n: i64) -> i64 {
+    return n
+}
+
+fn pick(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64) -> i64 {
+    return a + b * 10 + c * 100 + d * 1000 + e * 10000 + f * 100000 + g * 1000000 + h * 10000000
+}
+
+fn fib(n: i64) -> i64 {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn busy(xs: mut List[i64], seed: i64) -> i64 {
+    // Seven variables in use in the loop, and the list besides.
+    var a = seed
+    var b = seed + 1
+    var c = seed * 2
+    var d = 3
+    var e = 0
+    var f = 1
+    var i = 0
+    while i < xs.len() {
+        a = a + xs[i]
+        b = b * 3 - a
+        c = c + b % 7
+        d = d + c / 5
+        e = e + d - f
+        f = f + e % 3
+        xs[i] = a + b + c + d + e + f
+        i = i + 1
+    }
+    return a + b + c + d + e + f + i
+}
+
+fn scale(v: mut Vec3, by: i64) -> i64 {
+    var i = 0
+    var sum = 0
+    while i < 3 {
+        v.x = v.x * by + i
+        v.y = v.y - v.x
+        v.z = v.z + v.x * v.y
+        sum = sum + v.x + v.y + v.z
+        i = i + 1
+    }
+    return sum
+}
+
+fn rem_all(n: i64) -> i64 {
+    var x = n
+    var total = 0
+    total = total + x % 7
+    total = total * 10 + x / 7
+    x = x % 1000
+    total = total * 10 + x
+    x = x / 3
+    total = total + x
+    let y = x % 10
+    let z = x / 10
+    return total + y * 3 + z
+}
+
+fn main() {
+    // Small factors and sums into another variable.
+    var n = 7
+    let n2 = n * 2
+    let n3 = n * 3
+    let n4 = n * 4
+    let n5 = n * 5
+    let n8 = n * 8
+    let n9 = n * 9
+    let n10 = n * 10
+    print(n2 + n3 + n4 + n5 + n8 + n9 + n10)
+    let up = n + 100
+    let down = n - 100
+    let both = n + n2
+    let back = 100 - n
+    let zero = 0 - n
+    let twice = 2 * n
+    let masked = 12 & n
+    print(up)
+    print(down)
+    print(both)
+    print(back)
+    print(zero)
+    print(twice + masked)
+    n = 10 - n
+    n = n * 3 + n
+    print(n)
+    let least = (0 - 9223372036854775807) - 1
+    print(0 - least)
+    print(least * 3)
+    print(least - 1)
+
+    // Division by constants with the dividend in a register.
+    print(rem_all(1000003))
+    print(rem_all(0 - 1000003))
+    var m = 0 - 17
+    m = m % 5
+    print(m)
+    m = (m - 40) / 7
+    print(m)
+    print(pick(1, 2, 0 - 9 % 4, 9 / 2, 3, 3 << 1, 100 >> 4, m * 0 + 8))
+    var sh = 3
+    print(pick(sh, 1, 1, 1 << sh, 1, 256 >> sh, sh << sh, sh / 2))
+    print(pick(id(1), id(2), id(3), id(4), id(5), id(6), id(7), id(4) + id(4)))
+
+    // Operands in memory, in elements and behind an address.
+    var v = Vec3 { x: 2, y: 30, z: 400 }
+    print(v.x + v.y)
+    print(v.z - v.x * v.y)
+    print(scale(mut v, 3))
+    print(v.x + v.y + v.z)
+    var xs = [4, 8, 15, 16, 23, 42]
+    print(busy(mut xs, 5))
+    print(xs[0] + xs[5])
+    var i = 2
+    let e1 = xs[i] - xs[i + 1]
+    let e2 = xs[i] * xs[i] - xs[i - 1] * xs[i + 2]
+    i = xs[i] % 6
+    print(e1)
+    print(e2)
+    print(i)
+    i = i - i + xs[i] % 4
+    print(i)
+
+    // Deeper than the registers that hold waiting operands.
+    var p = Vec3 { x: 1, y: 2, z: 3 }
+    var q = Vec3 { x: 4, y: 5, z: 6 }
+    print(p.x + (p.y * (p.z + (q.x * (q.y + (q.z * (p.x + (p.y * (p.z + q.x * q.y)))))))))
+    print(p.x - (p.y - (p.z - (q.x - (q.y - (q.z - (p.x - (p.y - p.z * q.z))))))))
+    print((p.x + p.y) * (p.z + q.x) - (q.y + q.z) * (p.x - q.z))
+    q.z = (p.x + p.y * 2) * (q.x - (p.z + q.y) * 2) + q.z
+    print(q.z)
+
+    // Operands that wait while calls run.
+    print(id(10) - id(3))
+    print(id(2) * (id(3) + id(4)) - id(5))
+    print(id(1) + (id(2) * (id(3) - (id(4) + id(5) * id(6)))))
+    print(id(7) - (xs[1] + id(1)) - xs[0])
+    print(id(id(3) + id(4)) * (id(2) - id(8)))
+    print(id(9) / id(2) + id(9) % id(4) + (id(1) << id(5)))
+    print(fib(15))
+    if id(3) + id(4) > id(2) * id(3) {
+        print(1)
+    }
+}

@@ -1,0 +1,301 @@
+// expect-exit: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: true
+// expect-line: false
+// expect-line: false
+// expect-line: true
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: 1
+// expect-line: 1
+// expect-line: 1
+// expect-line: 1
+// expect-line: 4
+// expect-line: false
+// expect-line: true
+// expect-line: true
+// expect-line: false
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: -1
+// expect-line: -1
+// expect-line: -1
+// expect-line: -1
+// expect-line: -4
+// expect-line: false
+// expect-line: true
+// expect-line: false
+// expect-line: false
+// expect-line: 3
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: 1
+// expect-line: 7
+// expect-line: 7
+// expect-line: 7
+// expect-line: 28
+// expect-line: false
+// expect-line: true
+// expect-line: true
+// expect-line: false
+// expect-line: -3
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: -1
+// expect-line: -7
+// expect-line: -7
+// expect-line: -7
+// expect-line: -28
+// expect-line: false
+// expect-line: true
+// expect-line: false
+// expect-line: false
+// expect-line: 4
+// expect-line: 1
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: 8
+// expect-line: 8
+// expect-line: 32
+// expect-line: true
+// expect-line: false
+// expect-line: false
+// expect-line: false
+// expect-line: -4
+// expect-line: -1
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: -8
+// expect-line: -8
+// expect-line: -32
+// expect-line: true
+// expect-line: false
+// expect-line: false
+// expect-line: false
+// expect-line: 4
+// expect-line: 1
+// expect-line: 0
+// expect-line: 0
+// expect-line: 1
+// expect-line: 1
+// expect-line: 9
+// expect-line: 9
+// expect-line: 36
+// expect-line: false
+// expect-line: true
+// expect-line: true
+// expect-line: true
+// expect-line: -4
+// expect-line: -1
+// expect-line: 0
+// expect-line: 0
+// expect-line: -1
+// expect-line: -1
+// expect-line: -9
+// expect-line: -9
+// expect-line: -36
+// expect-line: false
+// expect-line: true
+// expect-line: false
+// expect-line: true
+// expect-line: 511
+// expect-line: 127
+// expect-line: 0
+// expect-line: 0
+// expect-line: 1
+// expect-line: 7
+// expect-line: 1023
+// expect-line: 1023
+// expect-line: 4092
+// expect-line: false
+// expect-line: true
+// expect-line: true
+// expect-line: true
+// expect-line: -511
+// expect-line: -127
+// expect-line: 0
+// expect-line: 0
+// expect-line: -1
+// expect-line: -7
+// expect-line: -1023
+// expect-line: -1023
+// expect-line: -4092
+// expect-line: false
+// expect-line: true
+// expect-line: false
+// expect-line: true
+// expect-line: 512
+// expect-line: 128
+// expect-line: 1
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: 1024
+// expect-line: 4096
+// expect-line: true
+// expect-line: false
+// expect-line: false
+// expect-line: false
+// expect-line: -512
+// expect-line: -128
+// expect-line: -1
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: -1024
+// expect-line: -4096
+// expect-line: true
+// expect-line: false
+// expect-line: false
+// expect-line: false
+// expect-line: 512
+// expect-line: 128
+// expect-line: 1
+// expect-line: 0
+// expect-line: 1
+// expect-line: 1
+// expect-line: 1
+// expect-line: 1025
+// expect-line: 4100
+// expect-line: false
+// expect-line: true
+// expect-line: true
+// expect-line: false
+// expect-line: -512
+// expect-line: -128
+// expect-line: -1
+// expect-line: 0
+// expect-line: -1
+// expect-line: -1
+// expect-line: -1
+// expect-line: -1025
+// expect-line: -4100
+// expect-line: false
+// expect-line: true
+// expect-line: false
+// expect-line: false
+// expect-line: 4611686018427387903
+// expect-line: 1152921504606846975
+// expect-line: 9007199254740991
+// expect-line: 1
+// expect-line: 1
+// expect-line: 7
+// expect-line: 1023
+// expect-line: 4611686018427387903
+// expect-line: -4
+// expect-line: false
+// expect-line: true
+// expect-line: true
+// expect-line: false
+// expect-line: -4611686018427387903
+// expect-line: -1152921504606846975
+// expect-line: -9007199254740991
+// expect-line: -1
+// expect-line: -1
+// expect-line: -7
+// expect-line: -1023
+// expect-line: -4611686018427387903
+// expect-line: 4
+// expect-line: false
+// expect-line: true
+// expect-line: false
+// expect-line: false
+// expect-line: -4611686018427387904
+// expect-line: -1152921504606846976
+// expect-line: -9007199254740992
+// expect-line: -2
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: 0
+// expect-line: true
+// expect-line: false
+// expect-line: false
+// expect-line: false
+// expect-line: 2
+// expect-line: 21
+// expect-line: -2
+// expect-line: -1
+// expect-line: -2
+// expect-line: -1
+// expect-line: -1
+// expect-line: 0
+
+// Multiplying, dividing and taking remainders by powers of two, where
+// shifts and masks stand in for the real operations: negative numbers
+// round toward zero and a remainder keeps the sign of the left side.
+
+fn show(n: i64) {
+    print(n / 2)
+    print(n / 8)
+    print(n / 1024)
+    print(n / 4611686018427387904)
+    print(n % 2)
+    print(n % 8)
+    print(n % 1024)
+    print(n % 4611686018427387904)
+    print(n * 4)
+    print(n % 2 == 0)
+    print(n % 8 != 0)
+    print(n % 2 == 1)
+    print(n % 3 == 0)
+}
+
+fn count_even(xs: List[i64]) -> i64 {
+    var even = 0
+    for x in xs {
+        if x % 2 == 0 && x % 16 != 0 {
+            even = even + 1
+        }
+    }
+    return even
+}
+
+fn main() {
+    let lowest = -9223372036854775807 - 1
+    let numbers = [0, 1, -1, 7, -7, 8, -8, 9, -9, 1023, -1023, 1024, -1024, 1025, -1025, 9223372036854775807, -9223372036854775807, lowest]
+    for n in numbers {
+        show(n)
+    }
+    print(count_even(numbers))
+    var i = -20
+    var sum = 0
+    while i <= 20 {
+        var local = i
+        sum = sum + local / 4 * 100 + local % 4
+        local = local * 16
+        if local % 32 == 0 {
+            sum = sum + 1
+        }
+        i = i + 1
+    }
+    print(sum)
+    let eight = 8
+    print(-17 / eight)
+    print(-17 % eight)
+    print(-17 / 8)
+    print(-17 % 8)
+    print((0 - 16) / 16)
+    print((0 - 16) % 16)
+}

@@ -1,0 +1,149 @@
+// expect-exit: 0
+// expect-line: 17
+// expect-line: 17
+// expect-line: 0
+// expect-line: 5
+// expect-line: 7
+// expect-line: 9223372036854775807
+// expect-line: 9223372036854775807
+// expect-line: -9223372036854775808
+// expect-line: -5
+// expect-line: 3
+// expect-line: 3
+// expect-line: -17
+// expect-line: -18
+// expect-line: -9223372036854775808
+// expect-line: 8
+// expect-line: 8
+// expect-line: -17
+// expect-line: 9223372036854775807
+// expect-line: 3
+// expect-line: 5
+// expect-line: 0
+// expect-line: 10
+// expect-line: 0
+// expect-line: 10
+// expect-line: 7
+// expect-line: -18
+// expect-line: 0
+// expect-line: 1024
+// expect-line: 1
+// expect-line: 1
+// expect-line: 0
+// expect-line: 1
+// expect-line: 7
+// expect-line: 4052555153018976267
+// expect-line: 1000000000000000000
+// expect-line: -8
+// expect-line: 16
+// expect-line: -1
+// expect-line: 4611686018427387904
+// expect-line: -9223372036854775808
+// expect-line: 0
+// expect-line: -420491770248316829
+// expect-line: 1
+// expect-line: 289
+// expect-line: -2862423051509815793
+// expect-line: -6679040345461786367
+// expect-line: -1
+// expect-line: 1
+// expect-line: 0
+// expect-line: -1
+// expect-line: 1
+// expect-line: 1
+// expect-line: ffffffffffffffef
+// expect-line: 11
+// expect-line: 10000000000
+// expect-line: 38
+// expect-line: 795
+// expect-line: 8848943016114115328
+
+// Methods of `i64` from the library, on variables, on literals and on
+// larger expressions.
+
+const SMALLEST: i64 = -9223372036854775807 - 1
+const LARGEST: i64 = 9223372036854775807
+
+fn main() {
+    let n = -17
+    let zero = 0
+    print(n.abs())
+    print(17.abs())
+    print(zero.abs())
+    print((-5).abs())
+    print((3 - 10).abs())
+    print(LARGEST.abs())
+    print((-LARGEST).abs())
+    // The smallest number has no positive twin.
+    print(SMALLEST.abs())
+    // A minus in front applies to the result of the method.
+    print(-5.abs())
+
+    print(3.min(8))
+    print(8.min(3))
+    print(n.min(n))
+    print(n.min(-18))
+    print(SMALLEST.min(LARGEST))
+    print(3.max(8))
+    print(8.max(3))
+    print(n.max(-18))
+    print(SMALLEST.max(LARGEST))
+    print(1.max(2).max(3).min(10))
+
+    print(5.clamp(0, 10))
+    print(n.clamp(0, 10))
+    print(99.clamp(0, 10))
+    print(0.clamp(0, 10))
+    print(10.clamp(0, 10))
+    print(7.clamp(7, 7))
+    print(n.clamp(-20, -18))
+    print(LARGEST.clamp(SMALLEST, 0))
+
+    print(2.pow(10))
+    print(2.pow(0))
+    print(0.pow(0))
+    print(0.pow(5))
+    print(1.pow(1000000))
+    print(7.pow(1))
+    print(3.pow(39))
+    print(10.pow(18))
+    print((-2).pow(3))
+    print((-2).pow(4))
+    print((-1).pow(1001))
+    print(2.pow(62))
+    print(2.pow(63))
+    print(2.pow(64))
+    print(3.pow(41))
+    print(5.pow(-1))
+    print(n.pow(2))
+    print(n.pow(15))
+    print(n.pow(16))
+
+    print(3.compare(8))
+    print(8.compare(3))
+    print(n.compare(n))
+    print(SMALLEST.compare(LARGEST))
+    print(LARGEST.compare(SMALLEST))
+    print(zero.compare(-1))
+
+    print(n.to_hex())
+    print(n.abs().to_hex())
+    print(2.pow(40).to_hex())
+
+    // Methods inside larger expressions.
+    print(n.abs() * 2 + 3.max(4))
+    var total = 0
+    var i = -50
+    while i <= 50 {
+        total = total + i.abs().min(20) - i.clamp(-5, 30)
+        i = i + 1
+    }
+    print(total)
+    var powers = 0
+    i = 0
+    while i < 64 {
+        powers = powers ^ 3.pow(i)
+        i = i + 1
+    }
+    print(powers)
+}

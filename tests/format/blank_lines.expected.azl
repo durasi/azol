@@ -1,0 +1,26 @@
+// A file may start with blank lines; they go.
+
+const A = 1
+
+const B = 2
+fn first() {
+    let a = 1
+
+    let b = 2
+}
+
+fn second(
+    a: i64,
+
+    b: i64
+) -> i64 {
+    // The blank line above goes, the one below stays.
+
+    let xs = [
+        1,
+
+        2,
+    ]
+
+    return a + b + xs[0]
+}

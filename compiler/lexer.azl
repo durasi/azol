@@ -1,0 +1,380 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The lexer: source bytes to tokens, in one pass, without copying text.
+
+// Why a text could not be split into tokens, and at which byte.
+struct LexError {
+    message: str
+    offset: i64
+}
+
+// Positions are kept in 32 bits by the later stages.
+const MAX_SOURCE_BYTES = 0xFFFF_FFFF
+
+fn lex_failure(message: str, offset: i64) -> Option[LexError] {
+    return Some(LexError { message: message, offset: offset })
+}
+
+// A byte that can continue a name: a letter, a digit, `_`, or any byte
+// of a character outside ASCII.
+fn is_name_byte(b: i64) -> bool {
+    return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') || b == '_' || b >= 0x80
+}
+
+fn is_hex_digit(b: i64) -> bool {
+    return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
+}
+
+// True when the bytes of `src` from `start` on are those of `word`. The
+// caller has made sure that many bytes are there.
+fn word_at(src: str, start: i64, word: str) -> bool {
+    var i = 0
+    while i < word.len() {
+        if src[start + i] != word[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// The kind of the name at `start`: a keyword, or `TOK_IDENT`.
+fn keyword_kind(src: str, start: i64, len: i64) -> i64 {
+    if len < 2 || len > 8 {
+        return TOK_IDENT
+    }
+    let first = src[start]
+    match len {
+        2 => {
+            let second = src[start + 1]
+            if first == 'f' && second == 'n' {
+                return TOK_FN
+            }
+            if first == 'i' && second == 'f' {
+                return TOK_IF
+            }
+            if first == 'i' && second == 'n' {
+                return TOK_IN
+            }
+        }
+        3 => {
+            if first == 'l' && word_at(src, start, "let") {
+                return TOK_LET
+            }
+            if first == 'v' && word_at(src, start, "var") {
+                return TOK_VAR
+            }
+            if first == 'm' && word_at(src, start, "mut") {
+                return TOK_MUT
+            }
+            if first == 'f' && word_at(src, start, "for") {
+                return TOK_FOR
+            }
+        }
+        4 => {
+            if first == 'e' && word_at(src, start, "else") {
+                return TOK_ELSE
+            }
+            if first == 'e' && word_at(src, start, "enum") {
+                return TOK_ENUM
+            }
+            if first == 't' && word_at(src, start, "true") {
+                return TOK_TRUE
+            }
+        }
+        5 => {
+            if first == 'c' && word_at(src, start, "const") {
+                return TOK_CONST
+            }
+            if first == 'm' && word_at(src, start, "match") {
+                return TOK_MATCH
+            }
+            if first == 'w' && word_at(src, start, "while") {
+                return TOK_WHILE
+            }
+            if first == 'b' && word_at(src, start, "break") {
+                return TOK_BREAK
+            }
+            if first == 'f' && word_at(src, start, "false") {
+                return TOK_FALSE
+            }
+        }
+        6 => {
+            if first == 's' && word_at(src, start, "struct") {
+                return TOK_STRUCT
+            }
+            if first == 'r' && word_at(src, start, "return") {
+                return TOK_RETURN
+            }
+        }
+        8 => {
+            if first == 'c' && word_at(src, start, "continue") {
+                return TOK_CONTINUE
+            }
+        }
+        _ => {}
+    }
+    return TOK_IDENT
+}
+
+// Splits `src` into tokens, which are added to `tokens`, ending with a
+// `TOK_EOF` token. Returns what went wrong, if anything did.
+fn lex(src: str, tokens: mut Tokens) -> Option[LexError] {
+    let n = src.len()
+    if n > MAX_SOURCE_BYTES {
+        return lex_failure("source file is larger than 4 GiB", 0)
+    }
+    var i = 0
+    while i < n {
+        let start = i
+        let b = src[i]
+        var kind = TOK_EOF
+
+        if b == ' ' || b == '\t' || b == '\r' {
+            i = i + 1
+            continue
+        }
+        if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || b == '_' || b >= 0x80 {
+            i = i + 1
+            while i < n {
+                let c = src[i]
+                if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c >= 0x80) {
+                    break
+                }
+                i = i + 1
+            }
+            kind = keyword_kind(src, start, i - start)
+        } else if b == '\n' {
+            i = i + 1
+            kind = TOK_NEWLINE
+        } else if b == '0' && i + 1 < n && (src[i + 1] == 'x' || src[i + 1] == 'b') {
+            // `0x1F` and `0b1010`, with `_` allowed between digits.
+            let hex = src[i + 1] == 'x'
+            i = i + 2
+            var digits = 0
+            while i < n {
+                let c = src[i]
+                if c == '_' {
+                    i = i + 1
+                } else if (hex && is_hex_digit(c)) || (!hex && (c == '0' || c == '1')) {
+                    digits = digits + 1
+                    i = i + 1
+                } else {
+                    break
+                }
+            }
+            if digits == 0 || (i < n && is_name_byte(src[i])) {
+                if hex {
+                    return lex_failure("a hexadecimal number is `0x` followed by the digits 0-9 and a-f, as in `0x1F`", start)
+                }
+                return lex_failure("a binary number is `0b` followed by the digits 0 and 1, as in `0b1010`", start)
+            }
+            kind = TOK_INT
+        } else if b >= '0' && b <= '9' {
+            i = i + 1
+            while i < n && ((src[i] >= '0' && src[i] <= '9') || src[i] == '_') {
+                i = i + 1
+            }
+            kind = TOK_INT
+            if i + 1 < n && src[i] == '.' && src[i + 1] >= '0' && src[i + 1] <= '9' {
+                i = i + 2
+                while i < n && ((src[i] >= '0' && src[i] <= '9') || src[i] == '_') {
+                    i = i + 1
+                }
+                kind = TOK_FLOAT
+            }
+        } else if b == '"' {
+            i = i + 1
+            while true {
+                if i >= n || src[i] == '\n' {
+                    return lex_failure("unterminated string literal", start)
+                }
+                let c = src[i]
+                if c == '"' {
+                    i = i + 1
+                    break
+                }
+                if c == '\\' {
+                    if i + 1 >= n {
+                        return lex_failure("unterminated string literal", start)
+                    }
+                    let e = src[i + 1]
+                    if e == 'n' || e == 't' || e == 'r' || e == '0' || e == '\\' || e == '"' {
+                        i = i + 2
+                    } else {
+                        return lex_failure("unknown escape sequence in string literal", i)
+                    }
+                } else {
+                    i = i + 1
+                }
+            }
+            kind = TOK_STR
+        } else if b == '\'' {
+            // A character literal is a number: the byte it names.
+            var len = 0
+            if i + 1 < n && src[i + 1] == '\\' {
+                var known = false
+                if i + 2 < n {
+                    let e = src[i + 2]
+                    known = e == 'n' || e == 't' || e == 'r' || e == '0' || e == '\\' || e == '\'' || e == '"'
+                }
+                if !known {
+                    return lex_failure("unknown escape sequence in character literal", start)
+                }
+                len = 2
+            } else if i + 1 < n && src[i + 1] >= 0x20 && src[i + 1] < 0x7F && src[i + 1] != '\'' {
+                len = 1
+            } else {
+                return lex_failure("a character literal holds one ASCII character, as in `'a'`", start)
+            }
+            if i + 1 + len >= n || src[i + 1 + len] != '\'' {
+                return lex_failure("a character literal holds one ASCII character, as in `'a'`", start)
+            }
+            i = i + len + 2
+            kind = TOK_INT
+        } else if b == '/' {
+            if i + 1 < n && src[i + 1] == '/' {
+                i = i + 2
+                while i < n && src[i] != '\n' {
+                    i = i + 1
+                }
+                continue
+            }
+            i = i + 1
+            kind = TOK_SLASH
+        } else {
+            // Signs. `second` is the byte after this one, or 0 at the end.
+            var second = 0
+            if i + 1 < n {
+                second = src[i + 1]
+            }
+            i = i + 1
+            match b {
+                '(' => kind = TOK_LPAREN
+                ')' => kind = TOK_RPAREN
+                '{' => kind = TOK_LBRACE
+                '}' => kind = TOK_RBRACE
+                '[' => kind = TOK_LBRACKET
+                ']' => kind = TOK_RBRACKET
+                ',' => kind = TOK_COMMA
+                ':' => kind = TOK_COLON
+                '.' => kind = TOK_DOT
+                '+' => kind = TOK_PLUS
+                '*' => kind = TOK_STAR
+                '%' => kind = TOK_PERCENT
+                '^' => kind = TOK_CARET
+                '-' => {
+                    kind = TOK_MINUS
+                    if second == '>' {
+                        i = i + 1
+                        kind = TOK_ARROW
+                    }
+                }
+                '!' => {
+                    kind = TOK_BANG
+                    if second == '=' {
+                        i = i + 1
+                        kind = TOK_NOT_EQ
+                    }
+                }
+                '<' => {
+                    kind = TOK_LT
+                    if second == '<' {
+                        i = i + 1
+                        kind = TOK_SHL
+                    } else if second == '=' {
+                        i = i + 1
+                        kind = TOK_LT_EQ
+                    }
+                }
+                '>' => {
+                    kind = TOK_GT
+                    if second == '>' {
+                        i = i + 1
+                        kind = TOK_SHR
+                    } else if second == '=' {
+                        i = i + 1
+                        kind = TOK_GT_EQ
+                    }
+                }
+                '=' => {
+                    kind = TOK_ASSIGN
+                    if second == '=' {
+                        i = i + 1
+                        kind = TOK_EQ
+                    } else if second == '>' {
+                        i = i + 1
+                        kind = TOK_FAT_ARROW
+                    }
+                }
+                '&' => {
+                    kind = TOK_AMP
+                    if second == '&' {
+                        i = i + 1
+                        kind = TOK_AND_AND
+                    }
+                }
+                '|' => {
+                    kind = TOK_PIPE
+                    if second == '|' {
+                        i = i + 1
+                        kind = TOK_OR_OR
+                    }
+                }
+                _ => return lex_failure("unexpected character", start)
+            }
+        }
+
+        tokens.kinds.push(kind)
+        tokens.starts.push(start)
+        tokens.lens.push(i - start)
+    }
+    tokens.kinds.push(TOK_EOF)
+    tokens.starts.push(n)
+    tokens.lens.push(0)
+    return None
+}
+
+// The line and column of a byte offset, both counted from 1. A column
+// is a count of characters, not of bytes.
+struct LineColumn {
+    line: i64
+    column: i64
+}
+
+// A byte that starts a character: any byte that is not the continuation
+// of a longer UTF-8 sequence.
+fn starts_character(b: i64) -> bool {
+    return (b & 0xC0) != 0x80
+}
+
+// The number of characters in the bytes `from..to` of `src`.
+fn count_characters(src: str, from: i64, to: i64) -> i64 {
+    var count = 0
+    var i = from
+    while i < to {
+        if (src[i] & 0xC0) != 0x80 {
+            count = count + 1
+        }
+        i = i + 1
+    }
+    return count
+}
+
+fn line_column(src: str, offset: i64) -> LineColumn {
+    var end = offset
+    if end > src.len() {
+        end = src.len()
+    }
+    var line = 1
+    var line_start = 0
+    var i = 0
+    while i < end {
+        if src[i] == '\n' {
+            line = line + 1
+            line_start = i + 1
+        }
+        i = i + 1
+    }
+    return LineColumn { line: line, column: count_characters(src, line_start, end) + 1 }
+}

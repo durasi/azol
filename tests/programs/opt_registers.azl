@@ -1,0 +1,154 @@
+// expect-exit: 0
+// expect-line: 7
+// expect-line: -20
+// expect-line: 8
+// expect-line: -8
+// expect-line: 3
+// expect-line: 41
+// expect-line: 19
+// expect-line: 18
+// expect-line: 52
+// expect-line: 50
+// expect-line: 30
+// expect-line: 140
+// expect-line: 150
+// expect-line: 250
+// expect-line: 898
+// expect-line: 146871
+// expect-line: 19449
+// expect-line: 19449
+
+// Functions with 0 to 8 parameters of mixed kinds, and more busy
+// variables than there are registers, with `for` loops on top.
+
+struct Pair {
+    a: i64
+    b: i64
+}
+
+fn p0() -> i64 {
+    return 7
+}
+
+fn p1(a: i64) -> i64 {
+    return a + a + a + a
+}
+
+fn p2(a: bool, b: i64) -> i64 {
+    if a && b > 0 || !a && b < 0 {
+        return b + b
+    }
+    return b - 1
+}
+
+fn p3(a: i64, s: str, b: i64) -> i64 {
+    return a * s.len() + b + a + b + a + b
+}
+
+fn p4(p: Pair, a: i64, q: Pair, flag: bool) -> i64 {
+    if flag {
+        return p.a + q.b + a
+    }
+    return p.b + q.a - a
+}
+
+fn p5(a: i64, b: i64, c: i64, d: i64, e: i64) -> i64 {
+    return a - b * c + d / (e + 1) + a * e + b + c + d
+}
+
+fn p6(xs: List[i64], a: i64, s: str, b: bool, p: Pair, c: i64) -> i64 {
+    var total = a + c
+    for x in xs {
+        total = total + x * a - c
+    }
+    if b {
+        total = total + s.len() + p.a
+    }
+    return total + a + c + a + c
+}
+
+fn p7(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64) -> i64 {
+    return a + 2 * b + 3 * c + 4 * d + 5 * e + 6 * f + 7 * g
+}
+
+fn p8(a: i64, flag: bool, c: i64, s: str, e: i64, p: Pair, g: i64, h: i64) -> i64 {
+    var total = 0
+    var i = 0
+    while i < 3 {
+        total = total + a + c + e + g + h + p.a * p.b + s.len()
+        if flag && i == 1 {
+            total = total * 2
+        }
+        i = i + 1
+    }
+    return total
+}
+
+fn bump(p: mut Pair, by: i64) {
+    p.a = p.a + by
+    p.b = p.b - by
+}
+
+fn busy(xs: List[i64], ys: List[i64]) -> i64 {
+    var a = 1
+    var b = 2
+    var c = 3
+    var d = 4
+    var e = 5
+    var f = 6
+    var g = 7
+    var h = 8
+    var i = 9
+    var j = 10
+    var k = 11
+    var l = 12
+    var round = 0
+    while round < 5 {
+        a = a + b
+        b = b + c
+        c = c + d
+        d = d + e
+        e = e + f
+        f = f + g
+        g = g + h
+        h = h + i
+        i = i + j
+        j = j + k
+        k = k + l
+        l = l + a + round
+        for n, x in xs {
+            a = a + x * n
+            for m, y in ys {
+                l = l + y + m - x
+                k = k + p1(y)
+            }
+        }
+        round = round + 1
+    }
+    return a + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 + g * 7 + h * 8 + i * 9 + j * 10 + k * 11 + l * 12
+}
+
+fn main() {
+    let p = Pair { a: 10, b: 20 }
+    var q = Pair { a: 3, b: 4 }
+    print(p0())
+    print(p1(-5))
+    print(p2(true, 4))
+    print(p2(false, -4))
+    print(p2(false, 4))
+    print(p3(2, "hello", 9))
+    print(p4(p, 5, q, true))
+    print(p4(p, 5, q, false))
+    print(p5(1, 2, 3, 40, 4))
+    print(p6([1, 2, 3], 4, "four", true, p, 6))
+    print(p6([], 4, "four", false, p, 6))
+    print(p7(1, 2, 3, 4, 5, 6, 7))
+    print(p8(1, true, 2, "abc", 3, q, 4, 5))
+    print(p8(p0(), p2(true, 1) == 2, p1(2), "x", p3(1, "", 1), Pair { a: p0(), b: 2 }, p5(5, 4, 3, 2, 1), p7(0, 0, 0, 0, 0, 0, 1)))
+    bump(mut q, 6)
+    print(q.a * 100 + q.b)
+    print(busy([3, 1, 4, 1, 5], [9, 2, 6]))
+    var none: List[i64] = []
+    print(busy(none, [1]))
+    print(busy([1], none))
+}

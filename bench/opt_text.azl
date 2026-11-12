@@ -1,0 +1,25 @@
+// Measuring program: building and scanning text.
+
+fn main() {
+    var text = ""
+    var i = 0
+    while i < 4000 {
+        text = text + "item "
+        text = text + str(i)
+        text = text + "\n"
+        i = i + 1
+    }
+    var spaces = 0
+    var digits = 0
+    var k = 0
+    while k < text.len() {
+        let c = text[k]
+        if c == ' ' {
+            spaces = spaces + 1
+        } else if c >= '0' && c <= '9' {
+            digits = digits + 1
+        }
+        k = k + 1
+    }
+    print(spaces + digits + text.lines().len())
+}

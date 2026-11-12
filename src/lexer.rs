@@ -250,6 +250,7 @@ fn keyword(word: &[u8]) -> TokenKind {
         b"mut" => TokenKind::Mut,
         b"for" => TokenKind::For,
         b"else" => TokenKind::Else,
+        b"const" => TokenKind::Const,
         b"enum" => TokenKind::Enum,
         b"true" => TokenKind::True,
         b"match" => TokenKind::Match,
@@ -300,8 +301,8 @@ mod tests {
     #[test]
     fn keywords_and_identifiers() {
         assert_eq!(
-            kinds("let var mut letter fnx struct_ match"),
-            vec![K::Let, K::Var, K::Mut, K::Ident, K::Ident, K::Ident, K::Match, K::Eof]
+            kinds("let var mut letter fnx struct_ match const constant"),
+            vec![K::Let, K::Var, K::Mut, K::Ident, K::Ident, K::Ident, K::Match, K::Const, K::Ident, K::Eof]
         );
     }
 

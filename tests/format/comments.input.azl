@@ -1,0 +1,42 @@
+// expect-exit: 0
+// expect-line: 3
+// expect-line:   kept as written, inner spaces too
+//no space after the slashes stays as it is
+    // An indented comment before a declaration.
+// A block of comments
+// before a function.
+fn main() {   // after the brace
+        // first in the block
+    let a = 1// tight
+    let b = 2        // far away
+    let url = "http://example.com" // a string with slashes
+    let slash = '/' // a character
+    let quotient = a / b // divided // twice
+    if a > b { // after if
+        print(a)
+        // last in the block
+    } // after the closing brace
+    // between if and else
+    else {
+        print(b)
+    }
+    let xs = [
+        1, // one
+        // on its own inside a list
+        2,
+        // before the bracket
+    ]
+    let total = a + // after an operator
+        b
+    print(call( // after a parenthesis
+        a,
+        b // last argument
+    ))
+    match a {
+        // before an arm
+        1 => print(1) // after an arm
+        _ => {} // empty
+    }
+    // at the end of the function
+}
+// at the end of the file

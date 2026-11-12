@@ -1,0 +1,1140 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Recursive-descent parser with precedence climbing for expressions.
+// It never backtracks: every decision is made from the current token,
+// plus at most a look past blank lines.
+//
+// The first mistake stops the parse. A function that finds one records
+// it with `parse_fail` and returns; every caller checks `p.failed` after
+// a call that can fail and returns in turn, so nothing is built from a
+// half-read construct.
+
+const MAX_PARSE_DEPTH = 200
+
+// Why a text could not be parsed, and at which byte.
+struct ParseError {
+    message: str
+    offset: i64
+}
+
+// Everything a parse works on: the source, its tokens, the tree being
+// built, and where the parser is.
+struct Parser {
+    src: str
+    tokens: Tokens
+    ast: Ast
+    // Index of the current token, and its kind.
+    pos: i64
+    kind: i64
+    // Ids of the list being collected, innermost last. Only the first
+    // `scratch_len` elements are in use.
+    scratch: List[i64]
+    scratch_len: i64
+    // True while parsing a condition, where `name {` starts a block and
+    // not a struct literal.
+    no_struct: bool
+    depth: i64
+    failed: bool
+    error: ParseError
+}
+
+// A parser for `src`, with no tokens yet: fill `tokens` with `lex` and
+// call `parse_tokens`.
+fn new_parser(src: str) -> Parser {
+    return Parser {
+        src: src,
+        tokens: new_tokens(),
+        ast: new_ast(),
+        pos: 0,
+        kind: TOK_EOF,
+        scratch: [],
+        scratch_len: 0,
+        no_struct: false,
+        depth: 0,
+        failed: false,
+        error: ParseError { message: "", offset: 0 },
+    }
+}
+
+// Parses the tokens in `p.tokens`, from the first one, and adds what
+// they declare to `p.ast`. Calling it again after replacing the tokens
+// adds another file to the same tree; the positions in its tokens then
+// refer to the same source text, further along. Look at `p.failed`
+// afterwards.
+fn parse_tokens(p: mut Parser) {
+    p.pos = 0
+    p.kind = p.tokens.kinds[0]
+    p.scratch_len = 0
+    p.no_struct = false
+    p.depth = 0
+    parse_file(mut p)
+}
+
+// ---- token helpers ---------------------------------------------------
+
+// Records the first mistake, at the current token.
+fn parse_fail(p: mut Parser, message: str) {
+    parse_fail_at(mut p, message, p.tokens.starts[p.pos])
+}
+
+fn parse_fail_at(p: mut Parser, message: str, offset: i64) {
+    if !p.failed {
+        p.failed = true
+        p.error = ParseError { message: message, offset: offset }
+    }
+}
+
+// Moves to the next token. The end of the file is never passed.
+fn bump(p: mut Parser) {
+    if p.kind != TOK_EOF {
+        p.pos = p.pos + 1
+        p.kind = p.tokens.kinds[p.pos]
+    }
+}
+
+// The span of the current token, which is then passed.
+fn take_span(p: mut Parser) -> Span {
+    let span = Span { start: p.tokens.starts[p.pos], len: p.tokens.lens[p.pos] }
+    bump(mut p)
+    return span
+}
+
+// Passes the current token if it is of this kind.
+fn eat(p: mut Parser, kind: i64) -> bool {
+    if p.kind == kind {
+        bump(mut p)
+        return true
+    }
+    return false
+}
+
+// Passes a token of this kind, or fails.
+fn expect(p: mut Parser, kind: i64) {
+    if p.kind == kind {
+        bump(mut p)
+    } else {
+        parse_fail(mut p, "expected " + describe_token(kind) + " but found " + describe_token(p.kind))
+    }
+}
+
+// Passes a name and returns its span, or fails saying what was expected.
+fn expect_name(p: mut Parser, what: str) -> Span {
+    if p.kind == TOK_IDENT {
+        return take_span(mut p)
+    }
+    parse_fail(mut p, "expected " + what + " but found " + describe_token(p.kind))
+    return Span { start: 0, len: 0 }
+}
+
+fn skip_newlines(p: mut Parser) {
+    while p.kind == TOK_NEWLINE {
+        p.pos = p.pos + 1
+        p.kind = p.tokens.kinds[p.pos]
+    }
+}
+
+fn kind_after_newlines(p: Parser) -> i64 {
+    var i = p.pos
+    while p.tokens.kinds[i] == TOK_NEWLINE {
+        i = i + 1
+    }
+    return p.tokens.kinds[i]
+}
+
+// Counts one more level of nesting; code nested too deeply is refused
+// rather than overflowing the stack.
+fn enter(p: mut Parser) {
+    p.depth = p.depth + 1
+    if p.depth > MAX_PARSE_DEPTH {
+        parse_fail(mut p, "code is nested too deeply")
+    }
+}
+
+// Where the current token starts.
+fn here(p: Parser) -> i64 {
+    return p.tokens.starts[p.pos]
+}
+
+// Adds an id to the list being collected.
+fn collect(p: mut Parser, id: i64) {
+    if p.scratch_len < p.scratch.len() {
+        p.scratch[p.scratch_len] = id
+    } else {
+        p.scratch.push(id)
+    }
+    p.scratch_len = p.scratch_len + 1
+}
+
+// Moves the ids collected since `start` into the tree and returns where
+// they are.
+fn finish_list(p: mut Parser, start: i64) -> IdRange {
+    let range = IdRange { start: p.ast.lists.len(), len: p.scratch_len - start }
+    var i = start
+    while i < p.scratch_len {
+        p.ast.lists.push(p.scratch[i])
+        i = i + 1
+    }
+    p.scratch_len = start
+    return range
+}
+
+fn push_expr(p: mut Parser, expr: Expr, pos: i64) -> i64 {
+    p.ast.exprs.push(expr)
+    p.ast.expr_pos.push(pos)
+    return p.ast.exprs.len() - 1
+}
+
+fn push_stmt(p: mut Parser, stmt: Stmt, pos: i64) -> i64 {
+    p.ast.stmts.push(stmt)
+    p.ast.stmt_pos.push(pos)
+    return p.ast.stmts.len() - 1
+}
+
+fn empty_range() -> IdRange {
+    return IdRange { start: 0, len: 0 }
+}
+
+// ---- items -------------------------------------------------------------
+
+fn parse_file(p: mut Parser) {
+    while true {
+        skip_newlines(mut p)
+        match p.kind {
+            TOK_EOF => return
+            TOK_FN => parse_function(mut p)
+            TOK_STRUCT => parse_struct(mut p)
+            TOK_ENUM => parse_enum(mut p)
+            TOK_CONST => parse_const(mut p)
+            _ => parse_fail(mut p, "expected `fn`, `struct`, `enum` or `const` but found " + describe_token(p.kind))
+        }
+        if p.failed {
+            return
+        }
+        if p.kind != TOK_EOF {
+            line_end(mut p)
+            if p.failed {
+                return
+            }
+        }
+    }
+}
+
+fn line_end(p: mut Parser) {
+    if !eat(mut p, TOK_NEWLINE) {
+        parse_fail(mut p, "expected end of line but found " + describe_token(p.kind))
+    }
+}
+
+// `[T, U]` after a name, or nothing.
+fn parse_generics(p: mut Parser) -> IdRange {
+    let start = p.scratch_len
+    if eat(mut p, TOK_LBRACKET) {
+        while true {
+            let name = expect_name(mut p, "a type parameter name")
+            if p.failed {
+                return empty_range()
+            }
+            p.ast.names.push(name)
+            collect(mut p, p.ast.names.len() - 1)
+            if !eat(mut p, TOK_COMMA) {
+                break
+            }
+        }
+        expect(mut p, TOK_RBRACKET)
+        if p.failed {
+            return empty_range()
+        }
+    }
+    return finish_list(mut p, start)
+}
+
+fn parse_function(p: mut Parser) {
+    let first_expr = p.ast.exprs.len()
+    let first_stmt = p.ast.stmts.len()
+    let first_pattern = p.ast.patterns.len()
+    let first_init = p.ast.field_inits.len()
+    bump(mut p)
+    let name = expect_name(mut p, "a function name")
+    if p.failed {
+        return
+    }
+    let generics = parse_generics(mut p)
+    if p.failed {
+        return
+    }
+    expect(mut p, TOK_LPAREN)
+    if p.failed {
+        return
+    }
+    let start = p.scratch_len
+    skip_newlines(mut p)
+    while p.kind != TOK_RPAREN {
+        let param_name = expect_name(mut p, "a parameter name")
+        if p.failed {
+            return
+        }
+        expect(mut p, TOK_COLON)
+        if p.failed {
+            return
+        }
+        let mutable = eat(mut p, TOK_MUT)
+        let ty = parse_type(mut p)
+        if p.failed {
+            return
+        }
+        p.ast.params.push(Param { name: param_name, mutable: mutable, ty: ty })
+        collect(mut p, p.ast.params.len() - 1)
+        skip_newlines(mut p)
+        if !eat(mut p, TOK_COMMA) {
+            break
+        }
+        skip_newlines(mut p)
+    }
+    expect(mut p, TOK_RPAREN)
+    if p.failed {
+        return
+    }
+    let params = finish_list(mut p, start)
+    var ret = NO_NODE
+    if eat(mut p, TOK_ARROW) {
+        ret = parse_type(mut p)
+        if p.failed {
+            return
+        }
+    }
+    let body = parse_block(mut p)
+    if p.failed {
+        return
+    }
+    let nodes = Nodes {
+        exprs_start: first_expr,
+        exprs_len: p.ast.exprs.len() - first_expr,
+        stmts_start: first_stmt,
+        stmts_len: p.ast.stmts.len() - first_stmt,
+        patterns_start: first_pattern,
+        patterns_len: p.ast.patterns.len() - first_pattern,
+        field_inits_start: first_init,
+        field_inits_len: p.ast.field_inits.len() - first_init,
+    }
+    p.ast.items.push(ItemFn(name, generics, params, ret, body, nodes))
+}
+
+fn parse_struct(p: mut Parser) {
+    bump(mut p)
+    let name = expect_name(mut p, "a struct name")
+    if p.failed {
+        return
+    }
+    let generics = parse_generics(mut p)
+    if p.failed {
+        return
+    }
+    expect(mut p, TOK_LBRACE)
+    if p.failed {
+        return
+    }
+    let start = p.scratch_len
+    while true {
+        skip_newlines(mut p)
+        if p.kind == TOK_RBRACE {
+            break
+        }
+        let field_name = expect_name(mut p, "a field name")
+        if p.failed {
+            return
+        }
+        expect(mut p, TOK_COLON)
+        if p.failed {
+            return
+        }
+        let ty = parse_type(mut p)
+        if p.failed {
+            return
+        }
+        p.ast.fields.push(FieldDecl { name: field_name, ty: ty })
+        collect(mut p, p.ast.fields.len() - 1)
+        member_separator(mut p)
+        if p.failed {
+            return
+        }
+    }
+    bump(mut p)
+    let fields = finish_list(mut p, start)
+    p.ast.items.push(ItemStruct(name, generics, fields))
+}
+
+fn parse_enum(p: mut Parser) {
+    bump(mut p)
+    let name = expect_name(mut p, "an enum name")
+    if p.failed {
+        return
+    }
+    let generics = parse_generics(mut p)
+    if p.failed {
+        return
+    }
+    expect(mut p, TOK_LBRACE)
+    if p.failed {
+        return
+    }
+    let start = p.scratch_len
+    while true {
+        skip_newlines(mut p)
+        if p.kind == TOK_RBRACE {
+            break
+        }
+        let variant_name = expect_name(mut p, "a variant name")
+        if p.failed {
+            return
+        }
+        let field_start = p.scratch_len
+        if eat(mut p, TOK_LPAREN) {
+            while true {
+                let ty = parse_type(mut p)
+                if p.failed {
+                    return
+                }
+                collect(mut p, ty)
+                if !eat(mut p, TOK_COMMA) {
+                    break
+                }
+            }
+            expect(mut p, TOK_RPAREN)
+            if p.failed {
+                return
+            }
+        }
+        let fields = finish_list(mut p, field_start)
+        p.ast.variants.push(VariantDecl { name: variant_name, fields: fields })
+        collect(mut p, p.ast.variants.len() - 1)
+        member_separator(mut p)
+        if p.failed {
+            return
+        }
+    }
+    bump(mut p)
+    let variants = finish_list(mut p, start)
+    p.ast.items.push(ItemEnum(name, generics, variants))
+}
+
+fn parse_const(p: mut Parser) {
+    bump(mut p)
+    let name = expect_name(mut p, "a constant name")
+    if p.failed {
+        return
+    }
+    var ty = NO_NODE
+    if eat(mut p, TOK_COLON) {
+        ty = parse_type(mut p)
+        if p.failed {
+            return
+        }
+    }
+    expect(mut p, TOK_ASSIGN)
+    if p.failed {
+        return
+    }
+    let value = parse_expr(mut p)
+    if p.failed {
+        return
+    }
+    p.ast.items.push(ItemConst(name, ty, value))
+}
+
+// Members of a struct or enum are separated by a newline or a comma.
+fn member_separator(p: mut Parser) {
+    if eat(mut p, TOK_COMMA) || p.kind == TOK_NEWLINE || p.kind == TOK_RBRACE {
+        return
+    }
+    parse_fail(mut p, "expected a new line, `,` or `}` but found " + describe_token(p.kind))
+}
+
+// A type: a name, with type arguments in `[...]` if it takes any.
+fn parse_type(p: mut Parser) -> i64 {
+    enter(mut p)
+    if p.failed {
+        return NO_NODE
+    }
+    let name = expect_name(mut p, "a type")
+    if p.failed {
+        return NO_NODE
+    }
+    let start = p.scratch_len
+    if eat(mut p, TOK_LBRACKET) {
+        while true {
+            let arg = parse_type(mut p)
+            if p.failed {
+                return NO_NODE
+            }
+            collect(mut p, arg)
+            if !eat(mut p, TOK_COMMA) {
+                break
+            }
+        }
+        expect(mut p, TOK_RBRACKET)
+        if p.failed {
+            return NO_NODE
+        }
+    }
+    let args = finish_list(mut p, start)
+    p.depth = p.depth - 1
+    p.ast.types.push(TypeNode { name: name, args: args })
+    return p.ast.types.len() - 1
+}
+
+// ---- statements --------------------------------------------------------
+
+// `{`, statements one per line, `}`.
+fn parse_block(p: mut Parser) -> IdRange {
+    enter(mut p)
+    if p.failed {
+        return empty_range()
+    }
+    expect(mut p, TOK_LBRACE)
+    if p.failed {
+        return empty_range()
+    }
+    let saved = p.no_struct
+    p.no_struct = false
+    let start = p.scratch_len
+    while true {
+        skip_newlines(mut p)
+        if eat(mut p, TOK_RBRACE) {
+            break
+        }
+        if p.kind == TOK_EOF {
+            parse_fail(mut p, "expected `}` to close the block but reached end of file")
+            return empty_range()
+        }
+        let stmt = parse_statement(mut p)
+        if p.failed {
+            return empty_range()
+        }
+        collect(mut p, stmt)
+        if p.kind != TOK_RBRACE {
+            line_end(mut p)
+            if p.failed {
+                return empty_range()
+            }
+        }
+    }
+    p.no_struct = saved
+    p.depth = p.depth - 1
+    return finish_list(mut p, start)
+}
+
+// True for what can stand on the left of `=`.
+fn is_assignable(expr: Expr) -> bool {
+    match expr {
+        ExprIdent(name) => return true
+        ExprField(base, name) => return true
+        ExprIndex(base, index) => return true
+        _ => return false
+    }
+}
+
+fn parse_statement(p: mut Parser) -> i64 {
+    let pos = here(p)
+    match p.kind {
+        TOK_LET => return parse_let(mut p, pos)
+        TOK_VAR => return parse_let(mut p, pos)
+        TOK_RETURN => {
+            bump(mut p)
+            if p.kind == TOK_NEWLINE || p.kind == TOK_RBRACE || p.kind == TOK_EOF {
+                return push_stmt(mut p, StmtReturn(NO_NODE), pos)
+            }
+            let value = parse_expr(mut p)
+            if p.failed {
+                return NO_NODE
+            }
+            return push_stmt(mut p, StmtReturn(value), pos)
+        }
+        TOK_IF => return parse_if(mut p)
+        TOK_WHILE => {
+            bump(mut p)
+            let cond = parse_condition(mut p)
+            if p.failed {
+                return NO_NODE
+            }
+            let body = parse_block(mut p)
+            if p.failed {
+                return NO_NODE
+            }
+            return push_stmt(mut p, StmtWhile(cond, body), pos)
+        }
+        TOK_FOR => {
+            bump(mut p)
+            let first = expect_name(mut p, "a loop variable name")
+            if p.failed {
+                return NO_NODE
+            }
+            var has_index = false
+            var index = Span { start: 0, len: 0 }
+            var item = first
+            if eat(mut p, TOK_COMMA) {
+                has_index = true
+                index = first
+                item = expect_name(mut p, "a loop variable name")
+                if p.failed {
+                    return NO_NODE
+                }
+            }
+            expect(mut p, TOK_IN)
+            if p.failed {
+                return NO_NODE
+            }
+            let iter = parse_condition(mut p)
+            if p.failed {
+                return NO_NODE
+            }
+            let body = parse_block(mut p)
+            if p.failed {
+                return NO_NODE
+            }
+            return push_stmt(mut p, StmtFor(has_index, index, item, iter, body), pos)
+        }
+        TOK_MATCH => return parse_match(mut p, pos)
+        TOK_CONST => {
+            parse_fail(mut p, "a constant is declared outside functions; use `let` for a value inside one")
+            return NO_NODE
+        }
+        TOK_BREAK => {
+            bump(mut p)
+            return push_stmt(mut p, StmtBreak, pos)
+        }
+        TOK_CONTINUE => {
+            bump(mut p)
+            return push_stmt(mut p, StmtContinue, pos)
+        }
+        _ => {}
+    }
+    // An expression on its own, or an assignment.
+    let expr = parse_expr(mut p)
+    if p.failed {
+        return NO_NODE
+    }
+    if !eat(mut p, TOK_ASSIGN) {
+        return push_stmt(mut p, StmtExpr(expr), pos)
+    }
+    if !is_assignable(p.ast.exprs[expr]) {
+        parse_fail_at(mut p, "cannot assign to this expression", pos)
+        return NO_NODE
+    }
+    skip_newlines(mut p)
+    let value = parse_expr(mut p)
+    if p.failed {
+        return NO_NODE
+    }
+    return push_stmt(mut p, StmtAssign(expr, value), pos)
+}
+
+// `let name = value` and `var name: Type = value`.
+fn parse_let(p: mut Parser, pos: i64) -> i64 {
+    let mutable = p.kind == TOK_VAR
+    bump(mut p)
+    let name = expect_name(mut p, "a variable name")
+    if p.failed {
+        return NO_NODE
+    }
+    var ty = NO_NODE
+    if eat(mut p, TOK_COLON) {
+        ty = parse_type(mut p)
+        if p.failed {
+            return NO_NODE
+        }
+    }
+    expect(mut p, TOK_ASSIGN)
+    if p.failed {
+        return NO_NODE
+    }
+    skip_newlines(mut p)
+    let value = parse_expr(mut p)
+    if p.failed {
+        return NO_NODE
+    }
+    return push_stmt(mut p, StmtLet(mutable, name, ty, value), pos)
+}
+
+fn parse_if(p: mut Parser) -> i64 {
+    enter(mut p)
+    if p.failed {
+        return NO_NODE
+    }
+    let pos = here(p)
+    bump(mut p)
+    let cond = parse_condition(mut p)
+    if p.failed {
+        return NO_NODE
+    }
+    let then_block = parse_block(mut p)
+    if p.failed {
+        return NO_NODE
+    }
+    var else_branch = ElseNone
+    if kind_after_newlines(p) == TOK_ELSE {
+        skip_newlines(mut p)
+        bump(mut p)
+        if p.kind == TOK_IF {
+            let next = parse_if(mut p)
+            if p.failed {
+                return NO_NODE
+            }
+            else_branch = ElseIf(next)
+        } else {
+            let body = parse_block(mut p)
+            if p.failed {
+                return NO_NODE
+            }
+            else_branch = ElseBlock(body)
+        }
+    }
+    p.depth = p.depth - 1
+    return push_stmt(mut p, StmtIf(cond, then_block, else_branch), pos)
+}
+
+fn parse_match(p: mut Parser, pos: i64) -> i64 {
+    bump(mut p)
+    let scrutinee = parse_condition(mut p)
+    if p.failed {
+        return NO_NODE
+    }
+    expect(mut p, TOK_LBRACE)
+    if p.failed {
+        return NO_NODE
+    }
+    let start = p.scratch_len
+    while true {
+        skip_newlines(mut p)
+        if p.kind == TOK_RBRACE {
+            break
+        }
+        let pattern = parse_pattern(mut p)
+        if p.failed {
+            return NO_NODE
+        }
+        expect(mut p, TOK_FAT_ARROW)
+        if p.failed {
+            return NO_NODE
+        }
+        var body = empty_range()
+        if p.kind == TOK_LBRACE {
+            body = parse_block(mut p)
+            if p.failed {
+                return NO_NODE
+            }
+        } else {
+            // One statement without braces.
+            let body_start = p.scratch_len
+            let saved = p.no_struct
+            p.no_struct = false
+            let stmt = parse_statement(mut p)
+            if p.failed {
+                return NO_NODE
+            }
+            p.no_struct = saved
+            collect(mut p, stmt)
+            body = finish_list(mut p, body_start)
+        }
+        p.ast.arms.push(Arm { pattern: pattern, body: body })
+        collect(mut p, p.ast.arms.len() - 1)
+        member_separator(mut p)
+        if p.failed {
+            return NO_NODE
+        }
+    }
+    bump(mut p)
+    let arms = finish_list(mut p, start)
+    return push_stmt(mut p, StmtMatch(scrutinee, arms), pos)
+}
+
+fn push_pattern(p: mut Parser, pattern: Pattern, pos: i64) -> i64 {
+    p.depth = p.depth - 1
+    p.ast.patterns.push(pattern)
+    p.ast.pat_pos.push(pos)
+    return p.ast.patterns.len() - 1
+}
+
+fn parse_pattern(p: mut Parser) -> i64 {
+    enter(mut p)
+    if p.failed {
+        return NO_NODE
+    }
+    let pos = here(p)
+    match p.kind {
+        TOK_IDENT => {
+            let name = take_span(mut p)
+            if eat(mut p, TOK_LPAREN) {
+                let start = p.scratch_len
+                while true {
+                    let arg = parse_pattern(mut p)
+                    if p.failed {
+                        return NO_NODE
+                    }
+                    collect(mut p, arg)
+                    if !eat(mut p, TOK_COMMA) {
+                        break
+                    }
+                }
+                expect(mut p, TOK_RPAREN)
+                if p.failed {
+                    return NO_NODE
+                }
+                let args = finish_list(mut p, start)
+                return push_pattern(mut p, PatVariant(name, args), pos)
+            }
+            if name.len == 1 && p.src[name.start] == '_' {
+                return push_pattern(mut p, PatWildcard, pos)
+            }
+            return push_pattern(mut p, PatName(name), pos)
+        }
+        TOK_INT => {
+            let digits = take_span(mut p)
+            return push_pattern(mut p, PatInt(false, digits), pos)
+        }
+        TOK_MINUS => {
+            bump(mut p)
+            let digits = Span { start: p.tokens.starts[p.pos], len: p.tokens.lens[p.pos] }
+            expect(mut p, TOK_INT)
+            if p.failed {
+                return NO_NODE
+            }
+            return push_pattern(mut p, PatInt(true, digits), pos)
+        }
+        TOK_STR => {
+            let text = take_span(mut p)
+            return push_pattern(mut p, PatStr(text), pos)
+        }
+        TOK_TRUE => {
+            bump(mut p)
+            return push_pattern(mut p, PatBool(true), pos)
+        }
+        TOK_FALSE => {
+            bump(mut p)
+            return push_pattern(mut p, PatBool(false), pos)
+        }
+        _ => {
+            parse_fail(mut p, "expected a pattern but found " + describe_token(p.kind))
+            return NO_NODE
+        }
+    }
+}
+
+// ---- expressions -------------------------------------------------------
+
+fn parse_expr(p: mut Parser) -> i64 {
+    return parse_binary(mut p, 1)
+}
+
+// An expression directly followed by `{`, as in `if`, `while`, `for`
+// and `match`.
+fn parse_condition(p: mut Parser) -> i64 {
+    let saved = p.no_struct
+    p.no_struct = true
+    let result = parse_expr(mut p)
+    p.no_struct = saved
+    return result
+}
+
+// How tightly a binary operator binds, or 0 for a token that is not one.
+fn binary_precedence(kind: i64) -> i64 {
+    match kind {
+        TOK_OR_OR => return 1
+        TOK_AND_AND => return 2
+        TOK_EQ => return 3
+        TOK_NOT_EQ => return 3
+        TOK_LT => return 3
+        TOK_LT_EQ => return 3
+        TOK_GT => return 3
+        TOK_GT_EQ => return 3
+        TOK_PIPE => return 4
+        TOK_CARET => return 5
+        TOK_AMP => return 6
+        TOK_SHL => return 7
+        TOK_SHR => return 7
+        TOK_PLUS => return 8
+        TOK_MINUS => return 8
+        TOK_STAR => return 9
+        TOK_SLASH => return 9
+        TOK_PERCENT => return 9
+        _ => return 0
+    }
+}
+
+// The operator a token stands for. Only called for binary operators.
+fn binary_operator(kind: i64) -> BinOp {
+    match kind {
+        TOK_OR_OR => return BinOr
+        TOK_AND_AND => return BinAnd
+        TOK_EQ => return BinEq
+        TOK_NOT_EQ => return BinNotEq
+        TOK_LT => return BinLt
+        TOK_LT_EQ => return BinLtEq
+        TOK_GT => return BinGt
+        TOK_GT_EQ => return BinGtEq
+        TOK_PIPE => return BinBitOr
+        TOK_CARET => return BinBitXor
+        TOK_AMP => return BinBitAnd
+        TOK_SHL => return BinShl
+        TOK_SHR => return BinShr
+        TOK_PLUS => return BinAdd
+        TOK_MINUS => return BinSub
+        TOK_STAR => return BinMul
+        TOK_SLASH => return BinDiv
+        _ => return BinRem
+    }
+}
+
+fn parse_binary(p: mut Parser, min_prec: i64) -> i64 {
+    var lhs = parse_unary(mut p)
+    if p.failed {
+        return NO_NODE
+    }
+    while true {
+        // The common case first: what follows is not an operator at all.
+        if p.kind < TOK_EQ || p.kind > TOK_SHR {
+            break
+        }
+        let prec = binary_precedence(p.kind)
+        if prec == 0 || prec < min_prec {
+            break
+        }
+        let op = binary_operator(p.kind)
+        bump(mut p)
+        skip_newlines(mut p)
+        let rhs = parse_binary(mut p, prec + 1)
+        if p.failed {
+            return NO_NODE
+        }
+        let pos = p.ast.expr_pos[lhs]
+        lhs = push_expr(mut p, ExprBinary(op, lhs, rhs), pos)
+    }
+    return lhs
+}
+
+fn parse_unary(p: mut Parser) -> i64 {
+    if p.kind != TOK_MINUS && p.kind != TOK_BANG {
+        return parse_postfix(mut p)
+    }
+    var op = OpNeg
+    if p.kind == TOK_BANG {
+        op = OpNot
+    }
+    enter(mut p)
+    if p.failed {
+        return NO_NODE
+    }
+    let pos = here(p)
+    bump(mut p)
+    let operand = parse_unary(mut p)
+    if p.failed {
+        return NO_NODE
+    }
+    p.depth = p.depth - 1
+    return push_expr(mut p, ExprUnary(op, operand), pos)
+}
+
+// A primary expression followed by any number of calls, indexes and
+// field accesses.
+fn parse_postfix(p: mut Parser) -> i64 {
+    var expr = parse_primary(mut p)
+    if p.failed {
+        return NO_NODE
+    }
+    let pos = p.ast.expr_pos[expr]
+    while true {
+        if p.kind == TOK_LPAREN {
+            bump(mut p)
+            let saved = p.no_struct
+            p.no_struct = false
+            let start = p.scratch_len
+            skip_newlines(mut p)
+            while p.kind != TOK_RPAREN {
+                let arg_pos = here(p)
+                var arg = NO_NODE
+                if eat(mut p, TOK_MUT) {
+                    let value = parse_expr(mut p)
+                    if p.failed {
+                        return NO_NODE
+                    }
+                    arg = push_expr(mut p, ExprMutArg(value), arg_pos)
+                } else {
+                    arg = parse_expr(mut p)
+                    if p.failed {
+                        return NO_NODE
+                    }
+                }
+                collect(mut p, arg)
+                skip_newlines(mut p)
+                if !eat(mut p, TOK_COMMA) {
+                    break
+                }
+                skip_newlines(mut p)
+            }
+            expect(mut p, TOK_RPAREN)
+            if p.failed {
+                return NO_NODE
+            }
+            p.no_struct = saved
+            let args = finish_list(mut p, start)
+            expr = push_expr(mut p, ExprCall(expr, args), pos)
+        } else if p.kind == TOK_LBRACKET {
+            bump(mut p)
+            let saved = p.no_struct
+            p.no_struct = false
+            skip_newlines(mut p)
+            let index = parse_expr(mut p)
+            if p.failed {
+                return NO_NODE
+            }
+            skip_newlines(mut p)
+            expect(mut p, TOK_RBRACKET)
+            if p.failed {
+                return NO_NODE
+            }
+            p.no_struct = saved
+            expr = push_expr(mut p, ExprIndex(expr, index), pos)
+        } else if p.kind == TOK_DOT {
+            bump(mut p)
+            let name = expect_name(mut p, "a field name")
+            if p.failed {
+                return NO_NODE
+            }
+            expr = push_expr(mut p, ExprField(expr, name), pos)
+        } else if p.kind == TOK_NEWLINE && kind_after_newlines(p) == TOK_DOT {
+            // A line that starts with `.` continues the previous one.
+            skip_newlines(mut p)
+        } else {
+            return expr
+        }
+    }
+    return expr
+}
+
+fn parse_primary(p: mut Parser) -> i64 {
+    let pos = here(p)
+    match p.kind {
+        TOK_INT => {
+            let span = take_span(mut p)
+            return push_expr(mut p, ExprInt(span), pos)
+        }
+        TOK_FLOAT => {
+            let span = take_span(mut p)
+            return push_expr(mut p, ExprFloat(span), pos)
+        }
+        TOK_STR => {
+            let span = take_span(mut p)
+            return push_expr(mut p, ExprStr(span), pos)
+        }
+        TOK_TRUE => {
+            bump(mut p)
+            return push_expr(mut p, ExprBool(true), pos)
+        }
+        TOK_FALSE => {
+            bump(mut p)
+            return push_expr(mut p, ExprBool(false), pos)
+        }
+        TOK_IDENT => {
+            let name = take_span(mut p)
+            if p.kind == TOK_LBRACE && !p.no_struct {
+                return parse_struct_literal(mut p, name)
+            }
+            return push_expr(mut p, ExprIdent(name), pos)
+        }
+        TOK_LPAREN => {
+            enter(mut p)
+            if p.failed {
+                return NO_NODE
+            }
+            bump(mut p)
+            let saved = p.no_struct
+            p.no_struct = false
+            skip_newlines(mut p)
+            let inner = parse_expr(mut p)
+            if p.failed {
+                return NO_NODE
+            }
+            skip_newlines(mut p)
+            expect(mut p, TOK_RPAREN)
+            if p.failed {
+                return NO_NODE
+            }
+            p.no_struct = saved
+            p.depth = p.depth - 1
+            return inner
+        }
+        TOK_LBRACKET => {
+            enter(mut p)
+            if p.failed {
+                return NO_NODE
+            }
+            bump(mut p)
+            let saved = p.no_struct
+            p.no_struct = false
+            let start = p.scratch_len
+            skip_newlines(mut p)
+            while p.kind != TOK_RBRACKET {
+                let item = parse_expr(mut p)
+                if p.failed {
+                    return NO_NODE
+                }
+                collect(mut p, item)
+                skip_newlines(mut p)
+                if !eat(mut p, TOK_COMMA) {
+                    break
+                }
+                skip_newlines(mut p)
+            }
+            expect(mut p, TOK_RBRACKET)
+            if p.failed {
+                return NO_NODE
+            }
+            p.no_struct = saved
+            p.depth = p.depth - 1
+            let items = finish_list(mut p, start)
+            return push_expr(mut p, ExprArrayLit(items), pos)
+        }
+        _ => {
+            parse_fail(mut p, "expected an expression but found " + describe_token(p.kind))
+            return NO_NODE
+        }
+    }
+}
+
+// `Name { field: value, ... }`, with the name already read.
+fn parse_struct_literal(p: mut Parser, name: Span) -> i64 {
+    enter(mut p)
+    if p.failed {
+        return NO_NODE
+    }
+    bump(mut p)
+    let start = p.scratch_len
+    skip_newlines(mut p)
+    while p.kind != TOK_RBRACE {
+        let field = expect_name(mut p, "a field name")
+        if p.failed {
+            return NO_NODE
+        }
+        expect(mut p, TOK_COLON)
+        if p.failed {
+            return NO_NODE
+        }
+        let value = parse_expr(mut p)
+        if p.failed {
+            return NO_NODE
+        }
+        p.ast.field_inits.push(FieldInit { name: field, value: value })
+        collect(mut p, p.ast.field_inits.len() - 1)
+        skip_newlines(mut p)
+        if !eat(mut p, TOK_COMMA) {
+            break
+        }
+        skip_newlines(mut p)
+    }
+    expect(mut p, TOK_RBRACE)
+    if p.failed {
+        return NO_NODE
+    }
+    p.depth = p.depth - 1
+    let fields = finish_list(mut p, start)
+    return push_expr(mut p, ExprStructLit(name, fields), name.start)
+}

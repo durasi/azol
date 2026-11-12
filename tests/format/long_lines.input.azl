@@ -1,0 +1,87 @@
+fn describe(name: Text, first_value: i64, second_value: i64, third_value: i64, fourth_value: i64, fifth: i64) -> i64 {
+    return first_value
+}
+
+fn broken(
+    name: Text,
+        first_value: i64, second_value: i64,
+    third_value: i64) -> i64 {
+    return first_value
+}
+
+fn hanging(name: Text,
+           first_value: i64,
+           second_value: i64
+) -> i64 {
+    return first_value
+}
+
+fn main() {
+    let short = describe("a", 1, 2, 3, 4, 5)
+    let one_line = describe("a rather long name for a thing", 1000000, 2000000, 3000000, 4000000, 5000000) + describe("another", 1, 2, 3, 4, 5)
+    let wrapped = describe(
+"a rather long name for a thing",
+      1000000, 2000000,
+          3000000, 4000000, 5000000)
+    let hanging = describe("a rather long name for a thing",
+                           1000000, 2000000, 3000000,
+                           4000000, 5000000
+    )
+    let nested = describe("x", describe(
+        "y", 1, 2, 3, 4, 5,
+    ), second(
+            [
+        1, 2, 3,
+        4, 5, 6 ],
+    ), 3, 4, 5)
+    let table = [
+        [1, 0, 0],
+            [0, 1, 0],
+      [0, 0, 1]
+    ]
+    let primes = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71,
+                  73, 79, 83, 89, 97]
+    let account = Account {
+            owner: "Ada", balance: 100,
+        history: [
+        1,
+        2,
+        ] }
+    let point = Point { x: 1,
+                        y: 2 }
+    let total = first_value +
+    second_value *
+            third_value -
+        describe(
+        "z", 1, 2, 3, 4, 5
+        ) +
+    1
+    let later =
+            total + 1
+    var name = 0
+    name =
+    total
+    let ok = total > 0 &&
+    total < 100 ||
+    total == 1000
+    if total > 0 &&
+    ok {
+        print(total)
+    }
+    let text = builder
+    .add("a")
+            .add("b")
+
+        .add(describe(
+            "c", 1, 2, 3, 4, 5
+        ))
+    .finish()
+    builder.items
+    .push(1)
+    print((
+        1 + 2
+    ) * 3)
+    print(table[
+        0
+    ][1])
+}

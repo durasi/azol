@@ -215,6 +215,12 @@ pub enum Item {
         /// List of ids into `Ast::variants`.
         variants: List,
     },
+    /// `const NAME = value` or `const NAME: Type = value`.
+    Const {
+        name: Span,
+        ty: Option<TypeId>,
+        value: ExprId,
+    },
 }
 
 #[derive(Debug, Default)]

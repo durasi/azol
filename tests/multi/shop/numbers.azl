@@ -1,5 +1,9 @@
 // Small helpers with numbers, used from both other files.
 
+// Constants are visible in every file, in any order.
+const SEPARATOR = ": "
+const BASE_EXIT = 2
+
 fn sum(numbers: List[i64]) -> i64 {
     var total = 0
     for n in numbers {

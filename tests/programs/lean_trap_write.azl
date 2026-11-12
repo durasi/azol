@@ -1,0 +1,15 @@
+// expect-exit: 1
+// expect-output: 0 1 2 3
+// expect-stderr: azol: index out of range
+
+// Writing one past the end, with the value a constant, in a loop.
+fn main() {
+    var xs = [9, 9, 9]
+    var i = 0
+    while i <= xs.len() {
+        print(i)
+        xs[i] = 1
+        i = i + 1
+    }
+    print(xs[0])
+}

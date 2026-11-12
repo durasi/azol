@@ -1,0 +1,218 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// azol-front: the lexer and parser written in azoL, as a tool.
+//
+//     azol-front lex <file>      lists the tokens of a file
+//     azol-front parse <file>    prints the syntax tree of a file
+//
+// Both write what `azol lex` and `azol parse` write, and report a
+// mistake in the same words, so the two compilers can be compared file
+// by file. With `--time` before the file the work is done and nothing
+// is printed, for measuring from outside.
+
+const REPORT_WIDTH = 100
+
+fn append_spaces(out: mut str, count: i64) {
+    var i = 0
+    while i < count {
+        out = out + " "
+        i = i + 1
+    }
+}
+
+// Prints an error with the offending source line and a caret under it.
+// A very long line is cut down to the part around the problem.
+fn report_error(path: str, src: str, offset: i64, message: str) {
+    let at = line_column(src, offset)
+    var end = offset
+    if end > src.len() {
+        end = src.len()
+    }
+    // The line the position is in, without its line ending.
+    var line_start = end
+    while line_start > 0 && src[line_start - 1] != '\n' {
+        line_start = line_start - 1
+    }
+    var line_end = end
+    while line_end < src.len() && src[line_end] != '\n' {
+        line_end = line_end + 1
+    }
+    if line_end < src.len() && line_end > line_start && src[line_end - 1] == '\r' {
+        line_end = line_end - 1
+    }
+    let characters = count_characters(src, line_start, line_end)
+    var shown = ""
+    var caret = at.column - 1
+    if characters <= REPORT_WIDTH {
+        shown = src.slice(line_start, line_end)
+    } else {
+        var first = at.column - 1 - REPORT_WIDTH / 2
+        if first < 0 {
+            first = 0
+        }
+        if first > characters - REPORT_WIDTH {
+            first = characters - REPORT_WIDTH
+        }
+        let last = first + REPORT_WIDTH
+        // Where the characters `first` and `last` start in the text.
+        var from = line_start
+        var to = line_end
+        var seen = 0
+        var i = line_start
+        while i < line_end {
+            if starts_character(src[i]) {
+                if seen == first {
+                    from = i
+                }
+                if seen == last {
+                    to = i
+                }
+                seen = seen + 1
+            }
+            i = i + 1
+        }
+        caret = at.column - 1 - first
+        if first > 0 {
+            shown = "..."
+            caret = caret + 3
+        }
+        shown = shown + src.slice(from, to)
+        if last < characters {
+            shown = shown + "..."
+        }
+    }
+    let line = str(at.line)
+    let gutter = line.len()
+    var out = "error: " + message + "\n"
+    append_spaces(mut out, gutter)
+    out = out + "--> " + path + ":" + line + ":" + str(at.column) + "\n"
+    append_spaces(mut out, gutter)
+    out = out + " |\n"
+    out = out + line + " | " + shown + "\n"
+    append_spaces(mut out, gutter)
+    out = out + " | "
+    append_spaces(mut out, caret)
+    out = out + "^"
+    eprint(out)
+}
+
+// One line per token: line, column, kind and text.
+fn token_listing(src: str, tokens: Tokens) -> str {
+    var out = ""
+    // The line and column of `cursor`, kept up to date while the tokens
+    // are visited in order, so the text is walked only once.
+    var cursor = 0
+    var line = 1
+    var column = 1
+    var i = 0
+    let count = tokens.kinds.len()
+    while i < count {
+        let kind = tokens.kinds[i]
+        let start = tokens.starts[i]
+        while cursor < start {
+            let b = src[cursor]
+            if b == '\n' {
+                line = line + 1
+                column = 1
+            } else if starts_character(b) {
+                column = column + 1
+            }
+            cursor = cursor + 1
+        }
+        let line_text = str(line)
+        append_spaces(mut out, 4 - line_text.len())
+        out = out + line_text
+        out = out + ":"
+        let column_text = str(column)
+        out = out + column_text
+        append_spaces(mut out, 4 - column_text.len())
+        out = out + " "
+        let name = token_kind_name(kind)
+        out = out + name
+        append_spaces(mut out, 10 - name.len())
+        out = out + " "
+        if kind == TOK_NEWLINE {
+            out = out + "\\n"
+        } else if kind != TOK_EOF {
+            out = out + src.slice(start, start + tokens.lens[i])
+        }
+        i = i + 1
+        if i < count {
+            out = out + "\n"
+        }
+    }
+    return out
+}
+
+fn run_lex(path: str, src: str, quiet: bool) -> i64 {
+    var tokens = new_tokens()
+    match lex(src, mut tokens) {
+        Some(problem) => {
+            report_error(path, src, problem.offset, problem.message)
+            return 1
+        }
+        None => {}
+    }
+    if !quiet {
+        print(token_listing(src, tokens))
+    }
+    return 0
+}
+
+fn run_parse(path: str, src: str, quiet: bool) -> i64 {
+    var p = new_parser(src)
+    match lex(p.src, mut p.tokens) {
+        Some(problem) => {
+            report_error(path, src, problem.offset, problem.message)
+            return 1
+        }
+        None => {}
+    }
+    parse_tokens(mut p)
+    if p.failed {
+        report_error(path, src, p.error.offset, p.error.message)
+        return 1
+    }
+    if !quiet {
+        let text = dump_ast(p.ast, p.src)
+        // `print` ends the line itself.
+        if text.len() > 0 {
+            print(text.slice(0, text.len() - 1))
+        }
+    }
+    return 0
+}
+
+fn main() -> i64 {
+    let arguments = args()
+    var quiet = false
+    var path = ""
+    if arguments.len() == 3 {
+        path = arguments[2]
+    } else if arguments.len() == 4 && arguments[2] == "--time" {
+        quiet = true
+        path = arguments[3]
+    } else {
+        eprint("usage: azol-front lex|parse [--time] <file>")
+        return 2
+    }
+    let mode = arguments[1]
+    if mode != "lex" && mode != "parse" {
+        eprint("usage: azol-front lex|parse [--time] <file>")
+        return 2
+    }
+    var src = ""
+    match read_file(path) {
+        Ok(text) => {
+            src = text
+        }
+        Err(problem) => {
+            eprint("error: cannot read '" + path + "': " + problem)
+            return 1
+        }
+    }
+    if mode == "lex" {
+        return run_lex(path, src, quiet)
+    }
+    return run_parse(path, src, quiet)
+}

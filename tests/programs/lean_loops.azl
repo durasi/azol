@@ -1,0 +1,167 @@
+// expect-exit: 0
+// expect-output: 0 1 2 -1 -1 21 -1 0 6 0 30 0 603 1104 33 7 10 23 57
+// Loops as the x86-64 generator writes them, with the test below the
+// body: loops that never run, and every way out of nested ones.
+
+fn first_above(xs: List[i64], limit: i64) -> i64 {
+    for i, x in xs {
+        if x > limit {
+            return i
+        }
+    }
+    return 0 - 1
+}
+
+fn find_pair(rows: List[List[i64]], wanted: i64) -> i64 {
+    var r = 0
+    while r < rows.len() {
+        for c, value in rows[r] {
+            if value == wanted {
+                return r * 10 + c
+            }
+        }
+        r = r + 1
+    }
+    return 0 - 1
+}
+
+fn count_to(n: i64) -> i64 {
+    var steps = 0
+    var i = 0
+    while true {
+        if i >= n {
+            break
+        }
+        i = i + 1
+        steps = steps + 1
+    }
+    return steps
+}
+
+fn skip_odd(n: i64) -> i64 {
+    var total = 0
+    var i = 0
+    while i < n {
+        i = i + 1
+        if i % 2 == 1 {
+            continue
+        }
+        total = total + i
+    }
+    return total
+}
+
+fn nested_breaks(n: i64) -> i64 {
+    var hits = 0
+    var a = 0
+    while a < n {
+        var b = 0
+        while b < n {
+            b = b + 1
+            if b == a {
+                continue
+            }
+            if b > a + 2 {
+                break
+            }
+            hits = hits + 1
+        }
+        a = a + 1
+        if a == 4 {
+            break
+        }
+    }
+    return hits * 100 + a
+}
+
+fn kind(n: i64) -> i64 {
+    var i = 0
+    while i < 10 {
+        match i + n {
+            3 => return 30 + i
+            7 => {
+                i = i + 2
+                continue
+            }
+            12 => break
+            _ => i = i + 1
+        }
+    }
+    return i
+}
+
+fn main() {
+    // Loops that never run.
+    var none = 0
+    var i = 5
+    while i < 5 {
+        none = none + 1
+        i = i + 1
+    }
+    let empty: List[i64] = []
+    for x in empty {
+        none = none + x + 1
+    }
+    for k, x in empty {
+        none = none + k + x + 1
+    }
+    var never = false
+    while never {
+        none = none + 1
+    }
+    while false {
+        none = none + 1
+    }
+    print(none)
+
+    // Exactly one round, then none.
+    var once = 0
+    var go = true
+    while go {
+        once = once + 1
+        go = false
+    }
+    print(once)
+
+    print(first_above([1, 5, 9, 12], 8))
+    print(first_above([1, 5, 9, 12], 100))
+    print(first_above(empty, 0))
+    print(find_pair([[1, 2, 3], [], [4, 5, 6]], 5))
+    print(find_pair([[1, 2, 3], [], [4, 5, 6]], 7))
+    print(count_to(0))
+    print(count_to(6))
+    print(skip_odd(0))
+    print(skip_odd(10))
+    print(nested_breaks(0))
+    print(nested_breaks(3))
+    print(nested_breaks(9))
+    print(kind(0))
+    print(kind(5))
+    print(kind(20))
+
+    // `continue` and `break` inside `for`, with the position going on.
+    var seen = 0
+    for k, x in [10, 20, 30, 40, 50, 60] {
+        if k == 1 {
+            continue
+        }
+        if x == 50 {
+            break
+        }
+        seen = seen * 10 + k
+    }
+    print(seen)
+
+    // A list of structs gone through twice, the inner loop left early.
+    var pairs = 0
+    let ys = [3, 1, 2]
+    for a in ys {
+        for b in ys {
+            if b == a {
+                break
+            }
+            pairs = pairs + a * 10 + b
+        }
+    }
+    print(pairs)
+}

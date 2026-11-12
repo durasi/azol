@@ -1,0 +1,155 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Writes Linux x86-64 executables: static ELF files that need no
+// interpreter and no libraries.
+//
+// The file is mapped as it is, in two pieces:
+//
+//     file offset   address               contents
+//     0             base                  ELF header and program headers
+//     text_offset   base + text_offset    the runtime (fixed size)
+//                   ...                   a jump to the program's `main`
+//                   ...                   the program's code
+//                   ...                   the program's string literals
+//     next page     memory                one page of zeros: the runtime's
+//                                         writable memory
+//
+// The first piece is readable and executable, the second readable and
+// writable. The runtime was linked for exactly these addresses, so it is
+// copied in unchanged; only the program's references to it and to its own
+// data are filled in here.
+
+// constants
+
+fn elf_page() -> i64 {
+    return 4096
+}
+
+fn elf_header_size() -> i64 {
+    return 64
+}
+
+fn elf_program_header_size() -> i64 {
+    return 56
+}
+
+fn elf_program_headers() -> i64 {
+    return 3
+}
+
+// Room for the jump to `main` in front of the program's code.
+fn elf_jump_size() -> i64 {
+    return 16
+}
+
+fn pt_load() -> i64 {
+    return 1
+}
+
+fn pt_gnu_stack() -> i64 {
+    return 0x6474E551
+}
+
+fn pf_x() -> i64 {
+    return 1
+}
+
+fn pf_w() -> i64 {
+    return 2
+}
+
+fn pf_r() -> i64 {
+    return 4
+}
+
+fn put_program_header(out: mut List[i64], kind: i64, flags: i64, offset: i64, address: i64, size: i64, align: i64) {
+    put32(mut out, kind)
+    put32(mut out, flags)
+    put64(mut out, offset)
+    put64(mut out, address) // virtual address
+    put64(mut out, address) // physical address, unused
+    put64(mut out, size) // size in the file
+    put64(mut out, size) // size in memory
+    put64(mut out, align)
+}
+
+// The 4-byte distance an instruction stores to reach `target`, when the
+// field holding it is at `field` and the instruction ends right after.
+fn elf_relative(target: i64, field: i64) -> i64 {
+    return target - (field + 4)
+}
+
+// Builds the complete executable for a program. `runtime` is the content
+// of `runtime/linux_x64/runtime.bin`.
+fn build_elf(code: CodeFile, runtime: str) -> List[i64] {
+    // Where each part sits in the file. Addresses are the base plus the
+    // offset, except for the runtime's memory.
+    let jump = code.text_offset + runtime.len()
+    let code_at = jump + elf_jump_size()
+    let data_at = align_up(code_at + code.code.len(), 16)
+    let text_end = data_at + code.data.len()
+    let memory_at = align_up(text_end, elf_page())
+    var memory_size = code.memory_size
+    if memory_size < 1 {
+        memory_size = 1
+    }
+    let file_size = memory_at + align_up(memory_size, elf_page())
+    if code.base + text_end > code.memory {
+        eprint("azol-link: the program is too large for this executable layout")
+        exit(1)
+    }
+
+    var out: List[i64] = []
+    // ELF header: 64-bit, little-endian, version 1, System V.
+    put8(mut out, 0x7F)
+    put_text(mut out, "ELF")
+    put8(mut out, 2)
+    put8(mut out, 1)
+    put8(mut out, 1)
+    put8(mut out, 0)
+    put64(mut out, 0)
+    put16(mut out, 2) // an executable at fixed addresses
+    put16(mut out, 62) // x86-64
+    put32(mut out, 1)
+    put64(mut out, code.base + code.text_offset + code.start) // where the process starts
+    put64(mut out, elf_header_size()) // program headers follow this header
+    put64(mut out, 0) // no section headers
+    put32(mut out, 0)
+    put16(mut out, elf_header_size())
+    put16(mut out, elf_program_header_size())
+    put16(mut out, elf_program_headers())
+    put16(mut out, 64) // size a section header would have
+    put16(mut out, 0)
+    put16(mut out, 0)
+
+    // Code and constant data, then the runtime's memory, then a note
+    // that the stack holds no code.
+    put_program_header(mut out, pt_load(), pf_r() | pf_x(), 0, code.base, text_end, elf_page())
+    put_program_header(mut out, pt_load(), pf_r() | pf_w(), memory_at, code.memory, file_size - memory_at, elf_page())
+    put_program_header(mut out, pt_gnu_stack(), pf_r() | pf_w(), 0, 0, 0, 16)
+
+    pad_to(mut out, code.text_offset, 0)
+    put_text(mut out, runtime)
+
+    // The runtime calls this spot; from here the program's `main` is a
+    // fixed distance away.
+    put8(mut out, 0xE9) // jmp rel32
+    put32(mut out, elf_relative(code_at + code.entry, jump + 1))
+    pad_to(mut out, code_at, 0xCC)
+
+    put_bytes(mut out, code.code)
+    for call in code.calls {
+        let target = code.text_offset + code.entries[call.value]
+        let field = code_at + call.field
+        patch32(mut out, field, elf_relative(target, field))
+    }
+    for reference in code.refs {
+        let field = code_at + reference.field
+        patch32(mut out, field, elf_relative(data_at + reference.value, field))
+    }
+    pad_to(mut out, data_at, 0xCC)
+    put_bytes(mut out, code.data)
+
+    pad_to(mut out, file_size, 0)
+    return out
+}

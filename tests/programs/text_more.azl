@@ -1,0 +1,297 @@
+// expect-exit: 0
+// expect-line: true
+// expect-line: false
+// expect-line: false
+// expect-line: -1
+// expect-line: 1
+// expect-line: 0
+// expect-line: -1
+// expect-line: 1
+// expect-line: 0
+// expect-line: -1
+// expect-line: 1
+// expect-line: -1
+// expect-line: 1
+// expect-line: 1
+// expect-line: -1
+// expect-line: 0
+// expect-line: 8
+// expect-line: 8
+// expect-line: 16
+// expect-line: 16
+// expect-line: none
+// expect-line: none
+// expect-line: 0
+// expect-line: 4
+// expect-line: 19
+// expect-line: none
+// expect-line: 0
+// expect-line: none
+// expect-line: 16
+// expect-line: 12
+// expect-line: none
+// expect-line: 19
+// expect-line: 0
+// expect-line: none
+// expect-line: 0
+// expect-line: 2
+// expect-line: 1 two 1 two 1
+// expect-line: one second one second one
+// expect-line: onetwoonetwoone
+// expect-line: one two one two one
+// expect-line: one two one two one
+// expect-line: aa
+// expect-line: ba
+// expect-line: []
+// expect-line: []
+// expect-line: a..b..c
+// expect-line: xxxx
+// expect-line: ababab
+// expect-line: []
+// expect-line: []
+// expect-line: []
+// expect-line: -
+// expect-line: 3000
+// expect-line: HELLO, WORLD 123!
+// expect-line: hello, world 123!
+// expect-line: @AZ[`AZ{
+// expect-line: @az[`az{
+// expect-line: []
+// expect-line: çAY İÇ
+// expect-line: Çay iç
+// expect-line: 007
+// expect-line: 1234
+// expect-line: 123
+// expect-line: ababx
+// expect-line: ababx
+// expect-line: x
+// expect-line: [  ]
+// expect-line: x
+// expect-line: name....|
+// expect-line: name|
+// expect-line: name|
+// expect-line: xabab|
+// expect-line: x|
+// expect-line: ***
+// expect-line: [65,90,32,97,122]
+// expect-line: []
+// expect-line: [195,169]
+// expect-line: hello
+// expect-line: []
+// expect-line: Hi!
+// expect-line: 4
+// expect-line: 255
+// expect-line: true
+// expect-line: 0
+// expect-line: 9
+// expect-line: a
+// expect-line: ff
+// expect-line: 100
+// expect-line: 1000
+// expect-line: deadbeef
+// expect-line: 7fffffffffffffff
+// expect-line: ffffffffffffffff
+// expect-line: ffffffffffffff00
+// expect-line: 8000000000000000
+// expect-line: 1000000000000000
+// expect-line: 0
+// expect-line: 255
+// expect-line: 255
+// expect-line: 3735928559
+// expect-line: 16
+// expect-line: 9223372036854775807
+// expect-line: -1
+// expect-line: -9223372036854775808
+// expect-line: none
+// expect-line: none
+// expect-line: none
+// expect-line: none
+// expect-line: none
+// expect-line: none
+// expect-line: none
+// expect-line: none
+// expect-line: none
+// expect-line: none
+// expect-line: none
+// expect-line: none
+// expect-line: 858
+
+// More methods of strings from the library: comparing, searching from a
+// position or from the end, replacing, repeating, letter case, padding,
+// bytes, and hexadecimal digits.
+
+fn show(found: Option[i64]) -> str {
+    match found {
+        Some(value) => return str(value)
+        None => return "none"
+    }
+}
+
+fn numbers(items: List[i64]) -> str {
+    var out = "["
+    for i, item in items {
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + str(item)
+    }
+    return out + "]"
+}
+
+fn main() {
+    let empty = ""
+    print(empty.is_empty())
+    print("a".is_empty())
+    print(" ".is_empty())
+
+    print("apple".compare("banana"))
+    print("banana".compare("apple"))
+    print("same".compare("same"))
+    print("app".compare("apple"))
+    print("apple".compare("app"))
+    print(empty.compare(""))
+    print(empty.compare("a"))
+    print("a".compare(empty))
+    print("Zebra".compare("apple"))
+    print("a".compare("B"))
+    // Bytes above 127 are larger than every ASCII byte.
+    print("é".compare("z"))
+    print("abc".compare("abd"))
+
+    let text = "one two one two one"
+    print(show(text.index_of_from("one", 0)))
+    print(show(text.index_of_from("one", 1)))
+    print(show(text.index_of_from("one", 8)))
+    print(show(text.index_of_from("one", 9)))
+    print(show(text.index_of_from("one", 16)))
+    print(show(text.index_of_from("one", 17)))
+    print(show(text.index_of_from("one", 100)))
+    print(show(text.index_of_from("one", -5)))
+    print(show(text.index_of_from("", 4)))
+    print(show(text.index_of_from("", 19)))
+    print(show(text.index_of_from("", 20)))
+    print(show(empty.index_of_from("", 0)))
+    print(show(empty.index_of_from("x", 0)))
+
+    print(show(text.last_index_of("one")))
+    print(show(text.last_index_of("two")))
+    print(show(text.last_index_of("three")))
+    print(show(text.last_index_of("")))
+    print(show(text.last_index_of(text)))
+    print(show("ab".last_index_of("abc")))
+    print(show(empty.last_index_of("")))
+    print(show("aaaa".last_index_of("aa")))
+
+    print(text.replace("one", "1"))
+    print(text.replace("two", "second"))
+    print(text.replace(" ", ""))
+    print(text.replace("three", "3"))
+    print(text.replace("", "x"))
+    print("aaaa".replace("aa", "a"))
+    print("aaa".replace("aa", "b"))
+    print("[" + "abc".replace("abc", "") + "]")
+    print("[" + empty.replace("a", "b") + "]")
+    print("a.b.c".replace(".", ".."))
+    print("x".replace("x", "xx").replace("x", "xx"))
+
+    print("ab".repeat(3))
+    print("[" + "ab".repeat(0) + "]")
+    print("[" + "ab".repeat(-2) + "]")
+    print("[" + empty.repeat(5) + "]")
+    print("-".repeat(1))
+    print("abc".repeat(1000).len())
+
+    print("Hello, World 123!".to_upper())
+    print("Hello, World 123!".to_lower())
+    print("@AZ[`az{".to_upper())
+    print("@AZ[`az{".to_lower())
+    print("[" + empty.to_upper() + empty.to_lower() + "]")
+    // Letters outside ASCII are left alone.
+    print("çay İÇ".to_upper())
+    print("ÇAY iç".to_lower())
+
+    print("7".pad_left(3, "0"))
+    print("1234".pad_left(3, "0"))
+    print("123".pad_left(3, "0"))
+    print("x".pad_left(4, "ab"))
+    print("x".pad_left(5, "ab"))
+    print("x".pad_left(5, ""))
+    print("[" + empty.pad_left(2, " ") + "]")
+    print("x".pad_left(-1, "."))
+    print("name".pad_right(8, ".") + "|")
+    print("name".pad_right(4, ".") + "|")
+    print("name".pad_right(2, ".") + "|")
+    print("x".pad_right(4, "ab") + "|")
+    print("x".pad_right(5, "") + "|")
+    print(empty.pad_right(3, "*"))
+
+    print(numbers("AZ az".bytes()))
+    print(numbers(empty.bytes()))
+    print(numbers("é".bytes()))
+    print("hello".bytes().to_str())
+    print("[" + empty.bytes().to_str() + "]")
+    print([72, 105, 33].to_str())
+    let high = [195, 169, 0, 255].to_str()
+    print(high.len())
+    print(high[3] + high[2])
+    var all: List[i64] = []
+    var b = 0
+    while b < 256 {
+        all.push(b)
+        b = b + 1
+    }
+    print(numbers(all.to_str().bytes()) == numbers(all))
+
+    print(0.to_hex())
+    print(9.to_hex())
+    print(10.to_hex())
+    print(255.to_hex())
+    print(256.to_hex())
+    print(4096.to_hex())
+    print(3735928559.to_hex())
+    print(9223372036854775807.to_hex())
+    let minus_one = -1
+    print(minus_one.to_hex())
+    let minus_256 = -256
+    print(minus_256.to_hex())
+    print((1 << 63).to_hex())
+    print((1 << 60).to_hex())
+
+    print(show("0".parse_hex()))
+    print(show("ff".parse_hex()))
+    print(show("FF".parse_hex()))
+    print(show("DeadBeef".parse_hex()))
+    print(show("0000000000000010".parse_hex()))
+    print(show("7fffffffffffffff".parse_hex()))
+    print(show("ffffffffffffffff".parse_hex()))
+    print(show("8000000000000000".parse_hex()))
+    print(show("00000000000000010".parse_hex()))
+    print(show(empty.parse_hex()))
+    print(show("g".parse_hex()))
+    print(show("0x10".parse_hex()))
+    print(show("-1".parse_hex()))
+    print(show(" 1".parse_hex()))
+    print(show("12 ".parse_hex()))
+    print(show("@".parse_hex()))
+    print(show("G".parse_hex()))
+    print(show("`".parse_hex()))
+    print(show("/".parse_hex()))
+    print(show(":".parse_hex()))
+
+    // Each number comes back from its own hexadecimal digits.
+    var good = 0
+    var n = -3000
+    while n < 3000 {
+        let wide = n * 1000003 * 1000003
+        match wide.to_hex().parse_hex() {
+            Some(back) => {
+                if back == wide {
+                    good = good + 1
+                }
+            }
+            None => {}
+        }
+        n = n + 7
+    }
+    print(good)
+}

@@ -1,0 +1,161 @@
+// expect-exit: 0
+// expect-output: 1 2 1 3 0 5 1 7 8 0 9 10 11 1 12 13 1 15 16 17 18 0 19 20 1 21 23 false true true 31 32 1 34 33 0 1 40 45 -5 3 4 6 -6 50 51 52 53 60 61 62 2 -1 0 1 true false false false true 11 22 3 1
+// Conditions that turn into jumps: `&&`, `||` and `!` with calls that
+// print, so that the order and the skipping can be seen.
+
+struct Flags {
+    on: bool
+    count: i64
+    ready: bool
+}
+
+fn say(n: i64, answer: bool) -> bool {
+    print(n)
+    return answer
+}
+
+fn num(n: i64) -> i64 {
+    print(n)
+    return n
+}
+
+fn sign(n: i64) -> i64 {
+    if n < 0 {
+        return 0 - 1
+    }
+    if n == 0 {
+        return 0
+    }
+    return 1
+}
+
+fn between(n: i64, low: i64, high: i64) -> bool {
+    return n >= low && n <= high
+}
+
+fn outside(n: i64, low: i64, high: i64) -> bool {
+    return n < low || n > high
+}
+
+fn main() {
+    // Each line prints the calls that ran, then 1 or 0.
+    if say(1, true) && say(2, true) {
+        print(1)
+    } else {
+        print(0)
+    }
+    if say(3, false) && say(4, true) {
+        print(1)
+    } else {
+        print(0)
+    }
+    if say(5, true) || say(6, true) {
+        print(1)
+    } else {
+        print(0)
+    }
+    if say(7, false) || say(8, false) {
+        print(1)
+    } else {
+        print(0)
+    }
+    if !say(9, false) && (say(10, false) || say(11, true)) {
+        print(1)
+    } else {
+        print(0)
+    }
+    if !(say(12, true) && say(13, false)) || say(14, true) {
+        print(1)
+    } else {
+        print(0)
+    }
+    if (say(15, false) || say(16, true)) && (say(17, false) || say(18, false)) {
+        print(1)
+    } else {
+        print(0)
+    }
+    if !(say(19, false) || !say(20, true)) {
+        print(1)
+    } else {
+        print(0)
+    }
+
+    // The same as values.
+    let a = say(21, false) && say(22, true)
+    let b = say(23, true) || say(24, false)
+    let c = !a && (b || say(25, true))
+    print(a)
+    print(b)
+    print(c)
+
+    // Calls on both sides of a comparison, left one first.
+    if num(31) < num(32) {
+        print(1)
+    }
+    if num(34) - num(33) > num(0) {
+        print(1)
+    }
+    print(num(40) - num(45))
+    print(num(3) * (num(4) - num(6)))
+
+    // A loop whose test has effects: it runs once more than the body.
+    var n = 0
+    while say(50 + n, n < 3) {
+        n = n + 1
+    }
+    var m = 0
+    while m < 5 && say(60 + m, m != 2) {
+        m = m + 1
+    }
+    print(m)
+
+    // Against zero, negative numbers and values in memory.
+    print(sign(0 - 5))
+    print(sign(0))
+    print(sign(9))
+    print(between(5, 1, 10))
+    print(between(0, 1, 10))
+    print(between(11, 1, 10))
+    print(outside(5, 1, 10))
+    print(outside(0 - 3, 0 - 2, 2))
+    var f = Flags { on: true, count: 0, ready: false }
+    if f.on && !f.ready {
+        f.count = f.count + 1
+    }
+    if f.ready || f.count == 1 {
+        f.ready = true
+    }
+    if f.ready {
+        f.count = f.count + 10
+    }
+    if !f.on {
+        f.count = f.count + 100
+    }
+    print(f.count)
+    let marks = [true, false, true]
+    var k = 0
+    var set = 0
+    while k < marks.len() {
+        if marks[k] {
+            set = set + 1
+        }
+        if !marks[k] || k == 2 {
+            set = set + 10
+        }
+        k = k + 1
+    }
+    print(set)
+
+    // A test that leaves a temporary to free.
+    let word = "ab"
+    var rounds = 0
+    var text = ""
+    while text + "x" != "aaax" {
+        text = text + "a"
+        rounds = rounds + 1
+    }
+    print(rounds)
+    if word + "c" == "abc" && rounds == 3 {
+        print(1)
+    }
+}

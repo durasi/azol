@@ -1,0 +1,201 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Tokens: the words and signs a source text is made of.
+//
+// A token kind is a number, so that the parser can compare and branch
+// on it cheaply. The tokens of a text are three parallel lists: kind,
+// where the token starts, and how many bytes long it is. The text of a
+// token is never copied; it is that range of the source.
+
+const TOK_IDENT = 0
+const TOK_INT = 1
+const TOK_FLOAT = 2
+const TOK_STR = 3
+
+const TOK_FN = 4
+const TOK_STRUCT = 5
+const TOK_ENUM = 6
+const TOK_CONST = 7
+const TOK_LET = 8
+const TOK_VAR = 9
+const TOK_MUT = 10
+const TOK_IF = 11
+const TOK_ELSE = 12
+const TOK_FOR = 13
+const TOK_IN = 14
+const TOK_WHILE = 15
+const TOK_RETURN = 16
+const TOK_MATCH = 17
+const TOK_BREAK = 18
+const TOK_CONTINUE = 19
+const TOK_TRUE = 20
+const TOK_FALSE = 21
+
+const TOK_LPAREN = 22
+const TOK_RPAREN = 23
+const TOK_LBRACE = 24
+const TOK_RBRACE = 25
+const TOK_LBRACKET = 26
+const TOK_RBRACKET = 27
+const TOK_COMMA = 28
+const TOK_COLON = 29
+const TOK_DOT = 30
+const TOK_ARROW = 31
+const TOK_FAT_ARROW = 32
+
+const TOK_ASSIGN = 33
+const TOK_EQ = 34
+const TOK_NOT_EQ = 35
+const TOK_LT = 36
+const TOK_LT_EQ = 37
+const TOK_GT = 38
+const TOK_GT_EQ = 39
+const TOK_PLUS = 40
+const TOK_MINUS = 41
+const TOK_STAR = 42
+const TOK_SLASH = 43
+const TOK_PERCENT = 44
+const TOK_BANG = 45
+const TOK_AND_AND = 46
+const TOK_OR_OR = 47
+const TOK_AMP = 48
+const TOK_PIPE = 49
+const TOK_CARET = 50
+const TOK_SHL = 51
+const TOK_SHR = 52
+
+const TOK_NEWLINE = 53
+const TOK_EOF = 54
+
+// The tokens of one source text. The last one is always `TOK_EOF`.
+struct Tokens {
+    kinds: List[i64]
+    starts: List[i64]
+    lens: List[i64]
+}
+
+fn new_tokens() -> Tokens {
+    return Tokens { kinds: [], starts: [], lens: [] }
+}
+
+// The name of a token kind, as `azol lex` prints it.
+fn token_kind_name(kind: i64) -> str {
+    match kind {
+        TOK_IDENT => return "Ident"
+        TOK_INT => return "Int"
+        TOK_FLOAT => return "Float"
+        TOK_STR => return "Str"
+        TOK_FN => return "Fn"
+        TOK_STRUCT => return "Struct"
+        TOK_ENUM => return "Enum"
+        TOK_CONST => return "Const"
+        TOK_LET => return "Let"
+        TOK_VAR => return "Var"
+        TOK_MUT => return "Mut"
+        TOK_IF => return "If"
+        TOK_ELSE => return "Else"
+        TOK_FOR => return "For"
+        TOK_IN => return "In"
+        TOK_WHILE => return "While"
+        TOK_RETURN => return "Return"
+        TOK_MATCH => return "Match"
+        TOK_BREAK => return "Break"
+        TOK_CONTINUE => return "Continue"
+        TOK_TRUE => return "True"
+        TOK_FALSE => return "False"
+        TOK_LPAREN => return "LParen"
+        TOK_RPAREN => return "RParen"
+        TOK_LBRACE => return "LBrace"
+        TOK_RBRACE => return "RBrace"
+        TOK_LBRACKET => return "LBracket"
+        TOK_RBRACKET => return "RBracket"
+        TOK_COMMA => return "Comma"
+        TOK_COLON => return "Colon"
+        TOK_DOT => return "Dot"
+        TOK_ARROW => return "Arrow"
+        TOK_FAT_ARROW => return "FatArrow"
+        TOK_ASSIGN => return "Assign"
+        TOK_EQ => return "Eq"
+        TOK_NOT_EQ => return "NotEq"
+        TOK_LT => return "Lt"
+        TOK_LT_EQ => return "LtEq"
+        TOK_GT => return "Gt"
+        TOK_GT_EQ => return "GtEq"
+        TOK_PLUS => return "Plus"
+        TOK_MINUS => return "Minus"
+        TOK_STAR => return "Star"
+        TOK_SLASH => return "Slash"
+        TOK_PERCENT => return "Percent"
+        TOK_BANG => return "Bang"
+        TOK_AND_AND => return "AndAnd"
+        TOK_OR_OR => return "OrOr"
+        TOK_AMP => return "Amp"
+        TOK_PIPE => return "Pipe"
+        TOK_CARET => return "Caret"
+        TOK_SHL => return "Shl"
+        TOK_SHR => return "Shr"
+        TOK_NEWLINE => return "Newline"
+        _ => return "Eof"
+    }
+}
+
+// How a token kind is named in a message: "expected `)` but found a name".
+fn describe_token(kind: i64) -> str {
+    match kind {
+        TOK_IDENT => return "a name"
+        TOK_INT => return "a number"
+        TOK_FLOAT => return "a number"
+        TOK_STR => return "a string"
+        TOK_FN => return "`fn`"
+        TOK_STRUCT => return "`struct`"
+        TOK_ENUM => return "`enum`"
+        TOK_CONST => return "`const`"
+        TOK_LET => return "`let`"
+        TOK_VAR => return "`var`"
+        TOK_MUT => return "`mut`"
+        TOK_IF => return "`if`"
+        TOK_ELSE => return "`else`"
+        TOK_FOR => return "`for`"
+        TOK_IN => return "`in`"
+        TOK_WHILE => return "`while`"
+        TOK_RETURN => return "`return`"
+        TOK_MATCH => return "`match`"
+        TOK_BREAK => return "`break`"
+        TOK_CONTINUE => return "`continue`"
+        TOK_TRUE => return "`true`"
+        TOK_FALSE => return "`false`"
+        TOK_LPAREN => return "`(`"
+        TOK_RPAREN => return "`)`"
+        TOK_LBRACE => return "`{`"
+        TOK_RBRACE => return "`}`"
+        TOK_LBRACKET => return "`[`"
+        TOK_RBRACKET => return "`]`"
+        TOK_COMMA => return "`,`"
+        TOK_COLON => return "`:`"
+        TOK_DOT => return "`.`"
+        TOK_ARROW => return "`->`"
+        TOK_FAT_ARROW => return "`=>`"
+        TOK_ASSIGN => return "`=`"
+        TOK_EQ => return "`==`"
+        TOK_NOT_EQ => return "`!=`"
+        TOK_LT => return "`<`"
+        TOK_LT_EQ => return "`<=`"
+        TOK_GT => return "`>`"
+        TOK_GT_EQ => return "`>=`"
+        TOK_PLUS => return "`+`"
+        TOK_MINUS => return "`-`"
+        TOK_STAR => return "`*`"
+        TOK_SLASH => return "`/`"
+        TOK_PERCENT => return "`%`"
+        TOK_BANG => return "`!`"
+        TOK_AND_AND => return "`&&`"
+        TOK_OR_OR => return "`||`"
+        TOK_AMP => return "`&`"
+        TOK_PIPE => return "`|`"
+        TOK_CARET => return "`^`"
+        TOK_SHL => return "`<<`"
+        TOK_SHR => return "`>>`"
+        TOK_NEWLINE => return "end of line"
+        _ => return "end of file"
+    }
+}

@@ -1,0 +1,327 @@
+// expect-exit: 0
+// expect-line: true
+// expect-line: true
+// expect-line: false
+// expect-line: false
+// expect-line: false
+// expect-line: 0
+// expect-line: 1
+// expect-line: 5
+// expect-line: none
+// expect-line: none
+// expect-line: 0
+// expect-line: 5
+// expect-line: 6
+// expect-line: none
+// expect-line: none
+// expect-line: 3
+// expect-line: 2
+// expect-line: 0
+// expect-line: 0
+// expect-line: 2
+// expect-line: 1
+// expect-line: 0
+// expect-line: 3
+// expect-line: [5,-3,9]
+// expect-line: []
+// expect-line: []
+// expect-line: [5,-3,9,0,-3,12,5,5]
+// expect-line: [5,-3,9,0,-3,12,5,5]
+// expect-line: []
+// expect-line: [42]
+// expect-line: [0,-3,12,5,5]
+// expect-line: [5,-3,9,0,-3,12,5,5]
+// expect-line: [5,-3,9,0,-3,12,5,5]
+// expect-line: []
+// expect-line: []
+// expect-line: []
+// expect-line: []
+// expect-line: pear+apple
+// expect-line: +apples
+// expect-line: fig+Apple
+// expect-line: [5,-3,9,0,-3,12,5,5]
+// expect-line: -3
+// expect-line: 12
+// expect-line: 42
+// expect-line: 42
+// expect-line: none
+// expect-line: none
+// expect-line: -9223372036854775808
+// expect-line: 9223372036854775807
+// expect-line: <>
+// expect-line: <pear>
+// expect-line: none
+// expect-line: none
+// expect-line: <a>
+// expect-line: <c>
+// expect-line: 30
+// expect-line: 0
+// expect-line: 42
+// expect-line: -9223372036854775808
+// expect-line: -6
+// expect-line: [-3,-3,0,5,5,5,9,12]
+// expect-line: []
+// expect-line: [42]
+// expect-line: [1,2]
+// expect-line: [1,2]
+// expect-line: [1,2,3]
+// expect-line: [7,7,7,7,7]
+// expect-line: [-1,0,1,2,3,4,5]
+// expect-line: [-9223372036854775808,-1,0,1,9223372036854775807]
+// expect-line: [5,-3,9,0,-3,12,5,5]
+// expect-line: ,Apple,apple,apples,fig,pear,pear
+// expect-line: pear,apple,fig,Apple,pear,,apples
+// expect-line: []
+// expect-line: solo
+// expect-line: a,b
+// expect-line: ,B,a,aa,ab,abc,b
+// expect-line: <pear>
+// expect-line: 5000
+// expect-line: true
+// expect-line: false
+// expect-line: true
+// expect-line: -1000
+// expect-line: -10
+// expect-line: 1000
+// expect-line: 4082403867
+// expect-line: -1000
+// expect-line: 1000
+// expect-line: 3
+// expect-line: 1185
+// expect-line: 2522
+// expect-line: true
+// expect-line: true
+// expect-line: true
+// expect-line: 150
+// expect-line: k0 k1 k10 k100 k101
+// expect-line: k95 k96 k97 k98 k99
+// expect-line: k31
+// expect-line: <k0>
+// expect-line: <k99>
+// expect-line: 149
+// expect-line: [1,1,1,1,2,2,2,2]
+
+// More methods of lists from the library: searching, counting, parts of
+// a list, the smallest and largest item, sums, and sorting.
+
+fn show(found: Option[i64]) -> str {
+    match found {
+        Some(value) => return str(value)
+        None => return "none"
+    }
+}
+
+fn text(found: Option[str]) -> str {
+    match found {
+        Some(value) => return "<" + value + ">"
+        None => return "none"
+    }
+}
+
+fn numbers(items: List[i64]) -> str {
+    var out = "["
+    for i, item in items {
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + str(item)
+    }
+    return out + "]"
+}
+
+// Whether each item is at most the one after it.
+fn in_order(items: List[i64]) -> bool {
+    var i = 1
+    while i < items.len() {
+        if items[i - 1] > items[i] {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// A sum that depends on where each item stands.
+fn weighted(items: List[i64]) -> i64 {
+    var total = 0
+    for i, item in items {
+        total = total + (i + 1) * item
+    }
+    return total
+}
+
+fn main() {
+    let none: List[i64] = []
+    let no_words: List[str] = []
+    let one = [42]
+    let some = [5, -3, 9, 0, -3, 12, 5, 5]
+    let words = ["pear", "apple", "fig", "Apple", "pear", "", "apples"]
+
+    print(none.is_empty())
+    print(no_words.is_empty())
+    print(one.is_empty())
+    print(words.is_empty())
+    print([none].is_empty())
+
+    print(show(some.index_of(5)))
+    print(show(some.index_of(-3)))
+    print(show(some.index_of(12)))
+    print(show(some.index_of(7)))
+    print(show(none.index_of(0)))
+    print(show(words.index_of("pear")))
+    print(show(words.index_of("")))
+    print(show(words.index_of("apples")))
+    print(show(words.index_of("PEAR")))
+    print(show(no_words.index_of("")))
+
+    print(some.count(5))
+    print(some.count(-3))
+    print(some.count(1))
+    print(none.count(0))
+    print(words.count("pear"))
+    print(words.count("apple"))
+    print(words.count("x"))
+    print([true, false, true, true].count(true))
+
+    print(numbers(some.take(3)))
+    print(numbers(some.take(0)))
+    print(numbers(some.take(-4)))
+    print(numbers(some.take(8)))
+    print(numbers(some.take(100)))
+    print(numbers(none.take(2)))
+    print(numbers(one.take(1)))
+    print(numbers(some.skip(3)))
+    print(numbers(some.skip(0)))
+    print(numbers(some.skip(-4)))
+    print(numbers(some.skip(8)))
+    print(numbers(some.skip(100)))
+    print(numbers(none.skip(2)))
+    print(numbers(one.skip(1)))
+    print(words.take(2).join("+"))
+    print(words.skip(5).join("+"))
+    print(words.skip(2).take(2).join("+"))
+    // The original is untouched.
+    print(numbers(some))
+
+    print(show(some.min()))
+    print(show(some.max()))
+    print(show(one.min()))
+    print(show(one.max()))
+    print(show(none.min()))
+    print(show(none.max()))
+    print(show([-9223372036854775807 - 1, 9223372036854775807, 0].min()))
+    print(show([-9223372036854775807 - 1, 9223372036854775807, 0].max()))
+    print(text(words.min()))
+    print(text(words.max()))
+    print(text(no_words.min()))
+    print(text(no_words.max()))
+    print(text(["b", "a", "c"].min()))
+    print(text(["b", "a", "c"].max()))
+
+    print(some.sum())
+    print(none.sum())
+    print(one.sum())
+    print([9223372036854775807, 1].sum())
+    print([-1, -2, -3].sum())
+
+    print(numbers(some.sorted()))
+    print(numbers(none.sorted()))
+    print(numbers(one.sorted()))
+    print(numbers([2, 1].sorted()))
+    print(numbers([1, 2].sorted()))
+    print(numbers([3, 1, 2].sorted()))
+    print(numbers([7, 7, 7, 7, 7].sorted()))
+    print(numbers([5, 4, 3, 2, 1, 0, -1].sorted()))
+    print(numbers([0, 9223372036854775807, -9223372036854775807 - 1, -1, 1].sorted()))
+    print(numbers(some))
+    print(words.sorted().join(","))
+    print(words.join(","))
+    print("[" + no_words.sorted().join(",") + "]")
+    print(["solo"].sorted().join(","))
+    print(["b", "a"].sorted().join(","))
+    print(["ab", "a", "abc", "", "b", "B", "aa"].sorted().join(","))
+    print(text(words.sorted().reversed().first()))
+
+    // Many numbers from a small generator, with many repeats.
+    var many: List[i64] = []
+    var seed = 12345
+    var i = 0
+    while i < 5000 {
+        seed = (seed * 1103515245 + 12345) & 2147483647
+        many.push(seed % 2001 - 1000)
+        i = i + 1
+    }
+    let ordered = many.sorted()
+    print(ordered.len())
+    print(in_order(ordered))
+    print(in_order(many))
+    print(ordered.sum() == many.sum())
+    print(ordered[0])
+    print(ordered[2499])
+    print(ordered[4999])
+    print(weighted(ordered))
+    print(show(many.min()))
+    print(show(many.max()))
+    print(many.count(0))
+    print(show(many.index_of(0)))
+    print(show(ordered.index_of(0)))
+
+    // Every length from 0 to 40, which covers all the ways the last
+    // runs can be short.
+    var all_good = true
+    var size = 0
+    while size <= 40 {
+        var block: List[i64] = []
+        var k = 0
+        while k < size {
+            seed = (seed * 1103515245 + 12345) & 2147483647
+            block.push(seed % 10)
+            k = k + 1
+        }
+        let sorted = block.sorted()
+        if sorted.len() != size || !in_order(sorted) || sorted.sum() != block.sum() {
+            all_good = false
+        }
+        size = size + 1
+    }
+    print(all_good)
+
+    // Already sorted and backwards inputs.
+    var up: List[i64] = []
+    var down: List[i64] = []
+    i = 0
+    while i < 1000 {
+        up.push(i)
+        down.push(999 - i)
+        i = i + 1
+    }
+    print(weighted(up.sorted()) == weighted(up))
+    print(weighted(down.sorted()) == weighted(up))
+
+    // Many strings: the numbers 0 to 149 as text, in a shuffled order.
+    var names: List[str] = []
+    i = 0
+    while i < 150 {
+        names.push("k" + str(i * 7919 % 150))
+        i = i + 1
+    }
+    let by_name = names.sorted()
+    print(by_name.len())
+    print(by_name.take(5).join(" "))
+    print(by_name.skip(145).join(" "))
+    print(by_name[75])
+    print(text(names.min()))
+    print(text(names.max()))
+    var steps = 0
+    i = 1
+    while i < by_name.len() {
+        if by_name[i - 1].compare(by_name[i]) < 0 {
+            steps = steps + 1
+        }
+        i = i + 1
+    }
+    print(steps)
+
+    // Runs of equal items.
+    print(numbers([2, 1, 2, 1, 2, 1, 1, 2].sorted()))
+}

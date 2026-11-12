@@ -1,0 +1,106 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Binary output. A file being built is a `List[i64]` with one byte, 0 to
+// 255, in each element. That costs memory, but any byte can be read or
+// replaced in place at any time, which the linkers need: instructions
+// are completed after the code has been copied in, and the signature
+// hashes the file it is appended to. The list becomes a string only
+// once, when the file is written.
+
+fn put8(out: mut List[i64], value: i64) {
+    out.push(value & 0xFF)
+}
+
+// Little-endian numbers: lowest byte first.
+fn put16(out: mut List[i64], value: i64) {
+    out.push(value & 0xFF)
+    out.push((value >> 8) & 0xFF)
+}
+
+fn put32(out: mut List[i64], value: i64) {
+    out.push(value & 0xFF)
+    out.push((value >> 8) & 0xFF)
+    out.push((value >> 16) & 0xFF)
+    out.push((value >> 24) & 0xFF)
+}
+
+fn put64(out: mut List[i64], value: i64) {
+    put32(mut out, value)
+    put32(mut out, value >> 32)
+}
+
+// Big-endian numbers: highest byte first.
+fn put32_be(out: mut List[i64], value: i64) {
+    out.push((value >> 24) & 0xFF)
+    out.push((value >> 16) & 0xFF)
+    out.push((value >> 8) & 0xFF)
+    out.push(value & 0xFF)
+}
+
+fn put64_be(out: mut List[i64], value: i64) {
+    put32_be(mut out, value >> 32)
+    put32_be(mut out, value)
+}
+
+// The bytes of a string.
+fn put_text(out: mut List[i64], text: str) {
+    var i = 0
+    while i < text.len() {
+        out.push(text[i])
+        i = i + 1
+    }
+}
+
+// All of `bytes`.
+fn put_bytes(out: mut List[i64], bytes: List[i64]) {
+    for byte in bytes {
+        out.push(byte)
+    }
+}
+
+// Adds `byte` until the output is `length` bytes long.
+fn pad_to(out: mut List[i64], length: i64, byte: i64) {
+    while out.len() < length {
+        out.push(byte)
+    }
+}
+
+// Replaces the four bytes at `at` with a little-endian number.
+fn patch32(out: mut List[i64], at: i64, value: i64) {
+    out[at] = value & 0xFF
+    out[at + 1] = (value >> 8) & 0xFF
+    out[at + 2] = (value >> 16) & 0xFF
+    out[at + 3] = (value >> 24) & 0xFF
+}
+
+// `value` rounded up to a multiple of `to`.
+fn align_up(value: i64, to: i64) -> i64 {
+    return (value + to - 1) / to * to
+}
+
+// The finished bytes as a string, ready for `write_file`.
+fn bytes_to_text(bytes: List[i64]) -> str {
+    var text = ""
+    for byte in bytes {
+        text = text + chr(byte)
+    }
+    return text
+}
+
+// The bytes of a string as a list.
+fn text_to_bytes(text: str) -> List[i64] {
+    var bytes: List[i64] = []
+    put_text(mut bytes, text)
+    return bytes
+}
+
+// Two lowercase hexadecimal digits per byte.
+fn hex_text(bytes: List[i64]) -> str {
+    let digits = "0123456789abcdef"
+    var text = ""
+    for byte in bytes {
+        text = text + chr(digits[byte >> 4])
+        text = text + chr(digits[byte & 15])
+    }
+    return text
+}

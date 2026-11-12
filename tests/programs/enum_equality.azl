@@ -1,0 +1,133 @@
+// expect-exit: 0
+// expect-line: true
+// expect-line: false
+// expect-line: false
+// expect-line: true
+// expect-line: number
+// expect-line: 3
+// expect-line: 2
+// expect-line: true
+// expect-line: false
+// expect-line: 4
+// expect-line: 1
+// expect-line: same side
+// expect-line: true
+// expect-line: 2
+// expect-line: 6
+
+// `==` and `!=` on enums whose variants hold no values.
+
+enum Kind {
+    Ident
+    Number
+    Plus
+    End
+}
+
+enum Switch[T] {
+    On
+    Off
+}
+
+struct Token {
+    kind: Kind
+    text: str
+}
+
+fn classify(text: str) -> Kind {
+    if text == "+" {
+        return Plus
+    }
+    if text.len() == 0 {
+        return End
+    }
+    if text[0] >= '0' && text[0] <= '9' {
+        return Number
+    }
+    return Ident
+}
+
+fn count(tokens: List[Token], wanted: Kind) -> i64 {
+    var found = 0
+    for token in tokens {
+        if token.kind == wanted {
+            found = found + 1
+        }
+    }
+    return found
+}
+
+fn next(kind: Kind) -> Kind {
+    if kind == Ident {
+        return Number
+    }
+    if kind == Number {
+        return Plus
+    }
+    return End
+}
+
+fn flip(value: mut Kind) -> Kind {
+    let before = value
+    value = End
+    return before
+}
+
+fn main() {
+    let a = Ident
+    let b = classify("12")
+    print(a == Ident)
+    print(a == b)
+    print(a != Ident)
+    print(a != b)
+    if b == Number {
+        print("number")
+    }
+
+    var tokens: List[Token] = []
+    for text in ["x", "+", "1", "+", "yy", "22", "+", ""] {
+        tokens.push(Token { kind: classify(text), text: text })
+    }
+    print(count(tokens, Plus))
+    print(count(tokens, Ident))
+    print(tokens[0].kind == tokens[4].kind)
+    print(tokens[0].kind == tokens[1].kind)
+
+    // A loop that stops on a kind, and comparing what calls return.
+    var steps = 0
+    var kind = Ident
+    while kind != End {
+        kind = next(kind)
+        steps = steps + 1
+    }
+    print(steps + 1)
+    print(count(tokens, classify("")))
+    if next(Ident) == classify("7") && next(Plus) != Ident {
+        print("same side")
+    }
+
+    // The left side is read before the right side runs.
+    var changing = Plus
+    print(changing == flip(mut changing))
+
+    let lamp: Switch[i64] = On
+    var presses = 0
+    if lamp == On {
+        presses = presses + 1
+    }
+    if lamp != Off {
+        presses = presses + 1
+    }
+    print(presses)
+    var kinds = [Ident, Number, Plus]
+    var matches = 0
+    for first in kinds {
+        for second in kinds {
+            if first != second {
+                matches = matches + 1
+            }
+        }
+    }
+    kinds.push(End)
+    print(matches)
+}

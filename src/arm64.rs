@@ -22,7 +22,7 @@ use crate::sema::{
     BUILTIN_LIST_PUSH, BUILTIN_PRINT_BOOL, BUILTIN_PRINT_I64, BUILTIN_PRINT_STR, BUILTIN_READ_FILE,
     BUILTIN_SET_EXECUTABLE, BUILTIN_STR_FROM_BOOL, BUILTIN_STR_FROM_I64, BUILTIN_STR_SLICE, BUILTIN_VARIANT,
     BUILTIN_WRITE_FILE, BY_REF,
-    COPIED, FIRST_BUILTIN, IN_PLACE, PAT_BIND, PAT_LITERAL, PAT_VARIANT, VARIANT,
+    COPIED, FIRST_BUILTIN, FIRST_REGISTER, IN_PLACE, PAT_BIND, PAT_LITERAL, PAT_VARIANT, REGISTERS, VARIANT,
 };
 use std::collections::HashMap;
 
@@ -66,6 +66,8 @@ const GT: u32 = 12;
 const LE: u32 = 13;
 /// Unsigned higher or same.
 const HS: u32 = 2;
+/// Unsigned lower.
+const LO: u32 = 3;
 
 const RET: u32 = 0xD65F_03C0;
 const BRK_1: u32 = 0xD420_0020;
@@ -152,14 +154,41 @@ fn mov(to: u32, from: u32) -> u32 {
     0xAA00_03E0 | from << 16 | to
 }
 
-/// A branch that is taken when a condition is false, to be completed
-/// once its destination is known.
+/// `and to, from, #(2^bits - 1)`: the low `bits` bits, 1 to 63 of them.
+fn low_bits(to: u32, from: u32, bits: u32) -> u32 {
+    0x9240_0000 | (bits - 1) << 10 | from << 5 | to
+}
+
+/// `tst from, #(2^bits - 1)`
+fn tst_low_bits(from: u32, bits: u32) -> u32 {
+    0xF240_001F | (bits - 1) << 10 | from << 5
+}
+
+/// `ldr rt, [buffer, index, lsl #3]`
+fn ldr_scaled(rt: u32, buffer: u32, index: u32) -> u32 {
+    0xF860_7800 | index << 16 | buffer << 5 | rt
+}
+
+/// `str rt, [buffer, index, lsl #3]`
+fn str_scaled(rt: u32, buffer: u32, index: u32) -> u32 {
+    0xF820_7800 | index << 16 | buffer << 5 | rt
+}
+
+/// `cmp left, right`
+fn cmp(left: u32, right: u32) -> u32 {
+    0xEB00_001F | right << 16 | left << 5
+}
+
+/// A branch whose destination is filled in later: the index of its
+/// placeholder and what kind of branch it is.
 #[derive(Clone, Copy)]
-enum FalseJump {
-    /// `cbz x0`: the condition was computed as 0 or 1.
-    Zero(usize),
-    /// A branch on the flags of a compare, with the condition to jump on.
-    Flags(usize, u32),
+enum Jump {
+    /// `cbz reg` (or `cbnz reg`): on a register being zero (or not).
+    Zero { at: usize, reg: u32, nonzero: bool },
+    /// `b.<code>`: on the flags of a compare.
+    Flags { at: usize, code: u32 },
+    /// `b`.
+    Always { at: usize },
 }
 
 /// The condition code of a comparison operator.
@@ -212,6 +241,9 @@ struct Gen<'a> {
     glue_calls: Vec<(usize, usize)>,
     relocs: Vec<Reloc>,
     loops: Vec<LoopFixups>,
+    /// The pending branches of the conditions being generated: those of
+    /// an outer `if` lie below those of the statements inside it.
+    jumps: Vec<Jump>,
     /// Local variables that own buffers and are in scope: slot and type.
     live: Vec<(u32, Ty)>,
     frame_bytes: u32,
@@ -221,6 +253,9 @@ struct Gen<'a> {
     /// The variables of the function being generated that live in
     /// registers: slot and register.
     registers: &'a [(u32, u8)],
+    /// Registers the function has to spare, given to its `for` loops for
+    /// their position, item and index: slot and register.
+    loop_registers: Vec<(u32, u8)>,
     /// First frame slot of the area where those registers' old values
     /// are kept.
     saved_slot: u32,
@@ -242,12 +277,14 @@ pub fn generate(ast: &Ast, prog: &Program) -> Code {
         glue_calls: Vec::new(),
         relocs: Vec::new(),
         loops: Vec::new(),
+        jumps: Vec::new(),
         live: Vec::new(),
         frame_bytes: 0,
         ret: Ty::Unit,
         sret_slot: None,
         scratch_slot: 0,
         registers: &[],
+        loop_registers: Vec::new(),
         saved_slot: 0,
         sh: Shift::default(),
     };
@@ -366,6 +403,12 @@ impl<'a> Gen<'a> {
         self.prog.expr_ty[self.sh.e(id)]
     }
 
+    /// Expression `id`, with the name of a constant read as its value.
+    #[inline(always)]
+    fn expr(&self, id: ExprId) -> Expr {
+        self.prog.expr(self.ast, self.sh, id)
+    }
+
     /// True for values handled by address: structs, strings and lists.
     fn is_aggregate(&self, id: ExprId) -> bool {
         self.ty(id).is_aggregate()
@@ -374,15 +417,49 @@ impl<'a> Gen<'a> {
     fn function(&mut self, index: u32) {
         let prog = self.prog;
         let info = &prog.fns[index as usize];
-        let Item::Fn { params, body, .. } = self.ast.items[info.item as usize] else {
+        let Item::Fn { params, body, nodes, .. } = self.ast.items[info.item as usize] else {
             unreachable!("a function's item is a function");
         };
         self.sh = info.shift;
         self.fn_starts.push(self.words.len() as u32);
         self.registers = &info.registers;
+        self.loop_registers.clear();
+        // Registers the checker left unused go to the `for` loops, in the
+        // order the loops are written: the position first, then the item
+        // when it is a number or `bool`, then the index.
+        let mut next = FIRST_REGISTER + info.registers.len() as u8;
+        let end = FIRST_REGISTER + REGISTERS;
+        if next < end {
+            let first = nodes.stmts.0 as usize;
+            for (i, stmt) in self.ast.stmts[first..first + nodes.stmts.1 as usize].iter().enumerate() {
+                let &Stmt::For { index, iter, .. } = stmt else {
+                    continue;
+                };
+                let id = (first + i) as StmtId;
+                let Ty::List(list) = self.ty(iter) else {
+                    unreachable!("checked: `for` goes through a list");
+                };
+                let elem = prog.lists[list as usize];
+                let elem_size = prog.size_of(elem);
+                let base = prog.stmt_slot[self.sh.s(id)];
+                // Only a number or `bool` can live in a register; other
+                // items are looked at through their address.
+                let mut wanted = [Some(base), (!elem.is_aggregate()).then_some(base + 4), index.map(|_| base + 4 + elem_size)];
+                for slot in wanted.iter_mut().filter_map(Option::take) {
+                    if next < end {
+                        self.loop_registers.push((slot, next));
+                        next += 1;
+                    }
+                }
+                if next == end {
+                    break;
+                }
+            }
+        }
         // Above the slots, room for the caller's values of those registers.
         self.saved_slot = info.slots;
-        self.frame_bytes = (16 + 8 * (info.slots + info.registers.len() as u32)).div_ceil(16) * 16;
+        let saved = (info.registers.len() + self.loop_registers.len()) as u32;
+        self.frame_bytes = (16 + 8 * (info.slots + saved)).div_ceil(16) * 16;
         self.ret = info.ret;
         self.sret_slot = info.sret_slot;
         self.scratch_slot = info.scratch_slot;
@@ -401,8 +478,9 @@ impl<'a> Gen<'a> {
             self.emit(0xA900_7BFD); // stp x29, x30, [sp]
         }
         self.emit(0x9100_03FD); // mov x29, sp
-        for (i, &(_, reg)) in info.registers.iter().enumerate() {
-            self.emit(str(reg as u32, FP, frame(self.saved_slot + i as u32)));
+        for i in 0..saved {
+            // The registers in use are x19, x20, ... without gaps.
+            self.emit(str(FIRST_REGISTER as u32 + i, FP, frame(self.saved_slot + i)));
         }
         // Each parameter arrives in a register as a value or a pointer,
         // and moves to its slot or to the register it lives in.
@@ -431,10 +509,11 @@ impl<'a> Gen<'a> {
     }
 
     fn epilogue(&mut self) {
-        for (i, &(_, reg)) in self.registers.iter().enumerate() {
-            self.emit(ldr(reg as u32, FP, frame(self.saved_slot + i as u32)));
+        for i in 0..(self.registers.len() + self.loop_registers.len()) as u32 {
+            self.emit(ldr(FIRST_REGISTER as u32 + i, FP, frame(self.saved_slot + i)));
         }
-        self.emit(0x9100_03BF); // mov sp, x29
+        // Everything parked on the stack during a statement has been
+        // taken off again by now, so sp is where the frame starts.
         if self.frame_bytes <= SMALL_FRAME {
             self.emit(0xA8C0_7BFD | (self.frame_bytes / 8) << 15); // ldp x29, x30, [sp], #frame
         } else {
@@ -448,6 +527,15 @@ impl<'a> Gen<'a> {
     }
 
     /// Generates a block and frees the owning locals declared in it.
+    /// Whether a block ends by leaving it, so that nothing runs past its
+    /// last statement and no jump over what follows is needed.
+    fn leaves(&self, body: List) -> bool {
+        match self.ast.list(body).last() {
+            Some(&last) => matches!(self.ast.stmts[last as usize], Stmt::Return(_) | Stmt::Break | Stmt::Continue),
+            None => false,
+        }
+    }
+
     fn block(&mut self, body: List) {
         let outer = self.live.len();
         for &id in self.ast.list(body) {
@@ -687,28 +775,56 @@ impl<'a> Gen<'a> {
                 let skip_then = self.branch_if_false(id, cond);
                 self.block(then_block);
                 match else_branch {
-                    Else::None => self.patch_false(skip_then),
+                    Else::None => self.patch_here(skip_then),
                     Else::Block(body) => {
-                        let skip_else = self.placeholder();
-                        self.patch_false(skip_then);
+                        let skip_else = (!self.leaves(then_block)).then(|| self.placeholder());
+                        self.patch_here(skip_then);
                         self.block(body);
-                        self.patch_jump(skip_else);
+                        if let Some(at) = skip_else {
+                            self.patch_jump(at);
+                        }
                     }
                     Else::If(next) => {
-                        let skip_else = self.placeholder();
-                        self.patch_false(skip_then);
+                        let skip_else = (!self.leaves(then_block)).then(|| self.placeholder());
+                        self.patch_here(skip_then);
                         self.stmt(next);
-                        self.patch_jump(skip_else);
+                        if let Some(at) = skip_else {
+                            self.patch_jump(at);
+                        }
                     }
                 }
             }
+            Stmt::While { cond, body } if self.prog.stmt_drops[self.sh.s(id)].1 == 0 => {
+                // The test sits below the body, so that every round takes
+                // one branch: back up when the condition holds. The loop
+                // is entered by jumping to the test.
+                let enter = self.placeholder();
+                let top = self.words.len();
+                self.loops.push(LoopFixups { start: top, breaks: Vec::new(), continues: Some(Vec::new()), live: self.live.len() });
+                self.block(body);
+                let fixups = self.loops.pop().expect("loop stack is balanced");
+                for at in fixups.continues.expect("this loop collects its continues") {
+                    self.patch_jump(at);
+                }
+                self.patch_jump(enter);
+                let mark = self.jumps.len();
+                let mut jumps = std::mem::take(&mut self.jumps);
+                self.condition_jumps(cond, true, &mut jumps);
+                self.jumps = jumps;
+                self.patch_to(mark, top);
+                for at in fixups.breaks {
+                    self.patch_jump(at);
+                }
+            }
             Stmt::While { cond, body } => {
+                // The condition leaves temporaries to free on every round,
+                // which is simplest with the test on top.
                 let start = self.words.len();
                 let exit = self.branch_if_false(id, cond);
                 self.loops.push(LoopFixups { start, breaks: Vec::new(), continues: None, live: self.live.len() });
                 self.block(body);
                 self.jump_back(start);
-                self.patch_false(exit);
+                self.patch_here(exit);
                 let fixups = self.loops.pop().expect("loop stack is balanced");
                 for at in fixups.breaks {
                     self.patch_jump(at);
@@ -741,7 +857,7 @@ impl<'a> Gen<'a> {
         if self.prog.stmt_flag[self.sh.s(id)] == APPEND {
             // `s = s + more`: the new text is added to `s` in place. It
             // is computed first; only then is `s` looked at.
-            let Expr::Binary { rhs, .. } = self.ast.exprs[value as usize] else {
+            let Expr::Binary { rhs, .. } = self.expr(value) else {
                 unreachable!("checked: an append adds something");
             };
             self.address(rhs);
@@ -836,7 +952,7 @@ impl<'a> Gen<'a> {
                 if self.prog.needs_drop(ty) {
                     if !self.prog.expr_moved[self.sh.e(value)] {
                         self.clone_pointer(slot, ty);
-                    } else if let Expr::Ident(_) = self.ast.exprs[value as usize] {
+                    } else if let Expr::Ident(_) = self.expr(value) {
                         moved_local = self.place(value).map(|place| place.slot);
                     }
                 }
@@ -892,36 +1008,65 @@ impl<'a> Gen<'a> {
         if !in_place {
             self.live.push((own_list, list_ty));
         }
-        self.emit(str(XZR, FP, frame(position)));
+        // The position, the item and the index live in registers when
+        // the function has some to spare.
+        let position_reg = self.slot_register(position);
+        match position_reg {
+            Some(reg) => self.mov_imm(reg, 0),
+            None => self.emit(str(XZR, FP, frame(position))),
+        }
+        // The test sits below the body: one branch per round. It leaves
+        // the list's address in x0 and the position in `at` for the top.
+        let at = position_reg.unwrap_or(X1);
+        let enter = self.placeholder();
+        let top = self.words.len();
+        if has_index {
+            match self.slot_register(index_slot) {
+                Some(reg) => self.emit(mov(reg, at)),
+                None => self.emit(str(at, FP, frame(index_slot))),
+            }
+        }
+        self.emit(ldr(X9, X0, 0)); // buffer
+        if elem_size == 1 {
+            match self.slot_register(item_slot) {
+                Some(reg) => self.emit(ldr_scaled(reg, X9, at)),
+                None => {
+                    self.emit(ldr_scaled(X10, X9, at));
+                    self.emit(str(X10, FP, frame(item_slot)));
+                }
+            }
+        } else {
+            self.element_address(X0, X9, at, elem_size);
+            self.copy_to_frame(item_slot, elem_size);
+        }
 
-        let start = self.words.len();
+        self.loops.push(LoopFixups { start: top, breaks: Vec::new(), continues: Some(Vec::new()), live: self.live.len() });
+        self.block(body);
+        let fixups = self.loops.pop().expect("loop stack is balanced");
+        for at in fixups.continues.expect("a `for` loop collects its continues") {
+            self.patch_jump(at);
+        }
+        match position_reg {
+            Some(reg) => self.emit(0x9100_0400 | reg << 5 | reg), // add reg, reg, #1
+            None => {
+                self.emit(ldr(X0, FP, frame(position)));
+                self.emit(0x9100_0400); // add x0, x0, #1
+                self.emit(str(X0, FP, frame(position)));
+            }
+        }
+        self.patch_jump(enter);
         if in_place {
             self.address(iter);
         } else {
             self.frame_address(X0, own_list);
         }
         self.emit(ldr(X9, X0, 1)); // length
-        self.emit(ldr(X1, FP, frame(position)));
-        self.emit(0xEB09_003F); // cmp x1, x9
-        let exit = self.placeholder();
-        if has_index {
-            self.emit(str(X1, FP, frame(index_slot)));
+        if position_reg.is_none() {
+            self.emit(ldr(X1, FP, frame(position)));
         }
-        self.emit(ldr(X9, X0, 0)); // buffer
-        self.element_address(X0, X9, X1, elem_size);
-        self.copy_to_frame(item_slot, elem_size);
-
-        self.loops.push(LoopFixups { start, breaks: Vec::new(), continues: Some(Vec::new()), live: self.live.len() });
-        self.block(body);
-        let fixups = self.loops.pop().expect("loop stack is balanced");
-        for at in fixups.continues.expect("a `for` loop collects its continues") {
-            self.patch_jump(at);
-        }
-        self.emit(ldr(X0, FP, frame(position)));
-        self.emit(0x9100_0400); // add x0, x0, #1
-        self.emit(str(X0, FP, frame(position)));
-        self.jump_back(start);
-        self.patch_branch_if(exit, HS);
+        self.emit(cmp(at, X9));
+        let again = self.placeholder();
+        self.patch_one(Jump::Flags { at: again, code: LO }, top);
         for at in fixups.breaks {
             self.patch_jump(at);
         }
@@ -1021,7 +1166,7 @@ impl<'a> Gen<'a> {
                 _ => {}
             }
             self.block(arm.body);
-            if test {
+            if test && !self.leaves(arm.body) {
                 ends.push(self.placeholder());
             }
             match next {
@@ -1062,12 +1207,13 @@ impl<'a> Gen<'a> {
 
     /// The register the variable in frame slot `slot` lives in, if any.
     fn slot_register(&self, slot: u32) -> Option<u32> {
-        self.registers.iter().find(|&&(taken, _)| taken == slot).map(|&(_, reg)| reg as u32)
+        let found = |list: &[(u32, u8)]| list.iter().find(|&&(taken, _)| taken == slot).map(|&(_, reg)| reg as u32);
+        found(self.registers).or_else(|| found(&self.loop_registers))
     }
 
     /// The register a place lives in: only whole variables have one.
     fn register(&self, place: Place) -> Option<u32> {
-        if place.by_ref || place.offset != 0 || self.registers.is_empty() {
+        if place.by_ref || place.offset != 0 || (self.registers.is_empty() && self.loop_registers.is_empty()) {
             return None;
         }
         self.slot_register(place.slot)
@@ -1077,10 +1223,10 @@ impl<'a> Gen<'a> {
     /// Such a variable cannot change while an expression is evaluated:
     /// only a statement can assign to it, and nothing has its address.
     fn in_register(&self, id: ExprId) -> Option<u32> {
-        if self.registers.is_empty() {
+        if self.registers.is_empty() && self.loop_registers.is_empty() {
             return None;
         }
-        match self.ast.exprs[id as usize] {
+        match self.expr(id) {
             Expr::Ident(_) => self.place(id).and_then(|place| self.register(place)),
             _ => None,
         }
@@ -1088,7 +1234,7 @@ impl<'a> Gen<'a> {
 
     /// The frame slot of `id` when it is a whole local variable.
     fn variable_slot(&self, id: ExprId) -> Option<u32> {
-        match self.ast.exprs[id as usize] {
+        match self.expr(id) {
             Expr::Ident(_) => self.place(id).filter(|place| !place.by_ref).map(|place| place.slot),
             _ => None,
         }
@@ -1174,7 +1320,7 @@ impl<'a> Gen<'a> {
     /// when it is fixed at compile time. `None` for computed values and
     /// for anything reached through a list index.
     fn place(&self, id: ExprId) -> Option<Place> {
-        match self.ast.exprs[id as usize] {
+        match self.expr(id) {
             Expr::Ident(_) => {
                 let res = self.prog.expr_res[self.sh.e(id)];
                 if res == VARIANT {
@@ -1220,7 +1366,7 @@ impl<'a> Gen<'a> {
     /// into any register without disturbing the others: a constant, a
     /// variable, a field of a variable.
     fn is_simple(&self, id: ExprId) -> bool {
-        match self.ast.exprs[id as usize] {
+        match self.expr(id) {
             Expr::Int(_) | Expr::Bool(_) => true,
             Expr::Ident(_) | Expr::Field { .. } => !self.is_aggregate(id) && self.place(id).is_some(),
             _ => false,
@@ -1229,7 +1375,7 @@ impl<'a> Gen<'a> {
 
     /// Loads a simple value into `reg`. Uses x9 for a value behind a pointer.
     fn load_simple(&mut self, id: ExprId, reg: u32) {
-        match self.ast.exprs[id as usize] {
+        match self.expr(id) {
             Expr::Int(_) => self.mov_imm(reg, self.prog.ints[self.prog.expr_res[self.sh.e(id)] as usize]),
             Expr::Bool(value) => self.mov_imm(reg, value as i64),
             _ => {
@@ -1253,7 +1399,7 @@ impl<'a> Gen<'a> {
     fn operands(&mut self, lhs: ExprId, rhs: ExprId, constants: bool) -> Operands {
         let left = self.in_register(lhs);
         if constants {
-            if let Expr::Int(_) = self.ast.exprs[rhs as usize] {
+            if let Expr::Int(_) = self.expr(rhs) {
                 let value = self.prog.ints[self.prog.expr_res[self.sh.e(rhs)] as usize];
                 if (0..4096).contains(&value) {
                     let left = left.unwrap_or_else(|| {
@@ -1274,6 +1420,12 @@ impl<'a> Gen<'a> {
                 self.value(lhs);
                 Operands::Registers(X0, right)
             }
+            (None, None) if self.is_simple(lhs) && self.is_simple(rhs) => {
+                // Two plain loads: each goes straight where it is wanted.
+                self.load_simple(lhs, X1);
+                self.load_simple(rhs, X0);
+                Operands::Registers(X1, X0)
+            }
             (None, None) => {
                 self.value(lhs);
                 if self.is_simple(rhs) {
@@ -1291,36 +1443,143 @@ impl<'a> Gen<'a> {
     }
 
     /// Compares two numbers or `bool`s and leaves the result in the flags.
-    fn compare_flags(&mut self, lhs: ExprId, rhs: ExprId) {
+    fn compare_flags(&mut self, op: BinOp, lhs: ExprId, rhs: ExprId) {
+        // `a % 8 == 0` asks whether the low bits of `a` are clear, for
+        // negative numbers too: no remainder needs computing.
+        if matches!(op, BinOp::Eq | BinOp::NotEq) && self.is_zero(rhs) {
+            if let Expr::Binary { op: BinOp::Rem, lhs: number, rhs: by } = self.expr(lhs) {
+                if let Some(bits) = self.power_of_two(by) {
+                    let reg = self.in_register(number).unwrap_or_else(|| {
+                        self.value(number);
+                        X0
+                    });
+                    self.emit(tst_low_bits(reg, bits));
+                    return;
+                }
+            }
+        }
         match self.operands(lhs, rhs, true) {
             Operands::Constant(left, value) => self.emit(0xF100_001F | value << 10 | left << 5), // cmp left, #value
             Operands::Registers(left, right) => self.emit(0xEB00_001F | right << 16 | left << 5), // cmp left, right
         }
     }
 
-    /// Generates the test of an `if` or `while` and returns the branch
-    /// taken when it fails. A comparison branches on its flags directly
+    /// Generates the test of an `if` or `while`. The branches taken when
+    /// it fails are left on `jumps`; the result marks where they start,
+    /// for `patch_here`. Comparisons and `&&`, `||`, `!` branch directly
     /// instead of first becoming a 0 or 1.
-    fn branch_if_false(&mut self, id: StmtId, cond: ExprId) -> FalseJump {
+    fn branch_if_false(&mut self, id: StmtId, cond: ExprId) -> usize {
+        let mark = self.jumps.len();
         if self.prog.stmt_drops[self.sh.s(id)].1 == 0 {
-            if let Expr::Binary { op, lhs, rhs } = self.ast.exprs[cond as usize] {
-                if let (Some(code), false) = (comparison(op), self.ty(lhs) == Ty::Str) {
-                    self.compare_flags(lhs, rhs);
-                    // Jump on the opposite condition.
-                    return FalseJump::Flags(self.placeholder(), code ^ 1);
-                }
-            }
+            let mut jumps = std::mem::take(&mut self.jumps);
+            self.condition_jumps(cond, false, &mut jumps);
+            self.jumps = jumps;
+        } else {
+            // The statement has temporaries to free before it branches.
+            self.value(cond);
+            self.drop_temps(id, true);
+            let at = self.placeholder();
+            self.jumps.push(Jump::Zero { at, reg: X0, nonzero: false });
         }
-        self.value(cond);
-        self.drop_temps(id, true);
-        FalseJump::Zero(self.placeholder())
+        mark
     }
 
-    fn patch_false(&mut self, jump: FalseJump) {
-        match jump {
-            FalseJump::Zero(at) => self.patch_cbz(at, false),
-            FalseJump::Flags(at, code) => self.patch_branch_if(at, code),
+    /// Generates code that jumps when `cond` comes out as `when` and
+    /// falls through otherwise. The jumps are added to `out`, to be
+    /// pointed somewhere by the caller. Operands are evaluated in the
+    /// order written, and the right side of `&&` and `||` only when the
+    /// left side does not decide, exactly as when the value is computed.
+    fn condition_jumps(&mut self, cond: ExprId, when: bool, out: &mut Vec<Jump>) {
+        match self.expr(cond) {
+            Expr::Bool(value) => {
+                if value == when {
+                    let at = self.placeholder();
+                    out.push(Jump::Always { at });
+                }
+            }
+            Expr::Unary { op: UnOp::Not, operand } => self.condition_jumps(operand, !when, out),
+            Expr::Binary { op: op @ (BinOp::And | BinOp::Or), lhs, rhs } => {
+                // `a && b` is false as soon as `a` is; `a || b` is true
+                // as soon as `a` is.
+                let decides = op == BinOp::Or;
+                if when == decides {
+                    self.condition_jumps(lhs, decides, out);
+                    self.condition_jumps(rhs, decides, out);
+                } else {
+                    // The left side deciding means: do not jump, go on
+                    // after the whole condition.
+                    let mut over = Vec::new();
+                    self.condition_jumps(lhs, decides, &mut over);
+                    self.condition_jumps(rhs, when, out);
+                    let here = self.words.len();
+                    for jump in over {
+                        self.patch_one(jump, here);
+                    }
+                }
+            }
+            Expr::Binary { op, lhs, rhs } if comparison(op).is_some() && !self.is_aggregate(lhs) => {
+                let code = comparison(op).expect("just checked");
+                // Comparing with zero for equality needs no compare.
+                // A remainder by a power of two is left to `compare_flags`.
+                if matches!(op, BinOp::Eq | BinOp::NotEq)
+                    && self.is_zero(rhs)
+                    && !matches!(self.expr(lhs), Expr::Binary { op: BinOp::Rem, rhs: by, .. } if self.power_of_two(by).is_some())
+                {
+                    let reg = self.in_register(lhs).unwrap_or_else(|| {
+                        self.value(lhs);
+                        X0
+                    });
+                    let at = self.placeholder();
+                    out.push(Jump::Zero { at, reg, nonzero: (op == BinOp::NotEq) == when });
+                } else {
+                    self.compare_flags(op, lhs, rhs);
+                    let at = self.placeholder();
+                    out.push(Jump::Flags { at, code: if when { code } else { code ^ 1 } });
+                }
+            }
+            _ => {
+                // Any other `bool`: a variable is tested where it lives.
+                let reg = self.in_register(cond).unwrap_or_else(|| {
+                    self.value(cond);
+                    X0
+                });
+                let at = self.placeholder();
+                out.push(Jump::Zero { at, reg, nonzero: when });
+            }
         }
+    }
+
+    /// Completes one pending branch to jump to instruction `target`,
+    /// which may lie before or after it.
+    fn patch_one(&mut self, jump: Jump, target: usize) {
+        match jump {
+            Jump::Zero { at, reg, nonzero } => {
+                let delta = (target as i64 - at as i64) as u32;
+                let op = if nonzero { 0xB500_0000 } else { 0xB400_0000 };
+                self.words[at] = op | (delta & 0x7_FFFF) << 5 | reg;
+            }
+            Jump::Flags { at, code } => {
+                let delta = (target as i64 - at as i64) as u32;
+                self.words[at] = 0x5400_0000 | (delta & 0x7_FFFF) << 5 | code;
+            }
+            Jump::Always { at } => {
+                let delta = (target as i64 - at as i64) as u32;
+                self.words[at] = 0x1400_0000 | (delta & 0x03FF_FFFF);
+            }
+        }
+    }
+
+    /// Points the branches pending since `mark` at instruction `target`.
+    fn patch_to(&mut self, mark: usize, target: usize) {
+        while self.jumps.len() > mark {
+            let jump = self.jumps.pop().expect("just checked");
+            self.patch_one(jump, target);
+        }
+    }
+
+    /// Points the branches pending since `mark` at the next instruction.
+    fn patch_here(&mut self, mark: usize) {
+        self.patch_to(mark, self.words.len());
     }
 
     /// Whether argument `i` of the call target travels as an address.
@@ -1338,7 +1597,7 @@ impl<'a> Gen<'a> {
     /// True when an argument can be put in its register directly: a
     /// simple value, or the address of a variable or a part of one.
     fn is_simple_arg(&self, arg: ExprId, by_ref: bool) -> bool {
-        match self.ast.exprs[arg as usize] {
+        match self.expr(arg) {
             Expr::MutArg(inner) => self.place(inner).is_some(),
             _ if by_ref => self.place(arg).is_some(),
             _ => self.is_simple(arg),
@@ -1346,7 +1605,7 @@ impl<'a> Gen<'a> {
     }
 
     fn load_simple_arg(&mut self, arg: ExprId, by_ref: bool, reg: u32) {
-        match self.ast.exprs[arg as usize] {
+        match self.expr(arg) {
             Expr::MutArg(inner) => {
                 let place = self.place(inner).expect("checked by `is_simple_arg`");
                 self.place_address_in(place, reg);
@@ -1378,7 +1637,7 @@ impl<'a> Gen<'a> {
             self.place_address(place);
             return;
         }
-        match self.ast.exprs[id as usize] {
+        match self.expr(id) {
             Expr::Str(_) => {
                 let tmp = self.prog.expr_tmp[self.sh.e(id)];
                 self.string_value(self.prog.expr_res[self.sh.e(id)], tmp);
@@ -1427,19 +1686,42 @@ impl<'a> Gen<'a> {
                     unreachable!("checked: only lists are indexed");
                 };
                 let elem_size = self.prog.size_of(self.prog.lists[list as usize]);
-                self.value(index);
-                self.emit(PUSH_X0);
-                self.address(base);
-                self.emit(pop(X1));
-                self.emit(ldr(X9, X0, 1)); // length
-                self.emit(0xEB09_003F); // cmp x1, x9
-                self.emit(0x5400_0043); // b.lo +2: an unsigned compare also rejects negatives
-                self.runtime(runtime::INDEX_FAIL);
-                self.emit(ldr(X9, X0, 0)); // buffer
-                self.element_address(X0, X9, X1, elem_size);
+                let at = self.checked_index(base, index);
+                self.element_address(X0, X9, at, elem_size);
             }
             _ => unreachable!("checked: only these expressions have an address"),
         }
+    }
+
+    /// Evaluates `index`, then finds the list or string `base`, and stops
+    /// the program unless the index is inside it. Leaves the buffer in x9
+    /// and returns the register that holds the index. The index is
+    /// evaluated first, so that nothing runs between reading the buffer
+    /// pointer and using it.
+    fn checked_index(&mut self, base: ExprId, index: ExprId) -> u32 {
+        let at = if let Some(reg) = self.in_register(index) {
+            // A variable in a register stays where it is.
+            self.address(base);
+            reg
+        } else if self.place(base).is_some() {
+            // Finding a variable takes only x0, so the index can wait in x1.
+            self.value(index);
+            self.emit(mov(X1, X0));
+            self.address(base);
+            X1
+        } else {
+            self.value(index);
+            self.emit(PUSH_X0);
+            self.address(base);
+            self.emit(pop(X1));
+            X1
+        };
+        self.emit(ldr(X9, X0, 1)); // length
+        self.emit(cmp(at, X9));
+        self.emit(0x5400_0043); // b.lo +2: an unsigned compare also rejects negatives
+        self.runtime(runtime::INDEX_FAIL);
+        self.emit(ldr(X9, X0, 0)); // buffer
+        at
     }
 
     fn list_literal(&mut self, id: ExprId, items: List) {
@@ -1490,21 +1772,18 @@ impl<'a> Gen<'a> {
 
     /// Generates code that leaves a scalar value in x0.
     fn value(&mut self, id: ExprId) {
-        match self.ast.exprs[id as usize] {
+        match self.expr(id) {
             Expr::Int(_) => self.mov_imm(X0, self.prog.ints[self.prog.expr_res[self.sh.e(id)] as usize]),
             Expr::Bool(value) => self.mov_imm(X0, value as i64),
             Expr::Index { base, index } if self.ty(base) == Ty::Str => {
                 // A byte of a string, checked like a list index.
-                self.value(index);
-                self.emit(PUSH_X0);
-                self.address(base);
-                self.emit(pop(X1));
-                self.emit(ldr(X9, X0, 1)); // length
-                self.emit(0xEB09_003F); // cmp x1, x9
-                self.emit(0x5400_0043); // b.lo +2: an unsigned compare also rejects negatives
-                self.runtime(runtime::INDEX_FAIL);
-                self.emit(ldr(X9, X0, 0)); // bytes
-                self.emit(0x3861_6920); // ldrb w0, [x9, x1]
+                let at = self.checked_index(base, index);
+                self.emit(0x3860_6920 | at << 16); // ldrb w0, [x9, at]
+            }
+            Expr::Index { base, index } if !self.is_aggregate(id) => {
+                // A number or `bool` in a list: one slot, loaded directly.
+                let at = self.checked_index(base, index);
+                self.emit(ldr_scaled(X0, X9, at));
             }
             Expr::Ident(_) | Expr::Field { .. } | Expr::Index { .. } => match self.place(id) {
                 Some(place) if place.by_ref => {
@@ -1535,6 +1814,18 @@ impl<'a> Gen<'a> {
                 self.value(rhs);
                 self.patch_cbz(skip, op == BinOp::Or);
             }
+            Expr::Binary { op, lhs, rhs } if matches!(self.ty(lhs), Ty::Enum(_)) => {
+                // `==` and `!=` on enums without values compare the tags.
+                // The left tag is read before the right side is computed.
+                self.address(lhs);
+                self.emit(ldr(X0, X0, 0));
+                self.emit(PUSH_X0);
+                self.address(rhs);
+                self.emit(ldr(X0, X0, 0));
+                self.emit(pop(X1));
+                self.emit(0xEB00_003F); // cmp x1, x0
+                self.emit(cset_x0(if op == BinOp::Eq { EQ } else { NE }));
+            }
             Expr::Binary { op, lhs, rhs } if self.ty(lhs) == Ty::Str => {
                 // `==` and `!=` on strings compare the bytes.
                 self.address(lhs);
@@ -1559,8 +1850,40 @@ impl<'a> Gen<'a> {
     /// in register `dest`.
     fn binary(&mut self, op: BinOp, lhs: ExprId, rhs: ExprId, dest: u32) {
         if let Some(code) = comparison(op) {
-            self.compare_flags(lhs, rhs);
+            self.compare_flags(op, lhs, rhs);
             self.emit(cset_x0(code) | dest);
+            return;
+        }
+        if let Some(bits) = if matches!(op, BinOp::Mul | BinOp::Div | BinOp::Rem) { self.power_of_two(rhs) } else { None } {
+            // By a power of two: shifts and masks instead of multiplying
+            // and dividing. Division rounds toward zero and a remainder
+            // takes the sign of the left side, as with any other divisor.
+            let left = self.in_register(lhs).unwrap_or_else(|| {
+                self.value(lhs);
+                X0
+            });
+            match op {
+                BinOp::Mul => self.emit(lsl_imm(dest, left, bits)),
+                BinOp::Div => {
+                    // A negative number is first raised by divisor - 1.
+                    let raise = (1i64 << bits) - 1;
+                    if raise < 4096 {
+                        self.emit(0x9100_0000 | (raise as u32) << 10 | left << 5 | X9); // add x9, left, #raise
+                    } else {
+                        self.mov_imm(X9, raise);
+                        self.emit(0x8B00_0000 | X9 << 16 | left << 5 | X9); // add x9, left, x9
+                    }
+                    self.emit(0xF100_001F | left << 5); // cmp left, #0
+                    self.emit(0x9A80_B129 | left << 16); // csel x9, x9, left, lt
+                    self.emit(asr_imm(dest, X9, bits));
+                }
+                _ => {
+                    self.emit(0xEB00_03E9 | left << 16); // negs x9, left
+                    self.emit(low_bits(X10, left, bits));
+                    self.emit(low_bits(X9, X9, bits));
+                    self.emit(0xDA89_4540 | dest); // csneg dest, x10, x9, mi
+                }
+            }
             return;
         }
         match self.operands(lhs, rhs, matches!(op, BinOp::Add | BinOp::Sub | BinOp::Shl | BinOp::Shr)) {
@@ -1573,7 +1896,7 @@ impl<'a> Gen<'a> {
             Operands::Registers(left, right) => {
                 let both = right << 16 | left << 5;
                 // Dividing by a constant other than zero needs no check.
-                let safe = match self.ast.exprs[rhs as usize] {
+                let safe = match self.expr(rhs) {
                     Expr::Int(_) => self.prog.ints[self.prog.expr_res[self.sh.e(rhs)] as usize] != 0,
                     _ => false,
                 };
@@ -1606,13 +1929,30 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// For a constant that is a power of two from 2 up: which power.
+    /// Whether the expression is the literal 0.
+    fn is_zero(&self, id: ExprId) -> bool {
+        match self.expr(id) {
+            Expr::Int(_) => self.prog.ints[self.prog.expr_res[self.sh.e(id)] as usize] == 0,
+            _ => false,
+        }
+    }
+
+    fn power_of_two(&self, id: ExprId) -> Option<u32> {
+        let Expr::Int(_) = self.expr(id) else {
+            return None;
+        };
+        let value = self.prog.ints[self.prog.expr_res[self.sh.e(id)] as usize];
+        (value >= 2 && value & (value - 1) == 0).then(|| value.trailing_zeros())
+    }
+
     /// Generates code that leaves a number or `bool` in register `dest`,
     /// one of the registers variables live in. Arithmetic and constants
     /// are computed there directly.
     fn value_in(&mut self, id: ExprId, dest: u32) {
-        match self.ast.exprs[id as usize] {
+        match self.expr(id) {
             Expr::Int(_) | Expr::Bool(_) => self.load_simple(id, dest),
-            Expr::Binary { op, lhs, rhs } if !matches!(op, BinOp::And | BinOp::Or) && self.ty(lhs) != Ty::Str => {
+            Expr::Binary { op, lhs, rhs } if !matches!(op, BinOp::And | BinOp::Or) && !self.is_aggregate(lhs) => {
                 self.binary(op, lhs, rhs, dest)
             }
             _ => {
@@ -1627,11 +1967,11 @@ impl<'a> Gen<'a> {
     fn call(&mut self, id: ExprId, args: List) {
         let target = self.prog.expr_res[self.sh.e(id)];
         let arg_ids = self.ast.list(args);
-        let Expr::Call { callee, .. } = self.ast.exprs[id as usize] else {
+        let Expr::Call { callee, .. } = self.expr(id) else {
             unreachable!("a call is a call");
         };
         // In `value.method(...)` the value is the receiver.
-        let receiver = match self.ast.exprs[callee as usize] {
+        let receiver = match self.expr(callee) {
             Expr::Field { base, .. } => Some(base),
             _ => None,
         };
@@ -1657,7 +1997,7 @@ impl<'a> Gen<'a> {
                 self.load_simple_arg(arg, by_ref, i as u32);
                 continue;
             }
-            match self.ast.exprs[arg as usize] {
+            match self.expr(arg) {
                 Expr::MutArg(inner) => self.address(inner),
                 _ if by_ref => self.address(arg),
                 _ => self.value(arg),
@@ -1756,9 +2096,28 @@ impl<'a> Gen<'a> {
                     self.emit(str(X0, FP, frame(tmp)));
                 }
                 self.address(base);
+                let mut done = None;
+                if elem_size == 1 {
+                    // With room left, a one-slot element is stored right
+                    // here; only growing the list needs the runtime.
+                    self.emit(ldr(X9, X0, 1)); // length
+                    self.emit(ldr(X10, X0, 2)); // capacity
+                    self.emit(cmp(X9, X10));
+                    let grow = self.placeholder();
+                    self.emit(ldr(X10, X0, 0)); // buffer
+                    self.emit(ldr(X11, FP, frame(tmp)));
+                    self.emit(str_scaled(X11, X10, X9));
+                    self.emit(0x9100_0529); // add x9, x9, #1
+                    self.emit(str(X9, X0, 1));
+                    done = Some(self.placeholder());
+                    self.patch_branch_if(grow, HS);
+                }
                 self.frame_address(X1, tmp);
                 self.mov_imm(X2, elem_size as i64 * 8);
                 self.runtime(runtime::LIST_PUSH);
+                if let Some(done) = done {
+                    self.patch_jump(done);
+                }
             }
             _ => {
                 self.address(base);
@@ -1857,6 +2216,21 @@ mod tests {
         assert_eq!(0x9AC0_0C00u32 | 23 << 16 | 19 << 5 | X2, 0x9AD70E62); // sdiv x2, x19, x23
         assert_eq!(0x9B00_8000u32 | 23 << 16 | 19 << 10 | X2 << 5, 0x9B17CC40); // msub x0, x2, x23, x19
         assert_eq!(0xEB00_001Fu32 | 20 << 16 | 19 << 5, 0xEB14027F); // cmp x19, x20
+        assert_eq!(low_bits(X0, 19, 4), 0x92400E60); // and x0, x19, #0xf
+        assert_eq!(tst_low_bits(X0, 1), 0xF240001F); // tst x0, #1
+        assert_eq!(tst_low_bits(21, 3), 0xF2400ABF); // tst x21, #7
+        assert_eq!(tst_low_bits(3, 32), 0xF2407C7F); // tst x3, #0xffffffff
+        assert_eq!(low_bits(X10, X0, 10), 0x9240240A); // and x10, x0, #0x3ff
+        assert_eq!(low_bits(X9, X9, 62), 0x9240F529); // and x9, x9, #0x3fffffffffffffff
+        assert_eq!(0xEB00_03E9u32 | 19 << 16, 0xEB1303E9); // negs x9, x19
+        assert_eq!(0xDA89_4540u32 | 20, 0xDA894554); // csneg x20, x10, x9, mi
+        assert_eq!(0x9A80_B129u32 | 19 << 16, 0x9A93B129); // csel x9, x9, x19, lt
+        assert_eq!(0x8B00_0000u32 | X9 << 16 | X9, 0x8B090009); // add x9, x0, x9
+        assert_eq!(ldr_scaled(X0, X9, X1), 0xF8617920); // ldr x0, [x9, x1, lsl #3]
+        assert_eq!(ldr_scaled(X0, X9, 20), 0xF8747920); // ldr x0, [x9, x20, lsl #3]
+        assert_eq!(str_scaled(X11, X10, X9), 0xF829794B); // str x11, [x10, x9, lsl #3]
+        assert_eq!(cmp(20, X9), 0xEB09029F); // cmp x20, x9
+        assert_eq!(cmp(X1, X9), 0xEB09003F);
         assert_eq!(cmp_x9_imm(1), 0xF100053F);
         assert_eq!(cmp_x9_imm(1000), 0xF10FA13F);
         assert_eq!(cset_x0(EQ), 0x9A9F17E0);

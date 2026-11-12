@@ -92,6 +92,16 @@ impl<'a> Dumper<'a> {
                     self.out.push('\n');
                 }
             }
+            Item::Const { name, ty, value } => {
+                let _ = write!(self.out, "const {}", name.text(self.src));
+                if let Some(ty) = ty {
+                    self.out.push_str(": ");
+                    self.ty(ty);
+                }
+                self.out.push_str(" = ");
+                self.expr(value);
+                self.out.push('\n');
+            }
             Item::Enum { name, generics, variants } => {
                 let _ = write!(self.out, "enum {}", name.text(self.src));
                 self.generics(generics);

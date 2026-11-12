@@ -4,6 +4,16 @@
 // A function named `type_method` here becomes the method `method` of the
 // type of its first parameter: `str_find` is what `text.find(part)` calls.
 // These names are not visible to programs as plain functions.
+//
+// A function without type parameters is compiled into every program,
+// used or not; one with type parameters only into the programs that
+// use it, and there can be one such function for each method name.
+// That is why most of the methods below take their receiver as a type
+// parameter (`s: S` for a string, `n: N` for a number) although they
+// work for one type only: a call on any other type is reported as an
+// error that names the function. Only what other library functions call
+// on a type parameter (`compare`) and the names that lists also use
+// (`min`, `max`) are written without one.
 
 // Where `part` first occurs in `s`, as a byte position.
 fn str_find(s: str, part: str) -> Option[i64] {
@@ -205,6 +215,439 @@ fn list_reversed[T](items: List[T]) -> List[T] {
     while i > 0 {
         i = i - 1
         out.push(items[i])
+    }
+    return out
+}
+
+// -1 when `s` comes before `other` in byte order, 1 when it comes
+// after, 0 when they are equal. A string comes after its own beginnings.
+fn str_compare(s: str, other: str) -> i64 {
+    var n = s.len()
+    if other.len() < n {
+        n = other.len()
+    }
+    var i = 0
+    while i < n {
+        if s[i] != other[i] {
+            if s[i] < other[i] {
+                return -1
+            }
+            return 1
+        }
+        i = i + 1
+    }
+    if s.len() < other.len() {
+        return -1
+    }
+    if s.len() > other.len() {
+        return 1
+    }
+    return 0
+}
+
+// Where `part` first occurs in `s` at byte position `start` or later.
+// A `start` below zero counts as zero.
+fn str_index_of_from[S](s: S, part: str, start: i64) -> Option[i64] {
+    let n = part.len()
+    var i = start
+    if i < 0 {
+        i = 0
+    }
+    while i + n <= s.len() {
+        var j = 0
+        while j < n && s[i + j] == part[j] {
+            j = j + 1
+        }
+        if j == n {
+            return Some(i)
+        }
+        i = i + 1
+    }
+    return None
+}
+
+// Where `part` last occurs in `s`, as a byte position.
+fn str_last_index_of[S](s: S, part: str) -> Option[i64] {
+    let n = part.len()
+    var i = s.len() - n
+    while i >= 0 {
+        var j = 0
+        while j < n && s[i + j] == part[j] {
+            j = j + 1
+        }
+        if j == n {
+            return Some(i)
+        }
+        i = i - 1
+    }
+    return None
+}
+
+// `s` with every occurrence of `old` replaced by `new`, looking from
+// left to right. An empty `old` gives `s` unchanged.
+fn str_replace[S](s: S, old: str, new: str) -> str {
+    let n = old.len()
+    if n == 0 {
+        return s
+    }
+    var out = ""
+    var start = 0
+    var i = 0
+    while i + n <= s.len() {
+        var j = 0
+        while j < n && s[i + j] == old[j] {
+            j = j + 1
+        }
+        if j == n {
+            out = out + s.slice(start, i)
+            out = out + new
+            i = i + n
+            start = i
+        } else {
+            i = i + 1
+        }
+    }
+    out = out + s.slice(start, s.len())
+    return out
+}
+
+// `s` written `count` times in a row; the empty string when `count`
+// is zero or less.
+fn str_repeat[S](s: S, count: i64) -> str {
+    var out = ""
+    var i = 0
+    while i < count {
+        out = out + s
+        i = i + 1
+    }
+    return out
+}
+
+// `s` with the letters `a` to `z` turned into `A` to `Z`. Other bytes
+// stay as they are.
+fn str_to_upper[S](s: S) -> str {
+    var out = ""
+    var i = 0
+    while i < s.len() {
+        var c = s[i]
+        if c >= 97 && c <= 122 {
+            c = c - 32
+        }
+        out = out + chr(c)
+        i = i + 1
+    }
+    return out
+}
+
+// `s` with the letters `A` to `Z` turned into `a` to `z`. Other bytes
+// stay as they are.
+fn str_to_lower[S](s: S) -> str {
+    var out = ""
+    var i = 0
+    while i < s.len() {
+        var c = s[i]
+        if c >= 65 && c <= 90 {
+            c = c + 32
+        }
+        out = out + chr(c)
+        i = i + 1
+    }
+    return out
+}
+
+// `s` with copies of `fill` put in front until it is at least `width`
+// bytes long. An empty `fill` gives `s` unchanged.
+fn str_pad_left[S](s: S, width: i64, fill: str) -> str {
+    var front = ""
+    while fill.len() > 0 && front.len() + s.len() < width {
+        front = front + fill
+    }
+    return front + s
+}
+
+// `s` with copies of `fill` put after it until it is at least `width`
+// bytes long. An empty `fill` gives `s` unchanged.
+fn str_pad_right[S](s: S, width: i64, fill: str) -> str {
+    var out = s
+    while fill.len() > 0 && out.len() < width {
+        out = out + fill
+    }
+    return out
+}
+
+// The bytes of `s`, each a number from 0 to 255.
+fn str_bytes[S](s: S) -> List[i64] {
+    var out: List[i64] = []
+    var i = 0
+    while i < s.len() {
+        out.push(s[i])
+        i = i + 1
+    }
+    return out
+}
+
+// The number `s` spells in one to sixteen hexadecimal digits, in small
+// or capital letters; sixteen digits fill all 64 bits. `None` when it
+// is anything else.
+fn str_parse_hex[S](s: S) -> Option[i64] {
+    if s.len() == 0 || s.len() > 16 {
+        return None
+    }
+    var value = 0
+    var i = 0
+    while i < s.len() {
+        let c = s[i]
+        var digit = -1
+        if c >= 48 && c <= 57 {
+            digit = c - 48
+        }
+        if c >= 97 && c <= 102 {
+            digit = c - 87
+        }
+        if c >= 65 && c <= 70 {
+            digit = c - 55
+        }
+        if digit < 0 {
+            return None
+        }
+        value = (value << 4) | digit
+        i = i + 1
+    }
+    return Some(value)
+}
+
+// The string whose bytes are `bytes`. Each must be from 0 to 255;
+// the program stops with an error otherwise.
+fn list_to_str[T](bytes: List[T]) -> str {
+    var out = ""
+    for byte in bytes {
+        out = out + chr(byte)
+    }
+    return out
+}
+
+// The numbers of `items` added up; zero for an empty list.
+fn list_sum[T](items: List[T]) -> i64 {
+    var total = 0
+    for item in items {
+        total = total + item
+    }
+    return total
+}
+
+// Whether `items`, a string or a list, has nothing in it.
+fn any_is_empty[T](items: T) -> bool {
+    return items.len() == 0
+}
+
+// The position of the first item of `items` that equals `wanted`.
+fn list_index_of[T](items: List[T], wanted: T) -> Option[i64] {
+    for i, item in items {
+        if item == wanted {
+            return Some(i)
+        }
+    }
+    return None
+}
+
+// How many items of `items` equal `wanted`.
+fn list_count[T](items: List[T], wanted: T) -> i64 {
+    var found = 0
+    for item in items {
+        if item == wanted {
+            found = found + 1
+        }
+    }
+    return found
+}
+
+// The first `count` items of `items` as a new list; all of them when
+// there are fewer, none when `count` is zero or less.
+fn list_take[T](items: List[T], count: i64) -> List[T] {
+    var out: List[T] = []
+    var i = 0
+    while i < count && i < items.len() {
+        out.push(items[i])
+        i = i + 1
+    }
+    return out
+}
+
+// The items of `items` after the first `count`, as a new list; all of
+// them when `count` is zero or less.
+fn list_skip[T](items: List[T], count: i64) -> List[T] {
+    var out: List[T] = []
+    var i = count
+    if i < 0 {
+        i = 0
+    }
+    while i < items.len() {
+        out.push(items[i])
+        i = i + 1
+    }
+    return out
+}
+
+// The smallest item of `items` by `compare`: for numbers and strings.
+// The first one when several are equal; `None` for an empty list.
+fn list_min[T](items: List[T]) -> Option[T] {
+    if items.len() == 0 {
+        return None
+    }
+    var best = 0
+    var i = 1
+    while i < items.len() {
+        if items[i].compare(items[best]) < 0 {
+            best = i
+        }
+        i = i + 1
+    }
+    return Some(items[best])
+}
+
+// The largest item of `items` by `compare`: for numbers and strings.
+// The first one when several are equal; `None` for an empty list.
+fn list_max[T](items: List[T]) -> Option[T] {
+    if items.len() == 0 {
+        return None
+    }
+    var best = 0
+    var i = 1
+    while i < items.len() {
+        if items[i].compare(items[best]) > 0 {
+            best = i
+        }
+        i = i + 1
+    }
+    return Some(items[best])
+}
+
+// The items of `items` from smallest to largest by `compare`, as a new
+// list: for numbers and strings. Equal items keep their order. It
+// merges runs of 1, 2, 4, ... items, so the work grows as n log n.
+fn list_sorted[T](items: List[T]) -> List[T] {
+    var from = items
+    let n = from.len()
+    var width = 1
+    while width < n {
+        var to: List[T] = []
+        var start = 0
+        while start < n {
+            var middle = start + width
+            if middle > n {
+                middle = n
+            }
+            var end = middle + width
+            if end > n {
+                end = n
+            }
+            var a = start
+            var b = middle
+            while a < middle && b < end {
+                if from[b].compare(from[a]) < 0 {
+                    to.push(from[b])
+                    b = b + 1
+                } else {
+                    to.push(from[a])
+                    a = a + 1
+                }
+            }
+            while a < middle {
+                to.push(from[a])
+                a = a + 1
+            }
+            while b < end {
+                to.push(from[b])
+                b = b + 1
+            }
+            start = end
+        }
+        from = to
+        width = width * 2
+    }
+    return from
+}
+
+// -1 when `n` is less than `other`, 1 when it is greater, 0 when they
+// are equal.
+fn i64_compare(n: i64, other: i64) -> i64 {
+    if n < other {
+        return -1
+    }
+    if n > other {
+        return 1
+    }
+    return 0
+}
+
+// `n` without its sign. The smallest `i64` has no positive twin and
+// stays as it is.
+fn i64_abs[N](n: N) -> i64 {
+    if n < 0 {
+        return -n
+    }
+    return n
+}
+
+// The smaller of `n` and `other`.
+fn i64_min(n: i64, other: i64) -> i64 {
+    if other < n {
+        return other
+    }
+    return n
+}
+
+// The larger of `n` and `other`.
+fn i64_max(n: i64, other: i64) -> i64 {
+    if other > n {
+        return other
+    }
+    return n
+}
+
+// `n`, or `low` when it is below `low`, or `high` when it is above
+// `high`.
+fn i64_clamp[N](n: N, low: i64, high: i64) -> i64 {
+    if n < low {
+        return low
+    }
+    if n > high {
+        return high
+    }
+    return n
+}
+
+// `n` multiplied by itself `exponent` times, wrapping around like all
+// arithmetic; 1 when `exponent` is zero or less.
+fn i64_pow[N](n: N, exponent: i64) -> i64 {
+    var result = 1
+    var base = n
+    var left = exponent
+    while left > 0 {
+        if left & 1 == 1 {
+            result = result * base
+        }
+        base = base * base
+        left = left >> 1
+    }
+    return result
+}
+
+// The 64 bits of `n` in hexadecimal digits with small letters and no
+// zeros in front: 255 gives `ff`, -1 gives sixteen `f`.
+fn i64_to_hex[N](n: N) -> str {
+    var out = ""
+    var shift = 60
+    while shift >= 0 {
+        let digit = (n >> shift) & 15
+        if digit != 0 || out.len() > 0 || shift == 0 {
+            if digit < 10 {
+                out = out + chr(48 + digit)
+            } else {
+                out = out + chr(87 + digit)
+            }
+        }
+        shift = shift - 4
     }
     return out
 }

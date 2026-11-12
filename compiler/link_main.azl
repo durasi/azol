@@ -1,0 +1,56 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// azol-link: turns a code file into an executable.
+//
+//     azol-link <code-file> <output> [runtime.bin]
+//
+// The code file comes from `azol build --emit-code <path>`. For Linux
+// the third argument names the runtime's machine code, which is
+// `runtime/linux_x64/runtime.bin` in the repository.
+
+// Prints why the tool cannot go on and ends it.
+fn stop(problem: str) {
+    eprint("azol-link: " + problem)
+    exit(1)
+}
+
+// The content of a file; ends the program when it cannot be read.
+fn read_or_stop(path: str) -> str {
+    match read_file(path) {
+        Ok(text) => return text
+        Err(problem) => {
+            stop("cannot read '" + path + "': " + problem)
+            return ""
+        }
+    }
+}
+
+fn main() -> i64 {
+    let arguments = args()
+    if arguments.len() < 3 || arguments.len() > 4 {
+        eprint("usage: azol-link <code-file> <output> [runtime.bin]")
+        return 2
+    }
+    let output = arguments[2]
+    let code = read_code_file(read_or_stop(arguments[1]))
+
+    var image: List[i64] = []
+    if code.target == "aarch64-macos" {
+        image = build_macho(code)
+    } else {
+        if arguments.len() < 4 {
+            stop("a Linux executable needs the runtime: pass the path of runtime.bin as the third argument")
+        }
+        image = build_elf(code, read_or_stop(arguments[3]))
+    }
+
+    match write_file(output, bytes_to_text(image)) {
+        Ok(written) => {}
+        Err(problem) => stop("cannot write '" + output + "': " + problem)
+    }
+    match set_executable(output) {
+        Ok(done) => {}
+        Err(problem) => stop("cannot make '" + output + "' executable: " + problem)
+    }
+    return 0
+}

@@ -1,0 +1,38 @@
+// Run-time benchmark: the same computation as bench/tree.rs.
+// Builds trees out of an enum, walks them and frees them.
+
+enum Tree {
+    Leaf(i64)
+    Node(List[Tree])
+}
+
+fn build(depth: i64, seed: i64) -> Tree {
+    if depth == 0 {
+        return Leaf(seed % 10)
+    }
+    return Node([build(depth - 1, seed * 3 + 1), build(depth - 1, seed * 5 + 2)])
+}
+
+fn sum(tree: Tree) -> i64 {
+    match tree {
+        Leaf(value) => return value
+        Node(children) => {
+            var total = 1
+            for child in children {
+                total = total + sum(child)
+            }
+            return total
+        }
+    }
+}
+
+fn main() {
+    var total = 0
+    var round = 0
+    while round < 12 {
+        let tree = build(18, round)
+        total = total + sum(tree)
+        round = round + 1
+    }
+    print(total)
+}

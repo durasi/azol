@@ -1,0 +1,28 @@
+// Run-time benchmark: the same computation as bench/sieve.rs.
+// The sieve of Eratosthenes over a list of flags.
+
+fn main() {
+    let limit = 20000000
+    var composite: List[bool] = []
+    var n = 0
+    while n <= limit {
+        composite.push(false)
+        n = n + 1
+    }
+    var count = 0
+    var last = 0
+    var i = 2
+    while i <= limit {
+        if !composite[i] {
+            count = count + 1
+            last = i
+            var j = i * i
+            while j <= limit {
+                composite[j] = true
+                j = j + i
+            }
+        }
+        i = i + 1
+    }
+    print(count * 100000000 + last)
+}

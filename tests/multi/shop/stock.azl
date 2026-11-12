@@ -1,5 +1,8 @@
 // The stock of a shop: declared here, used from main.azl.
 
+// Computed from a constant that another file declares.
+const EXTRA = BASE_EXIT - 1
+
 struct Item {
     name: str
     price: i64

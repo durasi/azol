@@ -1,0 +1,37 @@
+// Measuring program: `match` on enums and numbers inside a loop.
+
+enum Op {
+    Add(i64)
+    Sub(i64)
+    Double
+    Reset
+}
+
+fn apply(op: Op, value: i64) -> i64 {
+    match op {
+        Add(n) => return value + n
+        Sub(n) => return value - n
+        Double => return value * 2 % 1000003
+        Reset => return 1
+    }
+}
+
+fn main() {
+    let ops = [Add(5), Double, Sub(3), Add(11), Double, Reset, Add(2)]
+    var value = 1
+    var kinds = 0
+    var round = 0
+    while round < 6000 {
+        for op in ops {
+            value = apply(op, value)
+        }
+        match round % 4 {
+            0 => kinds = kinds + 1
+            1 => kinds = kinds + 2
+            2 => kinds = kinds + 3
+            _ => kinds = kinds - 1
+        }
+        round = round + 1
+    }
+    print(value + kinds)
+}

@@ -31,6 +31,34 @@ use std::rc::Rc;
 pub struct SemaError {
     pub message: String,
     pub offset: u32,
+    /// The expression the error is about, when it is about one whole
+    /// expression; the report then covers all of it.
+    pub expr: Option<ExprId>,
+    /// An edit that makes this error go away, when one is certain.
+    pub fix: Option<Fix>,
+}
+
+/// A mechanical repair for an error. Some are given as plain text
+/// replacements; the others name a place by its first token and are
+/// turned into replacements by whoever has the tokens (`diag`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fix {
+    /// Put `text` in place of the source text from `start` to `end`.
+    Replace { start: u32, end: u32, text: String },
+    /// Add these arms at the end of the `match` statement that starts at
+    /// `stmt`.
+    MatchArms { stmt: u32, arms: Vec<String> },
+    /// Insert `text` right after the name that starts at `at`.
+    AfterName { at: u32, text: String },
+    /// Remove the empty `()` that follows the name that starts at `at`.
+    EmptyParens { at: u32 },
+}
+
+impl SemaError {
+    fn with_fix(mut self, fix: Option<Fix>) -> SemaError {
+        self.fix = fix;
+        self
+    }
 }
 
 type SResult<T> = Result<T, SemaError>;
@@ -83,6 +111,15 @@ pub const BUILTIN_STR_SLICE: u32 = u32::MAX - 15;
 pub const BUILTIN_SET_EXECUTABLE: u32 = u32::MAX - 16;
 /// Resolutions at or above this value are built-ins.
 pub const FIRST_BUILTIN: u32 = u32::MAX - 16;
+
+/// In `expr_aux` of a name that is a constant: the expression then
+/// stands for a literal of that kind. For a number `expr_res` is its
+/// index in `ints`, for a string its index in `strings` (and `expr_tmp`
+/// its temporary), exactly as for a literal written in place.
+pub const CONST_INT: u32 = u32::MAX;
+pub const CONST_TRUE: u32 = u32::MAX - 1;
+pub const CONST_FALSE: u32 = u32::MAX - 2;
+pub const CONST_STR: u32 = u32::MAX - 3;
 
 /// Names of the built-in functions; a program cannot define these.
 const BUILTIN_FUNCTIONS: [&str; 9] =
@@ -327,6 +364,23 @@ pub struct Program<'a> {
 }
 
 impl Program<'_> {
+    /// Expression `id` as the code generators should see it: a name
+    /// that is a constant reads as the literal it stands for.
+    #[inline(always)]
+    pub fn expr(&self, ast: &Ast, shift: Shift, id: ExprId) -> Expr {
+        let expr = ast.exprs[id as usize];
+        if let Expr::Ident(span) = expr {
+            match self.expr_aux[shift.e(id)] {
+                CONST_INT => return Expr::Int(span),
+                CONST_TRUE => return Expr::Bool(true),
+                CONST_FALSE => return Expr::Bool(false),
+                CONST_STR => return Expr::Str(span),
+                _ => {}
+            }
+        }
+        expr
+    }
+
     pub fn size_of(&self, ty: Ty) -> u32 {
         size_of(&self.structs, &self.enums, ty)
     }
@@ -465,6 +519,9 @@ struct Local<'a> {
     uses: u32,
     /// Passed as `mut` somewhere, so it needs an address in memory.
     addressed: bool,
+    /// Where the `let` that declared it starts; `u32::MAX` for anything
+    /// that was not declared with `let` or `var`.
+    decl: u32,
 }
 
 /// A variable or a part of one, as a range of slots.
@@ -476,6 +533,8 @@ struct Place {
     mutable: bool,
     is_param: bool,
     is_view: bool,
+    /// `Local::decl` of the variable.
+    decl: u32,
 }
 
 /// Why a place that is not mutable cannot be changed, as the end of a message.
@@ -510,6 +569,38 @@ enum Holder {
     Match,
 }
 
+/// The value of a constant, known while compiling.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConstValue {
+    Int(i64),
+    Bool(bool),
+    /// Index in `strings`.
+    Str(u32),
+}
+
+impl ConstValue {
+    fn ty(self) -> Ty {
+        match self {
+            ConstValue::Int(_) => Ty::I64,
+            ConstValue::Bool(_) => Ty::Bool,
+            ConstValue::Str(_) => Ty::Str,
+        }
+    }
+}
+
+/// A `const` declaration.
+struct ConstInfo<'a> {
+    name: &'a str,
+    pos: u32,
+    ty: Option<TypeId>,
+    expr: ExprId,
+    /// 0 not evaluated yet, 1 being evaluated, 2 done.
+    state: u8,
+    value: ConstValue,
+    /// For a number: its index in `ints`, shared by every use.
+    int: u32,
+}
+
 /// A place something else currently refers to.
 struct Borrow {
     place: Place,
@@ -537,6 +628,10 @@ struct Checker<'a> {
     /// Which bytes some variant name starts with. Most names in a
     /// program are not variants, and this tells so without hashing.
     variant_starts: [bool; 256],
+    consts: Vec<ConstInfo<'a>>,
+    const_names: HashMap<&'a str, u32>,
+    /// Which bytes some constant's name starts with, like `variant_starts`.
+    const_starts: [bool; 256],
     enums: Vec<EnumInfo>,
     enum_ids: HashMap<(u32, Vec<Ty>), u32>,
     enum_state: Vec<u8>,
@@ -605,12 +700,17 @@ struct Checker<'a> {
 /// standard library that is written in azoL.
 #[cfg(test)]
 pub fn check<'a>(ast: &'a Ast, src: &'a str) -> Result<Program<'a>, SemaError> {
-    check_with_prelude(ast, src, u32::MAX)
+    check_with_prelude(ast, src, u32::MAX).map_err(|mut errors| errors.remove(0))
 }
 
 /// Checks a program whose source text continues, from `prelude_start`
 /// on, with the standard library's azoL code.
-pub fn check_with_prelude<'a>(ast: &'a Ast, src: &'a str, prelude_start: u32) -> Result<Program<'a>, SemaError> {
+///
+/// On failure it returns every problem it can report reliably, in source
+/// order: the first one among the declarations, or else the first one in
+/// each function. A mistake inside one function does not disturb the
+/// checking of the others, so those are independent of each other.
+pub fn check_with_prelude<'a>(ast: &'a Ast, src: &'a str, prelude_start: u32) -> Result<Program<'a>, Vec<SemaError>> {
     let mut c = Checker {
         ast,
         src,
@@ -624,6 +724,9 @@ pub fn check_with_prelude<'a>(ast: &'a Ast, src: &'a str, prelude_start: u32) ->
         template_names: HashMap::new(),
         variant_names: HashMap::new(),
         variant_starts: [false; 256],
+        consts: Vec::new(),
+        const_names: HashMap::new(),
+        const_starts: [false; 256],
         enums: Vec::new(),
         enum_ids: HashMap::new(),
         enum_state: Vec::new(),
@@ -668,17 +771,38 @@ pub fn check_with_prelude<'a>(ast: &'a Ast, src: &'a str, prelude_start: u32) ->
         next_slot: 0,
         loop_depth: 0,
     };
-    c.declare_types()?;
-    c.signatures()?;
+    // Later declarations and every function body depend on the
+    // declarations, so a mistake there is reported alone.
+    c.declare_types().map_err(|error| vec![error])?;
+    c.declare_consts().map_err(|error| vec![error])?;
+    c.signatures().map_err(|error| vec![error])?;
     // Checking a function can add to the list: each new use of a generic
     // function is one more function to check.
+    let mut errors: Vec<SemaError> = Vec::new();
     let mut index = 0;
     while index < c.fns.len() {
-        c.function(index as u32)?;
+        if let Err(error) = c.function(index as u32) {
+            // A generic function is checked once per set of types; the
+            // same mistake in it is reported once.
+            if !errors.iter().any(|known| known.offset == error.offset) {
+                errors.push(error);
+            }
+            // Types the function was in the middle of creating stay as
+            // they are; nothing is generated from a program with errors.
+            c.settled_structs = c.structs.len();
+            c.settled = c.enums.len();
+        }
         index += 1;
     }
+    if !c.fn_names.contains_key("main") {
+        errors.push(SemaError { message: "the program has no `main` function".to_string(), offset: 0, expr: None, fix: None });
+    }
+    if !errors.is_empty() {
+        errors.sort_by_key(|error| error.offset);
+        return Err(errors);
+    }
     let Some(&main) = c.fn_names.get("main") else {
-        return Err(SemaError { message: "the program has no `main` function".to_string(), offset: 0 });
+        return Err(vec![SemaError { message: "the program has no `main` function".to_string(), offset: 0, expr: None, fix: None }]);
     };
     Ok(Program {
         structs: c.structs,
@@ -737,8 +861,30 @@ fn special_literal(text: &str) -> Option<Option<i64>> {
     Some(Some(value as i64))
 }
 
+/// The value of a number literal as written: decimal, hexadecimal,
+/// binary or a character. The error is the message to report.
+fn int_literal(text: &str) -> Result<i64, &'static str> {
+    match special_literal(text) {
+        Some(Some(value)) => Ok(value),
+        Some(None) => Err("this number does not fit in 64 bits"),
+        None => {
+            let mut value: i64 = 0;
+            for byte in text.bytes().filter(|&b| b != b'_') {
+                let digit = (byte - b'0') as i64;
+                value = value.checked_mul(10).and_then(|v| v.checked_add(digit)).ok_or("this number does not fit in `i64`")?;
+            }
+            Ok(value)
+        }
+    }
+}
+
 fn err<T>(offset: u32, message: impl Into<String>) -> SResult<T> {
-    Err(SemaError { message: message.into(), offset })
+    Err(SemaError { message: message.into(), offset, expr: None, fix: None })
+}
+
+/// An error about the whole expression `expr`.
+fn err_expr<T>(ast: &Ast, expr: ExprId, message: impl Into<String>) -> SResult<T> {
+    Err(SemaError { message: message.into(), offset: ast.expr_pos[expr as usize], expr: Some(expr), fix: None })
 }
 
 fn overlaps(a: &Place, b: &Place) -> bool {
@@ -1087,7 +1233,7 @@ impl<'a> Checker<'a> {
             let (name, is_struct) = match *item {
                 Item::Struct { name, .. } => (name, true),
                 Item::Enum { name, .. } => (name, false),
-                Item::Fn { .. } => continue,
+                Item::Fn { .. } | Item::Const { .. } => continue,
             };
             let text = name.text(self.src);
             if matches!(text, "i64" | "bool" | "str" | "List") {
@@ -1140,7 +1286,7 @@ impl<'a> Checker<'a> {
                     self.templates.push(Template { name: text, pos: name.start, params, variants: Vec::new(), builtin: false });
                     enum_decls.push((index, variants));
                 }
-                Item::Fn { .. } => {}
+                Item::Fn { .. } | Item::Const { .. } => {}
             }
         }
 
@@ -1320,6 +1466,9 @@ impl<'a> Checker<'a> {
                 if let Some(&(template, _)) = self.variant_names.get(text) {
                     return err(name.start, format!("`{text}` is already a variant of `{}`", self.templates[template as usize].name));
                 }
+                if self.const_names.contains_key(text) {
+                    return err(name.start, format!("`{text}` is already a constant"));
+                }
             }
             let param_ids = self.ast.list(params);
             if param_ids.len() > MAX_PARAMS {
@@ -1477,6 +1626,7 @@ impl<'a> Checker<'a> {
                 scalar: !info.by_ref,
                 uses: 0,
                 addressed: false,
+                decl: u32::MAX,
             });
         }
         if self.ret.is_aggregate() {
@@ -1542,16 +1692,181 @@ impl<'a> Checker<'a> {
         self.locals.iter().rev().find(|local| local.name == name)
     }
 
+    /// The name of the constant an already checked expression is, if it is one.
+    fn constant_name(&self, id: ExprId) -> Option<&'a str> {
+        match self.ast.exprs[id as usize] {
+            Expr::Ident(name) if self.expr_aux[self.sh.e(id)] >= CONST_STR => Some(name.text(self.src)),
+            _ => None,
+        }
+    }
+
     /// The text of a name that is about to become a variable. A variant
     /// name cannot be one: `None` must always mean the variant.
     fn binding(&self, name: Span) -> SResult<&'a str> {
         let text = name.text(self.src);
-        match self.variant(text) {
-            Some((template, _)) => err(
+        if let Some((template, _)) = self.variant(text) {
+            return err(
                 name.start,
                 format!("`{text}` is a variant of `{}` and cannot be used as a variable name", self.templates[template as usize].name),
-            ),
-            None => Ok(text),
+            );
+        }
+        if self.constant(name).is_some() {
+            return err(name.start, format!("`{text}` is a constant and cannot be used as a variable name"));
+        }
+        Ok(text)
+    }
+
+    /// The constant that the name written at `name` means, if any. The
+    /// standard library's own code never means a program's constants,
+    /// so its variables may share a name with one.
+    fn constant(&self, name: Span) -> Option<u32> {
+        let text = name.text(self.src);
+        if name.start >= self.prelude_start || !self.const_starts[text.as_bytes()[0] as usize] {
+            return None;
+        }
+        self.const_names.get(text).copied()
+    }
+
+    /// Registers every `const` and computes its value. Constants may
+    /// use each other in any order, but not in a circle.
+    fn declare_consts(&mut self) -> SResult<()> {
+        for item in &self.ast.items {
+            let Item::Const { name, ty, value } = *item else {
+                continue;
+            };
+            let text = name.text(self.src);
+            if BUILTIN_FUNCTIONS.contains(&text) {
+                return err(name.start, format!("`{text}` is built in and cannot be redefined"));
+            }
+            if let Some(&(template, _)) = self.variant_names.get(text) {
+                return err(name.start, format!("`{text}` is already a variant of `{}`", self.templates[template as usize].name));
+            }
+            if self.const_names.insert(text, self.consts.len() as u32).is_some() {
+                return err(name.start, format!("constant `{text}` is defined more than once"));
+            }
+            self.const_starts[text.as_bytes()[0] as usize] = true;
+            self.consts.push(ConstInfo { name: text, pos: name.start, ty, expr: value, state: 0, value: ConstValue::Bool(false), int: 0 });
+        }
+        for index in 0..self.consts.len() {
+            self.const_value(index as u32)?;
+        }
+        Ok(())
+    }
+
+    /// The value of constant `index`, computed the first time it is needed.
+    fn const_value(&mut self, index: u32) -> SResult<ConstValue> {
+        let info = &self.consts[index as usize];
+        let (name, pos, ty, expr) = (info.name, info.pos, info.ty, info.expr);
+        match info.state {
+            2 => return Ok(info.value),
+            1 => return err(pos, format!("constant `{name}` is defined in terms of itself")),
+            _ => {}
+        }
+        self.consts[index as usize].state = 1;
+        let value = self.const_eval(expr)?;
+        if let Some(ty) = ty {
+            let declared = self.ty(ty)?;
+            if declared != value.ty() {
+                return err_expr(self.ast, expr,
+                    format!("expected `{}` but this is `{}`", self.ty_name(declared), self.ty_name(value.ty())),
+                );
+            }
+        }
+        if let ConstValue::Int(number) = value {
+            self.consts[index as usize].int = self.ints.len() as u32;
+            self.ints.push(number);
+        }
+        self.consts[index as usize].value = value;
+        self.consts[index as usize].state = 2;
+        Ok(value)
+    }
+
+    /// Computes a constant expression: literals, other constants and
+    /// operators on numbers and `bool`s, with the results the same
+    /// operators give when the program runs.
+    fn const_eval(&mut self, id: ExprId) -> SResult<ConstValue> {
+        let pos = self.ast.expr_pos[id as usize];
+        let wrong = |c: &Self, at: ExprId, what: &str, want: Ty, got: ConstValue| -> SResult<ConstValue> {
+            err(c.ast.expr_pos[at as usize], format!("{what} needs `{}` but this is `{}`", c.ty_name(want), c.ty_name(got.ty())))
+        };
+        match self.ast.exprs[id as usize] {
+            Expr::Int(span) => match int_literal(span.text(self.src)) {
+                Ok(value) => Ok(ConstValue::Int(value)),
+                Err(message) => err(pos, message),
+            },
+            Expr::Bool(value) => Ok(ConstValue::Bool(value)),
+            Expr::Str(span) => Ok(ConstValue::Str(self.string_literal(span))),
+            Expr::Ident(name) => {
+                let text = name.text(self.src);
+                match self.const_names.get(text) {
+                    Some(&index) => self.const_value(index),
+                    None => err(pos, format!("`{text}` is not a constant; a constant is made of literals and other constants")),
+                }
+            }
+            Expr::Unary { op, operand } => {
+                let value = self.const_eval(operand)?;
+                match (op, value) {
+                    (UnOp::Neg, ConstValue::Int(number)) => Ok(ConstValue::Int(number.wrapping_neg())),
+                    (UnOp::Not, ConstValue::Bool(flag)) => Ok(ConstValue::Bool(!flag)),
+                    (UnOp::Neg, other) => wrong(self, operand, "`-`", Ty::I64, other),
+                    (UnOp::Not, other) => wrong(self, operand, "`!`", Ty::Bool, other),
+                }
+            }
+            Expr::Binary { op, lhs, rhs } => {
+                let left = self.const_eval(lhs)?;
+                let right = self.const_eval(rhs)?;
+                let what = format!("`{}`", op.symbol());
+                if let ConstValue::Str(_) = left {
+                    return err(pos, "a string constant must be a single string literal");
+                }
+                match op {
+                    BinOp::And | BinOp::Or => {
+                        let (ConstValue::Bool(a), ConstValue::Bool(b)) = (left, right) else {
+                            return match left {
+                                ConstValue::Bool(_) => wrong(self, rhs, &what, Ty::Bool, right),
+                                _ => wrong(self, lhs, &what, Ty::Bool, left),
+                            };
+                        };
+                        Ok(ConstValue::Bool(if op == BinOp::And { a && b } else { a || b }))
+                    }
+                    BinOp::Eq | BinOp::NotEq => {
+                        if left.ty() != right.ty() {
+                            return wrong(self, rhs, &what, left.ty(), right);
+                        }
+                        Ok(ConstValue::Bool((left == right) == (op == BinOp::Eq)))
+                    }
+                    _ => {
+                        let (ConstValue::Int(a), ConstValue::Int(b)) = (left, right) else {
+                            return match left {
+                                ConstValue::Int(_) => wrong(self, rhs, &what, Ty::I64, right),
+                                _ => wrong(self, lhs, &what, Ty::I64, left),
+                            };
+                        };
+                        if matches!(op, BinOp::Div | BinOp::Rem) && b == 0 {
+                            return err_expr(self.ast, rhs, "division by zero in a constant");
+                        }
+                        Ok(match op {
+                            BinOp::Add => ConstValue::Int(a.wrapping_add(b)),
+                            BinOp::Sub => ConstValue::Int(a.wrapping_sub(b)),
+                            BinOp::Mul => ConstValue::Int(a.wrapping_mul(b)),
+                            BinOp::Div => ConstValue::Int(a.wrapping_div(b)),
+                            BinOp::Rem => ConstValue::Int(a.wrapping_rem(b)),
+                            BinOp::BitAnd => ConstValue::Int(a & b),
+                            BinOp::BitOr => ConstValue::Int(a | b),
+                            BinOp::BitXor => ConstValue::Int(a ^ b),
+                            // The low 6 bits of the count, as at run time.
+                            BinOp::Shl => ConstValue::Int(a.wrapping_shl(b as u32)),
+                            BinOp::Shr => ConstValue::Int(a.wrapping_shr(b as u32)),
+                            BinOp::Lt => ConstValue::Bool(a < b),
+                            BinOp::LtEq => ConstValue::Bool(a <= b),
+                            BinOp::Gt => ConstValue::Bool(a > b),
+                            BinOp::GtEq => ConstValue::Bool(a >= b),
+                            BinOp::And | BinOp::Or | BinOp::Eq | BinOp::NotEq => unreachable!("handled above"),
+                        })
+                    }
+                }
+            }
+            _ => err(pos, "a constant must be made of literals and other constants"),
         }
     }
 
@@ -1621,7 +1936,7 @@ impl<'a> Checker<'a> {
         if !local.owns || local.by_ref || local.depth != self.loop_depth || !self.needs_drop(local.ty) {
             return false;
         }
-        let place = Place { root: local.slot, start: 0, len: self.size_of(local.ty), mutable: false, is_param: false, is_view: false };
+        let place = Place { root: local.slot, start: 0, len: self.size_of(local.ty), mutable: false, is_param: false, is_view: false, decl: u32::MAX };
         let watched = self.borrows.iter().any(|other| overlaps(&place, &other.place));
         if !watched && !self.late.iter().any(|&late| self.mentions(late, text)) {
             self.locals[at].candidate = Some(id);
@@ -1641,7 +1956,12 @@ impl<'a> Checker<'a> {
     /// Called where the value of `id` is stored somewhere that will own
     /// it. A temporary hands its buffers over; anything else is copied.
     fn take(&mut self, id: ExprId) -> bool {
-        if let Expr::Str(_) = self.ast.exprs[id as usize] {
+        let literal = match self.ast.exprs[id as usize] {
+            Expr::Str(_) => true,
+            Expr::Ident(_) => self.expr_aux[self.sh.e(id)] == CONST_STR,
+            _ => false,
+        };
+        if literal {
             // A literal owns nothing, so there is nothing to copy either.
             self.expr_moved[self.sh.e(id)] = true;
             return true;
@@ -1679,12 +1999,11 @@ impl<'a> Checker<'a> {
                 };
                 let value_ty = self.expr_hint(value, declared)?;
                 if value_ty == Ty::Unit {
-                    return err(self.ast.expr_pos[value as usize], "this expression has no value to store");
+                    return err_expr(self.ast, value, "this expression has no value to store");
                 }
                 if let Some(declared) = declared {
                     if declared != value_ty {
-                        return err(
-                            self.ast.expr_pos[value as usize],
+                        return err_expr(self.ast, value,
                             format!("expected `{}` but this is `{}`", self.ty_name(declared), self.ty_name(value_ty)),
                         );
                     }
@@ -1706,6 +2025,7 @@ impl<'a> Checker<'a> {
                     scalar: matches!(value_ty, Ty::I64 | Ty::Bool),
                     uses: 0,
                     addressed: false,
+                    decl: pos,
                 });
                 self.stmt_slot[self.sh.s(id)] = slot;
             }
@@ -1717,18 +2037,21 @@ impl<'a> Checker<'a> {
                     }
                 }
                 let Some(place) = self.place(target) else {
+                    if let Some(name) = self.constant_name(target) {
+                        return err(pos, format!("cannot change `{name}`: it is a constant"));
+                    }
                     return err(pos, "only a variable or a part of a variable can be assigned");
                 };
                 if !place.mutable {
-                    return err(pos, format!("cannot change `{}`: {}", self.root_name(target), read_only(&place)));
+                    let message = format!("cannot change `{}`: {}", self.root_name(target), read_only(&place));
+                    return err(pos, message).map_err(|error: SemaError| error.with_fix(self.var_fix(&place)));
                 }
                 self.check_change(target, &place)?;
                 // The target is found after the value has been computed.
                 self.late.push(target);
                 let value_ty = self.expr_hint(value, Some(target_ty))?;
                 if value_ty != target_ty {
-                    return err(
-                        self.ast.expr_pos[value as usize],
+                    return err_expr(self.ast, value,
                         format!("expected `{}` but this is `{}`", self.ty_name(target_ty), self.ty_name(value_ty)),
                     );
                 }
@@ -1812,8 +2135,7 @@ impl<'a> Checker<'a> {
             Stmt::For { index, item, iter, body } => {
                 let iter_ty = self.expr(iter)?;
                 let Ty::List(list) = iter_ty else {
-                    return err(
-                        self.ast.expr_pos[iter as usize],
+                    return err_expr(self.ast, iter,
                         format!("`for` needs a list to go through but this is `{}`", self.ty_name(iter_ty)),
                     );
                 };
@@ -1834,10 +2156,10 @@ impl<'a> Checker<'a> {
                 let scope = self.locals.len();
                 let item_slot = self.alloc(self.size_of(elem), item.start)?;
                 // The loop variable looks at the element; the list keeps owning it.
-                self.locals.push(Local { name: self.binding(item)?, slot: item_slot, ty: elem, mutable: false, by_ref: false, is_param: false, is_view: true, owns: false, depth: self.loop_depth, candidate: None, scalar: false, uses: 0, addressed: false });
+                self.locals.push(Local { name: self.binding(item)?, slot: item_slot, ty: elem, mutable: false, by_ref: false, is_param: false, is_view: true, owns: false, depth: self.loop_depth, candidate: None, scalar: false, uses: 0, addressed: false, decl: u32::MAX });
                 if let Some(index) = index {
                     let index_slot = self.alloc(1, index.start)?;
-                    self.locals.push(Local { name: self.binding(index)?, slot: index_slot, ty: Ty::I64, mutable: false, by_ref: false, is_param: false, is_view: true, owns: false, depth: self.loop_depth, candidate: None, scalar: false, uses: 0, addressed: false });
+                    self.locals.push(Local { name: self.binding(index)?, slot: index_slot, ty: Ty::I64, mutable: false, by_ref: false, is_param: false, is_view: true, owns: false, depth: self.loop_depth, candidate: None, scalar: false, uses: 0, addressed: false, decl: u32::MAX });
                 }
                 let borrows = self.borrows.len();
                 if self.stmt_flag[self.sh.s(id)] == IN_PLACE {
@@ -1926,6 +2248,91 @@ impl<'a> Checker<'a> {
                 return err(pat_pos, "this arm can never run: the arms above already cover every case");
             }
             let scope = self.locals.len();
+            // A pattern that stands for one value: a literal, or the name
+            // of a constant. With it, how the value is written.
+            let literal: Option<(ConstValue, String)> = match self.ast.patterns[pat] {
+                Pattern::Int { negative, digits } => {
+                    let mut value: i128 = 0;
+                    match special_literal(digits.text(self.src)) {
+                        Some(Some(special)) => value = special as i128,
+                        Some(None) => return err(pat_pos, "this number does not fit in 64 bits"),
+                        None => {
+                            for byte in digits.text(self.src).bytes().filter(|&b| b != b'_') {
+                                value = value * 10 + (byte - b'0') as i128;
+                                if value > 1 << 63 {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if negative {
+                        value = -value;
+                    }
+                    let Ok(value) = i64::try_from(value) else {
+                        return err(pat_pos, "this number does not fit in `i64`");
+                    };
+                    Some((ConstValue::Int(value), format!("`{value}`")))
+                }
+                Pattern::Bool(value) => Some((ConstValue::Bool(value), format!("`{value}`"))),
+                Pattern::Str(span) => Some((ConstValue::Str(self.string_literal(span)), span.text(self.src).to_string())),
+                Pattern::Name(name) => self.constant(name).map(|index| {
+                    (self.consts[index as usize].value, format!("`{}`", name.text(self.src)))
+                }),
+                _ => None,
+            };
+            if let Some((value, shown)) = literal {
+                let kind = match value {
+                    ConstValue::Int(_) => "a number",
+                    ConstValue::Bool(_) => "a `bool`",
+                    ConstValue::Str(_) => "a string",
+                };
+                if ty != value.ty() {
+                    return err(pat_pos, format!("this pattern is {kind} but the `match` is on `{}`", self.ty_name(ty)));
+                }
+                let seen_before = match value {
+                    ConstValue::Int(number) => {
+                        let seen = seen_ints.contains(&number);
+                        seen_ints.push(number);
+                        seen
+                    }
+                    ConstValue::Bool(flag) => std::mem::replace(&mut seen_bools[flag as usize], true),
+                    ConstValue::Str(index) => {
+                        let bytes = |c: &Self, index: u32| {
+                            let (offset, len) = c.strings[index as usize];
+                            c.data[offset as usize..(offset + len) as usize].to_vec()
+                        };
+                        let text = bytes(self, index);
+                        let seen = seen_strings.iter().any(|&earlier| bytes(self, earlier) == text);
+                        seen_strings.push(index);
+                        seen
+                    }
+                };
+                if seen_before {
+                    return err(pat_pos, format!("this arm can never run: {shown} is already handled above"));
+                }
+                self.pats[self.sh.p(arm.pattern)] = match value {
+                    ConstValue::Int(number) => {
+                        self.ints.push(number);
+                        PatInfo { kind: PAT_LITERAL, res: self.ints.len() as u32 - 1, slot: 0 }
+                    }
+                    ConstValue::Bool(flag) => PatInfo { kind: PAT_LITERAL, res: flag as u32, slot: 0 },
+                    ConstValue::Str(index) => {
+                        // One area is enough: the strings are compared one at a time.
+                        let slot = match literal_slot {
+                            Some(slot) => slot,
+                            None => {
+                                let slot = self.alloc(3, pat_pos)?;
+                                literal_slot = Some(slot);
+                                slot
+                            }
+                        };
+                        PatInfo { kind: PAT_LITERAL, res: index, slot }
+                    }
+                };
+                self.block(arm.body)?;
+                self.close_scope(scope);
+                continue;
+            }
             match self.ast.patterns[pat] {
                 Pattern::Wildcard => {
                     self.pats[self.sh.p(arm.pattern)] = PatInfo { kind: PAT_ANY, res: 0, slot: 0 };
@@ -1948,6 +2355,7 @@ impl<'a> Checker<'a> {
                         scalar: false,
                         uses: 0,
                         addressed: false,
+                        decl: u32::MAX,
                     });
                     self.pats[self.sh.p(arm.pattern)] = PatInfo { kind: PAT_BIND, res: 0, slot };
                     catch_all = true;
@@ -1981,10 +2389,10 @@ impl<'a> Checker<'a> {
                         }
                         _ => {
                             if want > 0 {
-                                return err(
-                                    pat_pos,
-                                    format!("`{text}` holds {want} value{plural}; write `{text}({})` to match it", vec!["_"; want].join(", ")),
-                                );
+                                let fields = vec!["_"; want].join(", ");
+                                let fix = Fix::AfterName { at: pat_pos, text: format!("({fields})") };
+                                return err(pat_pos, format!("`{text}` holds {want} value{plural}; write `{text}({fields})` to match it"))
+                                    .map_err(|error: SemaError| error.with_fix(Some(fix)));
                             }
                             &[]
                         }
@@ -1999,7 +2407,10 @@ impl<'a> Checker<'a> {
                     for (i, &sub) in sub_patterns.iter().enumerate() {
                         match self.ast.patterns[sub as usize] {
                             Pattern::Wildcard => {}
-                            Pattern::Name(binding) if !self.variant_names.contains_key(binding.text(self.src)) => {
+                            Pattern::Name(binding)
+                                if !self.variant_names.contains_key(binding.text(self.src))
+                                    && self.constant(binding).is_none() =>
+                            {
                                 let binding_text = binding.text(self.src);
                                 if self.locals[scope..].iter().any(|local| local.name == binding_text) {
                                     return err(binding.start, format!("`{binding_text}` is used twice in this pattern"));
@@ -2021,6 +2432,7 @@ impl<'a> Checker<'a> {
                                     scalar: false,
                                     uses: 0,
                                     addressed: false,
+                                    decl: u32::MAX,
                                 });
                                 self.pats[self.sh.p(sub)] = PatInfo { kind: PAT_BIND, res: offset, slot };
                             }
@@ -2034,71 +2446,7 @@ impl<'a> Checker<'a> {
                     }
                     self.pats[self.sh.p(arm.pattern)] = PatInfo { kind: PAT_VARIANT, res: variant, slot: 0 };
                 }
-                Pattern::Int { negative, digits } => {
-                    if ty != Ty::I64 {
-                        return err(pat_pos, format!("this pattern is a number but the `match` is on `{}`", self.ty_name(ty)));
-                    }
-                    let mut value: i128 = 0;
-                    match special_literal(digits.text(self.src)) {
-                        Some(Some(special)) => value = special as i128,
-                        Some(None) => return err(pat_pos, "this number does not fit in 64 bits"),
-                        None => {
-                            for byte in digits.text(self.src).bytes().filter(|&b| b != b'_') {
-                                value = value * 10 + (byte - b'0') as i128;
-                                if value > 1 << 63 {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    if negative {
-                        value = -value;
-                    }
-                    let Ok(value) = i64::try_from(value) else {
-                        return err(pat_pos, "this number does not fit in `i64`");
-                    };
-                    if seen_ints.contains(&value) {
-                        return err(pat_pos, format!("this arm can never run: `{value}` is already handled above"));
-                    }
-                    seen_ints.push(value);
-                    self.pats[self.sh.p(arm.pattern)] = PatInfo { kind: PAT_LITERAL, res: self.ints.len() as u32, slot: 0 };
-                    self.ints.push(value);
-                }
-                Pattern::Bool(value) => {
-                    if ty != Ty::Bool {
-                        return err(pat_pos, format!("this pattern is a `bool` but the `match` is on `{}`", self.ty_name(ty)));
-                    }
-                    if seen_bools[value as usize] {
-                        return err(pat_pos, format!("this arm can never run: `{value}` is already handled above"));
-                    }
-                    seen_bools[value as usize] = true;
-                    self.pats[self.sh.p(arm.pattern)] = PatInfo { kind: PAT_LITERAL, res: value as u32, slot: 0 };
-                }
-                Pattern::Str(span) => {
-                    if ty != Ty::Str {
-                        return err(pat_pos, format!("this pattern is a string but the `match` is on `{}`", self.ty_name(ty)));
-                    }
-                    let index = self.string_literal(span);
-                    let bytes = |c: &Self, index: u32| {
-                        let (offset, len) = c.strings[index as usize];
-                        c.data[offset as usize..(offset + len) as usize].to_vec()
-                    };
-                    let text = bytes(self, index);
-                    if seen_strings.iter().any(|&earlier| bytes(self, earlier) == text) {
-                        return err(pat_pos, format!("this arm can never run: {} is already handled above", span.text(self.src)));
-                    }
-                    seen_strings.push(index);
-                    // One area is enough: the strings are compared one at a time.
-                    let slot = match literal_slot {
-                        Some(slot) => slot,
-                        None => {
-                            let slot = self.alloc(3, pat_pos)?;
-                            literal_slot = Some(slot);
-                            slot
-                        }
-                    };
-                    self.pats[self.sh.p(arm.pattern)] = PatInfo { kind: PAT_LITERAL, res: index, slot };
-                }
+                Pattern::Int { .. } | Pattern::Bool(_) | Pattern::Str(_) => unreachable!("literal patterns are handled above"),
             }
             self.block(arm.body)?;
             self.close_scope(scope);
@@ -2117,31 +2465,50 @@ impl<'a> Checker<'a> {
                     .filter(|&(_, &seen)| !seen)
                     .map(|(variant, _)| format!("`{}`", template.variants[variant].0))
                     .collect();
+                // The arms that would complete the `match`, doing nothing.
+                let arms: Vec<String> = seen_variants
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &seen)| !seen)
+                    .map(|(variant, _)| {
+                        let (name, fields) = &template.variants[variant];
+                        match fields.len() {
+                            0 => format!("{name} => {{}}"),
+                            count => format!("{name}({}) => {{}}", vec!["_"; count].join(", ")),
+                        }
+                    })
+                    .collect();
+                let fix = Some(Fix::MatchArms { stmt: pos, arms });
                 match missing.split_last() {
                     None => Ok(()),
-                    Some((only, [])) => err(pos, format!("this `match` does not handle {only}; add an arm for it or a final `_ =>` arm")),
+                    Some((only, [])) => err(pos, format!("this `match` does not handle {only}; add an arm for it or a final `_ =>` arm"))
+                        .map_err(|error: SemaError| error.with_fix(fix)),
                     Some((last, rest)) => err(
                         pos,
                         format!("this `match` does not handle {} and {last}; add arms for them or a final `_ =>` arm", rest.join(", ")),
-                    ),
+                    )
+                    .map_err(|error: SemaError| error.with_fix(fix)),
                 }
             }
             Ty::Bool if seen_bools == [true, true] => Ok(()),
-            Ty::Bool => err(
-                pos,
-                format!("this `match` does not handle `{}`; add an arm for it or a final `_ =>` arm", !seen_bools[1]),
-            ),
-            _ => err(
-                pos,
-                format!("a `match` on `{}` needs a final `_ =>` arm: the arms cannot list every value", self.ty_name(ty)),
-            ),
+            Ty::Bool => {
+                let missing = !seen_bools[1];
+                let fix = Fix::MatchArms { stmt: pos, arms: vec![format!("{missing} => {{}}")] };
+                err(pos, format!("this `match` does not handle `{missing}`; add an arm for it or a final `_ =>` arm"))
+                    .map_err(|error: SemaError| error.with_fix(Some(fix)))
+            }
+            _ => {
+                let fix = Fix::MatchArms { stmt: pos, arms: vec!["_ => {}".to_string()] };
+                err(pos, format!("a `match` on `{}` needs a final `_ =>` arm: the arms cannot list every value", self.ty_name(ty)))
+                    .map_err(|error: SemaError| error.with_fix(Some(fix)))
+            }
         }
     }
 
     fn condition(&mut self, cond: ExprId) -> SResult<()> {
         let ty = self.expr(cond)?;
         if ty != Ty::Bool {
-            return err(self.ast.expr_pos[cond as usize], format!("a condition must be `bool` but this is `{}`", self.ty_name(ty)));
+            return err_expr(self.ast, cond, format!("a condition must be `bool` but this is `{}`", self.ty_name(ty)));
         }
         Ok(())
     }
@@ -2162,6 +2529,7 @@ impl<'a> Checker<'a> {
                     mutable: local.mutable,
                     is_param: local.is_param,
                     is_view: local.is_view,
+                    decl: local.decl,
                 })
             }
             Expr::Field { base, .. } => {
@@ -2196,14 +2564,24 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The repair for changing a variable declared with `let`: declare it
+    /// with `var`. `None` for parameters, loop variables and bindings,
+    /// which have no such one-word repair.
+    fn var_fix(&self, place: &Place) -> Option<Fix> {
+        let start = place.decl as usize;
+        if place.is_param || place.is_view || place.decl == u32::MAX || !self.src[start..].starts_with("let ") {
+            return None;
+        }
+        Some(Fix::Replace { start: place.decl, end: place.decl + 3, text: "var".to_string() })
+    }
+
     /// Fails when `place` cannot be changed right now because something
     /// else still refers to it.
     fn check_change(&self, id: ExprId, place: &Place) -> SResult<()> {
         for other in &self.borrows {
             if overlaps(place, &other.place) {
                 let name = self.root_name(id);
-                return err(
-                    self.ast.expr_pos[id as usize],
+                return err_expr(self.ast, id,
                     match other.holder {
                         Holder::Loop => format!("cannot change `{name}` while a loop is going through it"),
                         Holder::Match => format!("cannot change `{name}` while a `match` is looking inside it"),
@@ -2222,8 +2600,7 @@ impl<'a> Checker<'a> {
         for other in &self.borrows {
             if (mutable || other.mutable) && overlaps(&place, &other.place) {
                 let name = self.root_name(id);
-                return err(
-                    self.ast.expr_pos[id as usize],
+                return err_expr(self.ast, id,
                     match other.holder {
                         Holder::Loop => format!("cannot pass `{name}` as `mut` while a loop is going through it"),
                         Holder::Match => format!("cannot pass `{name}` as `mut` while a `match` is looking inside it"),
@@ -2250,8 +2627,7 @@ impl<'a> Checker<'a> {
                 What::Argument(number, function) => format!("argument {number} of `{function}`"),
                 What::Field(name) => format!("field `{name}`"),
             };
-            return err(
-                self.ast.expr_pos[expr as usize],
+            return err_expr(self.ast, expr,
                 format!("{what} needs `{}` but this is `{}`", self.ty_name(want), self.ty_name(ty)),
             );
         }
@@ -2274,21 +2650,9 @@ impl<'a> Checker<'a> {
         let pos = self.ast.expr_pos[id as usize];
         match self.ast.exprs[id as usize] {
             Expr::Int(span) => {
-                let text = span.text(self.src);
-                let value = match special_literal(text) {
-                    Some(Some(value)) => value,
-                    Some(None) => return err(pos, "this number does not fit in 64 bits"),
-                    None => {
-                        let mut value: i64 = 0;
-                        for byte in text.bytes().filter(|&b| b != b'_') {
-                            let digit = (byte - b'0') as i64;
-                            let Some(next) = value.checked_mul(10).and_then(|v| v.checked_add(digit)) else {
-                                return err(pos, "this number does not fit in `i64`");
-                            };
-                            value = next;
-                        }
-                        value
-                    }
+                let value = match int_literal(span.text(self.src)) {
+                    Ok(value) => value,
+                    Err(message) => return err(pos, message),
                 };
                 self.expr_res[self.sh.e(id)] = self.ints.len() as u32;
                 self.ints.push(value);
@@ -2305,6 +2669,24 @@ impl<'a> Checker<'a> {
                 let Some(at) = self.locals.iter().rposition(|local| local.name == text) else {
                     if let Some((template, variant)) = self.variant(text) {
                         return self.construct(id, template, variant, None, hint);
+                    }
+                    if let Some(index) = self.constant(name) {
+                        // From here on the name reads as the literal.
+                        let (value, int) = (self.consts[index as usize].value, self.consts[index as usize].int);
+                        let at = self.sh.e(id);
+                        match value {
+                            ConstValue::Int(_) => {
+                                self.expr_res[at] = int;
+                                self.expr_aux[at] = CONST_INT;
+                            }
+                            ConstValue::Bool(flag) => self.expr_aux[at] = if flag { CONST_TRUE } else { CONST_FALSE },
+                            ConstValue::Str(string) => {
+                                self.expr_res[at] = string;
+                                self.expr_aux[at] = CONST_STR;
+                                self.expr_tmp[at] = self.alloc(3, pos)?;
+                            }
+                        }
+                        return Ok(value.ty());
                     }
                     return if self.fn_names.contains_key(text) || self.generic_names.contains_key(text) || BUILTIN_FUNCTIONS.contains(&text) {
                         err(pos, format!("`{text}` is a function; call it with `{text}(...)`"))
@@ -2342,8 +2724,7 @@ impl<'a> Checker<'a> {
                         let left = self.expr(lhs)?;
                         if left != Ty::Str {
                             if left != Ty::I64 {
-                                return err(
-                                    self.ast.expr_pos[lhs as usize],
+                                return err_expr(self.ast, lhs,
                                     format!("`+` needs `i64` or `str` but this is `{}`", self.ty_name(left)),
                                 );
                             }
@@ -2381,14 +2762,25 @@ impl<'a> Checker<'a> {
                     BinOp::Eq | BinOp::NotEq => {
                         let left = self.expr(lhs)?;
                         match left {
-                            Ty::Unit => return err(self.ast.expr_pos[lhs as usize], "this expression has no value to compare"),
+                            Ty::Unit => return err_expr(self.ast, lhs, "this expression has no value to compare"),
                             Ty::Struct(_) => return err(pos, format!("structs cannot be compared with `{}` yet; compare their fields", op.symbol())),
                             Ty::Str => {
                                 self.string_operands(lhs, rhs, what)?;
                                 return Ok(Ty::Bool);
                             }
                             Ty::List(_) => return err(pos, format!("lists cannot be compared with `{}` yet", op.symbol())),
-                            Ty::Enum(_) => return err(pos, format!("enums cannot be compared with `{}` yet; use `match`", op.symbol())),
+                            // Without values in any variant, the tags say it all.
+                            Ty::Enum(index) if self.enums[index as usize].size == 1 => {}
+                            Ty::Enum(_) => {
+                                return err(
+                                    pos,
+                                    format!(
+                                        "`{}` works only on enums whose variants hold no values; use `match` for `{}`",
+                                        op.symbol(),
+                                        self.ty_name(left)
+                                    ),
+                                );
+                            }
                             Ty::I64 | Ty::Bool => {}
                         }
                         self.expect(rhs, left, what)?;
@@ -2461,7 +2853,10 @@ impl<'a> Checker<'a> {
             }
             Expr::StructLit { name, fields } => self.struct_literal(id, name, fields, hint),
             Expr::Call { callee, args } => self.call(id, callee, args, hint),
-            Expr::MutArg(_) => err(pos, "`mut` can only be used on a function argument"),
+            Expr::MutArg(inner) => {
+                let fix = Fix::Replace { start: pos, end: self.ast.expr_pos[inner as usize], text: String::new() };
+                err(pos, "`mut` can only be used on a function argument").map_err(|error: SemaError| error.with_fix(Some(fix)))
+            }
             Expr::Float(_) => err(pos, "floating-point numbers are not supported by `azol build` yet"),
         }
     }
@@ -2631,7 +3026,11 @@ impl<'a> Checker<'a> {
                 );
             }
             None => &[][..],
-            Some(_) if want == 0 => return err(pos, format!("`{name}` holds no value; write it without `()`")),
+            Some(given) if want == 0 => {
+                // Without arguments the `()` can simply go.
+                let fix = given.is_empty().then_some(Fix::EmptyParens { at: pos });
+                return err(pos, format!("`{name}` holds no value; write it without `()`")).map_err(|error: SemaError| error.with_fix(fix));
+            }
             Some(ids) => ids,
         };
         if arg_ids.len() != want {
@@ -2733,8 +3132,7 @@ impl<'a> Checker<'a> {
                 Ty::Bool => BUILTIN_PRINT_BOOL,
                 Ty::Str => BUILTIN_PRINT_STR,
                 other => {
-                    return err(
-                        self.ast.expr_pos[arg as usize],
+                    return err_expr(self.ast, arg,
                         format!("`print` takes an `i64`, a `bool` or a `str` but this is `{}`", self.ty_name(other)),
                     );
                 }
@@ -2750,8 +3148,7 @@ impl<'a> Checker<'a> {
                 Ty::I64 => BUILTIN_STR_FROM_I64,
                 Ty::Bool => BUILTIN_STR_FROM_BOOL,
                 other => {
-                    return err(
-                        self.ast.expr_pos[arg as usize],
+                    return err_expr(self.ast, arg,
                         format!("`str` turns an `i64` or a `bool` into text but this is `{}`", self.ty_name(other)),
                     );
                 }
@@ -2864,13 +3261,29 @@ impl<'a> Checker<'a> {
         let value = match (mutable, self.ast.exprs[arg as usize]) {
             (true, Expr::MutArg(inner)) => inner,
             (true, _) => {
+                // Writing `mut` in front is the whole repair when the
+                // argument is a changeable variable of the right type.
+                let known = match want {
+                    Want::Known(ty) | Want::Checked(ty) => Some(ty),
+                    Want::Infer(_) => None,
+                };
+                let fix = match self.ast.exprs[arg as usize] {
+                    Expr::Ident(name) => self
+                        .lookup(name.text(self.src))
+                        .filter(|local| local.mutable && known.is_none_or(|ty| ty == local.ty))
+                        .map(|_| Fix::Replace { start: arg_pos, end: arg_pos, text: "mut ".to_string() }),
+                    _ => None,
+                };
                 return err(
                     arg_pos,
                     format!("argument {number} of `{text}` can be changed by the function, so it must be written `mut <variable>`"),
-                );
+                )
+                .map_err(|error: SemaError| error.with_fix(fix));
             }
-            (false, Expr::MutArg(_)) => {
-                return err(arg_pos, format!("argument {number} of `{text}` is not a `mut` parameter; remove `mut`"));
+            (false, Expr::MutArg(inner)) => {
+                let fix = Fix::Replace { start: arg_pos, end: self.ast.expr_pos[inner as usize], text: String::new() };
+                return err(arg_pos, format!("argument {number} of `{text}` is not a `mut` parameter; remove `mut`"))
+                    .map_err(|error: SemaError| error.with_fix(Some(fix)));
             }
             (false, _) => arg,
         };
@@ -2890,11 +3303,10 @@ impl<'a> Checker<'a> {
                 // This argument decides what a type parameter stands for.
                 let got = self.expr(value)?;
                 if got == Ty::Unit {
-                    return err(self.ast.expr_pos[value as usize], "this expression has no value to pass");
+                    return err_expr(self.ast, value, "this expression has no value to pass");
                 }
                 if !self.unify(shape, got, bound) {
-                    return err(
-                        self.ast.expr_pos[value as usize],
+                    return err_expr(self.ast, value,
                         format!(
                             "argument {number} of `{text}` needs `{}` but this is `{}`",
                             self.shape_name(shape, type_params),
@@ -2908,10 +3320,14 @@ impl<'a> Checker<'a> {
         if mutable {
             self.expr_ty[self.sh.e(arg)] = ty;
             let Some(place) = self.place(value) else {
+                if let Some(name) = self.constant_name(value) {
+                    return err(arg_pos, format!("cannot pass `{name}` as `mut`: it is a constant"));
+                }
                 return err(arg_pos, "`mut` needs a variable or a part of a variable");
             };
             if !place.mutable {
-                return err(arg_pos, format!("cannot pass `{}` as `mut`: {}", self.root_name(value), read_only(&place)));
+                let message = format!("cannot pass `{}` as `mut`: {}", self.root_name(value), read_only(&place));
+                return err(arg_pos, message).map_err(|error: SemaError| error.with_fix(self.var_fix(&place)));
             }
             // The function gets its address, so it must stay in memory.
             if let Some(local) = self.locals.iter_mut().rev().find(|local| local.slot == place.root) {
@@ -3144,7 +3560,8 @@ impl<'a> Checker<'a> {
                     return err(pos, format!("`{text}` changes the list, so it needs a variable or a part of a variable"));
                 };
                 if !place.mutable {
-                    return err(pos, format!("cannot change `{}`: {}", self.root_name(base), read_only(&place)));
+                    let message = format!("cannot change `{}`: {}", self.root_name(base), read_only(&place));
+                    return err(pos, message).map_err(|error: SemaError| error.with_fix(self.var_fix(&place)));
                 }
                 if text == "push" {
                     // The element is computed before the list is looked at.
@@ -3588,7 +4005,7 @@ mod tests {
         assert_eq!(error(&in_main("let x = Some")), "`Some` holds 1 value; write `Some(...)`");
         assert_eq!(error(&in_main("let x: Option[i64] = None()")), "`None` holds no value; write it without `()`");
         assert_eq!(error(&in_main("let x = Some(print(1))")), "this expression has no value to store");
-        assert_eq!(error(&in_main("let x = Some(1)\nif x == x {\n}")), "enums cannot be compared with `==` yet; use `match`");
+        assert_eq!(error(&in_main("let x = Some(1)\nif x == x {\n}")), "`==` works only on enums whose variants hold no values; use `match` for `Option[i64]`");
         assert_eq!(error(&in_main("let x = Some(1)\nprint(x.value)")), "`Option[i64]` has no fields; use `match` to look inside it");
         assert_eq!(error(&in_main("let x = Some(1)\nprint(x)")), "`print` takes an `i64`, a `bool` or a `str` but this is `Option[i64]`");
         assert_eq!(error("enum E {\n A\n}\nfn main() {\n let e = E\n}"), "`E` is an enum; create a value with one of its variants");
@@ -3653,11 +4070,16 @@ mod tests {
 
     /// Checks a program together with the standard library's azoL code.
     fn library_error(body: &str) -> Option<String> {
-        let user = in_main(body);
+        library_error_with("", body)
+    }
+
+    /// The same, with declarations before `main`.
+    fn library_error_with(declarations: &str, body: &str) -> Option<String> {
+        let user = format!("{declarations}\n{}", in_main(body));
         let src = format!("{user}\n{}", include_str!("prelude.azl"));
         let tokens = lex(&src).expect("lexing failed");
         let ast = parse(&src, &tokens).expect("parsing failed");
-        check_with_prelude(&ast, &src, user.len() as u32 + 1).err().map(|e| e.message)
+        check_with_prelude(&ast, &src, user.len() as u32 + 1).err().map(|mut errors| errors.remove(0).message)
     }
 
     #[test]
@@ -3910,6 +4332,92 @@ mod tests {
         assert_eq!(error(&in_main("match 3 {\n0x1_0000_0000_0000_0000 => {}\n_ => {}\n}")), "this number does not fit in 64 bits");
         assert_eq!(error(&in_main("match 3 {\n-0x8000_0000_0000_0000 => {}\n_ => {}\n}")), "this number does not fit in `i64`");
         assert_eq!(error(&in_main("match true {\n'a' => {}\n_ => {}\n}")), "this pattern is a number but the `match` is on `bool`");
+    }
+
+    #[test]
+    fn constants() {
+        let with = |consts: &str, body: &str| format!("{consts}\n{}", in_main(body));
+        // All three types, every operator, any order of declaration.
+        assert!(check_src(&with(
+            "const B = A + 1\nconst A = 1\nconst MASK: i64 = (1 << 4) - 1 | 0x100 ^ 0b11 & 'a'\nconst YES: bool = !false && B >= 2 || A != 1\nconst NAME: str = \"n\"\nconst Q = 7 / 2 * 3 % 5 - -1 >> 1\nconst SAME = true == YES",
+            "let a: i64 = A + B * MASK\nlet b: bool = YES && SAME\nlet c: str = NAME + NAME\nvar xs = [A, B]\nxs.push(Q)\nif A < B {\n print(NAME)\n}\nprint(A)\nprint(YES)"
+        ))
+        .is_ok());
+        // The value is the one the program would compute.
+        let src = with("const A = 1 << 65\nconst B = -9223372036854775807 - 1\nconst C = B / -1\nconst D = B % -1\nconst E = 9223372036854775807 + 1\nconst F = -8 >> 1\nconst G = 0xFFFF_FFFF_FFFF_FFFF", "print(A + B + C + D + E + F + G)");
+        let tokens = lex(&src).unwrap();
+        let ast = parse(&src, &tokens).unwrap();
+        let prog = check(&ast, &src).unwrap();
+        assert_eq!(&prog.ints[..7], &[2, i64::MIN, i64::MIN, 0, i64::MIN, -4, -1]);
+        // A use reads as the literal: the name is marked, the value shared.
+        let marks: Vec<u32> = prog.expr_aux.iter().copied().filter(|&aux| aux == CONST_INT).collect();
+        assert_eq!(marks.len(), 7);
+        // Declaration errors.
+        assert_eq!(error(&with("const A = B\nconst B = A", "")), "constant `A` is defined in terms of itself");
+        assert_eq!(error(&with("const A = A", "")), "constant `A` is defined in terms of itself");
+        assert_eq!(error(&with("const A = 1\nconst A = 2", "")), "constant `A` is defined more than once");
+        assert_eq!(error(&with("const A = 1 / 0", "")), "division by zero in a constant");
+        assert_eq!(error(&with("const A = 1 % (2 - 2)", "")), "division by zero in a constant");
+        assert_eq!(error(&with("const A = x", "")), "`x` is not a constant; a constant is made of literals and other constants");
+        assert_eq!(error(&with("const A = [1]", "")), "a constant must be made of literals and other constants");
+        assert_eq!(error("fn f() -> i64 {\n return 1\n}\nconst A = f()\nfn main() {\n}"), "a constant must be made of literals and other constants");
+        assert_eq!(error(&with("const A = \"a\" + \"b\"", "")), "a string constant must be a single string literal");
+        assert_eq!(error(&with("const A = \"a\" == \"a\"", "")), "a string constant must be a single string literal");
+        assert_eq!(error(&with("const A = 1 + true", "")), "`+` needs `i64` but this is `bool`");
+        assert_eq!(error(&with("const A = true + 1", "")), "`+` needs `i64` but this is `bool`");
+        assert_eq!(error(&with("const A = 1 && true", "")), "`&&` needs `bool` but this is `i64`");
+        assert_eq!(error(&with("const A = true || 1", "")), "`||` needs `bool` but this is `i64`");
+        assert_eq!(error(&with("const A = 1 == true", "")), "`==` needs `i64` but this is `bool`");
+        assert_eq!(error(&with("const A = 1 << \"a\"", "")), "`<<` needs `i64` but this is `str`");
+        assert_eq!(error(&with("const A = -true", "")), "`-` needs `i64` but this is `bool`");
+        assert_eq!(error(&with("const A = !1", "")), "`!` needs `bool` but this is `i64`");
+        assert_eq!(error(&with("const A: bool = 1", "")), "expected `bool` but this is `i64`");
+        assert_eq!(error(&with("const A: str = true", "")), "expected `str` but this is `bool`");
+        assert_eq!(error(&with("const A: Missing = 1", "")), "unknown type `Missing`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`");
+        assert_eq!(error(&with("const A = 99999999999999999999", "")), "this number does not fit in `i64`");
+        assert_eq!(error(&with("const A = 0x1_0000_0000_0000_0000", "")), "this number does not fit in 64 bits");
+        // One name, one meaning.
+        assert_eq!(error(&with("const A = 1\nfn A() {\n}", "")), "`A` is already a constant");
+        assert_eq!(error(&with("fn A[T](x: T) {\n}\nconst A = 1", "")), "`A` is already a constant");
+        assert_eq!(error(&with("const Some = 1", "")), "`Some` is already a variant of `Option`");
+        assert_eq!(error(&with("enum E {\n A\n}\nconst A = 1", "")), "`A` is already a variant of `E`");
+        assert_eq!(error(&with("const print = 1", "")), "`print` is built in and cannot be redefined");
+        assert_eq!(error(&with("const A = 1", "let A = 2")), "`A` is a constant and cannot be used as a variable name");
+        assert_eq!(error(&with("const A = 1", "for A in [1] {\n}")), "`A` is a constant and cannot be used as a variable name");
+        assert_eq!(error(&with("const A = 1", "for i, A in [1] {\n}")), "`A` is a constant and cannot be used as a variable name");
+        assert_eq!(error("const a = 1\nfn f(a: i64) {\n}\nfn main() {\n}"), "`a` is a constant and cannot be used as a variable name");
+        // A constant is a value, not a place.
+        assert_eq!(error(&with("const A = 1", "A = 2")), "cannot change `A`: it is a constant");
+        assert_eq!(error(&with("const A = \"a\"", "A = A + \"b\"")), "cannot change `A`: it is a constant");
+        assert_eq!(error("const A = 1\nfn f(x: mut i64) {\n}\nfn main() {\n f(mut A)\n}"), "cannot pass `A` as `mut`: it is a constant");
+        assert_eq!(error(&with("const A = 1", "let b: bool = A")), "expected `bool` but this is `i64`");
+        assert_eq!(error(&with("const A = 1", "A(2)")), "unknown function `A`");
+        // In patterns a constant matches its value instead of binding a name.
+        assert!(check_src(&with("const A = 1\nconst S = \"s\"\nconst T = true", "match 3 {\nA => {}\n2 => {}\n_ => {}\n}\nmatch \"x\" {\nS => {}\n_ => {}\n}\nmatch true {\nT => {}\nfalse => {}\n}")).is_ok());
+        assert_eq!(error(&with("const A = 1", "match 3 {\nA => {}\n}")), "a `match` on `i64` needs a final `_ =>` arm: the arms cannot list every value");
+        assert_eq!(error(&with("const A = 1", "match 3 {\n1 => {}\nA => {}\n_ => {}\n}")), "this arm can never run: `A` is already handled above");
+        assert_eq!(error(&with("const A = 1\nconst B = 2 - 1", "match 3 {\nA => {}\nB => {}\n_ => {}\n}")), "this arm can never run: `B` is already handled above");
+        assert_eq!(error(&with("const A = 1", "match 3 {\nA => {}\n1 => {}\n_ => {}\n}")), "this arm can never run: `1` is already handled above");
+        assert_eq!(error(&with("const T = true", "match true {\nT => {}\n}")), "this `match` does not handle `false`; add an arm for it or a final `_ =>` arm");
+        assert_eq!(error(&with("const A = 1", "match \"s\" {\nA => {}\n_ => {}\n}")), "this pattern is a number but the `match` is on `str`");
+        assert_eq!(error(&with("const S = \"s\"", "match 1 {\nS => {}\n_ => {}\n}")), "this pattern is a string but the `match` is on `i64`");
+        assert_eq!(error(&with("const A = 1", "let o = Some(1)\nmatch o {\nA => {}\n_ => {}\n}")), "this pattern is a number but the `match` is on `Option[i64]`");
+        assert_eq!(error(&with("const A = 1", "let o = Some(1)\nmatch o {\nSome(A) => {}\n_ => {}\n}")), "a pattern inside a pattern is not supported yet; give the value a name and `match` on it inside the arm");
+        // The standard library's own names never clash with a program's constants.
+        assert_eq!(library_error_with("const n = 2\nconst part = 3\nconst at = 4\nconst s = 5\nconst i = 6", "let found = \"a,b\".split(\",\").len() + n + part + at + s + i\nlet c = \"abc\".contains(\"c\")\nlet t = \" x \".trim()"), None);
+    }
+
+    #[test]
+    fn equality_of_enums_without_values() {
+        let with = |body: &str| format!("enum Kind {{\n Ident\n Number\n Plus\n}}\nenum Shape {{\n Dot\n Circle(i64)\n}}\nenum Flag[T] {{\n On\n Off\n}}\n{}", in_main(body));
+        assert!(check_src(&with("let k = Ident\nlet same: bool = k == Number\nlet other: bool = k != Plus\nif Ident == k && Plus != Number {\n}\nlet f: Flag[i64] = On\nlet g: bool = f == Off\nvar ks = [Ident, Plus]\nwhile ks[0] == ks[1] {\n}")).is_ok());
+        assert_eq!(error(&with("let s = Dot\nlet b = s == Dot")), "`==` works only on enums whose variants hold no values; use `match` for `Shape`");
+        assert_eq!(error(&with("let s = Circle(1)\nlet b = s != s")), "`!=` works only on enums whose variants hold no values; use `match` for `Shape`");
+        assert_eq!(error(&with("let k = Ident\nlet b = k == 1")), "`==` needs `Kind` but this is `i64`");
+        assert_eq!(error(&with("let k = Ident\nlet b = k == Dot")), "`==` needs `Kind` but this is `Shape`");
+        assert_eq!(error(&with("let k = Ident\nlet f: Flag[i64] = On\nlet b = f == k")), "`==` needs `Flag[i64]` but this is `Kind`");
+        assert_eq!(error(&with("let f: Flag[i64] = On\nlet g: Flag[bool] = On\nlet b = f == g")), "`==` needs `Flag[i64]` but this is `Flag[bool]`");
+        assert_eq!(error(&with("let k = Ident\nlet b = k < Number")), "`<` needs `i64` but this is `Kind`");
     }
 
     #[test]

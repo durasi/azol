@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Writes the same program in azoL and in Rust, at any size.
+"""Writes the same program in azoL, in Rust and in JavaScript, at any size.
 
     python3 bench/gen.py 3000
 
-creates bench/generated/big.azl and bench/generated/big.rs, each made of
-that many units. A unit is a struct that owns a list plus four functions
-that build it, read it, change it through `mut` and copy it. Both
-programs print the same number, which shows they compute the same thing.
+creates bench/generated/big.azl, big.rs and big.js, each made of that
+many units. A unit is a struct that owns a list plus four functions that
+build it, read it, change it through `mut` and copy it. The programs
+print the same number, which shows they compute the same thing.
 """
 import os
 import sys
@@ -101,6 +101,44 @@ fn step{i}(seed: i64) -> i64 {{
 }}
 
 """
+JS_UNIT = """function make{i}(seed) {{
+    const values = [];
+    let k = 0;
+    while (k < 4) {{
+        values.push(seed * (k + 1) + {i});
+        k = k + 1;
+    }}
+    return {{ id: {i}, weight: seed % 7 + 1, values: values }};
+}}
+
+function score{i}(r) {{
+    let total = r.id * r.weight;
+    for (const v of r.values) {{
+        if (v % 2 === 0) {{
+            total = total + v;
+        }} else {{
+            total = total - Math.trunc(v / 3);
+        }}
+    }}
+    return total;
+}}
+
+function bump{i}(r, by) {{
+    r.weight = r.weight + by;
+    r.values.push(by);
+    r.values[0] = r.values[0] + r.id;
+}}
+
+function step{i}(seed) {{
+    const r = make{i}(seed);
+    bump{i}(r, seed % 5);
+    const before = score{i}(r);
+    const copy = {{ id: r.id, weight: r.weight, values: r.values.slice() }};
+    bump{i}(copy, 3);
+    return before + score{i}(copy) - score{i}(r);
+}}
+
+"""
 
 
 def main():
@@ -119,7 +157,12 @@ def main():
     rust.extend("    total = total + step%d(%d);\n" % (i, i % 97) for i in range(units))
     rust.append('    println!("{}", total);\n}\n')
 
-    for name, parts in (("big.azl", azol), ("big.rs", rust)):
+    js = [JS_UNIT.format(i=i) for i in range(units)]
+    js.append("let total = 0;\n")
+    js.extend("total = total + step%d(%d);\n" % (i, i % 97) for i in range(units))
+    js.append("console.log(total);\n")
+
+    for name, parts in (("big.azl", azol), ("big.rs", rust), ("big.js", js)):
         text = "".join(parts)
         with open(os.path.join(out, name), "w") as f:
             f.write(text)

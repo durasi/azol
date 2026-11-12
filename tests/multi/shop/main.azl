@@ -9,7 +9,7 @@
 // and they use each other and a function declared here.
 
 fn label(item: Item) -> str {
-    return item.name + ": " + money(item.price)
+    return item.name + SEPARATOR + money(item.price)
 }
 
 fn main() -> i64 {
@@ -25,5 +25,5 @@ fn main() -> i64 {
         Found(item) => print(label(item))
         Missing(name) => print("no such item: " + name)
     }
-    return stock.items.len() + 1
+    return stock.items.len() + EXTRA
 }

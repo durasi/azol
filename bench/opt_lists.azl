@@ -1,0 +1,37 @@
+// Measuring program: lists of numbers: push, index, for with and without index.
+
+fn main() {
+    var numbers: List[i64] = []
+    var i = 0
+    while i < 30000 {
+        numbers.push(i * 7 % 101)
+        i = i + 1
+    }
+    var total = 0
+    for n in numbers {
+        total = total + n
+    }
+    for at, n in numbers {
+        if n > 50 {
+            total = total + at
+        }
+    }
+    var k = 0
+    while k < numbers.len() {
+        total = total + numbers[k] * 2
+        numbers[k] = numbers[k] + 1
+        k = k + 1
+    }
+    var swaps = 0
+    var j = 1
+    while j < 3000 {
+        if numbers[j - 1] > numbers[j] {
+            let held = numbers[j - 1]
+            numbers[j - 1] = numbers[j]
+            numbers[j] = held
+            swaps = swaps + 1
+        }
+        j = j + 1
+    }
+    print(total + swaps)
+}

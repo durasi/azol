@@ -1,0 +1,125 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// SHA-256, needed for the code signature macOS requires on every
+// executable. Numbers here are 32-bit values kept in `i64`s: every
+// result is cut back to its low 32 bits.
+
+// constants
+
+// The 64 round constants. Make the list once and pass it along.
+fn sha256_round_constants() -> List[i64] {
+    return [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    ]
+}
+
+fn sha256_initial_state() -> List[i64] {
+    return [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
+}
+
+// A 32-bit value turned right by `count` bits.
+fn rotate_right(value: i64, count: i64) -> i64 {
+    return ((value >> count) | (value << (32 - count))) & 0xFFFFFFFF
+}
+
+// Mixes the 64 bytes of `data` that start at `at` into `state`. `w` is
+// working room with 64 elements; what it holds on entry does not matter.
+fn sha256_compress(state: mut List[i64], k: List[i64], w: mut List[i64], data: List[i64], at: i64) {
+    var i = 0
+    while i < 16 {
+        let from = at + i * 4
+        w[i] = (data[from] << 24) | (data[from + 1] << 16) | (data[from + 2] << 8) | data[from + 3]
+        i = i + 1
+    }
+    while i < 64 {
+        let x = w[i - 15]
+        let y = w[i - 2]
+        let s0 = rotate_right(x, 7) ^ rotate_right(x, 18) ^ (x >> 3)
+        let s1 = rotate_right(y, 17) ^ rotate_right(y, 19) ^ (y >> 10)
+        w[i] = (w[i - 16] + s0 + w[i - 7] + s1) & 0xFFFFFFFF
+        i = i + 1
+    }
+    var a = state[0]
+    var b = state[1]
+    var c = state[2]
+    var d = state[3]
+    var e = state[4]
+    var f = state[5]
+    var g = state[6]
+    var h = state[7]
+    i = 0
+    while i < 64 {
+        let s1 = rotate_right(e, 6) ^ rotate_right(e, 11) ^ rotate_right(e, 25)
+        let choice = (e & f) ^ ((e ^ 0xFFFFFFFF) & g)
+        let t1 = (h + s1 + choice + k[i] + w[i]) & 0xFFFFFFFF
+        let s0 = rotate_right(a, 2) ^ rotate_right(a, 13) ^ rotate_right(a, 22)
+        let majority = (a & b) ^ (a & c) ^ (b & c)
+        let t2 = (s0 + majority) & 0xFFFFFFFF
+        h = g
+        g = f
+        f = e
+        e = (d + t1) & 0xFFFFFFFF
+        d = c
+        c = b
+        b = a
+        a = (t1 + t2) & 0xFFFFFFFF
+        i = i + 1
+    }
+    state[0] = (state[0] + a) & 0xFFFFFFFF
+    state[1] = (state[1] + b) & 0xFFFFFFFF
+    state[2] = (state[2] + c) & 0xFFFFFFFF
+    state[3] = (state[3] + d) & 0xFFFFFFFF
+    state[4] = (state[4] + e) & 0xFFFFFFFF
+    state[5] = (state[5] + f) & 0xFFFFFFFF
+    state[6] = (state[6] + g) & 0xFFFFFFFF
+    state[7] = (state[7] + h) & 0xFFFFFFFF
+}
+
+// Appends the 32-byte hash of `data[start..end]` to `out`. `k` is
+// `sha256_round_constants()`.
+fn sha256_into(out: mut List[i64], data: List[i64], start: i64, end: i64, k: List[i64]) {
+    var state = sha256_initial_state()
+    var w: List[i64] = []
+    pad_to(mut w, 64, 0)
+    var at = start
+    while at + 64 <= end {
+        sha256_compress(mut state, k, mut w, data, at)
+        at = at + 64
+    }
+    // What is left, the end marker, zeros and the length in bits fill one
+    // or two more blocks.
+    var tail: List[i64] = []
+    while at < end {
+        tail.push(data[at])
+        at = at + 1
+    }
+    tail.push(0x80)
+    var tail_length = 64
+    if tail.len() > 56 {
+        tail_length = 128
+    }
+    pad_to(mut tail, tail_length - 8, 0)
+    put64_be(mut tail, (end - start) * 8)
+    sha256_compress(mut state, k, mut w, tail, 0)
+    if tail_length == 128 {
+        sha256_compress(mut state, k, mut w, tail, 64)
+    }
+    for word in state {
+        put32_be(mut out, word)
+    }
+}
+
+// The hash of a string of bytes, as 32 bytes.
+fn sha256(text: str) -> List[i64] {
+    let data = text_to_bytes(text)
+    var out: List[i64] = []
+    sha256_into(mut out, data, 0, data.len(), sha256_round_constants())
+    return out
+}

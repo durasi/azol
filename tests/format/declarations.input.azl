@@ -1,0 +1,21 @@
+enum Direction { North, East, South, West }
+enum Tight{A,B(i64,i64),C}
+enum Empty {}
+enum Shape {
+    Circle(i64), Square(i64)
+    Pair(i64 , i64),
+    Nothing }
+enum Option[T] { Some(T)
+    None }
+struct Point { x: i64, y: i64 }
+struct Pair [A,B] {first:A,second:B}
+struct Wide {
+    a: i64, b: i64, c: List[Option[i64]]
+    d: bool }
+struct Commented { // why
+    a: i64, // first
+    // second
+    b: i64
+}
+struct Unit {
+}

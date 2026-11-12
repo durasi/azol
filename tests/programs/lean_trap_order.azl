@@ -1,0 +1,18 @@
+// expect-exit: 1
+// expect-output: 1 20 7 2 2 9
+// expect-stderr: azol: index out of range
+
+// What runs before the failing check still runs, in order: the value
+// of an assignment before its index, the left operand before the right.
+fn num(n: i64) -> i64 {
+    print(n)
+    return n
+}
+
+fn main() {
+    var xs = [10, 20, 30]
+    print(xs[num(1)])
+    xs[num(2)] = num(7)
+    xs[num(9)] = num(2) + xs[5 - 4]
+    print(xs[2])
+}

@@ -1,0 +1,386 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Prints a syntax tree as indented text. Used by `azol-front parse` and
+// by the checks that compare this parser with the Rust one.
+
+// The whole tree as text, one declaration after another.
+fn dump_ast(ast: Ast, src: str) -> str {
+    var out = ""
+    for item in ast.items {
+        dump_item(ast, src, item, mut out)
+    }
+    return out
+}
+
+fn dump_span(src: str, span: Span, out: mut str) {
+    out = out + src.slice(span.start, span.start + span.len)
+}
+
+fn dump_indent(depth: i64, out: mut str) {
+    var i = 0
+    while i < depth {
+        out = out + "  "
+        i = i + 1
+    }
+}
+
+// `[T, U]` after a name, or nothing.
+fn dump_generics(ast: Ast, src: str, generics: IdRange, out: mut str) {
+    if generics.len == 0 {
+        return
+    }
+    out = out + "["
+    var i = 0
+    while i < generics.len {
+        if i > 0 {
+            out = out + ", "
+        }
+        dump_span(src, ast.names[ast.lists[generics.start + i]], mut out)
+        i = i + 1
+    }
+    out = out + "]"
+}
+
+fn dump_item(ast: Ast, src: str, item: Item, out: mut str) {
+    match item {
+        ItemFn(name, generics, params, ret, body, nodes) => {
+            out = out + "fn "
+            dump_span(src, name, mut out)
+            dump_generics(ast, src, generics, mut out)
+            out = out + "("
+            var i = 0
+            while i < params.len {
+                if i > 0 {
+                    out = out + ", "
+                }
+                let param = ast.params[ast.lists[params.start + i]]
+                dump_span(src, param.name, mut out)
+                out = out + ": "
+                if param.mutable {
+                    out = out + "mut "
+                }
+                dump_type(ast, src, param.ty, mut out)
+                i = i + 1
+            }
+            out = out + ")"
+            if ret != NO_NODE {
+                out = out + " -> "
+                dump_type(ast, src, ret, mut out)
+            }
+            out = out + "\n"
+            dump_block(ast, src, body, 1, mut out)
+        }
+        ItemStruct(name, generics, fields) => {
+            out = out + "struct "
+            dump_span(src, name, mut out)
+            dump_generics(ast, src, generics, mut out)
+            out = out + "\n"
+            var i = 0
+            while i < fields.len {
+                let field = ast.fields[ast.lists[fields.start + i]]
+                out = out + "  "
+                dump_span(src, field.name, mut out)
+                out = out + ": "
+                dump_type(ast, src, field.ty, mut out)
+                out = out + "\n"
+                i = i + 1
+            }
+        }
+        ItemConst(name, ty, value) => {
+            out = out + "const "
+            dump_span(src, name, mut out)
+            if ty != NO_NODE {
+                out = out + ": "
+                dump_type(ast, src, ty, mut out)
+            }
+            out = out + " = "
+            dump_expr(ast, src, value, mut out)
+            out = out + "\n"
+        }
+        ItemEnum(name, generics, variants) => {
+            out = out + "enum "
+            dump_span(src, name, mut out)
+            dump_generics(ast, src, generics, mut out)
+            out = out + "\n"
+            var i = 0
+            while i < variants.len {
+                let variant = ast.variants[ast.lists[variants.start + i]]
+                out = out + "  "
+                dump_span(src, variant.name, mut out)
+                if variant.fields.len > 0 {
+                    out = out + "("
+                    var j = 0
+                    while j < variant.fields.len {
+                        if j > 0 {
+                            out = out + ", "
+                        }
+                        dump_type(ast, src, ast.lists[variant.fields.start + j], mut out)
+                        j = j + 1
+                    }
+                    out = out + ")"
+                }
+                out = out + "\n"
+                i = i + 1
+            }
+        }
+    }
+}
+
+fn dump_type(ast: Ast, src: str, id: i64, out: mut str) {
+    let ty = ast.types[id]
+    dump_span(src, ty.name, mut out)
+    if ty.args.len > 0 {
+        out = out + "["
+        var i = 0
+        while i < ty.args.len {
+            if i > 0 {
+                out = out + ", "
+            }
+            dump_type(ast, src, ast.lists[ty.args.start + i], mut out)
+            i = i + 1
+        }
+        out = out + "]"
+    }
+}
+
+fn dump_block(ast: Ast, src: str, block: IdRange, depth: i64, out: mut str) {
+    var i = 0
+    while i < block.len {
+        dump_stmt(ast, src, ast.lists[block.start + i], depth, mut out)
+        i = i + 1
+    }
+}
+
+fn dump_stmt(ast: Ast, src: str, id: i64, depth: i64, out: mut str) {
+    dump_indent(depth, mut out)
+    match ast.stmts[id] {
+        StmtLet(mutable, name, ty, value) => {
+            if mutable {
+                out = out + "var "
+            } else {
+                out = out + "let "
+            }
+            dump_span(src, name, mut out)
+            if ty != NO_NODE {
+                out = out + ": "
+                dump_type(ast, src, ty, mut out)
+            }
+            out = out + " = "
+            dump_expr(ast, src, value, mut out)
+            out = out + "\n"
+        }
+        StmtAssign(target, value) => {
+            dump_expr(ast, src, target, mut out)
+            out = out + " = "
+            dump_expr(ast, src, value, mut out)
+            out = out + "\n"
+        }
+        StmtExpr(value) => {
+            dump_expr(ast, src, value, mut out)
+            out = out + "\n"
+        }
+        StmtReturn(value) => {
+            out = out + "return"
+            if value != NO_NODE {
+                out = out + " "
+                dump_expr(ast, src, value, mut out)
+            }
+            out = out + "\n"
+        }
+        StmtIf(cond, then_block, else_branch) => {
+            dump_if(ast, src, id, depth, mut out)
+        }
+        StmtWhile(cond, body) => {
+            out = out + "while "
+            dump_expr(ast, src, cond, mut out)
+            out = out + "\n"
+            dump_block(ast, src, body, depth + 1, mut out)
+        }
+        StmtFor(has_index, index, item, iter, body) => {
+            out = out + "for "
+            if has_index {
+                dump_span(src, index, mut out)
+                out = out + ", "
+            }
+            dump_span(src, item, mut out)
+            out = out + " in "
+            dump_expr(ast, src, iter, mut out)
+            out = out + "\n"
+            dump_block(ast, src, body, depth + 1, mut out)
+        }
+        StmtMatch(scrutinee, arms) => {
+            out = out + "match "
+            dump_expr(ast, src, scrutinee, mut out)
+            out = out + "\n"
+            var i = 0
+            while i < arms.len {
+                let arm = ast.arms[ast.lists[arms.start + i]]
+                dump_indent(depth + 1, mut out)
+                dump_pattern(ast, src, arm.pattern, mut out)
+                out = out + " =>\n"
+                dump_block(ast, src, arm.body, depth + 2, mut out)
+                i = i + 1
+            }
+        }
+        StmtBreak => {
+            out = out + "break\n"
+        }
+        StmtContinue => {
+            out = out + "continue\n"
+        }
+    }
+}
+
+// An `if` with its `else if` chain; the indentation of the first line
+// is already written.
+fn dump_if(ast: Ast, src: str, first: i64, depth: i64, out: mut str) {
+    var id = first
+    while id != NO_NODE {
+        var next = NO_NODE
+        match ast.stmts[id] {
+            StmtIf(cond, then_block, else_branch) => {
+                out = out + "if "
+                dump_expr(ast, src, cond, mut out)
+                out = out + "\n"
+                dump_block(ast, src, then_block, depth + 1, mut out)
+                match else_branch {
+                    ElseNone => {}
+                    ElseBlock(body) => {
+                        dump_indent(depth, mut out)
+                        out = out + "else\n"
+                        dump_block(ast, src, body, depth + 1, mut out)
+                    }
+                    ElseIf(other) => {
+                        dump_indent(depth, mut out)
+                        out = out + "else "
+                        next = other
+                    }
+                }
+            }
+            _ => {}
+        }
+        id = next
+    }
+}
+
+fn dump_pattern(ast: Ast, src: str, id: i64, out: mut str) {
+    match ast.patterns[id] {
+        PatWildcard => {
+            out = out + "_"
+        }
+        PatName(name) => dump_span(src, name, mut out)
+        PatVariant(name, args) => {
+            dump_span(src, name, mut out)
+            out = out + "("
+            var i = 0
+            while i < args.len {
+                if i > 0 {
+                    out = out + ", "
+                }
+                dump_pattern(ast, src, ast.lists[args.start + i], mut out)
+                i = i + 1
+            }
+            out = out + ")"
+        }
+        PatInt(negative, digits) => {
+            if negative {
+                out = out + "-"
+            }
+            dump_span(src, digits, mut out)
+        }
+        PatStr(text) => dump_span(src, text, mut out)
+        PatBool(value) => {
+            if value {
+                out = out + "true"
+            } else {
+                out = out + "false"
+            }
+        }
+    }
+}
+
+fn dump_expr(ast: Ast, src: str, id: i64, out: mut str) {
+    match ast.exprs[id] {
+        ExprInt(text) => dump_span(src, text, mut out)
+        ExprFloat(text) => dump_span(src, text, mut out)
+        ExprStr(text) => dump_span(src, text, mut out)
+        ExprIdent(text) => dump_span(src, text, mut out)
+        ExprBool(value) => {
+            if value {
+                out = out + "true"
+            } else {
+                out = out + "false"
+            }
+        }
+        ExprUnary(op, operand) => {
+            if op == OpNeg {
+                out = out + "(neg "
+            } else {
+                out = out + "(not "
+            }
+            dump_expr(ast, src, operand, mut out)
+            out = out + ")"
+        }
+        ExprBinary(op, lhs, rhs) => {
+            out = out + "("
+            out = out + binop_symbol(op)
+            out = out + " "
+            dump_expr(ast, src, lhs, mut out)
+            out = out + " "
+            dump_expr(ast, src, rhs, mut out)
+            out = out + ")"
+        }
+        ExprCall(callee, args) => {
+            out = out + "(call "
+            dump_expr(ast, src, callee, mut out)
+            var i = 0
+            while i < args.len {
+                out = out + " "
+                dump_expr(ast, src, ast.lists[args.start + i], mut out)
+                i = i + 1
+            }
+            out = out + ")"
+        }
+        ExprMutArg(value) => {
+            out = out + "(mut "
+            dump_expr(ast, src, value, mut out)
+            out = out + ")"
+        }
+        ExprField(base, name) => {
+            dump_expr(ast, src, base, mut out)
+            out = out + "."
+            dump_span(src, name, mut out)
+        }
+        ExprIndex(base, index) => {
+            out = out + "(index "
+            dump_expr(ast, src, base, mut out)
+            out = out + " "
+            dump_expr(ast, src, index, mut out)
+            out = out + ")"
+        }
+        ExprStructLit(name, fields) => {
+            out = out + "(new "
+            dump_span(src, name, mut out)
+            var i = 0
+            while i < fields.len {
+                let field = ast.field_inits[ast.lists[fields.start + i]]
+                out = out + " "
+                dump_span(src, field.name, mut out)
+                out = out + ": "
+                dump_expr(ast, src, field.value, mut out)
+                i = i + 1
+            }
+            out = out + ")"
+        }
+        ExprArrayLit(items) => {
+            out = out + "(array"
+            var i = 0
+            while i < items.len {
+                out = out + " "
+                dump_expr(ast, src, ast.lists[items.start + i], mut out)
+                i = i + 1
+            }
+            out = out + ")"
+        }
+    }
+}

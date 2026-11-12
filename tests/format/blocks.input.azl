@@ -1,0 +1,37 @@
+fn one() -> i64 { return 1 }
+
+fn nothing() {}
+
+fn also_nothing() {
+}
+
+fn sign(n: i64) -> i64 {
+    if n < 0 { return -1 } else if n == 0 { return 0 } else { return 1 }
+}
+
+fn loops(xs: List[i64]) {
+    while true { break }
+    for x in xs { print(x) }
+    for i, x in xs { if i > x { continue }
+        print(i) }
+    if xs.len() > 3 {
+        print(3)
+    }
+    else if xs.len() > 2 {
+        print(2)
+    }
+
+    else {
+        print(0)
+    }
+}
+
+fn pick(shape: Shape) -> i64 {
+    match shape { Circle(r) => return r, Square(s) => { return s }, Pair(a, b) => for i, x in [a, b] { print(i, x) }, _ => {} }
+    match shape {
+        Circle(r) => { print(r)
+            return 1 }
+        -1 => return 2, 'x' => return 3
+        _ => return 0
+    }
+}

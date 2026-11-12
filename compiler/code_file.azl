@@ -1,0 +1,294 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Reads a code file: the result of code generation as text, written by
+// `azol build --emit-code <path>`. It carries everything a linker needs
+// to produce the executable, so the linkers here can be checked against
+// the ones in the Rust compiler byte for byte.
+//
+// The format is lines of words separated by one space. Numbers are
+// decimal. Bytes are written as two hexadecimal digits each, 32 bytes to
+// a line. A line that starts a list ends with the number of items (or
+// bytes) that follow.
+//
+// For macOS on ARM64:
+//
+//     azol-code 1
+//     target aarch64-macos
+//     ident <name the signature is made for; the rest of the line>
+//     entry <index of the first instruction of main>
+//     imports <count>
+//     <one imported symbol per line, in the order of their slots>
+//     code <bytes>
+//     <the instructions, four bytes each, lowest byte first>
+//     data <bytes>
+//     <read-only data placed after the code>
+//     relocs <count>
+//     i <instruction index> <import>            call an imported function
+//     d <instruction index> <data offset> <register>   address of data
+//     end
+//
+// For Linux on x86-64:
+//
+//     azol-code 1
+//     target x86_64-linux
+//     entry <byte offset of main in the code>
+//     runtime <base address> <offset of the runtime in the file>
+//             <offset of its start routine> <address of its memory>
+//             <size of its memory>               (one line)
+//     entries <count>
+//     <offset of each runtime routine, one per line, by routine id>
+//     code <bytes>
+//     data <bytes>
+//     calls <count>
+//     <offset of a 4-byte field in the code> <routine id>
+//     refs <count>
+//     <offset of a 4-byte field in the code> <offset in the data>
+//     end
+//
+// The runtime's own machine code is not in the file; the Linux linker
+// reads it from `runtime/linux_x64/runtime.bin`.
+
+// An instruction the macOS linker completes once addresses are known.
+enum Reloc {
+    // Three instructions at this index call the import with this number.
+    Import(i64, i64)
+    // Two instructions at this index put the address of the data at this
+    // offset in this register.
+    Data(i64, i64, i64)
+}
+
+// A 4-byte field in x86-64 code and what it refers to: a routine id or
+// an offset in the data.
+struct Fixup {
+    field: i64
+    value: i64
+}
+
+// Everything a code file holds. Only the parts for its target are filled.
+struct CodeFile {
+    target: str
+    entry: i64
+    code: List[i64]
+    data: List[i64]
+    // macOS.
+    ident: str
+    imports: List[str]
+    relocs: List[Reloc]
+    // Linux.
+    base: i64
+    text_offset: i64
+    start: i64
+    memory: i64
+    memory_size: i64
+    entries: List[i64]
+    calls: List[Fixup]
+    refs: List[Fixup]
+}
+
+// A position in the text being read.
+struct Reader {
+    text: str
+    at: i64
+}
+
+// Stops the program: the file is not what this reader understands.
+fn bad_code_file(reader: Reader, problem: str) {
+    eprint("azol-link: bad code file near byte " + str(reader.at) + ": " + problem)
+    exit(1)
+}
+
+fn skip_spaces(reader: mut Reader) {
+    while reader.at < reader.text.len() {
+        let c = reader.text[reader.at]
+        if c != ' ' && c != '\n' && c != '\r' {
+            break
+        }
+        reader.at = reader.at + 1
+    }
+}
+
+// The next word: everything up to a space or the end of the line.
+fn read_word(reader: mut Reader) -> str {
+    skip_spaces(mut reader)
+    let start = reader.at
+    while reader.at < reader.text.len() {
+        let c = reader.text[reader.at]
+        if c == ' ' || c == '\n' || c == '\r' {
+            break
+        }
+        reader.at = reader.at + 1
+    }
+    return reader.text.slice(start, reader.at)
+}
+
+// The rest of the current line, without the space in front of it.
+fn read_rest_of_line(reader: mut Reader) -> str {
+    if reader.at < reader.text.len() && reader.text[reader.at] == ' ' {
+        reader.at = reader.at + 1
+    }
+    let start = reader.at
+    while reader.at < reader.text.len() && reader.text[reader.at] != '\n' {
+        reader.at = reader.at + 1
+    }
+    return reader.text.slice(start, reader.at)
+}
+
+// The next word, which must be a decimal number.
+fn read_number(reader: mut Reader) -> i64 {
+    skip_spaces(mut reader)
+    var value = 0
+    var digits = 0
+    while reader.at < reader.text.len() {
+        let c = reader.text[reader.at]
+        if c < '0' || c > '9' {
+            break
+        }
+        value = value * 10 + (c - '0')
+        digits = digits + 1
+        reader.at = reader.at + 1
+    }
+    if digits == 0 {
+        bad_code_file(reader, "a number is missing")
+    }
+    return value
+}
+
+// The next word must be exactly `word`.
+fn expect_word(reader: mut Reader, word: str) {
+    let found = read_word(mut reader)
+    if found != word {
+        bad_code_file(reader, "expected `" + word + "` but found `" + found + "`")
+    }
+}
+
+// `word` followed by a number.
+fn read_field(reader: mut Reader, word: str) -> i64 {
+    expect_word(mut reader, word)
+    return read_number(mut reader)
+}
+
+// The value of a hexadecimal digit, or -1.
+fn hex_digit(c: i64) -> i64 {
+    if c >= '0' && c <= '9' {
+        return c - '0'
+    }
+    if c >= 'a' && c <= 'f' {
+        return c - 'a' + 10
+    }
+    return -1
+}
+
+// `count` bytes written as hexadecimal digits, over any number of lines.
+fn read_bytes(reader: mut Reader, count: i64) -> List[i64] {
+    var bytes: List[i64] = []
+    while bytes.len() < count {
+        skip_spaces(mut reader)
+        if reader.at + 1 >= reader.text.len() {
+            bad_code_file(reader, "the file ends in the middle of its bytes")
+        }
+        let high = hex_digit(reader.text[reader.at])
+        let low = hex_digit(reader.text[reader.at + 1])
+        if high < 0 || low < 0 {
+            bad_code_file(reader, "a byte is not two hexadecimal digits")
+        }
+        bytes.push(high * 16 + low)
+        reader.at = reader.at + 2
+    }
+    return bytes
+}
+
+// Reads a whole code file.
+fn read_code_file(text: str) -> CodeFile {
+    var reader = Reader { text: text, at: 0 }
+    expect_word(mut reader, "azol-code")
+    if read_number(mut reader) != 1 {
+        bad_code_file(reader, "this is not version 1 of the format")
+    }
+    expect_word(mut reader, "target")
+    let target = read_word(mut reader)
+
+    var ident = ""
+    var imports: List[str] = []
+    var relocs: List[Reloc] = []
+    var base = 0
+    var text_offset = 0
+    var start = 0
+    var memory = 0
+    var memory_size = 0
+    var entries: List[i64] = []
+    var calls: List[Fixup] = []
+    var refs: List[Fixup] = []
+
+    if target == "aarch64-macos" {
+        expect_word(mut reader, "ident")
+        ident = read_rest_of_line(mut reader)
+        let entry = read_field(mut reader, "entry")
+        var count = read_field(mut reader, "imports")
+        while count > 0 {
+            imports.push(read_word(mut reader))
+            count = count - 1
+        }
+        let code_size = read_field(mut reader, "code")
+        let code = read_bytes(mut reader, code_size)
+        let data_size = read_field(mut reader, "data")
+        let data = read_bytes(mut reader, data_size)
+        count = read_field(mut reader, "relocs")
+        while count > 0 {
+            let kind = read_word(mut reader)
+            let at = read_number(mut reader)
+            if kind == "i" {
+                relocs.push(Import(at, read_number(mut reader)))
+            } else if kind == "d" {
+                let offset = read_number(mut reader)
+                relocs.push(Data(at, offset, read_number(mut reader)))
+            } else {
+                bad_code_file(reader, "unknown relocation `" + kind + "`")
+            }
+            count = count - 1
+        }
+        expect_word(mut reader, "end")
+        return CodeFile {
+            target: target, entry: entry, code: code, data: data,
+            ident: ident, imports: imports, relocs: relocs,
+            base: base, text_offset: text_offset, start: start, memory: memory, memory_size: memory_size,
+            entries: entries, calls: calls, refs: refs,
+        }
+    }
+    if target != "x86_64-linux" {
+        bad_code_file(reader, "unknown target `" + target + "`")
+    }
+    let entry = read_field(mut reader, "entry")
+    base = read_field(mut reader, "runtime")
+    text_offset = read_number(mut reader)
+    start = read_number(mut reader)
+    memory = read_number(mut reader)
+    memory_size = read_number(mut reader)
+    var count = read_field(mut reader, "entries")
+    while count > 0 {
+        entries.push(read_number(mut reader))
+        count = count - 1
+    }
+    let code_size = read_field(mut reader, "code")
+    let code = read_bytes(mut reader, code_size)
+    let data_size = read_field(mut reader, "data")
+    let data = read_bytes(mut reader, data_size)
+    count = read_field(mut reader, "calls")
+    while count > 0 {
+        let field = read_number(mut reader)
+        calls.push(Fixup { field: field, value: read_number(mut reader) })
+        count = count - 1
+    }
+    count = read_field(mut reader, "refs")
+    while count > 0 {
+        let field = read_number(mut reader)
+        refs.push(Fixup { field: field, value: read_number(mut reader) })
+        count = count - 1
+    }
+    expect_word(mut reader, "end")
+    return CodeFile {
+        target: target, entry: entry, code: code, data: data,
+        ident: ident, imports: imports, relocs: relocs,
+        base: base, text_offset: text_offset, start: start, memory: memory, memory_size: memory_size,
+        entries: entries, calls: calls, refs: refs,
+    }
+}

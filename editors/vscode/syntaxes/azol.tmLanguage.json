@@ -1,0 +1,267 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "azoL",
+  "scopeName": "source.azol",
+  "fileTypes": [
+    "azl"
+  ],
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#characters"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#declarations"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#constants"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#functions"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#punctuation"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.azol",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.azol",
+          "begin": "\"",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.begin.azol"
+            }
+          },
+          "end": "\"|$",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.string.end.azol"
+            }
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.azol",
+              "match": "\\\\[ntr0\\\\\\\"]"
+            },
+            {
+              "name": "invalid.illegal.escape.azol",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "characters": {
+      "patterns": [
+        {
+          "name": "constant.character.azol",
+          "match": "'(?:(\\\\[ntr0\\\\'])|[\\x20-\\x26\\x28-\\x5B\\x5D-\\x7E])'",
+          "captures": {
+            "1": {
+              "name": "constant.character.escape.azol"
+            }
+          }
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.azol",
+          "match": "(?<![A-Za-z0-9_])0x[0-9A-Fa-f_]+(?![A-Za-z0-9_])"
+        },
+        {
+          "name": "constant.numeric.binary.azol",
+          "match": "(?<![A-Za-z0-9_])0b[01_]+(?![A-Za-z0-9_])"
+        },
+        {
+          "name": "invalid.illegal.float.azol",
+          "match": "(?<![A-Za-z0-9_])[0-9][0-9_]*\\.[0-9][0-9_]*(?![A-Za-z0-9_])"
+        },
+        {
+          "name": "constant.numeric.decimal.azol",
+          "match": "(?<![A-Za-z0-9_])[0-9][0-9_]*(?![A-Za-z0-9_])"
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "(?<![A-Za-z0-9_])(fn)\\s+((?:[A-Za-z_]|[^\\x00-\\x7F])(?:[A-Za-z0-9_]|[^\\x00-\\x7F])*)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.function.azol"
+            },
+            "2": {
+              "name": "entity.name.function.azol"
+            }
+          }
+        },
+        {
+          "match": "(?<![A-Za-z0-9_])(struct|enum)\\s+((?:[A-Za-z_]|[^\\x00-\\x7F])(?:[A-Za-z0-9_]|[^\\x00-\\x7F])*)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.type.azol"
+            },
+            "2": {
+              "name": "entity.name.type.azol"
+            }
+          }
+        },
+        {
+          "match": "(?<![A-Za-z0-9_])(const)\\s+((?:[A-Za-z_]|[^\\x00-\\x7F])(?:[A-Za-z0-9_]|[^\\x00-\\x7F])*)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.constant.azol"
+            },
+            "2": {
+              "name": "variable.other.constant.azol"
+            }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.azol",
+          "match": "(?<![A-Za-z0-9_])(?:if|else|for|in|while|return|match|break|continue)(?![A-Za-z0-9_])"
+        },
+        {
+          "name": "keyword.declaration.azol",
+          "match": "(?<![A-Za-z0-9_])(?:fn|struct|enum|const|let|var)(?![A-Za-z0-9_])"
+        },
+        {
+          "name": "storage.modifier.mut.azol",
+          "match": "(?<![A-Za-z0-9_])(?:mut)(?![A-Za-z0-9_])"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.azol",
+          "match": "(?<![A-Za-z0-9_])(?:true|false)(?![A-Za-z0-9_])"
+        },
+        {
+          "name": "constant.language.none.azol",
+          "match": "(?<![A-Za-z0-9_])(?:None)(?![A-Za-z0-9_])"
+        },
+        {
+          "name": "support.function.variant.azol",
+          "match": "(?<![A-Za-z0-9_])(?:Some|Ok|Err)(?![A-Za-z0-9_])"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.azol",
+          "match": "(?<![A-Za-z0-9_])(?:i64|bool|str)(?![A-Za-z0-9_])(?!\\s*\\()"
+        },
+        {
+          "name": "support.type.azol",
+          "match": "(?<![A-Za-z0-9_])(?:List|Option|Result)(?![A-Za-z0-9_])"
+        },
+        {
+          "name": "entity.name.type.azol",
+          "match": "(?<![A-Za-z0-9_])[A-Z](?:[A-Za-z0-9_]|[^\\x00-\\x7F])*(?![A-Za-z0-9_])"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.azol",
+          "match": "(?<![A-Za-z0-9_])(?:print|eprint|str|chr|args|read_file|write_file|set_executable|exit)(?![A-Za-z0-9_])(?=\\s*\\()"
+        },
+        {
+          "match": "(\\.)((?:[a-z_]|[^\\x00-\\x7F])(?:[A-Za-z0-9_]|[^\\x00-\\x7F])*)(?=\\s*\\()",
+          "captures": {
+            "1": {
+              "name": "punctuation.accessor.azol"
+            },
+            "2": {
+              "name": "entity.name.function.method.azol"
+            }
+          }
+        },
+        {
+          "name": "entity.name.function.call.azol",
+          "match": "(?<![A-Za-z0-9_])(?:[a-z_]|[^\\x00-\\x7F])(?:[A-Za-z0-9_]|[^\\x00-\\x7F])*(?=\\s*\\()"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arrow.azol",
+          "match": "->|=>"
+        },
+        {
+          "name": "keyword.operator.comparison.azol",
+          "match": "==|!=|<=|>=|<(?!<)|>(?!>)"
+        },
+        {
+          "name": "keyword.operator.logical.azol",
+          "match": "&&|\\|\\||!"
+        },
+        {
+          "name": "keyword.operator.bitwise.azol",
+          "match": "<<|>>|&|\\||\\^"
+        },
+        {
+          "name": "keyword.operator.arithmetic.azol",
+          "match": "[+\\-*/%]"
+        },
+        {
+          "name": "keyword.operator.assignment.azol",
+          "match": "="
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.azol",
+          "match": "[,:]"
+        },
+        {
+          "name": "punctuation.accessor.azol",
+          "match": "\\."
+        },
+        {
+          "name": "punctuation.brackets.azol",
+          "match": "[\\(\\)\\[\\]\\{\\}]"
+        }
+      ]
+    }
+  }
+}

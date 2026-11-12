@@ -173,9 +173,10 @@ impl<'a> Parser<'a> {
                 K::Fn => self.function()?,
                 K::Struct => self.structure()?,
                 K::Enum => self.enumeration()?,
+                K::Const => self.constant()?,
                 other => {
                     return Err(self.error(format!(
-                        "expected `fn`, `struct` or `enum` but found {}",
+                        "expected `fn`, `struct`, `enum` or `const` but found {}",
                         describe(other)
                     )));
                 }
@@ -302,6 +303,15 @@ impl<'a> Parser<'a> {
         Ok(Item::Enum { name, generics, variants })
     }
 
+    fn constant(&mut self) -> PResult<Item> {
+        self.bump();
+        let name = self.ident("a constant name")?;
+        let ty = if self.eat(K::Colon) { Some(self.ty()?) } else { None };
+        self.expect(K::Assign)?;
+        let value = self.expr()?;
+        Ok(Item::Const { name, ty, value })
+    }
+
     /// Members of a struct or enum are separated by a newline or a comma.
     fn member_separator(&mut self) -> PResult<()> {
         if self.eat(K::Comma) || self.at(K::Newline) || self.at(K::RBrace) {
@@ -402,6 +412,9 @@ impl<'a> Parser<'a> {
                 Stmt::For { index, item, iter, body }
             }
             K::Match => self.match_statement()?,
+            K::Const => {
+                return Err(self.error("a constant is declared outside functions; use `let` for a value inside one".to_string()));
+            }
             K::Break => {
                 self.bump();
                 Stmt::Break
@@ -754,6 +767,7 @@ pub fn describe(kind: TokenKind) -> &'static str {
         K::Fn => "`fn`",
         K::Struct => "`struct`",
         K::Enum => "`enum`",
+        K::Const => "`const`",
         K::Let => "`let`",
         K::Var => "`var`",
         K::Mut => "`mut`",
@@ -936,6 +950,20 @@ mod tests {
     }
 
     #[test]
+    fn constants() {
+        let out = tree("const LIMIT = 10\nconst MASK: i64 = (1 << 4) - 1\nconst NAME = \"azoL\"\nfn main() {\n}");
+        assert!(out.starts_with("const LIMIT = 10\nconst MASK: i64 = (- (<< 1 4) 1)\nconst NAME = \"azoL\"\n"), "{out}");
+        let (message, line, col) = error("const = 1");
+        assert_eq!((message.as_str(), line, col), ("expected a constant name but found `=`", 1, 7));
+        let (message, ..) = error("const A 1");
+        assert_eq!(message, "expected `=` but found a number");
+        let (message, ..) = error("const A = 1 const B = 2");
+        assert_eq!(message, "expected end of line but found `const`");
+        let (message, ..) = error("fn main() {\n  const A = 1\n}");
+        assert_eq!(message, "a constant is declared outside functions; use `let` for a value inside one");
+    }
+
+    #[test]
     fn empty_file_and_comments_only() {
         assert_eq!(tree(""), "");
         assert_eq!(tree("// nothing here\n\n"), "");
@@ -965,7 +993,7 @@ mod tests {
     #[test]
     fn error_statement_outside_function() {
         let (message, ..) = error("let a = 1");
-        assert_eq!(message, "expected `fn`, `struct` or `enum` but found `let`");
+        assert_eq!(message, "expected `fn`, `struct`, `enum` or `const` but found `let`");
     }
 
     #[test]

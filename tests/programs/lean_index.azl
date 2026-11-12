@@ -1,0 +1,216 @@
+// expect-exit: 0
+// expect-output: 5222 9395 41 11 1649 825 135 258 32 75 6 60 9 54 142 51 853 false true 154326 666 456 4 633 15
+// List elements read and written many times over. The x86-64
+// generator checks an index once where it can and keeps the buffer or
+// the element's address at hand: everything here makes that knowledge
+// stale in some way and then uses the list again.
+
+struct Cell {
+    a: i64
+    b: i64
+    c: i64
+}
+
+struct Pair {
+    left: i64
+    right: i64
+}
+
+struct Board {
+    cells: List[Cell]
+    marks: List[bool]
+    size: i64
+}
+
+fn grow(xs: mut List[i64], by: i64) {
+    var n = 0
+    while n < by {
+        xs.push(100 + n)
+        n = n + 1
+    }
+}
+
+fn shrink(xs: mut List[i64]) -> i64 {
+    return xs.pop()
+}
+
+fn bump(cells: mut List[Cell], i: i64) {
+    cells[i].a = cells[i].a + cells[i].b
+    cells[i].b = cells[i].b * 2
+    cells[i].c = cells[i].a - cells[i].c
+}
+
+fn swap(xs: mut List[i64], i: i64, j: i64) {
+    let held = xs[i]
+    xs[i] = xs[j]
+    xs[j] = held
+}
+
+fn total(cells: List[Cell]) -> i64 {
+    var sum = 0
+    var i = 0
+    while i < cells.len() {
+        sum = sum + cells[i].a + cells[i].b * 10 + cells[i].c * 100
+        i = i + 1
+    }
+    return sum
+}
+
+fn mirror(xs: mut List[i64]) {
+    var i = 0
+    var j = xs.len() - 1
+    while i < j {
+        let low = xs[i]
+        let high = xs[j]
+        xs[i] = high
+        xs[j] = low
+        i = i + 1
+        j = j - 1
+    }
+}
+
+fn through(n: mut i64, xs: List[i64]) -> i64 {
+    // The index is behind an address, not in a register.
+    var sum = 0
+    while n < xs.len() {
+        sum = sum * 10 + xs[n]
+        n = n + 1
+    }
+    return sum
+}
+
+fn main() {
+    // The same element many times, the index changing in between.
+    var cells = [Cell { a: 1, b: 2, c: 3 }, Cell { a: 4, b: 5, c: 6 }, Cell { a: 7, b: 8, c: 9 }]
+    var i = 0
+    cells[i].a = cells[i].a + 10
+    cells[i].b = cells[i].a + cells[i].b
+    i = i + 1
+    cells[i].a = cells[i].a + 20
+    cells[i].c = cells[i].a + cells[i - 1].a
+    i = i + 1
+    cells[i].b = cells[i].b + cells[i].c + cells[0].b
+    print(total(cells))
+    bump(mut cells, 0)
+    bump(mut cells, 2)
+    print(total(cells))
+
+    // A list that grows while it is indexed: its buffer moves.
+    var xs: List[i64] = [5]
+    var k = 0
+    while k < 40 {
+        xs[k] = xs[k] + k
+        xs.push(xs[k] + 1)
+        xs[k] = xs[k] + xs[k + 1]
+        k = k + 1
+    }
+    print(xs.len())
+    print(xs[0])
+    print(xs[39])
+    print(xs[40])
+
+    // Grown and shrunk by a call between two uses of one element.
+    var ys = [1, 2, 3]
+    let before = ys[2]
+    grow(mut ys, 30)
+    let after = ys[2] + ys[32]
+    print(before + after)
+    var j = ys.len() - 1
+    ys[j] = ys[j] + 1
+    let gone = shrink(mut ys)
+    j = j - 1
+    print(gone + ys[j])
+    print(ys.len())
+
+    // Popped in line: the next use of the list checks again.
+    var zs = [7, 8, 9]
+    var z = 0
+    z = z + zs[1]
+    z = z + zs.pop()
+    z = z + zs[1]
+    zs.push(50)
+    z = z + zs[2]
+    print(z)
+
+    // Constant indices next to variable ones.
+    var ps = [Pair { left: 1, right: 2 }, Pair { left: 3, right: 4 }]
+    ps[0].left = ps[1].right + ps[0].right
+    ps[1].left = ps[0].left + ps[1].left
+    var q = 1
+    ps[q].right = ps[q].left * ps[0].left
+    q = q - 1
+    ps[q].right = ps[q].left + ps[1].right
+    print(ps[0].left)
+    print(ps[0].right)
+    print(ps[1].left)
+    print(ps[1].right)
+
+    // Lists inside lists, and a list inside a struct.
+    var rows = [[1, 2, 3], [4, 5, 6]]
+    var r = 0
+    while r < rows.len() {
+        var c = 0
+        while c < rows[r].len() {
+            rows[r][c] = rows[r][c] * 10 + r
+            c = c + 1
+        }
+        rows[r].push(rows[r][0] + rows[r][2])
+        r = r + 1
+    }
+    print(rows[0][3] + rows[1][3])
+    print(rows[1][1])
+    var board = Board { cells: [], marks: [], size: 3 }
+    var n = 0
+    while n < board.size {
+        board.cells.push(Cell { a: n, b: n * n, c: 0 })
+        board.marks.push(n % 2 == 0)
+        n = n + 1
+    }
+    n = 0
+    while n < board.size {
+        if board.marks[n] {
+            board.cells[n].c = board.cells[n].a + board.cells[n].b + 1
+        }
+        board.marks[n] = !board.marks[n]
+        n = n + 1
+    }
+    print(total(board.cells))
+    print(board.marks[0])
+    print(board.marks[1])
+
+    // Two indices into one list, and one index into two lists.
+    var ms = [1, 2, 3, 4, 5, 6]
+    swap(mut ms, 0, 5)
+    swap(mut ms, 2, 2)
+    mirror(mut ms)
+    print(ms[0] * 100000 + ms[1] * 10000 + ms[2] * 1000 + ms[3] * 100 + ms[4] * 10 + ms[5])
+    let us = [1, 2, 3]
+    var vs = [10, 20, 30]
+    var t = 0
+    while t < 3 {
+        vs[t] = vs[t] + us[t]
+        vs[2 - t] = vs[2 - t] + us[t] * 100
+        t = t + 1
+    }
+    print(vs[0] + vs[1] + vs[2])
+    var at = 1
+    print(through(mut at, [9, 4, 5, 6]))
+    print(at)
+
+    // Bytes of a string, with the string replaced in between.
+    var word = "hello"
+    var w = 1
+    var codes = word[w] + word[w + 1]
+    word = word + " there"
+    codes = codes + word[w] + word[9]
+    word = "hi"
+    codes = codes + word[w] + word[0]
+    print(codes)
+
+    // The index of a `for` loop and the item side by side.
+    var check = 0
+    for at, value in ms {
+        check = check + ms[at] - value + at
+    }
+    print(check)
+}

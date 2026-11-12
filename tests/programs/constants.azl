@@ -1,0 +1,148 @@
+// expect-exit: 42
+// expect-line: 10
+// expect-line: 15
+// expect-line: 271
+// expect-line: azoL
+// expect-line: azoL v1
+// expect-line: true
+// expect-line: false
+// expect-line: 30
+// expect-line: 5
+// expect-line: -10
+// expect-line: 97
+// expect-line: 4
+// expect-line: limit
+// expect-line: mask
+// expect-line: other
+// expect-line: name
+// expect-line: something else
+// expect-line: on
+// expect-line: off
+// expect-line: 45
+// expect-line: 3
+// expect-line: 8
+// expect-line: 1024
+// expect-line: 25
+// expect-line: azoLazoL!
+// expect-line: 4
+// expect-line: -9223372036854775808
+// expect-line: 2
+// expect-line: big
+// expect-line: 60
+
+// Constants: values with a name, computed while compiling, visible in
+// every function whatever the order of declaration.
+
+const LIMIT = 10
+const MASK: i64 = (1 << 4) - 1
+const FLAGS = 0x100 | MASK
+const NAME = "azoL"
+const VERSION: str = " v1"
+const DEBUG = !false && LIMIT > 3
+const QUIET: bool = LIMIT == MASK || !DEBUG
+const TRIPLE = LIMIT * 3
+const HALF = LIMIT / 2
+const NEGATIVE = -LIMIT
+const LETTER = 'a'
+const SHIFTED = 0b1000 >> 1
+const LOWEST = -9223372036854775807 - 1
+const WRAPPED = 1 << 65
+const KILO = 1 << LIMIT
+// Used before it is declared.
+const ANSWER = SIX * 7
+const SIX = 6
+const BIG = 0x7FFF_FFFF_FFFF_FFFF
+
+fn describe(n: i64) -> str {
+    match n {
+        LIMIT => return "limit"
+        MASK => return "mask"
+        _ => return "other"
+    }
+}
+
+fn which(text: str) -> str {
+    match text {
+        NAME => return "name"
+        " v1" => return "version"
+        _ => return "something else"
+    }
+}
+
+fn switch(flag: bool) -> str {
+    match flag {
+        DEBUG => return "on"
+        QUIET => return "off"
+    }
+}
+
+fn sum_below(limit: i64) -> i64 {
+    var total = 0
+    var i = 0
+    while i < LIMIT && i < limit {
+        total = total + i
+        i = i + 1
+    }
+    return total
+}
+
+fn add(a: i64, b: i64) -> i64 {
+    return a + b
+}
+
+fn twice(text: str) -> str {
+    return text + text
+}
+
+fn square[T](value: T) -> T {
+    return value * value + LIMIT - LIMIT
+}
+
+fn main() -> i64 {
+    print(LIMIT)
+    print(MASK)
+    print(FLAGS)
+    print(NAME)
+    print(NAME + VERSION)
+    print(DEBUG)
+    print(QUIET)
+    print(TRIPLE)
+    print(HALF)
+    print(NEGATIVE)
+    print(LETTER)
+    print(SHIFTED)
+    print(describe(10))
+    print(describe(15))
+    print(describe(0))
+    print(which("azo" + "L"))
+    print(which("version"))
+    print(switch(true))
+    print(switch(false))
+    print(sum_below(100))
+    print(sum_below(3))
+
+    // As operands on either side, in registers and in memory.
+    var x = 0x48
+    x = x & MASK
+    print(x)
+    print(KILO)
+    var y = LIMIT
+    y = y + MASK
+    print(square(HALF) + y - y)
+    var text = twice(NAME)
+    text = text + "!"
+    print(text)
+    let names = [NAME, VERSION, NAME, NAME]
+    print(names.len() + LIMIT - 10)
+    print(LOWEST)
+    print(WRAPPED)
+    if BIG > LIMIT && DEBUG {
+        print("big")
+    }
+    var total = 0
+    for step in [LIMIT, TRIPLE, MASK, HALF] {
+        total = total + step
+    }
+    print(total)
+    return add(ANSWER, LIMIT - LIMIT)
+}

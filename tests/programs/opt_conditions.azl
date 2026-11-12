@@ -1,0 +1,240 @@
+// expect-exit: 0
+// expect-line: a
+// expect-line: b
+// expect-line: yes 1
+// expect-line: a
+// expect-line: yes 2
+// expect-line: a
+// expect-line: b
+// expect-line: yes 3
+// expect-line: a
+// expect-line: c
+// expect-line: yes 4
+// expect-line: a
+// expect-line: b
+// expect-line: true
+// expect-line: w
+// expect-line: b
+// expect-line: w
+// expect-line: b
+// expect-line: w
+// expect-line: 2
+// expect-line: a
+// expect-line: b
+// expect-line: c
+// expect-line: yes 1
+// expect-line: a
+// expect-line: yes 2
+// expect-line: a
+// expect-line: b
+// expect-line: c
+// expect-line: b
+// expect-line: no 3, not b
+// expect-line: a
+// expect-line: c
+// expect-line: yes 4
+// expect-line: a
+// expect-line: b
+// expect-line: c
+// expect-line: false
+// expect-line: w
+// expect-line: b
+// expect-line: c
+// expect-line: w
+// expect-line: b
+// expect-line: c
+// expect-line: w
+// expect-line: 2
+// expect-line: a
+// expect-line: b
+// expect-line: c
+// expect-line: no 1
+// expect-line: a
+// expect-line: yes 2
+// expect-line: a
+// expect-line: b
+// expect-line: c
+// expect-line: yes 3
+// expect-line: a
+// expect-line: c
+// expect-line: a
+// expect-line: yes 4
+// expect-line: a
+// expect-line: b
+// expect-line: c
+// expect-line: true
+// expect-line: w
+// expect-line: b
+// expect-line: c
+// expect-line: 0
+// expect-line: a
+// expect-line: c
+// expect-line: yes 1
+// expect-line: a
+// expect-line: b
+// expect-line: c
+// expect-line: yes 2
+// expect-line: a
+// expect-line: yes 3
+// expect-line: a
+// expect-line: b
+// expect-line: c
+// expect-line: yes 4
+// expect-line: a
+// expect-line: c
+// expect-line: false
+// expect-line: w
+// expect-line: b
+// expect-line: w
+// expect-line: b
+// expect-line: w
+// expect-line: 2
+// expect-line: a
+// expect-line: c
+// expect-line: no 1
+// expect-line: a
+// expect-line: b
+// expect-line: c
+// expect-line: a
+// expect-line: yes 3
+// expect-line: a
+// expect-line: b
+// expect-line: c
+// expect-line: a
+// expect-line: a
+// expect-line: c
+// expect-line: true
+// expect-line: w
+// expect-line: b
+// expect-line: w
+// expect-line: b
+// expect-line: w
+// expect-line: 2
+// expect-line: a
+// expect-line: c
+// expect-line: no 1
+// expect-line: a
+// expect-line: b
+// expect-line: a
+// expect-line: yes 3
+// expect-line: a
+// expect-line: b
+// expect-line: a
+// expect-line: c
+// expect-line: true
+// expect-line: w
+// expect-line: b
+// expect-line: c
+// expect-line: 0
+// expect-line: left
+// expect-line: right
+// expect-line: x
+// expect-line: ordered
+// expect-line: left
+// expect-line: right
+// expect-line: a multiple
+// expect-line: zero
+// expect-line: constants
+// expect-line: constants again
+// expect-line: list
+// expect-line: after
+// expect-line: empty
+// expect-line: list
+// expect-line: list
+// expect-line: list
+// expect-line: 2
+// expect-line: 4
+
+// Conditions that branch directly: both sides of `&&` and `||` have
+// side effects, so the order and the skipping of the right side show.
+
+fn say(label: str, answer: bool) -> bool {
+    print(label)
+    return answer
+}
+
+fn number(label: str, value: i64) -> i64 {
+    print(label)
+    return value
+}
+
+fn empty_list() -> List[i64] {
+    print("list")
+    var out: List[i64] = []
+    return out
+}
+
+fn check(a: bool, b: bool, c: bool) {
+    if say("a", a) && say("b", b) || say("c", c) {
+        print("yes 1")
+    } else {
+        print("no 1")
+    }
+    if say("a", a) || say("b", b) && say("c", c) {
+        print("yes 2")
+    }
+    if !(say("a", a) && !say("b", b)) || !say("c", c) {
+        print("yes 3")
+    } else if !say("b", b) {
+        print("no 3, not b")
+    } else {
+        print("no 3")
+    }
+    if (say("a", a) || say("b", b)) && (say("c", c) || say("a", a)) {
+        print("yes 4")
+    }
+    let kept = say("a", a) && say("b", b) || !say("c", c)
+    print(kept)
+    var n = 0
+    while say("w", n < 2) && (say("b", b) || say("c", c)) {
+        n = n + 1
+    }
+    print(n)
+}
+
+fn main() {
+    check(true, true, true)
+    check(true, false, true)
+    check(true, false, false)
+    check(false, true, true)
+    check(false, true, false)
+    check(false, false, false)
+    if number("left", 3) < number("right", 4) && number("x", 0) == 0 {
+        print("ordered")
+    }
+    if number("left", 5) % 4 == 0 || number("right", 12) % 4 == 0 {
+        print("a multiple")
+    }
+    if number("zero", 0) != 0 {
+        print("wrong")
+    }
+    if true && !false {
+        print("constants")
+    }
+    if false || !true {
+        print("wrong")
+    } else {
+        print("constants again")
+    }
+    while false {
+        print("wrong")
+    }
+    // A condition with a temporary to free before it branches.
+    if empty_list().len() == 0 && say("after", true) {
+        print("empty")
+    }
+    var round = 0
+    while empty_list().len() == 0 && round < 2 {
+        round = round + 1
+    }
+    print(round)
+    var flag = true
+    var other = false
+    var steps = 0
+    while flag || other {
+        other = !other && flag
+        flag = steps < 3
+        steps = steps + 1
+    }
+    print(steps)
+}

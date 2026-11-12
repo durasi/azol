@@ -1,16 +1,17 @@
-// Builds one long string from many small pieces, which is what most
+// Run-time benchmark: the same computation as bench/append.rs.
+// Builds long strings from many small pieces, which is what most
 // programs that produce text do.
 
 fn main() -> i64 {
     var text = ""
     var i = 0
-    while i < 50000 {
+    while i < 3000000 {
         text = text + "0123456789"
         i = i + 1
     }
     var lines: List[str] = []
     var n = 0
-    while n < 2000 {
+    while n < 300000 {
         let line = "line " + str(n)
         lines.push(line)
         n = n + 1

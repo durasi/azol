@@ -1,0 +1,12 @@
+// expect-exit: 1
+// expect-output: 3 2
+// expect-stderr: azol: index out of range
+
+// An index that was in range is checked again once the list is shorter.
+fn main() {
+    var xs = [1, 2, 3]
+    print(xs[2])
+    xs.pop()
+    print(xs[1])
+    print(xs[2])
+}

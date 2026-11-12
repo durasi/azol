@@ -1,0 +1,40 @@
+{
+  "name": "azol",
+  "displayName": "azoL",
+  "description": "Syntax highlighting for the azoL programming language (.azl)",
+  "version": "0.1.0",
+  "publisher": "durasi",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/durasi/azol"
+  },
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "azol",
+        "aliases": [
+          "azoL",
+          "azol"
+        ],
+        "extensions": [
+          ".azl"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "azol",
+        "scopeName": "source.azol",
+        "path": "./syntaxes/azol.tmLanguage.json"
+      }
+    ]
+  }
+}
