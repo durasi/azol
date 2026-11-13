@@ -5,6 +5,8 @@
 !/bench/*.azl
 !/bench/*.py
 !/bench/*.js
+!/bench/*.c
+!/bench/*.go
 __pycache__/
 !/bench/suite/
 /azol

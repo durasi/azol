@@ -10,7 +10,7 @@ goes away.
 | `logo-dark.svg` | the same, on dark backgrounds |
 | `mark.svg` | the L alone, square |
 | `favicon.svg` | the L alone, simplified for 16 px |
-| `compare/` | header tiles for the comparison table in the README: `azol.svg` carries the mark; `rust.svg` and `javascript.svg` are plain name tiles of our own, used where the owners' logos would not be readable |
+| `compare/` | header tiles for the comparison table in the README: `azol.svg` carries the mark; `rust.svg`, `javascript.svg`, `c.svg` and `go.svg` are plain name tiles of our own, used where an owner's logo is not used or would not be readable |
 | `third-party/` | the Rust logo and the JS community logo, unmodified, with their sources and terms in its own README |
 | `alternatives/` | two other ideas that were considered |
 

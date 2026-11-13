@@ -7,12 +7,12 @@
 
 <p align="center">
   <strong>A memory-safe systems language with no garbage collector and no lifetime annotations,<br>
-  whose compiler turns 44,000 lines into an executable in 40 milliseconds.</strong>
+  whose compiler turns 44,000 lines into an executable in 24 milliseconds.</strong>
 </p>
 
 <p align="center">
   <a href="#numbers">Numbers</a> ·
-  <a href="#azol-rust-and-javascript">Comparison</a> ·
+  <a href="#azol-rust-c-go-and-javascript">Comparison</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="docs/language.md">Language reference</a> ·
   <a href="AGENTS.md">For AI agents</a> ·
@@ -64,98 +64,81 @@ Grace: 107 points
 
 ## Numbers
 
-One machine, one run of [`bench/compare.py`](bench/compare.py), which writes this section itself (`python3 bench/compare.py --write-readme`). Each benchmark is the same algorithm written plainly in the three languages, and all three versions must print the same result.
+One table, one machine, one run of [`bench/compare.py`](bench/compare.py), which writes this section itself (`python3 bench/compare.py --write-readme`). Every program is the same algorithm written plainly in each language ([`bench/`](bench/)), and all versions must print the same result.
 
 <!-- bench:start -->
 Measured on Apple M5, Darwin 27.2.0 (arm64). Best of 5 runs.
-Tools: azol 0.1.0, rustc 1.99.1 (58cf8f9c3 2026-10-13), v22.17.0.
+Tools: azol 0.1.0; rustc 1.99.1 (58cf8f9c3 2026-10-13); Apple clang version 21.0.0 (clang-2100.4.1.1); go version go1.27.1 darwin/arm64; node v22.17.0.
 
-<p><img src="assets/bench/run-light.svg#gh-light-mode-only" alt="azoL's run time against optimized Rust, program by program" width="760"><img src="assets/bench/run-dark.svg#gh-dark-mode-only" alt="azoL's run time against optimized Rust, program by program" width="760"></p>
+Lower is better everywhere. In every row the best value is bold, and nothing else in the table is.
 
-**Run time** (whole process, lower is better)
+|  | azoL | azoL `-O` | Rust `-O` | C `-O2` | Go | JavaScript (Node.js) |
+|:---|---:|---:|---:|---:|---:|---:|
+| Build time, the same 44,004-line program | **0.024 s** | 0.45 s | 9.51 s | 127.04 s | 0.67 s | nothing to build |
+| Executable size, `fib40` | **33 KB** | **33 KB** | 460 KB | **33 KB** | 2373 KB | needs Node.js |
+| Run time, `fib40`: function calls (recursive `fib(40)`) | 0.29 s | **0.15 s** | **0.15 s** | **0.15 s** | 0.23 s | 0.52 s |
+| Run time, `loops`: nested loops and arithmetic | 0.017 s | **0.016 s** | 0.018 s | 0.018 s | 0.018 s | 0.054 s |
+| Run time, `sort`: quicksort of 2 million numbers | 0.14 s | **0.11 s** | **0.11 s** | **0.11 s** | **0.11 s** | 0.27 s |
+| Run time, `sieve`: prime sieve up to 20 million | 0.16 s | 0.15 s | 0.045 s | 0.041 s | **0.036 s** | 0.30 s |
+| Run time, `particles`: list of structs updated in place | 0.096 s | 0.073 s | **0.039 s** | 0.050 s | 0.051 s | 0.17 s |
+| Run time, `tree`: building and walking trees | 0.094 s | 0.085 s | **0.054 s** | 0.058 s | 0.065 s | 0.42 s |
+| Run time, `append`: building long strings | 0.026 s | 0.025 s | 0.021 s | **0.019 s** | 0.027 s | 0.12 s |
+| Run time, `words`: splitting and joining text | 0.034 s | 0.030 s | 0.025 s | 0.026 s | **0.018 s** | 0.10 s |
 
-|  | azoL | Rust (`-O`) | Rust (unoptimized) | JavaScript (Node.js) |
-|:---|---:|---:|---:|---:|
-| `fib40`: function calls (recursive `fib(40)`) | **0.24 s** | 0.14 s | 0.36 s | 0.46 s |
-| `loops`: nested loops and arithmetic | **0.016 s** | 0.018 s | 0.065 s | 0.043 s |
-| `sort`: quicksort of 2 million numbers | **0.12 s** | 0.11 s | 0.30 s | 0.27 s |
-| `sieve`: prime sieve up to 20 million | **0.16 s** | 0.047 s | 0.23 s | 0.34 s |
-| `particles`: list of structs updated in place | **0.11 s** | 0.056 s | 1.13 s | 0.21 s |
-| `tree`: building and walking trees | **0.12 s** | 0.062 s | 0.13 s | 0.52 s |
-| `append`: building long strings | **0.037 s** | 0.028 s | 0.088 s | 0.15 s |
-| `words`: splitting and joining text | **0.047 s** | 0.035 s | 0.11 s | 0.13 s |
+The generated program is 44,004 lines in azoL, 45,006 lines in Rust, 49,035 lines in C, 44,008 lines in Go, 38,002 lines in JavaScript.
 
-<p><img src="assets/bench/build-light.svg#gh-light-mode-only" alt="Build time of azoL and of Rust for the same program" width="760"><img src="assets/bench/build-dark.svg#gh-dark-mode-only" alt="Build time of azoL and of Rust for the same program" width="760"></p>
+Build: azoL's default build is 400 times faster than `rustc -O` (9.51 s), 54 times faster than an unoptimized `rustc` build (1.28 s), 29 times faster than `rustc`'s type check alone (`--emit=metadata`) (0.69 s), 5400 times faster than `cc -O2` (127.04 s), 29 times faster than `go build` (0.67 s).
 
-**Build time** of the same 44,004-line program
+Node.js has nothing to build; checking the syntax of the JavaScript version (`node --check`) takes 0.024 s.
 
-|  | Time |
-|:---|---:|
-| azoL, source to executable | **0.040 s** |
-| Rust, type checking only (`--emit=metadata`) | 1.05 s |
-| Rust, unoptimized build | 1.77 s |
-| Rust, optimized build (`-O`) | 12.53 s |
-| JavaScript, syntax check only (`node --check`) | 0.024 s |
-| JavaScript, load and run (nothing to build) | 0.048 s |
+Run: azoL's default build is ahead of Rust `-O` in 1 of 8, of C `-O2` in 1 of 8, of Go in 2 of 8, of Node.js in 8 of 8.
 
-**Executable size** of a small program (`fib40`)
-
-|  | Size |
-|:---|---:|
-| azoL | **33 KB** |
-| Rust (`-O`) | 460 KB |
-| Rust (unoptimized) | 461 KB |
-| JavaScript | needs Node.js installed |
-
-Build: azoL is 26 times faster than Rust's type checking alone, 44 times faster than an unoptimized Rust build and 310 times faster than an optimized one.
-
-Node.js checks the syntax of the JavaScript version in 0.6 times azoL's whole build time.
-
-Run: azoL is faster than unoptimized Rust in 8 of 8 and faster than Node.js in 8 of 8. It is slower than optimized Rust in 7 of 8; the largest gaps are `sieve` (3.3 times) and `particles` (2.0 times).
+Run: `azol build -O` is ahead of Rust `-O` in 1 of 8 (level in 2), of C `-O2` in 1 of 8 (level in 2), of Go in 3 of 8 (level in 1), of Node.js in 8 of 8.
 <!-- bench:end -->
 
 **Reading these fairly.**
 
-- The azoL column is its default build: one fast pass that checks every index and every division. `azol build -O` is new and experimental, and is not what these tables measure yet.
-- The build-time program is generated and repetitive ([`bench/gen.py`](bench/gen.py)), and azoL does less work than `rustc`: no traits, a small standard library, no optimizer passes.
+- azoL has two columns. The first is its default build, one fast pass. The second is `azol build -O`, the optimiser: new, experimental, and slower to build. Both check every index and every division.
+- Rust and Go check indexes too; C checks nothing. Go and JavaScript collect garbage; azoL, Rust and C free memory at fixed points.
+- The build-time program is generated and repetitive ([`bench/gen.py`](bench/gen.py)), and it is one file. That flatters azoL, which does less work than the others (no traits, a small library), and is hard on C, whose projects are split into many files compiled side by side. Go's build cache is kept for its standard library and bypassed for the program.
 - Run times are whole processes, so they include start-up, which is tens of milliseconds for Node.js.
-- These are eight small programs, not a benchmark suite. Where azoL trails optimized Rust, the reasons are known: Rust inlines calls and removes index checks it can prove unnecessary; azoL's default build does neither; `-O` does both.
+- These are eight small programs, not a benchmark suite. The gate azoL holds itself to is larger: 28 programs against `rustc -O` ([`bench/suite/`](bench/suite/), see the roadmap).
 
-## azoL, Rust and JavaScript
+## azoL, Rust, C, Go and JavaScript
 
-| | <img src="assets/compare/azol.svg" alt="azoL" height="30"> | <img src="assets/third-party/rust-logo-blk.svg#gh-light-mode-only" alt="" height="30"><img src="assets/compare/rust.svg#gh-dark-mode-only" alt="" height="30"> <strong>Rust</strong> | <img src="assets/third-party/js.png" alt="" height="30"> <strong>JavaScript</strong> |
-|:---|:---|:---|:---|
-| <sub>SAFETY</sub> | | | |
-| **Memory safety** | Yes, checked when compiling | Yes, checked when compiling | Yes, by the runtime |
-| **Garbage collector** | None | None | Yes |
-| **Lifetime annotations** | Never | Wherever the compiler cannot infer them | Not applicable |
-| **References in your code** | None. Values only; a function changes an argument only if the call says `mut` | `&T`, `&mut T`, smart pointers | Every object is a shared reference |
-| **What stops two parts of a program changing the same data** | Four exclusivity rules, checked one function at a time | The borrow checker | Nothing |
-| **Null** | None. `Option[T]` | None in safe code. `Option<T>` | `null` and `undefined` |
-| **Errors** | `Result[T, E]`, `?`, exhaustive `match` | `Result<T, E>`, `?`, exhaustive `match`, panics | Exceptions |
-| <sub>LANGUAGE</sub> | | | |
-| **Types** | Static, inferred inside functions | Static, inferred inside functions | Dynamic |
-| **Generics** | Functions, structs and enums, checked for each set of types used. No traits | With traits and bounds | Not needed |
-| **Numbers** | `i64` only. No floating point | Integers of every size, floats | 64-bit floats, `BigInt` |
-| **Closures, functions as values** | No | Yes | Yes |
-| **Threads** | No | Yes, with data races ruled out when compiling | Workers and an event loop |
-| **Modules and packages** | Several files, one namespace. No package manager | Modules, crates, Cargo, crates.io | Modules, npm |
-| <sub>BUILDING AND SHIPPING</sub> | | | |
-| **From source to running** | Compiled ahead of time, in milliseconds | Compiled ahead of time, in seconds to minutes | Compiled while it runs |
-| **What you ship** | One small executable | One executable | Source, and the user needs a runtime |
-| **Needed to build** | `azol` alone | `rustc`, LLVM, and the system linker | Nothing; Node.js or a browser to run |
-| **Building for another system** | Built in: `--target`, nothing to install | A target to install and a linker for it | Not applicable |
-| **Targets** | Apple Silicon macOS, x86-64 Linux, ARM64 Linux | Dozens | Wherever an engine runs |
-| <sub>TOOLS</sub> | | | |
-| **Compiler output for tools and AI agents** | `check --json`: code, exact span, the rule that was broken, and the edit when the repair is mechanical | `--error-format=json`, with suggested edits marked by how safe they are to apply | No compiler; errors appear when the code runs, linters are separate tools |
-| **Formatter** | `azol fmt`, one layout, no options | `rustfmt`, ships with the toolchain | Separate tools |
-| <sub>PROJECT</sub> | | | |
-| **Written in** | azoL: the compiler compiles itself. The first compiler was written in Rust | Rust | Engines are written in C++ |
-| **Maturity** | Experimental. Do not depend on it | Stable since 2015 | In use since 1995 |
+In each row, bold marks the languages that are ahead on that row, where that can be said plainly. Rows without bold are trade-offs.
 
-Rust and JavaScript can do far more than azoL can today. What azoL offers is the compile-time memory safety of the first with a full build that takes less time than Node.js needs to check the same program's syntax, in a language whose whole reference is one document.
+| | <img src="assets/compare/azol.svg" alt="azoL" height="30"> | <img src="assets/third-party/rust-logo-blk.svg#gh-light-mode-only" alt="" height="30"><img src="assets/compare/rust.svg#gh-dark-mode-only" alt="" height="30"> <strong>Rust</strong> | <img src="assets/compare/c.svg" alt="C" height="30"> | <img src="assets/compare/go.svg" alt="Go" height="30"> | <img src="assets/third-party/js.png" alt="" height="30"> <strong>JavaScript</strong> |
+|:---|:---|:---|:---|:---|:---|
+| <sub>SAFETY</sub> | | | | | |
+| Memory safety without a garbage collector | **Yes, checked when compiling** | **Yes, checked when compiling; `unsafe` opts out** | No | Safe, with a garbage collector | Safe, with a garbage collector |
+| Lifetime annotations | Never | Where the compiler cannot infer them | None | None | None |
+| References in your code | None. Values only; a call says `mut` to let a function change its argument | `&T`, `&mut T`, smart pointers | Pointers | Pointers | Every object is a shared reference |
+| Data races | No threads yet | **Ruled out when compiling** | Possible | Possible; a race detector for tests | No shared memory by default |
+| Null | **None. `Option[T]`** | **None in safe code. `Option<T>`** | `NULL` | `nil` | `null` and `undefined` |
+| Errors | `Result[T, E]`, `?`, exhaustive `match` | `Result<T, E>`, `?`, exhaustive `match`, panics | Return codes | Error values, `panic` | Exceptions |
+| <sub>LANGUAGE</sub> | | | | | |
+| Types | Static, inferred inside functions | Static, inferred inside functions | Static | Static, inferred inside functions | Dynamic |
+| Generics | Functions, structs and enums. No bounds yet | **With traits and bounds** | None; macros | **With constraints** | Not needed |
+| Numbers | `i64` only. No floating point | **Integers of every size, floats** | **Integers of every size, floats** | **Integers of every size, floats** | 64-bit floats, `BigInt` |
+| Closures | No | **Yes** | No; function pointers | **Yes** | **Yes** |
+| Threads | No | **Yes** | Yes, through a library | **Yes: goroutines and channels** | Workers and an event loop |
+| Packages | None. Several files, one namespace | **Cargo, crates.io** | No standard one | **Go modules** | **npm** |
+| <sub>BUILDING AND SHIPPING</sub> | | | | | |
+| From source to running | Compiled ahead of time | Compiled ahead of time | Compiled ahead of time | Compiled ahead of time | Compiled while it runs |
+| What you ship | One executable | One executable | One executable | One executable | Source; the user needs a runtime |
+| Building for another system | **Built in: `--target`** | A target to install, and a linker for it | A cross compiler | **Built in: `GOOS`, `GOARCH`** | Not applicable |
+| Targets | Apple Silicon macOS, x86-64 Linux, ARM64 Linux | Dozens | **Nearly every processor** | Dozens | Wherever an engine runs |
+| <sub>TOOLS</sub> | | | | | |
+| Errors for tools and AI agents | `check --json`: code, exact span, the rule that was broken, the edit when the repair is mechanical | `--error-format=json`, with suggested edits marked by how safe they are | Text, with fix-it hints | Text | No compiler; errors appear when the code runs |
+| Formatter | **`azol fmt`, one layout** | **`rustfmt`, with the toolchain** | Separate tools | **`gofmt`, one layout** | Separate tools |
+| <sub>PROJECT</sub> | | | | | |
+| Written in | azoL: the compiler compiles itself | Rust | Compilers are written in C and C++ | Go | Engines are written in C++ |
+| Maturity | Experimental. Do not depend on it | **Stable since 2015** | **A standard since 1989** | **Stable since 2012** | **In use since 1995** |
 
-<sub>The Rust logo belongs to the Rust Foundation and the JS logo to its community; they only label the columns. azoL is not affiliated with or endorsed by either. Sources and terms: [assets/third-party](assets/third-party/README.md).</sub>
+Rust, C, Go and JavaScript can each do far more than azoL can today. What azoL offers is memory safety checked when compiling, with no garbage collector and no lifetime annotations, a build measured in milliseconds, and a language whose whole reference is one document.
+
+<sub>The Rust logo belongs to the Rust Foundation and the JS logo to its community; they only label the columns. C and Go are labelled by name. azoL is not affiliated with or endorsed by any of them. Sources and terms: [assets/third-party](assets/third-party/README.md).</sub>
 
 ## Quick start
 
