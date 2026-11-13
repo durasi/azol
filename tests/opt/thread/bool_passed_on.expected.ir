@@ -1,0 +1,15 @@
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v2 = slt p0, 0
+    br v2, b4(p0), b1
+b1:
+    v3 = slt p1, 0
+    br v3, b5(p1), b5(7)
+b3(v4: bool, v5: i64):
+    br v4, b4(v5), b5(v5)
+b4(v6: i64):
+    v7 = add v6, 100
+    ret v7
+b5(v8: i64):
+    ret v8
+}

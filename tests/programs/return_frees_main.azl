@@ -1,0 +1,16 @@
+// expect-exit: 0
+// expect-line: none
+// A `return` without a value in `main` gives exit code 0 also when it
+// frees a string on its way out.
+fn main() {
+    let e: Option[i64] = None
+    var last = "a text " + str(3)
+    match e {
+        Some(n) => last = str(n)
+        None => {
+            print("none")
+            return
+        }
+    }
+    print(last)
+}

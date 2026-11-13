@@ -157,6 +157,11 @@ struct Ra {
     raw_kind: List[i64]
     raw_a: List[i64]
     raw_b: List[i64]
+    // The loops, as stretches of positions: from the first position of
+    // a block some later block (or the block itself) goes back to, up
+    // to the end of that later block.
+    lp_from: List[i64]
+    lp_to: List[i64]
     // The parallel move being put in order.
     pm_src: List[i64]
     pm_dst: List[i64]
@@ -212,6 +217,8 @@ fn ra_new() -> Ra {
         raw_kind: [],
         raw_a: [],
         raw_b: [],
+        lp_from: [],
+        lp_to: [],
         pm_src: [],
         pm_dst: [],
         failed: false,
@@ -772,9 +779,46 @@ fn ra_try_free(m: MFunc, t: RaTarget, r: mut Ra, cur: i64) -> bool {
 // Takes interval `a` out of its register from `pos` on: it is in its
 // slot until just before its next use that needs a register, and the
 // part from there is given a place later.
+// Where to cut interval `a`, which loses its register at `pos`, when an
+// earlier place is better: the top of the outermost loop around `pos`
+// that `a` was alive before, with no read between that top and `pos`
+// that needs a register. Cut at `pos`, the value would be in its
+// register at the top of the loop and in its slot at the bottom, and
+// every time round would load it again; cut at the top it is in its
+// slot for the whole loop, and going into the slot costs nothing.
+// -1 when there is no such place.
+fn ra_loop_top(r: Ra, a: i64, pos: i64) -> i64 {
+    var best = -1
+    let start = ra_start(r, a)
+    var k = 0
+    while k < r.lp_from.len() {
+        let top = r.lp_from[k]
+        if top < pos && pos < r.lp_to[k] && top > start && (best < 0 || top < best) {
+            // Alive at the top, and not in a hole there.
+            var c = r.iv_rs[a]
+            let end = c + r.iv_rn[a]
+            var alive = false
+            while c < end {
+                if r.r_from[c] < top && top < r.r_to[c] { alive = true }
+                c = c + 1
+            }
+            let next = ra_next_reg_use(r, a, top)
+            if alive && (next < 0 || next >= pos) { best = top }
+        }
+        k = k + 1
+    }
+    return best
+}
+
+// Sends interval `a` to its slot from `pos` on (or from the top of a
+// loop around `pos`, see `ra_loop_top`), until it is next needed in a
+// register.
 fn ra_spill_from(r: mut Ra, a: i64, pos: i64) {
+    var at = pos
+    let top = ra_loop_top(r, a, pos)
+    if top >= 0 { at = top }
     var tail = a
-    if ra_start(r, a) < pos { tail = ra_split(mut r, a, pos) }
+    if ra_start(r, a) < at { tail = ra_split(mut r, a, at) }
     r.iv_loc[tail] = RA_MEM
     let next = ra_next_reg_use(r, tail, pos)
     if next < 0 { return }
@@ -956,6 +1000,19 @@ fn ra_quiet_register(t: RaTarget, r: mut Ra, cur: i64) -> i64 {
 }
 
 fn ra_scan(m: MFunc, t: RaTarget, r: mut Ra) {
+    var from = 0
+    while from < m.b_first.len() {
+        var way = m.b_ss[from]
+        while way < m.b_ss[from] + m.b_sn[from] {
+            let to = m.s_blk[way]
+            if to <= from {
+                r.lp_from.push(2 * m.b_first[to])
+                r.lp_to.push(2 * m.b_last[from] + 2)
+            }
+            way = way + 1
+        }
+        from = from + 1
+    }
     r.free = 0.filled(32)
     r.usep = 0.filled(32)
     r.blockp = 0.filled(32)

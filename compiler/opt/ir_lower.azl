@@ -137,6 +137,7 @@ struct Lower {
     glue_copies: List[i64]
     glue_ids: IntMap
     need_str_cmp: bool
+    need_str_same: bool
     // The type of every slot of a type, once worked out: `st_len`
     // entries of `st_tys` from `st_start`, found through `st_ids`.
     st_ids: IntMap
@@ -272,6 +273,7 @@ fn lw_new() -> Lower {
         glue_copies: [],
         glue_ids: new_int_map(),
         need_str_cmp: false,
+        need_str_same: false,
         st_ids: new_int_map(),
         st_start: [],
         st_len: [],
@@ -972,6 +974,77 @@ fn lw_str_cmp_function(lw: mut Lower) {
     lw_end(mut lw)
 }
 
+// Writes `str.same(p, q, n)`: whether the `n` bytes at `p` and the `n`
+// bytes at `q` are the same. Eight bytes at a time while there are
+// eight; then, when there were eight at all, the last eight once more
+// wherever they start, and otherwise the few bytes one by one.
+fn lw_str_same_function(lw: mut Lower) {
+    lw_begin(mut lw, "str.same")
+    let p = ir_add_param(mut lw.f, IR_PTR, IR_FX_READ)
+    let q = ir_add_param(mut lw.f, IR_PTR, IR_FX_READ)
+    let n = ir_add_param(mut lw.f, IR_I64, 0)
+    lw.f.ret_ty.push(IR_BOOL)
+    let first = ir_region(mut lw.f, IR_REGION_PARAM, 0)
+    let second = ir_region(mut lw.f, IR_REGION_PARAM, 1)
+    let zero = lw_const(mut lw, 0)
+    let one = lw_const(mut lw, 1)
+    let eight = lw_const(mut lw, 8)
+    let differ = lw_block(mut lw)
+    let same = lw_block(mut lw)
+    // Words.
+    let top = lw_block(mut lw)
+    let at = ir_add_block_param(mut lw.f, top, IR_I64)
+    let bytes = lw_block(mut lw)
+    let k = ir_add_block_param(mut lw.f, bytes, IR_I64)
+    let long = lw_bin(mut lw, IR_SGE, n, eight)
+    ir_br(mut lw.f, lw.b, long, top, [zero], bytes, [zero])
+    lw.b = top
+    let after = lw_bin(mut lw, IR_ADD, at, eight)
+    let whole = lw_bin(mut lw, IR_SLE, after, n)
+    let words = lw_block(mut lw)
+    let last = lw_block(mut lw)
+    lw_br(mut lw, whole, words, last)
+    lw.b = words
+    let word_p = ir_gep(mut lw.f, lw.b, p, at, 1, 0)
+    let wx = ir_load(mut lw.f, lw.b, IR_I64, word_p, 0, first)
+    let word_q = ir_gep(mut lw.f, lw.b, q, at, 1, 0)
+    let wy = ir_load(mut lw.f, lw.b, IR_I64, word_q, 0, second)
+    let word_equal = lw_bin(mut lw, IR_EQ, wx, wy)
+    let word_on = lw_block(mut lw)
+    lw_br(mut lw, word_equal, word_on, differ)
+    lw.b = word_on
+    ir_jump(mut lw.f, lw.b, top, [after])
+    // What is left of a long one: the last word again.
+    lw.b = last
+    let from = lw_bin(mut lw, IR_SUB, n, eight)
+    let last_p = ir_gep(mut lw.f, lw.b, p, from, 1, 0)
+    let lx = ir_load(mut lw.f, lw.b, IR_I64, last_p, 0, first)
+    let last_q = ir_gep(mut lw.f, lw.b, q, from, 1, 0)
+    let ly = ir_load(mut lw.f, lw.b, IR_I64, last_q, 0, second)
+    let last_equal = lw_bin(mut lw, IR_EQ, lx, ly)
+    lw_br(mut lw, last_equal, same, differ)
+    lw.b = bytes
+    let more = lw_bin(mut lw, IR_SLT, k, n)
+    let look = lw_block(mut lw)
+    lw_br(mut lw, more, look, same)
+    lw.b = look
+    let first_at = ir_gep(mut lw.f, lw.b, p, k, 1, 0)
+    let x = ir_load(mut lw.f, lw.b, IR_U8, first_at, 0, first)
+    let second_at = ir_gep(mut lw.f, lw.b, q, k, 1, 0)
+    let y = ir_load(mut lw.f, lw.b, IR_U8, second_at, 0, second)
+    let equal = lw_bin(mut lw, IR_EQ, x, y)
+    let on = lw_block(mut lw)
+    lw_br(mut lw, equal, on, differ)
+    lw.b = on
+    let next = lw_bin(mut lw, IR_ADD, k, one)
+    ir_jump(mut lw.f, lw.b, bytes, [next])
+    lw.b = differ
+    ir_ret(mut lw.f, lw.b, [zero])
+    lw.b = same
+    ir_ret(mut lw.f, lw.b, [one])
+    lw_end(mut lw)
+}
+
 // Returns -1, 0 or 1 as `x` is below, equal to or above `y`.
 fn lw_ret_order(lw: mut Lower, x: i64, y: i64) {
     let below = lw_bin(mut lw, IR_SLT, x, y)
@@ -1010,4 +1083,5 @@ fn lw_program(lw: mut Lower, c: Checker, p: Parser) {
         next = next + 1
     }
     if lw.need_str_cmp { lw_str_cmp_function(mut lw) }
+    if lw.need_str_same { lw_str_same_function(mut lw) }
 }

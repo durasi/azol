@@ -50,9 +50,12 @@ first time. It is short on purpose. The full reference is
 
 **Control flow**
 
-16. `if`, `while`, `for`, `match` are statements. They have no value. No
-    `let x = if ...`, no ternary. Assign to a `var` in each branch or
-    `return` from each branch.
+16. `if` and `match` give a value only as the whole right side of `let`,
+    `var`, `=`, `op=` or `return`, with one expression per branch:
+    `let way = if n > 0 { "up" } else { "down" }`,
+    `return match c { Red => 1  Blue => 2 }` (one arm per line). A branch
+    may instead leave: `None => return`, `else { continue }`. Never inside
+    a call or a larger expression, and there is no ternary.
 17. Every function with a return type ends each path with `return value`.
     The last expression is not returned.
 18. Conditions are `bool`, without parentheses, with braces:
@@ -71,9 +74,10 @@ first time. It is short on purpose. The full reference is
 22. A `match` arm is `pattern => statement` or `pattern => { ... }`. No
     commas after arms. In a function that returns a value, an arm is
     usually `Some(x) => return x`.
-23. Patterns are one level deep: `Some(x)`, `Rect(w, _)`, `None`, `3`,
-    `"yes"`, `true`, a constant, a name, `_`. Not `Some(Some(x))`, not
-    `Some(3)`, not `1 | 2`, no guards.
+23. Patterns: `Some(x)`, `Rect(w, _)`, `None`, `3`, `"yes"`, `true`, a
+    constant, a name, `_`, and patterns inside the `()` of a variant to
+    any depth: `Some(Put(key, 0))`, `Ok(3)`, `Err("no")`. Not `1 | 2`, no
+    guards, no struct patterns.
 24. A `match` must cover everything. On `i64` or `str` it needs a final
     `_ =>` arm.
 25. You cannot assign to a variable inside a `match` on that same variable.
@@ -131,10 +135,12 @@ exit(code)
 
 xs.len()  xs.push(x)  xs.pop()  xs[i]  xs[i] = x
 xs.contains(x)  xs.first()  xs.last()      // first, last: Option[T]
-xs.reversed()   parts.join(separator)      // join: List[str] only
+xs.reversed()   parts.join(separator)      // join: lists of str, i64 or bool
 xs.is_empty()  xs.index_of(x)  xs.count(x)  xs.take(n)  xs.skip(n)
 xs.sorted()  xs.min()  xs.max()  xs.sum()  // numbers and strings; sum: List[i64]
 xs.extend(more)  xs.truncate(n)  xs.insert(at, x)  xs.remove_at(at)   // change xs
+xs.swap(i, j)  xs.reverse()  xs.remove(x)  // change xs; remove: bool, the first equal item
+xs.slice(from, to) -> List[T]              // stops the program outside the list
 bytes.to_str()                             // List[i64] to str
 0.filled(n)                                // a List of n copies of any value
 
@@ -146,16 +152,25 @@ s.trim()  s.split(separator)  s.lines()  s.to_i64()   // to_i64: Option[i64]
 s.is_empty()  s.is_utf8()  s.compare(t)  s.replace(old, new)  s.repeat(n)
 s.to_upper()  s.to_lower()  s.pad_left(width, fill)  s.pad_right(width, fill)
 s.index_of_from(part, start)  s.last_index_of(part)  s.bytes()  s.parse_hex()  s.hash()
+s.chars() -> List[str]                     // one string per UTF-8 character
 
-n.abs()  n.min(m)  n.max(m)  n.clamp(low, high)  n.pow(e)  n.compare(m)  n.to_hex()
+n.abs()  n.min(m)  n.max(m)  n.clamp(low, high)  n.pow(e)  n.compare(m)  n.sign()  n.to_hex()
 
 var m: Map[V] = new_map()                  // keys are str
 m.set(key, value)  m.remove(key)           // change m; remove: bool
 m.get(key)  m.has(key)  m.keys()  m.len()  // get: Option[V], a copy
+m.get_or(key, default) -> V  m.values() -> List[V]  m.is_empty()
+counts.add(key, 1)                         // Map[i64]: a missing key counts as 0
+groups.append(key, item)                   // Map[List[T]]: a missing key is an empty list
+
+o.or(default) -> T  o.is_some()  o.is_none()           // o: Option[T]
+o.expect("why it is there") -> T           // None stops the program: azol: why it is there
+r.or(default) -> T  r.is_ok()  r.is_err()  r.ok() -> Option[T]   // r: Result[T, E]
+r.expect("what was being done") -> T       // Err stops the program with the message and the error
 ```
 
 Nothing else exists: no `sort` in place, `map`, `filter`, `format`,
-`assert`, `panic`, standard input. Write the loop. A method that changes
+`assert`, `panic`, `unwrap`, standard input. Write the loop. A method that changes
 its receiver (`push`, `extend`, `set`, ...) takes no `mut`, but the receiver
 must be a `var`, a `mut` parameter or a part of one.
 
@@ -533,7 +548,9 @@ Messages to recognize:
 | `` `?` on ... needs a function that returns ... `` | `?` in `main`, or with another error type | `match`, or change the function's result type. |
 | `expected end of line but found` | Two statements on one line, or `Enum::Variant` | Split the line; bare variant. |
 | `a struct literal here needs parentheses` | `if p == Point { ... } {` | `if p == (Point { ... }) {`. |
-| `expected an expression but found` | `+=`, a line starting with an operator, `if` used as a value | See rules 2, 11, 16. |
+| `expected an expression but found` | A line starting with an operator, a statement where a value belongs | See rules 2, 11. |
+| ``an `if` or `match` that gives a value is the whole right side`` | `f(if ...)`, `a + match ...` | `let x = if ...` first (rule 16). |
+| `a branch that gives a value is one expression` | Statements in a branch of a value `if` or `match` | The statement form, assigning to a `var` inside. |
 | `expected `fn`, `struct`, `enum` or `const`` | Something else at the top level: `import`, `var`, `let`, a statement | Move it into a function or delete it. |
 | `unknown type` | A type azoL does not have | Rule 5. |
 | ``expected `=` but found `<` `` | `List<T>` | `List[T]`. |
@@ -546,7 +563,6 @@ Messages to recognize:
 | `cannot tell what this empty list holds`, `cannot tell which`, `cannot tell what `T` is` | No type from the context | Add a type to the variable. |
 | `must return a value ... on every path` | A path falls off the end | Add `return`. |
 | `this `match` does not handle`, `needs a final `_ =>` arm` | Missing case | Add the arm. |
-| `a pattern inside a pattern is not supported yet` | Nested pattern | Bind a name, `match` again inside the arm. |
 | `... needs `i64` but this is `str`` and the like | Mixed types, often text `+` number | `str(...)`, `to_i64()`. |
 | `(in `f` with `T` = `X`)` at the end | A generic function used with a type its body cannot handle | Change the call or the body. |
 | `cannot change ... while a loop is going through it` | Rule 29 | `while` with an index, or loop over a copy. |

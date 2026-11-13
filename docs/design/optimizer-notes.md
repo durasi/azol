@@ -2226,3 +2226,145 @@ together are 3 M.
   move: what they need is `gvn`, `licm` and `bce`.
 - Wall times were not usable on the machine these numbers come from (two
   other builds were running), so the cost is given in instructions only.
+
+## One driver for three targets (`azol-opt build --target`)
+
+`azol-opt build` (`opt_build_main.azl`) now ends in either back end:
+`bk_build` for `x86_64-linux`, `bka_build` for `aarch64-macos` and
+`aarch64-linux`, with the runtimes `embedded.azl` already holds
+(`RUNTIME_X64`, `RUNTIME_ARM64_DATA`, `RUNTIME_ARM64_LINUX`) and the
+default compiler's writers (`build_macho`, which signs; the ELF layout
+of `arm64_link.azl`). With no `--target` it builds for the machine it
+runs on: the tool is built with one of `compiler/host_*.azl`, as `azol`
+is. Its files are listed once, in `compiler/opt/OPT_SOURCES`;
+`sh build_opt.sh` builds `./azol-opt` from that list, and the tests read
+the same list. Lowering and the passes do not know the target: the same
+intermediate form goes to either back end.
+
+### Proof (in emulators; nothing here has run on Apple hardware)
+
+`python3 tests/opt/run_driver_tests.py`, also run at the end of
+`run_opt_tests.py`:
+
+- 96 programs of `tests/programs` and `examples`, built from source by
+  `azol-opt build --target T --check` for both ARM64 targets: 192
+  executables, each run in the checking emulators next to the default
+  build of the same program. Same output, same messages, same exit
+  code, no block left unfreed that the default build frees, nothing
+  outside a live block touched, x19 to x28 and the stack pointer
+  restored. The trapping programs are among them (stack overflow in
+  three forms, index, slice, division, `pop` of an empty list).
+- The 28 programs of `bench/suite` at their small size, both targets,
+  in the fast emulator: 56 executables print what their default builds
+  print and exit with 0.
+- Two builds give the same bytes on all three targets; no `--target`
+  gives the host's file; an unknown target is refused with exit code 2.
+
+`tests/opt/mac_check.sh` has a third part for a real Mac: it builds
+`azol-opt` and runs sixteen test programs and the four benchmarks built
+from source by it, natively, against their default builds.
+
+### Instructions on ARM64 (emulator, small sizes, 12 November 2026)
+
+`run_driver_tests.py --count` counts the instructions of the program
+itself in `compiler/emu_arm64.py`. On macOS the system library's
+functions (`malloc`, `realloc`, `free`, `memcpy`, `write`) are carried
+out by the emulator and are not counted; on Linux the runtime's own are.
+Geometric means of `azol-opt` against the default build over the 28
+programs: **0.66** for `aarch64-macos`, **0.68** for `aarch64-linux`
+(x86-64, callgrind: 0.70). Smallest: `bits` 0.29, `sha256` 0.33,
+`dijkstra` 0.43, `bignum` and `matmul` 0.50. Largest: `append` 0.94,
+`loops` 0.89, `knapsack`, `binary_trees` 0.87. No program runs more
+instructions than its default build (`particles`, 1.22 on x86-64, is
+0.63 here). There is no count for `rustc` on ARM64 in this sandbox, so
+the distance to Rust on the M5 is still unknown: the gate with
+`--azol-opt ./azol-opt` on the Mac measures it, in time.
+
+### Found on the way: the default generator, not this one
+
+`bench/suite/fannkuch.azl` built by `azol build --target aarch64-linux`
+prints the right line and exits with 192. `a_return_stmt`
+(`arm64_gen.azl`) writes `mov x0, 0` for a bare `return` and frees the
+live locals after it, and freeing changes x0; on Linux the exit code of
+`main` is x0. macOS is not affected (its start code does not use the
+value), x86-64 was not seen to be. The optimising path gives 0. Left as
+it is here: a fix changes the default compiler and so the seeds.
+
+### `azol build -O`: the plan, not done here
+
+1. Add the files of `OPT_SOURCES` that the compiler does not have yet
+   (those of `compiler/opt`, without `ir_interp.azl`, which only
+   `azol-opt run` needs; `ir_text.azl` stays, because the helpers of
+   `BK_HELPERS` are read from text) to
+   `compiler/SOURCES`, and move the body of `main` in
+   `opt_build_main.azl` after the front end into a function
+   `opt_build(c, p, target, out) -> BkResult`.
+2. In `self_main.azl`, `build_arguments` accepts `-O`; `build` calls
+   `opt_build` instead of the generator when it is set. The messages for
+   mistakes stay those of `azol build` (the driver here prints offsets,
+   not the diagnostics with codes; `-O` must reuse `report_errors`).
+3. `--emit-code` and `--map` under `-O`: refuse the first, keep the
+   second (`BkResult.map`).
+4. The compiler grows by about 550 KiB of code and its own build by the
+   time to check 20,000 more lines; the seeds must be rebuilt for the
+   three targets, in the usual two steps (old seed builds the new
+   compiler, the new compiler builds itself, fixed point).
+5. `bench/gate.py` already asks `azol build -O` when it exists
+   (`has_optimiser`); the `--azol-opt` column can then go.
+6. Before that: `ob_program` reads the whole program again for every
+   build; nothing to share yet, but the 300,000 lines a second target is
+   measured on this path, so the driver's own overhead should be looked
+   at first (see "Doubts" of the earlier sections).
+## `view`, range tests, and where a spilled value is cut
+
+### `view` (`pass_view.azl`, after `inline` in the order)
+
+`str_slice(S, a, b, D)` becomes two tests that end in the trap `slice`
+(end before start, end beyond the length: the routine's own two, without
+a sign) and three stores into D: the address of byte `a` of S, `b - a`,
+and capacity 0. A capacity of 0 is the header of a string that owns
+nothing (a literal has it), and `drop` leaves it alone, in the runtimes
+and in the interpreter. Rules V1 to V4 are in the file's head. All
+`str_slice` calls into one frame object go or none does, and then every
+`drop` of that object goes too; `sroa` and `gvn`, which run after it,
+then keep the three slots in registers.
+
+The loads through such a pointer keep the region `buf(frame D)` though
+the bytes are S's. That is sound only because V4 holds: between the
+call and the end of the part's life nothing stores into S or its
+buffer, so no pass can find a store that it would wrongly take for
+independent. A pass that moves a load of `buf(frame D)` out of the
+stretch V4 looked at would break this; none does (the pointer is
+defined inside it).
+
+Not covered: a part that is returned, stored into a list or moved into
+a variable that is later changed.
+
+### `thread` T3 and T4
+
+In the file's head. T3 compares what the two ways out pass on by value
+when both are constants (`ir_const` does not share entries). T4 puts a
+comparison into every way in, so it runs only where the block holds
+nothing but the test, as T2 does.
+
+### `ra_loop_top`
+
+A loop is taken to be the stretch of positions from the first
+instruction of a block that a later block (in layout order) goes back
+to, up to the end of that later block. This is a guess about shape, not
+a fact the allocation depends on: any cut that is after the start of
+the interval, alive there and with no read needing a register between
+it and the place the register is lost is a valid cut, and `ra_check`
+verifies every allocation in the tests as before.
+
+### Proof (x86-64 Linux, 12 November 2026)
+
+`sh build.sh` reaches its fixed point (the result differs from the
+seeds: the runtime and the library changed); `sh test.sh` passes whole
+(351 programs, two of them new: `string_views.azl`,
+`string_equality.azl`); `python3 tests/opt/run_opt_tests.py` passes
+whole (202 hand-written pass cases, 17 of them new, in `tests/opt/view`
+and `tests/opt/thread`); the two ARM64 emulator runs and the x86-64 one
+of `/home/claude/ref` say `ALL OK` for the default builds with the new
+runtime. Nothing here ran on Apple hardware; the macOS runtime
+(`runtime/runtime.s`) was not changed, so the copy there is as it was.

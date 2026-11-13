@@ -1,0 +1,15 @@
+; T1 on what the branch passes on: `a && b` passes `a` on as the answer when it is false; that is the constant 0, and T2 then goes past the test of the answer.
+fn main(p0: i64) -> i64 {
+b0:
+    v1 = sgt p0, 96
+    br v1, b1, b2(v1)
+b1:
+    v2 = slt p0, 123
+    jump b2(v2)
+b2(v3: bool):
+    br v3, b3, b4
+b3:
+    ret 1
+b4:
+    ret 0
+}

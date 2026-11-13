@@ -6,8 +6,11 @@ outside itself. This document measures where azoL's lines go, decides which
 features remove them, specifies those features, shows the gain on real
 programs, and says how each one could go wrong and how that would be caught.
 
-Nothing here is implemented. The rewritten programs in section 4 were written
-by hand and have not been compiled, because the features do not exist yet.
+Sections 3.1 to 3.8 and the library functions of 3.9 that need neither
+function values nor `Map[K, V]` are implemented; section 7 says where the
+build differs from this text. The rewritten programs in section 4 were
+written by hand before that and use library functions that still wait for
+closures, so they have not been compiled as they stand.
 
 ## Summary
 
@@ -801,3 +804,26 @@ lands, and `docs/check_docs.py` compiles every example.
 - The claim that value `if`/`match` needs no generator change rests on how
   the checker tracks unfilled slots, and was not verified in the code.
 - `tree_edit` was not analysed for a data-structure fix.
+
+## 7. As built: the second half
+
+What was built differs from the sections above in these points.
+
+- **Values from `if` and `match` (3.3) are lowered in the parser**, not in
+  the checker: to a `var` without a value, the statement form assigning in
+  each branch, and a read. The checker gives the hidden variable the type of
+  the first branch. A branch may leave instead of giving a value: `return`,
+  `break`, `continue` or `exit(...)`.
+- **A name bound twice in one pattern (3.5) is E0507**, the code that
+  already said it for flat patterns; E1418 was not used.
+- **A missing arm in a value `match` gets no fix.** The statement form's fix
+  adds `Variant(_) => {}`, which is not a value; only the author knows the
+  value, so `check --json` reports the missing case without an edit.
+- **Library (3.9):** every function not marked C or T is in
+  `lib/prelude.azl`. Of those marked T, `get_or`, `add`, `append`, `values`
+  and the general `join` were written for today's `Map[V]` with text keys
+  and for the element types `str()` accepts; they keep their names when
+  `Map[K, V]` arrives. Those marked C wait for function values.
+- **The compiler's own sources do not use the second-half forms yet**: the
+  seeds in `bootstrap/` were built before them. They can once new seeds are
+  checked in.

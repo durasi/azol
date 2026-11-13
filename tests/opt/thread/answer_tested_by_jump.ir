@@ -1,0 +1,18 @@
+; T4: each way in works the answer out and the block only tests it: the ways in test it themselves.
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v1 = ne p0, p1
+    br v1, b1, b2
+b1:
+    v2 = slt p0, p1
+    jump b3(v2)
+b2:
+    v3 = slt p0, 10
+    jump b3(v3)
+b3(v4: bool):
+    br v4, b4, b5
+b4:
+    ret 1
+b5:
+    ret 0
+}

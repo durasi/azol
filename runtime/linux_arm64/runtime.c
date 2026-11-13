@@ -83,7 +83,36 @@ static i64 text_len(const char *text) {
     return len;
 }
 
+// Eight bytes at a time while there are eight, and then the last
+// eight once more wherever they start: a few bytes are written twice
+// and none one at a time. Four to seven bytes are two words of four
+// that may overlap; fewer go one by one. The two blocks never overlap:
+// every caller copies into a block it has just allocated, or out of
+// one into another.
+typedef u64 __attribute__((may_alias, aligned(1))) Word;
+typedef unsigned int __attribute__((may_alias, aligned(1))) Half;
+
 static void copy(u8 *to, const u8 *from, i64 len) {
+    if (len >= 8) {
+        i64 i = 0;
+        // Most copies are short: the plain loop, not an unrolled one
+        // with its own prologue.
+#pragma clang loop unroll(disable)
+#pragma clang loop vectorize(disable)
+        for (; i + 8 <= len; i += 8) {
+            *(Word *)(to + i) = *(const Word *)(from + i);
+        }
+        if (i < len) {
+            *(Word *)(to + len - 8) = *(const Word *)(from + len - 8);
+        }
+        return;
+    }
+    if (len >= 4) {
+        *(Half *)to = *(const Half *)from;
+        *(Half *)(to + len - 4) = *(const Half *)(from + len - 4);
+        return;
+    }
+#pragma clang loop unroll(disable)
     for (i64 i = 0; i < len; i++) {
         to[i] = from[i];
     }

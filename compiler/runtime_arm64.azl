@@ -200,7 +200,7 @@ const ALR_BASE = 4194304
 // Where in the file, and so after `ALR_BASE`, the library starts.
 const ALR_TEXT_OFFSET = 256
 // Size of the library: the file `runtime/linux_arm64/runtime.bin`.
-const ALR_TEXT_SIZE = 6176
+const ALR_TEXT_SIZE = 6128
 // Offset in it of the code the system starts the process at.
 const ALR_START = 16
 // Address and size of the library's writable memory.
@@ -210,6 +210,6 @@ const ALR_MEMORY_SIZE = 176
 // Offset in the library of each imported function, in the order of
 // `art_imports`.
 fn alr_import_offsets() -> List[i64] {
-    return [548, 596, 648, 936, 2076, 2156, 3036, 0, 3208, 3256, 3312, 3324,
-        4556, 4580, 4592, 4604, 4840, 4872, 4884, 4664, 4724, 4784]
+    return [548, 596, 648, 936, 2032, 2112, 2992, 0, 3164, 3212, 3268, 3280,
+        4512, 4536, 4548, 4560, 4796, 4828, 4840, 4620, 4680, 4740]
 }

@@ -1,0 +1,30 @@
+; The part is made again every time round; each `drop` ends the one before.
+data "hello, world"
+
+fn main(p0: i64, p1: i64) -> i64 {
+    frames 24, 24
+b0:
+    v0 = frame 0
+    v1 = frame 1
+    v2 = addr @data+0
+    store ptr, v0, 0, v2  [frame 0]
+    store i64, v0, 8, 12  [frame 0]
+    store i64, v0, 16, 0  [frame 0]
+    store i64, v1, 16, 0  [frame 1]
+    jump b1(0, 0)
+b1(v3: i64, v4: i64):
+    v5 = slt v3, p0
+    br v5, b2, b3
+b2:
+    v6 = add v3, p1
+    callrt str_slice(v0, v3, v6, v1)
+    v7 = load ptr, v1, 0  [frame 1]
+    v8 = load u8, v7, 0  [buf(frame 1)]
+    callrt drop(v1)
+    store i64, v1, 16, 0  [frame 1]
+    v9 = add v4, v8
+    v10 = add v3, 1
+    jump b1(v10, v9)
+b3:
+    ret v4
+}

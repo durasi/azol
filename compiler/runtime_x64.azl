@@ -42,7 +42,7 @@ const RT_BASE = 4194304
 const RT_TEXT_OFFSET = 256
 // Size of the runtime's code and constant data: the file
 // `runtime/linux_x64/runtime.bin`.
-const RT_TEXT_SIZE = 9696
+const RT_TEXT_SIZE = 9248
 // Offset in it of the code the system starts the process at.
 const RT_START = 7
 // Address and size of the runtime's writable memory.
@@ -51,7 +51,7 @@ const RT_MEMORY_SIZE = 128
 
 // Offset in the runtime of each routine, indexed by its id.
 fn rt_entries() -> List[i64] {
-    return [800, 1040, 1312, 1632, 1712, 1728, 384, 720, 1744, 2432, 2624, 2704,
-        3088, 3152, 3472, 1440, 1568, 3536, 3808, 4400, 4704, 6112, 3872, 6464,
-        6656, 6800, 7008, 7088]
+    return [800, 1040, 1312, 1632, 1712, 1728, 384, 720, 1744, 2336, 2512, 2592,
+        2912, 2976, 3264, 1440, 1568, 3328, 3552, 4048, 4352, 5664, 3616, 6016,
+        6208, 6352, 6560, 6640]
 }

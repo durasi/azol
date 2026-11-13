@@ -70,22 +70,22 @@ error[E0309]: `trim` takes 0 arguments but 1 were given
 
 fn main() {
 let xs = [1]
-let t = xs.join(",")
+let t = xs.joined(",")
 }
 ---- run check a.azl
 ---- exit 1
 ---- stdout (empty)
 ---- stderr
-error[E0207]: `List[i64]` has no method `join`
+error[E0207]: `List[i64]` has no method `joined`
  --> a.azl:4:12
   |
-4 | let t = xs.join(",")
+4 | let t = xs.joined(",")
   |            ^
----- asserted 4:12 `List[i64]` has no method `join`
+---- asserted 4:12 `List[i64]` has no method `joined`
 ---- run check --json a.azl
 ---- exit 1
 ---- stdout
-{"severity":"error","code":"E0207","message":"`List[i64]` has no method `join`","file":"a.azl","line":4,"column":12,"end_line":4,"end_column":16,"source":"let t = xs.join(\",\")","rule":"A method call needs a method that exists for the type of the value before the dot."}
+{"severity":"error","code":"E0207","message":"`List[i64]` has no method `joined`","file":"a.azl","line":4,"column":12,"end_line":4,"end_column":18,"source":"let t = xs.joined(\",\")","rule":"A method call needs a method that exists for the type of the value before the dot."}
 {"summary":{"errors":1,"files":1}}
 ==== 5
 ---- file a.azl

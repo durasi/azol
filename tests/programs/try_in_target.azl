@@ -1,0 +1,65 @@
+// expect-exit: 0
+// expect-line: a|value 1|value 2 3
+// expect-line: n0|n1|n2 2
+// expect-line: 10 21 32 2
+// A `?` inside the target of an assignment leaves the function after the
+// new value was computed and before it is stored; the value that was
+// waiting is freed, whether it is a temporary, a copy of a variable or a
+// variable used for the last time.
+fn fail(n: i64) -> Result[i64, str] {
+    if n > 2 { return Err("too big: " + str(n)) }
+    return Ok(n)
+}
+
+fn put(xs: mut List[str], n: i64) -> Result[i64, str] {
+    xs[fail(n)?] = "value " + str(n)
+    return Ok(1)
+}
+
+fn put_copy(xs: mut List[str], n: i64, name: str) -> Result[i64, str] {
+    let local = name + str(n)
+    xs[fail(n)?] = local
+    xs[fail(n + 1)?] = local
+    return Ok(local.len())
+}
+
+fn put_number(xs: mut List[i64], n: i64) -> Result[i64, str] {
+    xs[fail(n)?] = xs[fail(n)?] + n
+    return Ok(1)
+}
+
+fn main() {
+    var xs = ["a", "b", "c"]
+    var bad = 0
+    for n in 1..6 {
+        match put(mut xs, n) {
+            Ok(_) => {}
+            Err(_) => {
+                bad += 1
+            }
+        }
+    }
+    print(xs.join("|") + " " + str(bad))
+    var ys = ["a", "b", "c"]
+    bad = 0
+    for n in 0..4 {
+        match put_copy(mut ys, n, "n") {
+            Ok(_) => {}
+            Err(_) => {
+                bad += 1
+            }
+        }
+    }
+    print(ys.join("|") + " " + str(bad))
+    var ns = [10, 20, 30]
+    bad = 0
+    for n in 1..5 {
+        match put_number(mut ns, n) {
+            Ok(_) => {}
+            Err(_) => {
+                bad += 1
+            }
+        }
+    }
+    print("{ns[0]} {ns[1]} {ns[2]} {bad}")
+}

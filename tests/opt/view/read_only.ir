@@ -1,0 +1,28 @@
+; V1-V4: the part is only measured and read, and the source stays: no copy, no `drop`; the two checks stay as tests.
+data "hello, world"
+
+fn main(p0: i64, p1: i64) -> i64 {
+    frames 24, 24
+b0:
+    v0 = frame 0
+    v1 = frame 1
+    v2 = addr @data+0
+    store ptr, v0, 0, v2  [frame 0]
+    store i64, v0, 8, 12  [frame 0]
+    store i64, v0, 16, 0  [frame 0]
+    store i64, v1, 16, 0  [frame 1]
+    callrt str_slice(v0, p0, p1, v1)
+    v3 = load ptr, v1, 0  [frame 1]
+    v4 = load i64, v1, 8  [frame 1]
+    v5 = sgt v4, 0
+    br v5, b1, b2(0)
+b1:
+    v6 = load u8, v3, 0  [buf(frame 1)]
+    jump b2(v6)
+b2(v7: i64):
+    callrt drop(v1)
+    store i64, v1, 16, 0  [frame 1]
+    v8 = mul v4, 1000
+    v9 = add v8, v7
+    ret v9
+}

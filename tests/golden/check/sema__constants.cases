@@ -28,8 +28,8 @@ checked 19 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 915e6df465a9dc335d3d7e9b03ce6a2ba9d69d2966d7e1edfafc8dd1b566d29b
-x86_64-linux 15f727c66a5673d7b955615ab842735a160659d5c35ca5590f53a9f60d3f474c
-aarch64-linux 1ecc6cdf08e3cb6df7e15b3b136e1f5b0446a13295810ba8c1e6726358c3958a
+x86_64-linux fa5bdfbc67184399ca4c5c1664f8e325037c6ba7507ee72e38515894fceb9eef
+aarch64-linux be874be474b27c87b9e579d1e2f94dc63993c69fca48935b97cef32376f82d6b
 ==== 2
 ---- file a.azl (no newline at end)
 const A = 1 << 65
@@ -50,8 +50,8 @@ checked 10 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 497bfea74b5c18b74ad2e2ebdc9740a7d786ce0cadfb7cb28d7c1a2b3bcf9620
-x86_64-linux bb3116976b0ecd2662e7391966e03adfb3626691259a12c183d1b0f628663fcc
-aarch64-linux 1013d4ec6e5eddc908e51dea58cd155fdc33b8bc890ebdbcc57262c8037e7b57
+x86_64-linux 01ab5c947c840c1971d58db87c1bc8cfe5d37865acc3fda1a0722334b1ccb179
+aarch64-linux e354e6b36c256a636f1bf31bc3049644f22f5e2ba10c803cfe48ae2324facd9e
 ==== 3
 ---- file a.azl (no newline at end)
 const A = "a" + "b"
@@ -67,8 +67,8 @@ checked 5 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 0670adcdd4d23a2be5851f81e202fd8de974217e52661b4d4deaf82494f73188
-x86_64-linux abfffd8410b89f8fef0de4a69867300429bf01575aa4380c70019db4c39b04f3
-aarch64-linux 2b33801fc144424199dc480916fde5b4dfc676ee834f32b8881a3819465932a0
+x86_64-linux 374553755c4f30bf5834666ea1b20436c8980062a70eeeb35c773f9870f8d5ab
+aarch64-linux 2c40e1ce73a5bf70b3342a602d932acdcadd549391a4904a2798214449f03fe0
 ==== 4
 ---- file a.azl (no newline at end)
 fn f(n: i64) -> i64 {
@@ -87,8 +87,8 @@ checked 8 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos b78c2f94883fbc27bc28f35ea14f769cfb8c8fe0aaa55e66f23890fb098d9fdc
-x86_64-linux 4a4c997390f32002dcad4726a149c0f3a2278db21d7f6b61968a0f7186ddfb6d
-aarch64-linux b1007b2dc6e89898ec1cc5bb8c0f02df1643057f412fd7ed232fa097354d9bd7
+x86_64-linux 9b578e75aabc51c44cb313fbf671a5c3fdd4fd1afc11e7469ff530ec3e659170
+aarch64-linux 4170618dc4ec2961f3b6a4ff087a630f3d787ec15e204197310d939951063b28
 ==== 5
 ---- file a.azl (no newline at end)
 const A = 1
@@ -117,8 +117,8 @@ checked 18 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos c328e01790a0d9f2bea86de8f1f3cd8100b8d5f08266450b138ec7195134ed70
-x86_64-linux 65629dac4f312a1c8a32effc5a9b8440b2bfffb594a4f6ca037e0fbc83921801
-aarch64-linux 4aa7bb63ed36f658f97c5a733b1148f6057a2a8d73310e08e947a398066dba06
+x86_64-linux bb8462aa98fa3a6f11ac96ede5ceccb9e5c3d067e3e0c7b2124ddf806c8894a8
+aarch64-linux ddc8d7f192b9b32769f05d3e6c814380851178f1dceaf4326845cb49d4c2f9e9
 ==== 6
 ---- file a.azl
 const n = 2
@@ -138,6 +138,6 @@ let t = " x ".trim()
 checked 10 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 28060b1bbde9478127c2a60fafece1c6fd8236a70eba5ac20a1473a7a23e37f8
-x86_64-linux 9bbbbb1865d042b13c044936c6a159f1f833cda6be5b6af6c55f3d7edb39f0ab
-aarch64-linux 0e97e17f0972e4a4a4807dcba9153699ba0c9eb3fd0bf2a65e5436db51ad66ca
+aarch64-macos 8cae0a0686d827baaf7b3806d5d047484271ed072e823cbc90b513e24a63d530
+x86_64-linux 0efd3d8c892c865a6632982590141af51c800e34bc28ebec5416f44533971f14
+aarch64-linux 39a7d9402370dd56433e03b09164ba14e4d5149d267c843f7421712ecdf9accb

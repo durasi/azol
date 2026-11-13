@@ -15,8 +15,8 @@ checked 6 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos ab376c289c0c350a55c05929ea3dce8847882d40840a95f69fd5f826a7650f7c
-x86_64-linux d7ed08fc7f8b5fc056e5de0bd3e606c54862c7f8e343f6d16d3770a4eaeb99e5
-aarch64-linux 7278e68f06c93a16a81832470af8057c065a34f66cee8e47faebc8f88c45d746
+x86_64-linux 376253482aae51a74b4f66d8837e471e715062b4ebf7c966c877e4e3be85619e
+aarch64-linux 5f3ff8c0428b712de35889b0e85b221bac7e42a4994c0f4b008c18c6f3606446
 ==== 2
 ---- file a.azl
 fn new_map[T](x: T) -> T {
@@ -33,5 +33,5 @@ checked 6 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 96965b2da25326b4e4f2d1d8e1664319ab1ee881175b476d078a87dd77fc6333
-x86_64-linux 8bbe33c8f79920ff430eb079c5199f7f56361a0900f13d017725da2ab7f8f0ca
-aarch64-linux 3499ba6037f98248649e92f6097b6a0fe180470bbeff3bc8b501f248f957a5a4
+x86_64-linux 224f84935f37519491c50e42a2742105b57656e316d7f177c12ba63a65f63d39
+aarch64-linux 5019aa7e51ca9ff9901aa58116dbb9a355c213b9afe50f04df6599d54da5b18f

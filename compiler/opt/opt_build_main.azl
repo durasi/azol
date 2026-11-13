@@ -3,8 +3,10 @@
 // `azol-opt`: source files to an executable through the optimising
 // back end. This is what `azol build -O` will be: lower the checked
 // program to the intermediate form, run the passes of `pipeline.azl`,
-// select instructions, allocate registers, write the file. x86-64
-// Linux only, until the second selector exists.
+// select instructions, allocate registers, write the file: for x86-64
+// Linux through `back_x64.azl`, for ARM64 macOS and Linux through
+// `back_arm64.azl`, with the runtimes and the executable writers of
+// the default compiler.
 //
 //     azol-opt build <file.azl>... -o <out> [options]
 //     azol-opt run <file.azl>... [options] [-- arguments]
@@ -13,6 +15,8 @@
 //         messages and the exit code of the program, and exit code 3
 //         when the interpreter catches it doing what it must not
 //
+//     --target TARGET   aarch64-macos, x86_64-linux or aarch64-linux;
+//                       when not given, the machine `azol-opt` runs on
 //     --passes a,b,c    these passes instead of the order of pipeline.azl;
 //                       `--passes ""` runs none
 //     --fixpoint        the list of passes again until it changes nothing
@@ -28,24 +32,17 @@
 // 2 for a wrong command line; 3 when the intermediate form breaks one
 // of its rules, before or after the passes.
 //
-// Built from the front end of the compiler and this folder:
-//
-//     azol build compiler/driver.azl compiler/token.azl compiler/lexer.azl compiler/ast.azl \
-//         compiler/parser.azl compiler/sema.azl compiler/sema_fn.azl compiler/embedded.azl \
-//         compiler/bytes.azl compiler/code_file.azl compiler/elf.azl compiler/runtime_x64.azl \
-//         compiler/opt/ir.azl compiler/opt/ir_text.azl compiler/opt/ir_cfg.azl \
-//         compiler/opt/ir_verify.azl compiler/opt/ir_interp.azl compiler/opt/ir_lower.azl \
-//         compiler/opt/ir_lower_stmt.azl \
-//         compiler/opt/ir_lower_expr.azl compiler/opt/pass_simplify_util.azl \
-//         compiler/opt/pass_simplify.azl compiler/opt/pass_dce.azl compiler/opt/pass_dse.azl \
-//         compiler/opt/pipeline.azl compiler/opt/mach.azl compiler/opt/regalloc.azl \
-//         compiler/opt/enc_x64.azl compiler/opt/sel_x64.azl compiler/opt/emit_x64.azl \
-//         compiler/opt/back_x64.azl compiler/opt/opt_build_main.azl -o azol-opt
+// Built from the files listed in compiler/opt/OPT_SOURCES and the one
+// file `compiler/host_<target>.azl` that says which machine the tool
+// runs on; `sh build_opt.sh` does it.
 
-const OB_RUNTIME = embed("../../runtime/linux_x64/runtime.bin")
+// The targets, numbered as `HOST_TARGET` of the host files numbers them.
+const OB_AARCH64_MACOS = 0
+const OB_X86_64_LINUX = 1
+const OB_AARCH64_LINUX = 2
 
 fn ob_usage() {
-    eprint("usage: azol-opt build <file.azl>... -o <out> [--passes a,b,c] [--fixpoint] [--verify-each] [--stats] [--emit-ir <path>] [--map <path>] [--check] [--stress]")
+    eprint("usage: azol-opt build <file.azl>... -o <out> [--target TARGET] [--passes a,b,c] [--fixpoint] [--verify-each] [--stats] [--emit-ir <path>] [--map <path>] [--check] [--stress]")
     eprint("       azol-opt run <file.azl>... [--passes a,b,c] [--fixpoint] [--verify-each] [--argv0 NAME] [-- arguments]")
     exit(2)
 }
@@ -166,6 +163,7 @@ fn main() {
     var options = pl_default_options()
     var back = BkOptions { stress: false, check: false, dump: false }
     var show = false
+    var target = HOST_TARGET
     var i = 2
     while i < a.len() {
         if a[i] == "--" && run {
@@ -179,6 +177,18 @@ fn main() {
             i = i + 2
         } else if a[i] == "-o" && i + 1 < a.len() {
             out = a[i + 1]
+            i = i + 2
+        } else if a[i] == "--target" && i + 1 < a.len() && !run {
+            if a[i + 1] == "aarch64-macos" {
+                target = OB_AARCH64_MACOS
+            } else if a[i + 1] == "x86_64-linux" {
+                target = OB_X86_64_LINUX
+            } else if a[i + 1] == "aarch64-linux" {
+                target = OB_AARCH64_LINUX
+            } else {
+                eprint("error: unknown target '" + a[i + 1] + "'; the targets are `aarch64-macos`, `x86_64-linux` and `aarch64-linux`")
+                exit(2)
+            }
             i = i + 2
         } else if a[i] == "--emit-ir" && i + 1 < a.len() {
             emit = a[i + 1]
@@ -241,7 +251,12 @@ fn main() {
     ob_parse(start, "(start)", mut lw.m)
     if options.verify_each { ob_verify(lw.m, "after the passes") }
     let entry = ir_find_func(lw.m, "__start")
-    let built = bk_build(mut lw.m, entry, back, OB_RUNTIME)
+    var built = bk_fail("")
+    if target == OB_X86_64_LINUX {
+        built = bk_build(mut lw.m, entry, back, RUNTIME_X64)
+    } else {
+        built = bka_build(lw.m, entry, back, target == OB_AARCH64_MACOS, out, RUNTIME_ARM64_DATA, RUNTIME_ARM64_LINUX)
+    }
     if !built.ok {
         eprint("error: " + built.error)
         exit(1)

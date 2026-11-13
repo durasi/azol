@@ -1,0 +1,33 @@
+// expect-exit: 0
+// expect-line: equal 42, different 420
+// Equality of strings of every short length, differing at every place.
+fn main() {
+    let base = "abcdefghijklmnopqrstuvwxyz0123456789"
+    var equal = 0
+    var differ = 0
+    var n = 0
+    while n <= 20 {
+        let a = base.slice(0, n)
+        var same = base.slice(0, n)
+        if a == same { equal = equal + 1 }
+        var at = 0
+        while at < n {
+            var b = base.slice(0, n)
+            b.set(at, 63)
+            if a == b {
+                equal = equal + 1000
+            } else {
+                differ = differ + 1
+            }
+            if a != b { differ = differ + 1 }
+            at = at + 1
+        }
+        let longer = base.slice(0, n + 1)
+        if a == longer { equal = equal + 1000 }
+        let keys = [base.slice(0, n), base.slice(1, n + 1)]
+        if keys.contains(a) { equal = equal + 1 }
+        if keys.contains(base.slice(2, n + 2)) && n > 0 { equal = equal + 1000 }
+        n = n + 1
+    }
+    print("equal {equal}, different {differ}")
+}

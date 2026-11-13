@@ -15,5 +15,5 @@ checked 6 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 2738d6a6ffa825bdae6182a62d5508cef1dfca39fc15ebf5f88f76e762536065
-x86_64-linux 9cf1125f72c11ce8a07d978949f4ce9c88dce249ba27dec6160eb0e1ddcfe47d
-aarch64-linux d4a7d1adc4d174d231a345629d91192d7fd6550cb60c2b67dd478aadb75d016c
+x86_64-linux d0237108669cda36acd86dbff16c4eccfdeb58e69bda7fe28fea1e975b129249
+aarch64-linux 366906d031b0fc36ff15f0072793ffef849f643e41ed9d360ed263ff90cd464d

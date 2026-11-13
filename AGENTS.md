@@ -27,8 +27,11 @@ carries a `fix`, apply it exactly: it is the edit that removes the error.
 4. A parameter that the function changes is written `name: mut Type`, and the
    call says `mut` too: `fn add(xs: mut List[i64])`, `add(mut xs)`. Not `mut xs: ...`,
    not `&mut xs`.
-5. `if`, `match` and blocks are statements, not values. Write
-   `var x = 0` and assign inside the arms; `let x = match ...` does not exist.
+5. `if` and `match` give a value only as the whole right side of `let`,
+   `var`, `=` or `return`, one expression per branch:
+   `let way = if n > 0 { "up" } else { "down" }`. A branch may leave instead
+   (`None => return`). Not inside a call, no ternary, and a block never
+   "ends in a value".
 6. `return` is always written. `x += 1` exists, `x++` does not. Count with
    `for i in 0..n` (to `n - 1`), `0..=n`, or `n - 1..=0 step -1`; a range is
    written only after `for ... in`. In a text, `"{value}"` puts an `i64`, a
@@ -179,6 +182,32 @@ read in the same call is fine, because it is copied before the call starts.
 `double_even(mut tree, tree.root)` compiles when `root` is an `i64`. Only a
 list, string, struct or enum read next to a `mut` use of the same variable
 is rejected.
+
+## Reading an `Option`, a `Result` or a map in one line
+
+```azol
+fn main() {
+    var counts: Map[i64] = new_map()
+    for word in "a b a".split(" ") {
+        counts.add(word, 1)
+    }
+    let seen = counts.get_or("a", 0)
+    let first = "7,8".split(",").first().or("0")
+    let n = first.to_i64().expect("a number before the comma")
+    let kind = match counts.get("b") {
+        Some(1) => "once"
+        Some(_) => "often"
+        None => "never"
+    }
+    print("{seen} {n} {kind}")
+}
+```
+
+It prints `2 7 once`. `o.or(default)`, `o.expect(message)`, `o.is_some()`,
+`r.ok()`, `m.get_or(key, default)`, `m.add(key, n)` (a `Map[i64]`) and
+`m.append(key, item)` (a map of lists) exist; `unwrap`, `if let` and
+`let ... else` do not, and the compiler says what to write instead. A
+pattern may hold patterns: `Some(1)`, `Ok(Put(key, 0))`.
 
 ## What does not exist yet
 

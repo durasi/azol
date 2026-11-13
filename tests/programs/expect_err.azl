@@ -1,0 +1,16 @@
+// expect-exit: 1
+// expect-line: 12
+// expect-stderr: azol: the second number: not a number: x
+// `expect` on an `Err` stops the program with its message and, when the
+// error is a text or a number, the error.
+fn parse(s: str) -> Result[i64, str] {
+    match s.to_i64() {
+        Some(n) => return Ok(n)
+        None => return Err("not a number: " + s)
+    }
+}
+
+fn main() {
+    print(parse("12").expect("the first number"))
+    print(parse("x").expect("the second number"))
+}

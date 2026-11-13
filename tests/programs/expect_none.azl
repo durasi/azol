@@ -1,0 +1,9 @@
+// expect-exit: 1
+// expect-line: 4
+// expect-stderr: azol: the list has a seven
+// `expect` on a `None` stops the program with its message.
+fn main() {
+    let xs = [3, 4]
+    print(xs.index_of(4).expect("the list has a four") + 3)
+    print(xs.index_of(7).expect("the list has a seven"))
+}

@@ -326,20 +326,14 @@ _ => {}
 }
 }
 ---- run check a.azl
----- exit 1
+---- exit 0
 ---- stdout (empty)
 ---- stderr
-error[E0508]: a pattern inside a pattern is not supported yet; give the value a name and `match` on it inside the arm
- --> a.azl:4:6
-  |
-4 | Some(1) => {}
-  |      ^
----- asserted 4:6 a pattern inside a pattern is not supported yet; give the value a name and `match` on it inside the arm
+checked 7 lines in 1 file: no errors
 ---- run check --json a.azl
----- exit 1
+---- exit 0
 ---- stdout
-{"severity":"error","code":"E0508","message":"a pattern inside a pattern is not supported yet; give the value a name and `match` on it inside the arm","file":"a.azl","line":4,"column":6,"end_line":4,"end_column":7,"source":"Some(1) => {}","rule":"The values of a variant pattern are names or `_`; patterns are not nested yet."}
-{"summary":{"errors":1,"files":1}}
+{"summary":{"errors":0,"files":1}}
 ==== 15
 ---- file a.azl (no newline at end)
 fn main() {
@@ -353,16 +347,16 @@ _ => {}
 ---- exit 1
 ---- stdout (empty)
 ---- stderr
-error[E0508]: a pattern inside a pattern is not supported yet; give the value a name and `match` on it inside the arm
+error[E0505]: `None` is a variant of `Option` but the value here is `i64`
  --> a.azl:4:6
   |
 4 | Some(None) => {}
   |      ^
----- asserted 4:6 a pattern inside a pattern is not supported yet; give the value a name and `match` on it inside the arm
+---- asserted 4:6 `None` is a variant of `Option` but the value here is `i64`
 ---- run check --json a.azl
 ---- exit 1
 ---- stdout
-{"severity":"error","code":"E0508","message":"a pattern inside a pattern is not supported yet; give the value a name and `match` on it inside the arm","file":"a.azl","line":4,"column":6,"end_line":4,"end_column":10,"source":"Some(None) => {}","rule":"The values of a variant pattern are names or `_`; patterns are not nested yet."}
+{"severity":"error","code":"E0505","message":"`None` is a variant of `Option` but the value here is `i64`","file":"a.azl","line":4,"column":6,"end_line":4,"end_column":10,"source":"Some(None) => {}","rule":"A pattern has the type of the value being matched."}
 {"summary":{"errors":1,"files":1}}
 ==== 16
 ---- file a.azl (no newline at end)

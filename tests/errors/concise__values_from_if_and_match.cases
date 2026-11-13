@@ -1,0 +1,129 @@
+# `if` and `match` that give a value (docs/design/concise.md 3.3): what
+# is refused, with its code.
+==== a value `if` needs an `else`
+---- file a.azl
+fn main() {
+    let x = if 1 > 0 { 1 }
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1406 2:13
+==== a branch is one expression
+---- file a.azl
+fn main() {
+    let x = if 1 > 0 { print(1)
+        2 } else { 3 }
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1407 3:9
+==== an arm cannot assign and give a value
+---- file a.azl
+fn main() {
+    var y = 0
+    let x = match 3 {
+        1 => y = 2
+        _ => 4
+    }
+    print(x + y)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1407 4:16
+==== a block in an arm must leave
+---- file a.azl
+fn main() {
+    let x = match 3 {
+        1 => { print(1) }
+        _ => 4
+    }
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1407 3:14
+==== some branch must give a value
+---- file a.azl
+fn main() {
+    let x = if 1 > 0 { return } else { exit(1) }
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1407 2:13
+==== the branches have one type
+---- file a.azl
+fn main() {
+    let x = if 1 > 0 { 1 } else { "a" }
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1408 2:35
+==== the declared type decides
+---- file a.azl
+fn main() {
+    let x: str = match 3 {
+        1 => 5
+        _ => "a"
+    }
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1408 3:14
+==== not inside a call
+---- file a.azl
+fn main() {
+    print(if 1 > 0 { 1 } else { 2 })
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1409 2:11
+==== not as a part of a larger expression
+---- file a.azl
+fn main() {
+    let x = if 1 > 0 { 1 } else { 2 } + 3
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1409 2:39
+==== a branch with no value to give
+---- file a.azl
+fn main() {
+    let x = if 1 > 0 { print(1) } else { print(2) }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0310 2:24
+==== a value `match` with a missing arm gets no fix: the arm needs a value
+---- file a.azl
+fn main() {
+    let o: Option[i64] = Some(1)
+    let x = match o {
+        Some(n) => n
+    }
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0501 3:13
+---- no-fix
+==== the same after `return`
+---- file a.azl
+fn f(o: Option[i64]) -> i64 {
+    return match o {
+        Some(n) => n
+    }
+}
+
+fn main() {
+    print(f(None))
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0501 2:12
+---- no-fix

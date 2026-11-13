@@ -1,0 +1,10 @@
+// expect-exit: 1
+// expect-line: 2
+// expect-stderr: azol: slice out of range
+// A slice of a list outside the list stops the program, like a slice of
+// a string.
+fn main() {
+    let xs = [1, 2, 3]
+    print(xs.slice(1, 3).len())
+    print(xs.slice(2, 4).len())
+}

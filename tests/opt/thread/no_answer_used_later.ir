@@ -1,0 +1,23 @@
+; T4 does not fire: the answer is used after the block that tests it, where both of its ways out meet.
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v1 = ne p0, p1
+    br v1, b1, b2
+b1:
+    v2 = slt p0, p1
+    jump b3(v2)
+b2:
+    v3 = slt p0, 10
+    jump b3(v3)
+b3(v4: bool):
+    br v4, b4, b5
+b4:
+    callrt print_i64(1)
+    jump b6
+b5:
+    callrt print_i64(0)
+    jump b6
+b6:
+    v5 = select v4, 10, 20
+    ret v5
+}

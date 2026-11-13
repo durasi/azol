@@ -1,0 +1,23 @@
+; V4 looks only as far as the `drop` of the part: the source is added to after it, and the part is still no copy.
+fn main(p0: i64, p1: i64) -> i64 {
+    frames 24, 24
+b0:
+    v0 = frame 0
+    v1 = frame 1
+    v2 = callrt alloc(8)
+    store i64, v2, 0, 7523094288207667809  [buf(frame 0)]
+    store ptr, v0, 0, v2  [frame 0]
+    store i64, v0, 8, 8  [frame 0]
+    store i64, v0, 16, 8  [frame 0]
+    store i64, v1, 16, 0  [frame 1]
+    callrt str_slice(v0, p0, p1, v1)
+    v3 = load ptr, v1, 0  [frame 1]
+    v6 = load u8, v3, 0  [buf(frame 1)]
+    callrt drop(v1)
+    store i64, v1, 16, 0  [frame 1]
+    store u8, v2, 0, 90  [buf(frame 0)]
+    v7 = load u8, v2, 0  [buf(frame 0)]
+    callrt drop(v0)
+    v8 = add v6, v7
+    ret v8
+}

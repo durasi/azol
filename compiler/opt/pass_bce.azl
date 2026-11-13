@@ -23,8 +23,11 @@
 //           while j < n { ... xs[j] ... ; j = j + s }
 //
 //       where the check of `xs[j]` is the first thing a round does
-//       (between the loop's test and the check there is nothing that
-//       writes, calls or can stop), `j` is the loop's counter and
+//       that can be seen from outside (between the loop's test and the
+//       check there is nothing that calls or can stop; a `store` may
+//       stand there, because memory is all it changes and nothing
+//       reads the memory of a program that has stopped), `j` is the
+//       loop's counter and
 //       never gets smaller, and `n` and `len` come from outside the
 //       loop: the loop is tested against `min(n, len)`, worked out
 //       once before it, the check in the round goes, and on the way
@@ -64,8 +67,8 @@
 // by the loop's own step; a check against a length that is loaded
 // inside the loop (the list may grow or be replaced there; `licm`
 // moves the load out when nothing in the loop can write the header);
-// a check with a call, a store or another check's failure before it
-// in the round; a counter that could wrap.
+// a check with a call or another check's failure before it in the
+// round; a counter that could wrap.
 
 struct BcCheck {
     ok: bool
@@ -268,7 +271,9 @@ fn bc_limit(f: mut IrFunc, r: IrRange, l: i64) -> i64 {
         if cur == h || r.cfg.pred_n[cur] != 1 || !ir_in_loop(r.cfg, cur, l) { return 0 }
         var ins = f.blk_first[cur]
         while ins >= 0 && ins != f.blk_last[cur] {
-            if !ir_is_pure(f.ins_op[ins]) { return 0 }
+            // A store may stand there: what the failing round wrote
+            // before its check nobody reads, the program stops.
+            if !ir_is_pure(f.ins_op[ins]) && f.ins_op[ins] != IR_STORE { return 0 }
             ins = f.ins_next[ins]
         }
         check = bc_check(f, cur)

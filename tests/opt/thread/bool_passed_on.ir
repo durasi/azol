@@ -1,0 +1,16 @@
+; T2: a block that branches on its own `bool` parameter; what it passes on is what each way in gave it.
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v2 = slt p0, 0
+    br v2, b3(1, p0), b1
+b1:
+    v3 = slt p1, 0
+    br v3, b3(0, p1), b3(v3, 7)
+b3(v4: bool, v5: i64):
+    br v4, b4(v5), b5(v5)
+b4(v6: i64):
+    v7 = add v6, 100
+    ret v7
+b5(v8: i64):
+    ret v8
+}

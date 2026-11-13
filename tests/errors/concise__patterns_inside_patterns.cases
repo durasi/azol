@@ -1,0 +1,158 @@
+# Patterns inside patterns (docs/design/concise.md 3.5): what is refused.
+==== a missing case is named in full
+---- file a.azl
+enum Cmd {
+    Put(str, i64)
+    Get(str)
+    Stop
+}
+fn main() {
+    let c: Option[Cmd] = None
+    match c {
+        Some(Put(_, 3)) => {}
+        Some(Get(_)) => {}
+        Some(Stop) => {}
+        None => {}
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0501 8:5
+---- apply-fix
+---- after-has a.azl
+    Some(Put(_, _)) => {}
+---- run check a.azl
+---- exit 0
+==== a `bool` inside needs both values
+---- file a.azl
+enum Cmd {
+    Put(str, i64)
+    Get(str)
+    Stop
+}
+fn main() {
+    let c: Option[bool] = None
+    match c {
+        Some(true) => {}
+        None => {}
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0501 8:5
+---- apply-fix
+---- after-has a.azl
+    Some(false) => {}
+---- run check a.azl
+---- exit 0
+==== an arm the arms above cover
+---- file a.azl
+enum Cmd {
+    Put(str, i64)
+    Get(str)
+    Stop
+}
+fn main() {
+    let c: Option[Cmd] = None
+    match c {
+        Some(Put(_, _)) => {}
+        Some(Get(_)) => {}
+        Some(Stop) => {}
+        Some(x) => {}
+        None => {}
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0503 12:9
+==== the same text twice
+---- file a.azl
+enum Cmd {
+    Put(str, i64)
+    Get(str)
+    Stop
+}
+fn main() {
+    let c: Option[Cmd] = None
+    match c {
+        Some(Get("a")) => {}
+        Some(Get("a")) => {}
+        _ => {}
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0503 10:9
+==== a name bound twice
+---- file a.azl
+enum Cmd {
+    Put(str, i64)
+    Get(str)
+    Stop
+}
+fn main() {
+    let c: Option[Cmd] = None
+    match c {
+        Some(Put(a, a)) => {}
+        _ => {}
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0507 9:21
+==== a number where the value is a string
+---- file a.azl
+enum Cmd {
+    Put(str, i64)
+    Get(str)
+    Stop
+}
+fn main() {
+    let c: Option[Cmd] = None
+    match c {
+        Some(Put(3, _)) => {}
+        _ => {}
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0505 9:18
+==== a variant of another enum
+---- file a.azl
+enum Cmd {
+    Put(str, i64)
+    Get(str)
+    Stop
+}
+fn main() {
+    let c: Option[Cmd] = None
+    match c {
+        Some(None) => {}
+        _ => {}
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0505 9:14
+==== a variant inside needs its values
+---- file a.azl
+enum Cmd {
+    Put(str, i64)
+    Get(str)
+    Stop
+}
+fn main() {
+    let c: Option[Cmd] = None
+    match c {
+        Some(Put) => {}
+        _ => {}
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0506 9:14
+---- apply-fix
+---- after-has a.azl
+        Some(Put(_, _)) => {}
+---- run check a.azl
+---- exit 0

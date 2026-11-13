@@ -373,31 +373,30 @@ What is not done, in the order planned. Finished work is not listed here; it is 
 
 **Speed: `azol build -O`, as fast as optimized Rust** ([design](docs/design/optimizer.md), [findings](docs/design/optimizer-findings.md))
 
-1. The optimising path end to end on all three targets, then the `-O` flag in `azol build`.
-2. The programs still far from `rustc -O`: text scanning, lists of structs, the library sort, maps.
+1. The `-O` flag in `azol build`. Today the optimising path is a separate tool, `azol-opt build`, made by `sh build_opt.sh`.
+2. The programs still far from `rustc -O`: lists of structs, the library sort, maps, building text.
 3. The remaining passes: unrolling, copy elision, string building, vectorising.
 4. Packed lists and structs, a faster allocator, an internal calling convention.
 5. `-O` compile speed.
-6. The gate that defines the claim: the 28 programs of [`bench/suite/`](bench/suite/) at a geometric mean of 1.00 or better against `rustc -O`, none worse than 1.10, on Apple M5 and on x86-64. Today, in instructions on x86-64: 1.29.
+6. The gate that defines the claim: the 28 programs of [`bench/suite/`](bench/suite/) at a geometric mean of 1.00 or better against `rustc -O`, none worse than 1.10, on Apple M5 and on x86-64. Today, in instructions on x86-64: 1.09, with 13 of the 28 at or under 1.00 and the furthest at 1.96.
 
 **Language**
 
-7. Shorter code, second half: `if` and `match` as values, patterns inside patterns, about thirty library functions ([design](docs/design/concise.md)).
-8. Floating-point numbers: `f64` ([design](docs/design/floats.md)).
-9. Methods and traits: methods on your own types, `==`, ordering and hashing for any type, bounded generics, `Map[K, V]` and `Set[T]` ([design](docs/design/traits.md)).
-10. Function values and closures, and the library functions that take them ([design](docs/design/closures.md)).
-11. Threads and channels without data races ([design](docs/design/threads.md)).
-12. Packages: modules, `import`, dependencies without a central server, `test` blocks ([design](docs/design/packages.md)).
+7. Floating-point numbers: `f64` ([design](docs/design/floats.md)).
+8. Methods and traits: methods on your own types, `==`, ordering and hashing for any type, bounded generics, `Map[K, V]` and `Set[T]` ([design](docs/design/traits.md)).
+9. Function values and closures, and the library functions that take them ([design](docs/design/closures.md)).
+10. Threads and channels without data races ([design](docs/design/threads.md)).
+11. Packages: modules, `import`, dependencies without a central server, `test` blocks ([design](docs/design/packages.md)).
 
 **For AI agents and for replacing old systems**
 
-13. `azol guide`, a named error with a fix for every habit from another language, `azol fix` ([design](docs/design/agents.md)).
-14. Calling C, more integer types, standard input, processes, directories, dates, JSON, CSV, stack traces with source lines ([design](docs/design/legacy.md)).
+12. `azol guide`, a named error with a fix for every habit from another language, `azol fix` ([design](docs/design/agents.md)).
+13. Calling C, more integer types, standard input, processes, directories, dates, JSON, CSV, stack traces with source lines ([design](docs/design/legacy.md)).
 
 **Before the first release**
 
-15. ARM64 Linux on real hardware.
-16. The numbers above measured again on an idle machine, with `-O`.
+14. ARM64 Linux on real hardware.
+15. The numbers above measured again on an idle machine, with `-O`.
 
 ## Name
 

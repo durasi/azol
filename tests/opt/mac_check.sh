@@ -17,6 +17,15 @@
 #      sort) against `azol build` of the benchmarks, and prints how long
 #      each takes in both ways, the best of five runs.
 #
+#   3. builds `azol-opt` (sh build_opt.sh), the whole optimising path as
+#      one tool, and builds the same test programs and the four
+#      benchmarks from their sources with `azol-opt build`: lowering,
+#      every pass of the optimiser, the back end. Compared and timed as
+#      above. To run the benchmark gate with it afterwards:
+#
+#          sh build_opt.sh
+#          python3 bench/gate.py --azol-opt ./azol-opt
+#
 # One line for every program. The last line is `MAC CHECK PASSED`, or
 # says how many programs failed; then the exit code is 1.
 #
@@ -148,6 +157,67 @@ for name in fib40 loops sieve sort; do
         failed=$((failed + 1))
     fi
 done
+
+echo
+echo "The whole optimising path: default build against azol-opt build (every pass, then the back end)"
+if ! sh build_opt.sh -o "$work/azol-opt" > "$work/build.log" 2>&1; then
+    cat "$work/build.log"
+    echo "  FAIL  azol-opt does not build (messages above)"
+    failed=$((failed + 1))
+else
+    for name in arithmetic bits control enums functions lists map matching strings structs \
+        text_methods try_operator numbers_edge index_fail div_zero stack_overflow; do
+        source=tests/programs/$name.azl
+        if [ ! -f "$source" ]; then
+            echo "  skip  $name (no $source in this tree)"
+            continue
+        fi
+        if ! ./azol build "$source" -o "$work/plain-$name" > "$work/build.log" 2>&1; then
+            echo "  FAIL  $name: azol build refuses it: $(head -1 "$work/build.log")"
+            failed=$((failed + 1))
+            continue
+        fi
+        if ! "$work/azol-opt" build "$source" -o "$work/full-$name" --check > "$work/build.log" 2>&1; then
+            echo "  FAIL  $name: azol-opt refuses it: $(head -1 "$work/build.log")"
+            failed=$((failed + 1))
+            continue
+        fi
+        run_in "plain-$name" "$work/plain-$name"
+        run_in "full-$name" "$work/full-$name"
+        if same "plain-$name" "full-$name"; then
+            echo "  ok    $name (exit $(cat "$work/full-$name.code"))"
+        else
+            echo "  FAIL  $name: default build exits $(cat "$work/plain-$name.code"), azol-opt's $(cat "$work/full-$name.code"); compare $work/plain-$name.out and .err with $work/full-$name.out and .err"
+            failed=$((failed + 1))
+        fi
+    done
+    echo
+    echo "Benchmarks from source: seconds, best of five (azol build; azol-opt build)"
+    for name in fib40 loops sieve sort; do
+        if [ ! -f "bench/$name.azl" ]; then
+            echo "  skip  $name (not in this tree)"
+            continue
+        fi
+        if ! ./azol build "bench/$name.azl" -o "$work/plain-$name" > "$work/build.log" 2>&1; then
+            echo "  FAIL  $name: azol build refuses the benchmark: $(head -1 "$work/build.log")"
+            failed=$((failed + 1))
+            continue
+        fi
+        if ! "$work/azol-opt" build "bench/$name.azl" -o "$work/full-$name" --check > "$work/build.log" 2>&1; then
+            echo "  FAIL  $name: azol-opt refuses the benchmark: $(head -1 "$work/build.log")"
+            failed=$((failed + 1))
+            continue
+        fi
+        run_in "plain-$name" "$work/plain-$name"
+        run_in "full-$name" "$work/full-$name"
+        if same "plain-$name" "full-$name"; then
+            echo "  ok    $name: default $(best_of_five "$work/plain-$name") s, azol-opt $(best_of_five "$work/full-$name") s (both print $(head -1 "$work/full-$name.out"))"
+        else
+            echo "  FAIL  $name: the default build prints $(head -1 "$work/plain-$name.out") and exits $(cat "$work/plain-$name.code"), azol-opt's prints $(head -1 "$work/full-$name.out") and exits $(cat "$work/full-$name.code")"
+            failed=$((failed + 1))
+        fi
+    done
+fi
 
 echo
 if [ "$failed" -eq 0 ]; then

@@ -25,8 +25,8 @@ checked 16 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 01c828ce8210f279a40537d454b16137bb47195af82800d022a0498fe173cae0
-x86_64-linux 3c608fae656389cdd42c3e076aec28733d567e9e46a34d29724340188a83692e
-aarch64-linux e95fbbbbf82593cc204bc46e9feefc9028e258a320c36973b32a3ca1193bc415
+x86_64-linux e4e13682ec775afd608ce86fa7d815a9f960748a3eb9ce37e3fc385a9de07af3
+aarch64-linux d207aecf8ec8bdba2e7f44ca090f8095807ea0c921d27f5ee068592c84ed3e34
 ==== 2
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -54,8 +54,8 @@ checked 17 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 6c7667c4a0d869df0f8f090ebd13535b24b805c263ab0f96c0acb990db1c623d
-x86_64-linux c8c81c15f91a370770100604b778ed1de4dcb65fe514fd87894bea90190b045c
-aarch64-linux 339e9482dc4919b0ea081fd05b25249d3005745e48893bb340657d96135199ba
+x86_64-linux cf0e0800a029e782cbe9dd00d8c63fccd044537a2d5f3d3d7f82ce4f718821e4
+aarch64-linux efbb4e1376b665744f97c55d90816b863edbf42f159b4ea12177b024b238f7da
 ==== 3
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -82,8 +82,8 @@ checked 16 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 1dfa263d6c712d13a3104a7bf8a6fab9a1b55567ddb212f50e54a5bea0615486
-x86_64-linux 2d23e53816e157ff60c13d822fdf8105579ea99840537e7925e3bd90558ea1dc
-aarch64-linux 2bbdd3470b8d5613f9869a0029cbb94cbc566c29359a47185f46516a964c2071
+x86_64-linux aec0165934ed6818f99e41e52ed0f922e50728ff418996878733f21239dd8eca
+aarch64-linux 76f18041082bb73eaf8e1e3de2293af73aec09010f8815007eeafeedc637bd56
 ==== 4
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -110,8 +110,8 @@ checked 16 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 8634fe75c0878a484e5f9536833cdb17bf7fc3640f5e34cde5c7f0f09cd709e6
-x86_64-linux 617074db89a07783204f10c67cb8a12e6a8d1bc414deeb6a879aa43b38ebb021
-aarch64-linux 9f67a75f7db183503a6c1e40d4a07d51b4e46ec5f9db7c4411dd3bd13f571da1
+x86_64-linux 482e98105a59b633a06eac06434f3d8fc846baab7eac82019e9689a620a65a44
+aarch64-linux 4a62ed7b488e5763451d7bc8be35c35f89d6d6096770f0e3edd33facf63964c5
 ==== 5
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -138,8 +138,8 @@ checked 16 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 3b533630b3d006df67d0de3a369c28afbf11a0df8c05f2687e6c7e5cec9edbd6
-x86_64-linux 97cb18e54e968e160ddd5e4a0eff7083a2193338e625cdab5a92180317def248
-aarch64-linux cfce519f657af1f2c1a4e8293d4e946061b3063ea0fff47c7c5ced805f81513d
+x86_64-linux bba7d57c10353ed8a0f5ad0126a09be710e85cd93f1837197a3a0e935e4368d0
+aarch64-linux 6fd669bd287f1cb874e6c3a4c99fd6d760b11d15fae46877f28d7bae837e3d37
 ==== 6
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -167,8 +167,8 @@ checked 17 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 98ca952def3648bf594871f31414567967d8c1ac81a6cbf527b3fc9b8a4cc8b4
-x86_64-linux 369470bc9cab221ad812c5d391121722498071f89417bcb64bb6485ee3828c25
-aarch64-linux b3ee25dff5741b8923f319cdccf35d36e243ee0b18d80010e06acc75818a6d11
+x86_64-linux 2aefee687291238f6ca16d0dec0c8471fc7c50793f8a315fc9437de6d19cc73d
+aarch64-linux 5128e2e6966d990b538bfdc6764e72850e60a32c83e50bfa03d834c87accb074
 ==== 7
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -196,8 +196,8 @@ checked 17 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos adb899f883d2a6eb818660bf5ebf4789366f261622ddd9dfbed6fb15aa03df40
-x86_64-linux 8c6a6104327f5856a6236a037bfeb200f47e62ffebbcece7705c7a47a208ffcc
-aarch64-linux 6187629c737aa9e8befb00c316b9f9e413f1fed0a784218dd5c7e8115119ce48
+x86_64-linux 5af3cf439e39c7f7a6f9a1bf47756587cbb8c1cd6e6d3a6324b36b31e74844fb
+aarch64-linux 68c3be4b8477d658bc6c39f2643c05c9cb5b1194801ab67975add04ca76bdad9
 ==== 8
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -225,8 +225,8 @@ checked 17 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 2b7fb18a183b7d3ade7a9fe2182fe3a6646ea6f4f07708da9dd84baa2186b73c
-x86_64-linux cd32833a4ef73088a7105c7ad44a917cdf7b6342330d96e2a23718cb3b2fa413
-aarch64-linux 334b858ae47eb6a882ac678b036694f2b5b545528175e65c38c11112e6a33b2a
+x86_64-linux 1c89d858f11cbef5a994eb4655bf5550369d34ac18a6b5abfa60a8199ff1d408
+aarch64-linux 6f19017acbbf23cb0106b5bd65c64678a250e5e8c18081eca187730fea7aeae2
 ==== 9
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -254,8 +254,8 @@ checked 17 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos f9aad3cc2f2c400c2d38a0f07f867595336291b6a671440867f2090d6538e7b0
-x86_64-linux 5f0f8d925e7b124d8db004538e0e44b942131d34937da426fc582d1a8ff6ea6c
-aarch64-linux e5d51a1243f6a92ed61015fda284283db207ca8cfb626429ea8bfedc749cbba9
+x86_64-linux 4ab3d102f5a527cccd0294f90746888ef172064fa2f3d61894c4831108e66099
+aarch64-linux 120b236dbafeb47802d2c2f7bdf283da6733fdd05535078267fbaf1c64f6bbbe
 ==== 10
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -282,8 +282,8 @@ checked 16 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 602207713f18b27ca87091644180074b98a5a9d4d2d7ef5b9b12b81636a8d77d
-x86_64-linux a4d1e4d880f7ac545ba0a35a35fe7be44bbd6e6d91b56b48fdc90027f1ab94a2
-aarch64-linux e714e8bfb16ab59d6262f1cc29783a3342607ce9ad42f27f1fdf6f8eac794519
+x86_64-linux 9132969ea6f5e37545c8e8949b07c90a998e55b359b665240cea0906fc60b225
+aarch64-linux 8b975709f4be90733a2cd8b5dceba5a911448f6bdf38bbe70b22561c9c8b3ec6
 ==== 11
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -311,8 +311,8 @@ checked 17 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 989b6c210e076d9861932fe27507ec7b022c2500d26471b99a7d5225c015dc59
-x86_64-linux edd1faa7dc27af6f363cb2a267d74ca01a8728928ff3fa8ac2eff7cdedb5e341
-aarch64-linux 4fce13a86afeeed0caf70361557c5d27fa3ed12cdec2440f77e0d5d05abe8fa2
+x86_64-linux 050e3aba88ffbc1820da3d2e5bb55809a65ce12a1de5d0d9a0d51e8c39f8e95e
+aarch64-linux c8ca2ed79cf04f559adc2197a24132a1bb5a4da24c1101c34cd5612b9537d7a6
 ==== 12
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -343,8 +343,8 @@ checked 20 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 9d62e34ea7068aaa45dd782828a2125d7b679dff125e2d61618cd9e2f91e4a9c
-x86_64-linux ce19c9d4dc4ec0eb742c3c6e89a1066470f7f24ff715e9037e6ff939f0faafd1
-aarch64-linux bfbc1c0c77599e6572532728f6bdd234e99b411c2e19dca3f70a80016d209694
+x86_64-linux f237d8b164287113c2f2861ec525e419ce7049e26649da83b3635526893e2c39
+aarch64-linux 07a5bedb1060e21a6e9971016be24284604a405fd1730a6cabcdf4fdbd1c04d5
 ==== 13
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -375,8 +375,8 @@ checked 20 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos f097d012f58539e2cf9f68f0d5e58fd09a5a78b5e21ebfbe71e53f088018d493
-x86_64-linux ba36bf7f4ab868e1d00a8bde31dafc03cc4e104a82991be186505374e226297b
-aarch64-linux 0dd5bb8494b13b19b2cb7b7935c1a7d053c6b9627110f59c365c8ca558c409f3
+x86_64-linux a223a551db81c5a6c885dbb7efa11f8c8734b97d656bc4967bb36a6c4d0d087c
+aarch64-linux 59ba99ac670a9c29432c22093e02a3bc42249792f32bfdc4d4a9a033aed501d5
 ==== 14
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -405,8 +405,8 @@ checked 18 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos a21521920936b9685cc6fa53ac89e9d78fd98a54de38084d303ef916d23d61c2
-x86_64-linux 90403c16e21bc181ac20bb8386b5fa92d356010628ab77c3a6bf15e33570d7b2
-aarch64-linux c97114b69f7fe07607512d946b9fc1ff41244e3c7f49bf5bebe856660dd3804e
+x86_64-linux 5081bf09756889102d36b6b199924bccd4d99ea3da4a0919e5c413ef89542027
+aarch64-linux f4ed9d0e9d03d18b63a1d2f9dab89615dda719cc7fc7e8065509c627060f6226
 ==== 15
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -434,8 +434,8 @@ checked 17 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos e9e8b0e1536a4f494c71e07f0d346ccd208134d038ee9bd0d28f832056927943
-x86_64-linux 92ad50037b5ac10b71eae77c0be36aa1ab0dc980df237f368a51ff96d9df24ad
-aarch64-linux 3726c1aa9178c1c9e3f419a18cc28ad35f1e936cab13525fa7a9245cd4ebedd2
+x86_64-linux 1902d26d4a9a1bd61c2eef01a6afca7136d3c02e17d1c2ea8b1831351df8cbc6
+aarch64-linux 2690f659a40d8356f4a5cb05100786bc8c6f5d3779b0d8ce00fef95968f094e3
 ==== 16
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -464,8 +464,8 @@ checked 18 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 53384743662cded9f1481728b34fabf19871d9d74b425b49711f6884ca81dd6c
-x86_64-linux 5d713bdb31a09b2d82d287385e8a0e711e4c2cb33c8d962c3bd915e3bfd2313c
-aarch64-linux e33040a15199b15f5ff3f929ff705df6cc13114eb9945d3ad8b7d4b12a0a1c12
+x86_64-linux d6b6dd118e822d33ce9b9e388bee0caa444d2a982878de3b9e14294a55ca1887
+aarch64-linux cc7f2817010291ad986b6bded5ab3a470b338e030b77c47347bcf8bbdac8c760
 ==== 17
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -497,8 +497,8 @@ checked 21 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 44d0f7df4d9fa64a30c2035e76fe2f2965f5b9efee5ea6421f5627530e82ec34
-x86_64-linux 2dc2dfc2fcab9dc7bae6930865c19ef94f4876b5722e11a1d90c4e06031cf9c5
-aarch64-linux 267492e9840e03c5ef8950f3ee6dedd306addf8f38b6acbd3557d70f51c9b5c0
+x86_64-linux 018cffe9abe812ec8fb2ad3f8cd90f75958eba101b1697e580f1e507d34ae674
+aarch64-linux 62e0f4ea5b90eb977648169202bcc0c9b666c964084abda2a91fc678dc72b6bf
 ==== 18
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -531,8 +531,8 @@ checked 22 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos bca1923111493604d32731167687d26f5e3e4754516d3d12ff2611646e78355f
-x86_64-linux 5ca89e9052797ad0c601d8cfda267f42ed6378cd2bf0793c16d097587309a446
-aarch64-linux 3b7fe96aa74d1fd818ef1222e234924123cefa0d4bf4942e1bf1a39cc2b60f6f
+x86_64-linux a969f5e2749e817a0147c3439fee035331e193235187ce4aec50f19ebc4f7224
+aarch64-linux 87e063b4f07aa5b091ab58ca07143de8e95c2959bc73f122d11c342de01e542b
 ==== 19
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -561,8 +561,8 @@ checked 18 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 3ed80015225ce6fd639c83722bb32ba0faa6a400a51623c7981820046cd0a285
-x86_64-linux 43902ce917d69fc57268af824b529db0fd777dbdc7022640b1039751fb508686
-aarch64-linux 1e86ad2b1f9c8da07c25b0c8ac6a62205e176249835b71bc62bf3022f5ec36a8
+x86_64-linux c25338a1430e5a901a1b15fbc9d322f26d756d0ce904a6a388aa3086d2cb1f40
+aarch64-linux 3e9ef3c7e53126de54b5a8e7a356de23504b0c0e017fd28f11370ab9601594f4
 ==== 20
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -589,8 +589,8 @@ checked 16 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos a73631d657450c2b26c9aeb4a407dc2052237bbe32b3b8b6db2c0b7d39579456
-x86_64-linux 07290bfc79c2d6edaf003f7b34e885c81d8bc0b71fea4278abbc407b4160a428
-aarch64-linux f11dfd0559cd0242d3179f34ee68e825dda1b6cb4f375a1054fa47a42bb0c641
+x86_64-linux 85f546348b64da5d1f0289cb5fc290f8fc7016e852df08bcbb75edc60031e1cc
+aarch64-linux 04ac5514db6f292e4f2d79894f76c26c6e21c8f64533d5131c2b0c14247377a1
 ==== 21
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -617,8 +617,8 @@ checked 16 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos e18f10690483298fac41d7145831315957cf491a71f36562c25c027833595012
-x86_64-linux 4842d969855351fb86deb384e97ed22456de10e03856d30a229ab3b66f0a12cd
-aarch64-linux fe2b04e00e34ce844dec10c7af626813ac3a3053b5e7f9ca529057cd3c0d9945
+x86_64-linux bb990beed7aaa0eeb58dd75cdfeb43b5702c63b5cfe30fcd1b9d43ebbf22c8a4
+aarch64-linux 1857ac78fc7abbf3b7f82cd70602c3901da31c486ddb113f468cfcc1d93bed0c
 ==== 22
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -646,8 +646,8 @@ checked 17 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 112efb054333b5fc8228b38f57d4db767e1cdd5108078d4fe266eec35611e3aa
-x86_64-linux 2a9b69fd51bfea76fba87c2d8bf44a2529da0fe90338772f06a0826775af80d0
-aarch64-linux 45d8af73afed821376d78091cfd78865792bb4b394318cc0e11a6ac2315db1bd
+x86_64-linux a3cf57f8962182d0feff39da5b14010285db51893b49eb7b959c08ee3f67a32d
+aarch64-linux 0c18eea0f01c0a063bab2f9a19f3f7c45bf06b592d28537f5261fa9983ff6d9c
 ==== 23
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -675,8 +675,8 @@ checked 17 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 240f7dc829e8a59ee70a25ab1029796c0575f80176263bbfdd9b4656beeac599
-x86_64-linux c14a319f0d2a914bda7eb96ccaacb233876f2e9706358ff3ff289c6a66c5e5b4
-aarch64-linux 2db5af2bf2099a9c7326d65733193cc7672ff9ecbf1db496268777ddd04274f7
+x86_64-linux c55863ba352559e6a40b518e551fa35235ae9f6bb0b9479e26140a0149ec6f76
+aarch64-linux a1d3cb17b7422f527186fe4ef56a5ddc9a93a1532886c76d368c256e6fa82dca
 ==== 24
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -703,8 +703,8 @@ checked 16 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos e83c9fb68e5b1466ac544db618d956cb9544d65559c8fd35dafd0f8106a17f93
-x86_64-linux 37c2ba906a96d22a83914f19a59f5466405887e432c558d87038f6c803ef7d13
-aarch64-linux 4ceef327b673cab532b328fe27fd0750d19d62e8a9373037ffc10144be753165
+x86_64-linux f6dc0419d853538c1358d2d92bce39bd72cea84d356fa2b693bf325e6ad55584
+aarch64-linux 99b81c4fb61b58444371fcf3be9cf989f2a13faaf49d3a23bd49551e21dfbf4a
 ==== 25
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -731,8 +731,8 @@ checked 16 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 694f1e360349a683a6eb7b3a3a99d0a7a192241b12e6bcf4472dccb1833aa588
-x86_64-linux 30b23ec851dfda93a39dabf6c39b820c9217e0836cbbbb1c4a179f33282671ce
-aarch64-linux d5bcb86cdb178e928c654c31fb63ebf5b1093ac9cce10b770d6ba40163983f1d
+x86_64-linux 2aa2f24aad36bbc93d543a7c3f1579291e2c356ce3452a1e89064ce7d80f6c61
+aarch64-linux 42c6a8beab20833e64dcef8753a32ec6edfc2f7690c175ee195e4ab126f0dae6
 ==== 26
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -759,8 +759,8 @@ checked 16 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos e1a6fac24028794be88a2fa819e762f56920690957a4b34158b7c98c5c700cea
-x86_64-linux 85f144eb791a6668f64fe048a275feaf114c4fc0cb5c1d346894b66c473ebfd7
-aarch64-linux 1335b605b05712ca97d0fa955b02b9e660f1b2029c794efe769c8fe8e71b57d6
+x86_64-linux 866014107599135a8296725ac80ef6d4bd42fb6c26389ad7642b3266e6def520
+aarch64-linux 6ad1396fa194a78009278f8d06f8ddb26497a26e3310718b00da4728688d54c3
 ==== 27
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -787,8 +787,8 @@ checked 16 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 7dba2c8ae38131dc21aac17c2592095f7891145102386a961c1217e6b46c269c
-x86_64-linux d3fc68c8efc02c569dae13e126f79dbfc602fe0fe44dd76b056fb31d242be492
-aarch64-linux 551257f3663a0ac463d1a862e4eed54312ad908f44ccb7007fb8adf6028651eb
+x86_64-linux 1cbb3a4d2c186ed5e061e501114f338c9e5dcafadcb3b1539580990b3d539fbf
+aarch64-linux d549a2f7cbf303f1b08bd177b7ccab41fdc31f90b5697bbe66ff5ab86aab0449
 ==== 28
 ---- file a.azl (no newline at end)
 struct Bag {
@@ -816,5 +816,5 @@ checked 17 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 559d26e5c7ba9495219528a59d9652a74b14b4b53708de01e031ffb0298ad8d6
-x86_64-linux df454b38b9ae06a314824976e46829279fa8da63ca02671305b3d23780c3691b
-aarch64-linux 8b93f8fa0eb2a1d2ae5df2f4b102790edd35307acfb37ea05580a835065403a6
+x86_64-linux 30544c0c45f36b4ec698a1c60f0bd274e515bbf6ba042d599d23d928c3f69edd
+aarch64-linux 689cdd3b622a2097c87c826bc4acae1a3504a20ab7ee75f2c9f50cf2ad61530d

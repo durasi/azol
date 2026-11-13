@@ -81,12 +81,15 @@ fn dump_item(ast: Ast, src: str, item: Item, out: mut str) {
         ItemConst(name, ty, value) => {
             out = out + "const "
             dump_span(src, name, mut out)
-            if ty != NO_NODE {
+            if ty >= 0 {
                 out = out + ": "
                 dump_type(ast, src, ty, mut out)
             }
-            out = out + " = "
-            dump_expr(ast, src, value, mut out)
+            // The variable a value `if` or `match` fills has no value yet.
+            if value != NO_NODE {
+                out = out + " = "
+                dump_expr(ast, src, value, mut out)
+            }
             out = out + "\n"
         }
         ItemEnum(name, generics, variants) => {
@@ -149,12 +152,15 @@ fn dump_stmt(ast: Ast, src: str, id: i64, depth: i64, out: mut str) {
                 out = out + "let "
             }
             dump_span(src, name, mut out)
-            if ty != NO_NODE {
+            if ty >= 0 {
                 out = out + ": "
                 dump_type(ast, src, ty, mut out)
             }
-            out = out + " = "
-            dump_expr(ast, src, value, mut out)
+            // The variable a value `if` or `match` fills has no value yet.
+            if value != NO_NODE {
+                out = out + " = "
+                dump_expr(ast, src, value, mut out)
+            }
             out = out + "\n"
         }
         StmtAssign(target, value) => {

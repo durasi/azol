@@ -1028,18 +1028,58 @@ fn main() {
 this arm can never run: `1` is already handled above
 ```
 
+A pattern may hold patterns, to any depth: inside the `()` of a variant
+stand `_`, a name to bind, a number, a `bool`, a string, the name of a
+constant, or another variant with its own `()`. The arms are still tried
+from top to bottom, and together they must cover every case; the error names
+a case that is missing in full.
+
+```azol
+enum Cmd {
+    Put(str, i64)
+    Get(str)
+    Stop
+}
+
+fn show(c: Option[Cmd]) -> str {
+    match c {
+        Some(Put(key, 0)) => return "clear " + key
+        Some(Put(key, n)) => return "put {key}={n}"
+        Some(Get("")) => return "get everything"
+        Some(Get(key)) => return "get " + key
+        Some(Stop) => return "stop"
+        None => return "nothing"
+    }
+}
+
+fn main() {
+    print(show(Some(Put("a", 0))))
+    print(show(Some(Put("a", 2))))
+    print(show(Some(Get(""))))
+    print(show(Some(Stop)))
+}
+```
+
+```output
+clear a
+put a=2
+get everything
+stop
+```
+
 ```azol-error
 fn main() {
     let nested: Option[Option[i64]] = Some(Some(1))
     match nested {
-        Some(Some(n)) => print(n)
-        _ => print("nothing")
+        Some(Some(1)) => print("one")
+        Some(None) => print("empty")
+        None => print("nothing")
     }
 }
 ```
 
 ```error
-a pattern inside a pattern is not supported yet; give the value a name and `match` on it inside the arm
+this `match` does not handle `Some(Some(_))`; add an arm for it or a final `_ =>` arm
 ```
 
 The value cannot be changed while the `match` runs
@@ -1435,6 +1475,69 @@ fn main() {
 a value in a text is an `i64`, a `bool` or a `str` but this is `List[i64]`; turn it into text first
 ```
 
+### 6.7 `if` and `match` that give a value
+
+An `if` or a `match` may give a value when it is the whole right side of
+`let`, `var`, an assignment (`=` or `op=`) or `return`:
+
+```azol
+enum Cmd {
+    Put(str, i64)
+    Get(str)
+    Stop
+}
+
+fn size(c: Cmd) -> i64 {
+    return match c {
+        Put(key, n) => key.len() + n
+        Get(key) => key.len()
+        Stop => 0
+    }
+}
+
+fn main() {
+    let n = size(Put("ab", 3))
+    let way = if n > 4 { "big" } else if n > 0 { "small" } else { "empty" }
+    var total = 0
+    total += if way == "big" { 10 } else { 1 }
+    print("{way} {total} {size(Stop)}")
+    for c in [Get("abc"), Stop, Get("x")] {
+        let weight = match c {
+            Get(key) => key.len()
+            Stop => continue
+            Put(_, _) => {
+                print("unexpected")
+                break
+            }
+        }
+        total += weight
+    }
+    print(total)
+}
+```
+
+```output
+big 10 0
+14
+```
+
+- Every branch is **one expression**, and all of them have the same type,
+  which is the type of the whole. The first branch that gives a value
+  decides it, unless the variable has a declared type:
+  `let found: Option[i64] = if n > 0 { Some(n) } else { None }`.
+- A value `if` always has an `else`. A value `match` covers every case, as
+  every `match` does.
+- A branch may leave instead of giving a value: `return`, `break`,
+  `continue` or a call of `exit`. Such a branch may be a block of several
+  statements, as long as its last statement leaves. No other branch holds
+  statements: there is no block that "ends in a value".
+- It is never part of a larger expression: not an argument, not an operand.
+  Give it a name with `let` first.
+- The statement forms of [5.3](#53-if) and [5.6](#56-match) are unchanged.
+- `azol fmt` writes a value `if` on one line when the whole statement fits
+  in 100 columns, and otherwise with each branch on lines of its own. A
+  value `match` has one arm per line.
+
 ## 7. Calls and `mut` arguments
 
 `name(argument, argument)`. The number and types of the arguments must match
@@ -1668,7 +1771,7 @@ No such file or directory
 | `xs.first()` | `Option[T]` | The first item, or `None`. |
 | `xs.last()` | `Option[T]` | The last item, or `None`. |
 | `xs.reversed()` | `List[T]` | A new list in the opposite order. |
-| `xs.join(separator)` | `str` | Only for `List[str]`: the strings in one, with `separator` between them. |
+| `xs.join(separator)` | `str` | For lists of strings, numbers or `bool`s: their texts in one string, with `separator` between them. |
 | `xs.is_empty()` | `bool` | Whether there are no items. |
 | `xs.index_of(item)` | `Option[i64]` | Position of the first item equal to `item`. |
 | `xs.count(item)` | `i64` | How many items equal `item`. |
@@ -1682,6 +1785,10 @@ No such file or directory
 | `xs.truncate(n)` | nothing | Keeps the first `n` items; nothing when `n` is below zero. Changes `xs`. |
 | `xs.insert(at, item)` | nothing | Puts `item` at position `at` and moves the later items up. `at` may be `xs.len()`; stops the program outside 0 to `xs.len()`. Changes `xs`. |
 | `xs.remove_at(at)` | `T` | Takes the item at `at` out and returns it; the later items move down. Stops the program when `at` is out of range. Changes `xs`. |
+| `xs.swap(i, j)` | nothing | Exchanges the items at `i` and `j`. Stops the program when either is out of range. Changes `xs`. |
+| `xs.reverse()` | nothing | Puts the items in the opposite order, in place. Changes `xs`. |
+| `xs.remove(item)` | `bool` | Takes the first item equal to `item` out; `false` when there is none. Changes `xs`. |
+| `xs.slice(from, to)` | `List[T]` | A new list of the items `from` up to but not including `to`. Stops the program unless 0 <= `from` <= `to` <= `xs.len()`. |
 | `value.filled(n)` | `List[T]` | A new list of `n` copies of `value`, which may be of any type: `0.filled(256)` is a table of zeros. Empty when `n` is zero or less. |
 
 ```azol
@@ -1801,6 +1908,7 @@ Positions and lengths count bytes.
 | `s.bytes()` | `List[i64]` | The bytes, each from 0 to 255. |
 | `s.parse_hex()` | `Option[i64]` | The number written in one to sixteen hexadecimal digits; `None` for anything else. |
 | `s.hash()` | `i64` | The FNV-1a hash of the bytes. |
+| `s.chars()` | `List[str]` | The characters, each as a string of its own: the bytes of one UTF-8 character stay together. |
 
 `pad_left` and `pad_right` add whole copies of `fill`, so a fill of
 several bytes may pass `width`; an empty fill changes nothing.
@@ -1957,6 +2065,7 @@ bats false true
 | `n.clamp(low, high)` | `i64` | `n`, or `low` when it is below `low`, or `high` when it is above `high`. |
 | `n.pow(exponent)` | `i64` | `n` multiplied by itself `exponent` times, wrapping; 1 when `exponent` is zero or less. |
 | `n.compare(other)` | `i64` | -1, 0 or 1. |
+| `n.sign()` | `i64` | -1, 0 or 1: whether `n` is below, at or above zero. |
 | `n.to_hex()` | `str` | The 64 bits in hexadecimal with small letters and no zeros in front. |
 
 A method call binds tighter than a unary minus: `-5.abs()` is `-(5.abs())`.
@@ -1999,6 +2108,11 @@ declare a type of its own called `Map`; it can declare a function called
 | `m.remove(key)` | `bool` | Takes `key` and its value out; `false` when it was not there. Changes `m`. |
 | `m.keys()` | `List[str]` | A copy of the keys, in the order they were set until the first `remove`. |
 | `m.len()` | `i64` | Number of keys. |
+| `m.is_empty()` | `bool` | Whether there are no keys. |
+| `m.values()` | `List[V]` | A copy of the values, in the order of `keys()`. |
+| `m.get_or(key, default)` | `V` | A copy of the value of `key`, or `default`. `default` is worked out either way. |
+| `m.add(key, amount)` | nothing | Only for `Map[i64]`: adds `amount` to the number of `key`; a key that is not there counts as 0. Changes `m`. |
+| `m.append(key, item)` | nothing | Only for a map of lists: adds `item` to the list of `key`; a key that is not there starts with an empty list. Changes `m`. |
 
 A map is a value like any other: storing or passing it copies all its keys
 and values, and `get` returns a copy. To change a value, `get` it, change
@@ -2045,6 +2159,57 @@ ann,bob
 true
 1
 2
+```
+
+### 10.5 `Option` and `Result`
+
+`match` and `?` read an `Option` or a `Result`. These methods do the common
+cases in one call.
+
+| Method | Result | Meaning |
+|---|---|---|
+| `o.or(default)` | `T` | What `o` holds, or `default` for `None`. `default` is worked out either way; use `match` when that is costly. |
+| `o.expect(message)` | `T` | What `o` holds. For `None` the program stops with `azol: <message>` and exit code 1. |
+| `o.is_some()`, `o.is_none()` | `bool` | Whether `o` holds a value. |
+| `r.or(default)` | `T` | What the `Ok` of `r` holds, or `default` for an `Err`. |
+| `r.expect(message)` | `T` | What the `Ok` of `r` holds. For an `Err` the program stops with `azol: <message>: <error>` when the error is a `str` or an `i64`, and with `azol: <message>` otherwise. |
+| `r.is_ok()`, `r.is_err()` | `bool` | Which of the two `r` is. |
+| `r.ok()` | `Option[T]` | The `Ok` value as an `Option`; the error is dropped. |
+
+There is no `unwrap`: a stop without a message helps nobody. There is no
+`map` or `or_else` either: a `match` that gives a value
+([6.7](#67-if-and-match-that-give-a-value)) says the same in the same space.
+
+```azol exit=1
+fn main() {
+    var counts: Map[i64] = new_map()
+    var groups: Map[List[str]] = new_map()
+    for word in "to be or not to be".split(" ") {
+        counts.add(word, 1)
+        groups.append(str(word.len()), word)
+    }
+    let to = counts.get_or("to", 0)
+    print("{to} {counts.len()} " + str(counts.get_or("is", 0)))
+    print(groups.get_or("2", []).join(","))
+    let third = "x,y".split(",")
+    print(third.first().or("none") + " " + str("12".to_i64().or(0) + 1))
+    var xs = [1, 2, 3, 4]
+    xs.swap(0, 3)
+    xs.reverse()
+    print(xs.slice(1, 3).join(" ") + " " + str(xs.remove(4)))
+    print("42x".to_i64().expect("a number in the first field"))
+}
+```
+
+```output
+2 4 0
+to,be,or,to,be
+x 13
+3 2 true
+```
+
+```stderr
+azol: a number in the first field
 ```
 
 ## 11. Value semantics
@@ -2663,7 +2828,7 @@ instead.
 | Block comments `/* */` | `//` on each line. |
 | `~` (bitwise not) | `x ^ -1`. |
 | `++`, `--` | `x += 1`, `x -= 1`. |
-| `if` and `match` as expressions, a ternary operator | A `var` assigned in each branch, or a function that returns from each branch. |
+| `if` and `match` inside a larger expression, a ternary operator, a block that ends in a value | `let x = if c { a } else { b }` first ([6.7](#67-if-and-match-that-give-a-value)), then use `x`. |
 | Implicit return of the last expression | `return`. |
 | A bare block `{ ... }` as a statement | A function, or `if true { ... }`. |
 | Closures, anonymous functions, functions as values | Named functions; an enum and a `match` to choose among behaviours. |
@@ -2672,9 +2837,10 @@ instead.
 | Explicit type arguments at a call, `f[i64](x)` | Let the arguments settle it, or store the result in a variable with a type. |
 | Modules, imports, namespaces, private names | All files of a build share one namespace. |
 | Qualified variants, `Color.Red` or `Color::Red` | `Red`. |
-| Patterns inside patterns, `Some(Some(x))`, `Some(3)` | Bind a name and `match` again inside the arm. |
 | Several patterns in one arm, guards | Separate arms; `if` inside the arm. |
 | Tuples | A struct. |
+| `if let`, `while let`, `let ... else`, `unwrap` | `match`; a `match` that gives a value; `.or(default)`, `.expect(message)`. |
+| Default values of fields, `..base` in a struct literal | Give every field; `var b = a`, then `b.x = 1`. |
 | Sets, maps with keys that are not `str` | `Map[bool]`, or a `List` of structs searched in a loop. |
 | Ranges as values, `let r = 0..n`, `xs[1..3]` | `for i in 0..n` is the only place for a range; `xs.slice(1, 3)`. |
 | `for` over the bytes of a string | `for i in 0..s.len()` and `s[i]`. |
@@ -2715,12 +2881,12 @@ azoL has no `--`; write `x -= 1`
 
 ```azol-error
 fn main() {
-    let x = if true { 1 } else { 2 }
+    print(if true { 1 } else { 2 })
 }
 ```
 
 ```error
-expected an expression but found `if`
+an `if` or `match` that gives a value is the whole right side of `let`, `var`, `=` or `return`
 ```
 
 ```azol-error

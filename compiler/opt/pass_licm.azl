@@ -22,6 +22,11 @@
 //       one, or a variable of the function. (A loop that runs no round
 //       did not load at all; the load before it must read bytes that
 //       were stored and mean what the type says.)
+//   L5  A `load` of a number or an address from a frame object, from a
+//       region nothing in the loop may write, when a `store` of the
+//       same type to the same place stands in a block that every way
+//       to the loop goes through (`lc_stored_before`): the field of a
+//       struct that is a variable, such as the length of `w.xs`.
 //   L4  An instruction that moves to a preheader which already has
 //       the same instruction (for a load: with nothing that writes
 //       after it there) is not kept; its users take the one that is
@@ -370,6 +375,36 @@ fn lc_header_slot(f: IrFunc, st: LcState, ins: i64) -> bool {
     return place.off == 8 || place.off == 16
 }
 
+// Whether `load` instruction `ins` of loop `l` reads eight bytes of a
+// frame object that a `store` of the same type has written, at the
+// same place, in a block every way to the loop goes through. The
+// bytes are then there, and mean what the type says, when the loop is
+// reached, whether or not a round gets as far as the load (L5).
+fn lc_stored_before(f: IrFunc, cfg: IrCfg, l: i64, ins: i64) -> bool {
+    let ty = f.ins_ty[ins]
+    if ty != IR_I64 && ty != IR_PTR { return false }
+    let place = lc_place(f, f.ins_a[ins], f.ins_imm[ins])
+    if !place.ok || place.root < f.param_count { return false }
+    let object = f.ins_imm[su_def(f, place.root)]
+    let header = cfg.loop_header[l]
+    var b = header
+    while cfg.idom[b] != b && cfg.idom[b] >= 0 {
+        b = cfg.idom[b]
+        if ir_in_loop(cfg, b, l) { continue }
+        var at = f.blk_first[b]
+        while at >= 0 {
+            if f.ins_op[at] == IR_STORE && f.ins_ty[at] == ty {
+                let to = lc_place(f, f.ins_a[at], f.ins_imm[at])
+                if to.ok && to.off == place.off && to.root >= f.param_count && f.ins_imm[su_def(f, to.root)] == object {
+                    return true
+                }
+            }
+            at = f.ins_next[at]
+        }
+    }
+    return false
+}
+
 // Whether instruction `ins` of loop `l` may move in front of the loop.
 // `sure` says it runs whenever the loop is entered.
 fn lc_may_move(f: IrFunc, cfg: IrCfg, st: LcState, w: LcWrites, l: i64, ins: i64, sure: bool) -> bool {
@@ -389,7 +424,7 @@ fn lc_may_move(f: IrFunc, cfg: IrCfg, st: LcState, w: LcWrites, l: i64, ins: i64
     }
     if op == IR_LOAD {
         if lc_written(f, w, f.ins_reg[ins]) { return false }
-        return sure || lc_header_slot(f, st, ins)
+        return sure || lc_header_slot(f, st, ins) || lc_stored_before(f, cfg, l, ins)
     }
     return true
 }

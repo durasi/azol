@@ -1,0 +1,16 @@
+; T2: the shape of `compare(a, b) < 0` once `compare` is in its caller: three ways in with -1, 1 and 0 go straight to where the test would send them.
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v2 = slt p0, p1
+    br v2, b4(-1), b1
+b1:
+    v3 = sgt p0, p1
+    br v3, b4(1), b4(0)
+b4(v4: i64):
+    v5 = slt v4, 0
+    br v5, b5, b6
+b5:
+    ret 10
+b6:
+    ret 20
+}

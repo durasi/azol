@@ -163,6 +163,8 @@ fn lex_part(src: str, from: i64, n: i64, tokens: mut Tokens) -> Option[LexError]
                     let e = src[i + 1]
                     if e == 'n' || e == 't' || e == 'r' || e == '0' || e == '\\' || e == '"' || e == '{' {
                         i = i + 2
+                    } else if e == '}' {
+                        return lex_failure("a `}` in a text needs no `\\`: only `\\\{` is written with one", i)
                     } else {
                         return lex_failure("unknown escape sequence in string literal", i)
                     }

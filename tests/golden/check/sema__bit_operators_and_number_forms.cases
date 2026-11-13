@@ -15,8 +15,8 @@ checked 6 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 563837a8dd2ba309031c6a5a9ba3cf7763c1ad896dcb81a607375b15b048f709
-x86_64-linux 91aa5f0aac1f487ae9830ba596f90054b7f72df7b49b53ccf247a47d57ab36b1
-aarch64-linux 2af4167e6d710c5f85d15e3b47ad1111952e6d9a8149f5bd4ee0b34d6948201d
+x86_64-linux f56b769361d6c069a358fc39c72e5dda65e5fef9631dd720b7bf5371365e2070
+aarch64-linux 7844ae2f997d46f17ef69d867a4626dd1d795c7b2d918920e1b89580ca22ff67
 ==== 2
 ---- file a.azl (no newline at end)
 fn main() {
@@ -30,8 +30,8 @@ checked 3 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 7d0d042d21fffc7b08f181477c53067b6d4d367d8e0611fd9ee4f8a2d0a071f0
-x86_64-linux 59b3c6b58f89f27eb1231d5608cc6774dcd21223870a2f094e776a964b0046cc
-aarch64-linux 0b023b3fd6015ca57937c6ccd5b4efc2179e181fb43cb1543c26f2af6bcecd4b
+x86_64-linux 4290abca6eec1f98c928d1de4bf17b28877b0955ee9cb43222112e2d2c149b3f
+aarch64-linux 150344846df5bf26019193f903e5713a7536156e75e4568006d117dc5a62a4ab
 ==== 3
 ---- file a.azl (no newline at end)
 fn main() {
@@ -45,8 +45,8 @@ checked 3 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos d1dd3e4abf7e44192eb80114ae6a2b08b044e850929181dc453b5711e33d540f
-x86_64-linux ab685204a7d1d7bcb793c10611508b26b8bc54606cf1b320ddba49958d707e9e
-aarch64-linux 2922c9ada908cf58546e153822582d1627205b3b076ceade6a10da66b4c35073
+x86_64-linux d982a59980055147896d3059d0f7e0a7b257f98d9d967ad650f70186add9c780
+aarch64-linux 28bf564ddd3458ed13dcb697878530dcbc738195558319f93b880dd9f59afbb5
 ==== 4
 ---- file a.azl (no newline at end)
 fn main() {
@@ -60,8 +60,8 @@ checked 3 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 39c56bd7000ed55fea922bfa05fdd5612ac2e1c66c6dc4266da69da00ad1c0bc
-x86_64-linux 22f2728652b3adcb9dcc934d4d8ad7e590472d92d25e1835143044f4ca9d6cb6
-aarch64-linux 5964298f10104ae4da9cc00abc8ab8aeaac14575f94307eab3d3f45d93b58bbd
+x86_64-linux a8e00ded4aa8f90d2f1d9ed027ddef4e61780fa9df0e508a9b8a007a7361fee6
+aarch64-linux 851d5c6eadf06629d7080d7dff162c1a28dc9dcc5ad92cb42164cd4b3c1410f6
 ==== 5
 ---- file a.azl (no newline at end)
 fn main() {
@@ -75,8 +75,8 @@ checked 3 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 7d7e44c2bd4efd799d118004adbc186b595181a57e95e4697f265a4b429a6355
-x86_64-linux 932d282863d310e77295af944ce4e1474e7d43c28d84fca1711165085780f0be
-aarch64-linux 2b3c901faa5315d7217e6378603c99fb17bc55f90cdbd1eff35448fb50fd90b2
+x86_64-linux 471b6d5e44477b21e239eb5a3df08ffe08190923f0068d62b8f8545b80a3d11e
+aarch64-linux 53b0504adb8703e777dfa69008217ecfcae412efa6184a17ab3491633ab37c20
 ==== 6
 ---- file a.azl (no newline at end)
 fn main() {
@@ -90,8 +90,8 @@ checked 3 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 69ae217d7c7c4d44407dc647c4e85a797e2958364ef46496ba4735287a5752de
-x86_64-linux 2967482a3e2ec3b5ebfc7fae31906dea6a25084e869a08c6354e4e8ae5c0b795
-aarch64-linux a026fdd46c9bf58b0312cdadf8f236e4fb80720b4f1c3b19fd71bdd0cf0d9cfd
+x86_64-linux dbb3ea776fd879cb2e6ec022c8305ade937e4ee9fc20bf17bc8e3cbfe521e99b
+aarch64-linux 575d6b52fec169a28336343cf139b9cf9bcfcae506d0034dc3c34268b63646d5
 ==== 7
 ---- file a.azl (no newline at end)
 fn main() {
@@ -105,8 +105,8 @@ checked 3 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos edea9c281482fe869c6d6430c90e94910d4009cc9499c3aafbb0d238b3575e6f
-x86_64-linux 832bce0623926c7839dc82a4b9dfefdd52c326b188f6a9e3f5032024c00c0618
-aarch64-linux 4caddced8b531f285a643457d33257575e05c03fb9ee44b2b84b106eade122a9
+x86_64-linux 9228dd7cd586fdda1f23c46c1af157aba970ff9c26c83e09a51fac37137476c7
+aarch64-linux 75de7ec6af65981b45d31903b3191dce3054e223ab2dec4cfaf938bcb7d3c2a9
 ==== 8
 ---- file a.azl (no newline at end)
 fn main() {
@@ -128,5 +128,5 @@ checked 11 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 022bcf422908f4381568e7fd1017849c6703f9bdb09eb2059a4925ee46ee02d5
-x86_64-linux a1dfc993e41ebf765f02407d84c3631a4ba76762993863cd4541881bbf22b542
-aarch64-linux 33e80ac958e5d2b35b9d006b2ce9f68a59955633aa1b17bc4ba83cac0d1c71fe
+x86_64-linux 2877ec4cb3d0b9e11cd12463932a0ea9f8f0a479fd740b752985ee5c7be3d267
+aarch64-linux f2ea3c5113b75c5dc90f9d8cc7fcdb0d18d90215899f99252850eebb2cc70393

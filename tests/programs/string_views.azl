@@ -1,0 +1,56 @@
+// expect-exit: 1
+// expect-line: 3
+// expect-line: 2
+// expect-line: the
+// expect-line: 2
+// expect-line: cat
+// expect-line: the hat and the hat and the bat!
+// expect-stderr: azol: slice out of range
+// Parts of strings that are only read, and parts that are kept.
+fn count_word(text: str, word: str) -> i64 {
+    var found = 0
+    var at = 0
+    while at + word.len() <= text.len() {
+        if text.slice(at, at + word.len()) == word { found = found + 1 }
+        at = at + 1
+    }
+    return found
+}
+
+fn first_longer(text: str, n: i64) -> str {
+    var start = 0
+    var at = 0
+    while at <= text.len() {
+        if at == text.len() || text[at] == 32 {
+            let word = text.slice(start, at)
+            if word.len() > n { return word }
+            start = at + 1
+        }
+        at = at + 1
+    }
+    return ""
+}
+
+fn main() {
+    var text = "the cat and the hat and the bat"
+    print(count_word(text, "the"))
+    print(count_word(text, "and"))
+    print(first_longer(text, 2))
+    let keys = ["cat", "bat"]
+    var hits = 0
+    var at = 0
+    while at + 3 <= text.len() {
+        if keys.contains(text.slice(at, at + 3)) { hits = hits + 1 }
+        at = at + 1
+    }
+    print(hits)
+    // The source changes while a part of it is alive.
+    let part = text.slice(4, 7)
+    text.set(4, 104)
+    text = text + "!"
+    print(part)
+    print(text)
+    let args_count = args().len()
+    // Out of range: the program stops as it does without the pass.
+    print(text.slice(args_count + 30, args_count + 2).len())
+}

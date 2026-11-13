@@ -1044,17 +1044,11 @@ _ => {}
 }
 }
 ---- run check a.azl
----- exit 1
+---- exit 0
 ---- stdout (empty)
 ---- stderr
-error[E0508]: a pattern inside a pattern is not supported yet; give the value a name and `match` on it inside the arm
- --> a.azl:5:6
-  |
-5 | Some(A) => {}
-  |      ^
----- asserted 5:6 a pattern inside a pattern is not supported yet; give the value a name and `match` on it inside the arm
+checked 8 lines in 1 file: no errors
 ---- run check --json a.azl
----- exit 1
+---- exit 0
 ---- stdout
-{"severity":"error","code":"E0508","message":"a pattern inside a pattern is not supported yet; give the value a name and `match` on it inside the arm","file":"a.azl","line":5,"column":6,"end_line":5,"end_column":7,"source":"Some(A) => {}","rule":"The values of a variant pattern are names or `_`; patterns are not nested yet."}
-{"summary":{"errors":1,"files":1}}
+{"summary":{"errors":0,"files":1}}

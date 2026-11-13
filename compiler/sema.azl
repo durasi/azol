@@ -128,6 +128,14 @@ const PAT_ANY = 0
 const PAT_BIND = 1
 const PAT_VARIANT = 2
 const PAT_LITERAL = 3
+// Inside a variant's `()`: a variant, a number, a `bool`, a string. The
+// result holds where the value is, in slots from the start of the value
+// around it, in its low 16 bits; above them the variant, the index of
+// the number in `ints`, 0 or 1, or the index of the string.
+const PAT_SUB_VARIANT = 4
+const PAT_SUB_INT = 5
+const PAT_SUB_BOOL = 6
+const PAT_SUB_STR = 7
 
 // Who refers to a place: see `Borrow`.
 const HOLDER_CALL = 0

@@ -375,7 +375,7 @@ fn syntax_fix(message: str, at: i64, src: str, end: i64) -> Fix {
         message.starts_with("a pattern is a fixed text") {
         return Fix { kind: FIX_REPLACE, start: at, end: at, text: "\\" }
     }
-    if message.ends_with("without `$`") || message.starts_with("a text needs no `f`") {
+    if message.ends_with("without `$`") || message.starts_with("a text needs no `f`") || message.starts_with("a `}` in a text needs no") {
         return Fix { kind: FIX_REPLACE, start: at, end: at + 1, text: "" }
     }
     return no_fix()

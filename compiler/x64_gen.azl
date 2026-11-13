@@ -11,7 +11,7 @@ fn x_stmt(g: mut Gen, c: Checker, p: Parser, id: i64) {
     // Every other statement starts and ends knowing nothing.
     var keeps = false
     match p.ast.stmts[id] {
-        StmtLet(_, _, _, value) => keeps = c.expr_ty[g.sh_e + value] < 3
+        StmtLet(_, _, _, value) => keeps = value < 0 || c.expr_ty[g.sh_e + value] < 3
         StmtAssign(target, _) => keeps = c.expr_ty[g.sh_e + target] < 3
         StmtIf(_, _, _) => keeps = true
         _ => {}
@@ -62,6 +62,16 @@ fn x_stmt_inner(g: mut Gen, c: Checker, p: Parser, id: i64) {
     match p.ast.stmts[id] {
         StmtLet(_, _, _, value) => {
             let slot = c.stmt_slot[g.sh_s + id]
+            if value < 0 {
+                // The variable a value `if` or `match` fills: empty for now.
+                let chosen_ty = c.stmt_flag[g.sh_s + id]
+                if ck_needs_drop(c, chosen_ty) {
+                    x_zero_idle(mut g, c, slot, chosen_ty)
+                    g.live_slots.push(slot)
+                    g.live_tys.push(chosen_ty)
+                }
+                return
+            }
             let ty = c.expr_ty[g.sh_e + value]
             x_store(mut g, c, p, value, slot)
             x_drop_temps(mut g, c, id, false)
@@ -524,6 +534,71 @@ fn x_for_test(g: mut Gen, c: Checker, p: Parser, in_place: bool, iter: i64, own_
     return found
 }
 
+// The patterns inside the `()` of variant pattern `pattern`, whose value
+// is at the address kept in slot `holder`: binds the names and, with
+// `test`, adds to `fails` a jump for every value that does not fit.
+fn x_sub_patterns(g: mut Gen, c: Checker, p: Parser, pattern: i64, holder: i64, test: bool, fails: mut List[i64]) {
+    var args = IdRange { start: 0, len: 0 }
+    match p.ast.patterns[pattern] {
+        PatVariant(_, inner) => {
+            args = inner
+        }
+        _ => {}
+    }
+    var k = 0
+    while k < args.len {
+        let inner = p.ast.lists[args.start + k]
+        let sub = g.sh_p + inner
+        let kind = c.pat_kind[sub]
+        let res = c.pat_res[sub]
+        let offset = res & 65535
+        k = k + 1
+        if kind == PAT_BIND {
+            // The name stands for the field where it is.
+            x_load(mut g, R8, holder)
+            x_lea(mut g, R8, R8, 8 * res)
+            x_store_slot(mut g, c.pat_slot[sub], R8)
+        } else if kind == PAT_SUB_VARIANT {
+            x_load(mut g, R8, holder)
+            x_lea(mut g, R8, R8, 8 * offset)
+            x_store_slot(mut g, c.pat_slot[sub], R8)
+            if test {
+                // tag
+                x_load_mem(mut g, R8, R8, 0)
+                x_op_imm(mut g, CMP_I, R8, (res >> 16) + 1)
+                fails.push(x_jump_if(mut g, CC_NE))
+            }
+            x_sub_patterns(mut g, c, p, inner, c.pat_slot[sub], test, mut fails)
+        } else if !test {
+            continue
+        } else if kind == PAT_SUB_INT {
+            x_load(mut g, R8, holder)
+            x_load_mem(mut g, RCX, R8, 8 * offset)
+            x_mov_imm(mut g, RAX, c.ints[res >> 16])
+            x_op(mut g, X_CMP, RCX, RAX)
+            fails.push(x_jump_if(mut g, CC_NE))
+        } else if kind == PAT_SUB_BOOL {
+            x_load(mut g, R8, holder)
+            x_load_mem(mut g, RAX, R8, 8 * offset)
+            x_op(mut g, X_TEST, RAX, RAX)
+            if (res >> 16) == 0 {
+                fails.push(x_jump_if(mut g, CC_NE))
+            } else {
+                fails.push(x_jump_if(mut g, CC_E))
+            }
+        } else if kind == PAT_SUB_STR {
+            let slot = c.pat_slot[sub]
+            x_string_value(mut g, c, res >> 16, slot)
+            x_load(mut g, RDI, holder)
+            x_lea(mut g, RDI, RDI, 8 * offset)
+            x_frame_address(mut g, RSI, slot)
+            x_runtime(mut g, RT_STR_EQ)
+            x_op(mut g, X_TEST, RAX, RAX)
+            fails.push(x_jump_if(mut g, CC_E))
+        }
+    }
+}
+
 fn x_match_stmt(g: mut Gen, c: Checker, p: Parser, id: i64, scrutinee: i64, arms: IdRange) {
     let ty = c.expr_ty[g.sh_e + scrutinee]
     let base = c.stmt_slot[g.sh_s + id]
@@ -568,6 +643,7 @@ fn x_match_stmt(g: mut Gen, c: Checker, p: Parser, id: i64, scrutinee: i64, arms
         let test = i + 1 < arms.len
         // A failed test jumps to the next arm.
         var next = -1
+        var fails: List[i64] = []
         if kind == PAT_VARIANT {
             if test {
                 x_load(mut g, R8, base)
@@ -576,22 +652,7 @@ fn x_match_stmt(g: mut Gen, c: Checker, p: Parser, id: i64, scrutinee: i64, arms
                 x_op_imm(mut g, CMP_I, R8, res + 1)
                 next = x_jump_if(mut g, CC_NE)
             }
-            match p.ast.patterns[pattern] {
-                PatVariant(_, args) => {
-                    var k = 0
-                    while k < args.len {
-                        let sub = g.sh_p + p.ast.lists[args.start + k]
-                        if c.pat_kind[sub] == PAT_BIND {
-                            // The name stands for the field where it is.
-                            x_load(mut g, R8, base)
-                            x_lea(mut g, R8, R8, 8 * c.pat_res[sub])
-                            x_store_slot(mut g, c.pat_slot[sub], R8)
-                        }
-                        k = k + 1
-                    }
-                }
-                _ => {}
-            }
+            x_sub_patterns(mut g, c, p, pattern, base, test, mut fails)
         } else if kind == PAT_LITERAL {
             if test {
                 if ty == TY_I64 {
@@ -628,6 +689,9 @@ fn x_match_stmt(g: mut Gen, c: Checker, p: Parser, id: i64, scrutinee: i64, arms
         x_block(mut g, c, p, p.ast.arms[arm_id].body)
         if test { ends.push(x_jump(mut g)) }
         if next >= 0 { x_patch(mut g, next) }
+        for at in fails {
+            x_patch(mut g, at)
+        }
         i = i + 1
     }
     for at in ends {

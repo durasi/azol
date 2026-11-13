@@ -24,6 +24,16 @@ fn lw_stmt(lw: mut Lower, c: Checker, p: Parser, id: i64) {
     match p.ast.stmts[id] {
         StmtLet(_, _, _, value) => {
             let slot = c.stmt_slot[lw.sh_s + id]
+            if value < 0 {
+                // The variable a value `if` or `match` fills: empty for now.
+                let chosen_ty = c.stmt_flag[lw.sh_s + id]
+                if ck_needs_drop(c, chosen_ty) {
+                    lw_zero_idle(mut lw, c, slot, chosen_ty)
+                    lw.live_slots.push(slot)
+                    lw.live_tys.push(chosen_ty)
+                }
+                return
+            }
             let ty = c.expr_ty[lw.sh_e + value]
             lw_store_value(mut lw, c, p, value, slot)
             lw_drop_temps(mut lw, c, id)
@@ -366,6 +376,82 @@ fn lw_for(lw: mut Lower, c: Checker, p: Parser, id: i64, has_index: bool, iter: 
     }
 }
 
+// True when a pattern inside the `()` of variant pattern `pattern`, at
+// any depth, is one that not every value fits.
+fn lw_has_sub_tests(c: Checker, p: Parser, sh_p: i64, pattern: i64) -> bool {
+    match p.ast.patterns[pattern] {
+        PatVariant(_, args) => {
+            var k = 0
+            while k < args.len {
+                if c.pat_kind[sh_p + p.ast.lists[args.start + k]] >= PAT_SUB_VARIANT { return true }
+                k = k + 1
+            }
+            return false
+        }
+        _ => return false
+    }
+}
+
+// The patterns inside the `()` of variant pattern `pattern`, whose value
+// is at `value`: binds the names and, with `test`, goes to block `next`
+// for every value that does not fit.
+fn lw_sub_patterns(lw: mut Lower, c: Checker, p: Parser, pattern: i64, value: LwAddr, test: bool, next: i64) {
+    var args = IdRange { start: 0, len: 0 }
+    match p.ast.patterns[pattern] {
+        PatVariant(_, inner) => {
+            args = inner
+        }
+        _ => {}
+    }
+    var k = 0
+    while k < args.len {
+        let inner = p.ast.lists[args.start + k]
+        let sub = lw.sh_p + inner
+        let kind = c.pat_kind[sub]
+        let res = c.pat_res[sub]
+        let offset = res & 65535
+        k = k + 1
+        if kind == PAT_BIND {
+            // The name stands for the field where it is.
+            lw_bind(mut lw, c.pat_slot[sub], lw_add(value, 8 * res))
+            continue
+        }
+        if kind == PAT_ANY { continue }
+        let field = lw_add(value, 8 * offset)
+        var is_it = -1
+        if kind == PAT_SUB_VARIANT {
+            if test {
+                let tag = lw_load(mut lw, IR_I64, field, 0)
+                let want = lw_const(mut lw, (res >> 16) + 1)
+                is_it = lw_bin(mut lw, IR_EQ, tag, want)
+            }
+        } else if !test {
+            continue
+        } else if kind == PAT_SUB_INT {
+            let number = lw_load(mut lw, IR_I64, field, 0)
+            let want = lw_const(mut lw, c.ints[res >> 16])
+            is_it = lw_bin(mut lw, IR_EQ, number, want)
+        } else if kind == PAT_SUB_BOOL {
+            let number = lw_load(mut lw, IR_I64, field, 0)
+            let want = lw_const(mut lw, res >> 16)
+            is_it = lw_bin(mut lw, IR_EQ, number, want)
+        } else {
+            let slot = c.pat_slot[sub]
+            lw_string_value(mut lw, c, res >> 16, slot)
+            let text = lw_slot(mut lw, slot, 3)
+            let left = lw_ptr(mut lw, field)
+            let call = lw_rt(mut lw, IR_RT_STR_EQ_BUF, left, text.p, -1, -1)
+            is_it = lw.f.ins_res[call]
+        }
+        if is_it >= 0 {
+            let goes_on = lw_block(mut lw)
+            lw_br(mut lw, is_it, goes_on, next)
+            lw.b = goes_on
+        }
+        if kind == PAT_SUB_VARIANT { lw_sub_patterns(mut lw, c, p, inner, field, test, next) }
+    }
+}
+
 fn lw_match(lw: mut Lower, c: Checker, p: Parser, id: i64, scrutinee: i64, arms: IdRange) {
     let ty = c.expr_ty[lw.sh_e + scrutinee]
     let base = c.stmt_slot[lw.sh_s + id]
@@ -421,20 +507,10 @@ fn lw_match(lw: mut Lower, c: Checker, p: Parser, id: i64, scrutinee: i64, arms:
                 lw_br(mut lw, is_it, body, next)
                 lw.b = body
             }
-            match p.ast.patterns[pattern] {
-                PatVariant(_, args) => {
-                    var k = 0
-                    while k < args.len {
-                        let sub = lw.sh_p + p.ast.lists[args.start + k]
-                        if c.pat_kind[sub] == PAT_BIND {
-                            // The name stands for the field where it is.
-                            lw_bind(mut lw, c.pat_slot[sub], lw_add(value, 8 * c.pat_res[sub]))
-                        }
-                        k = k + 1
-                    }
-                }
-                _ => {}
+            if lw_has_sub_tests(c, p, lw.sh_p, pattern) && test && next < 0 {
+                next = lw_block(mut lw)
             }
+            lw_sub_patterns(mut lw, c, p, pattern, value, test, next)
         } else if kind == PAT_LITERAL {
             if test {
                 var is_it = -1
@@ -448,9 +524,7 @@ fn lw_match(lw: mut Lower, c: Checker, p: Parser, id: i64, scrutinee: i64, arms:
                     let slot = c.pat_slot[pat]
                     lw_string_value(mut lw, c, res, slot)
                     let text = lw_slot(mut lw, slot, 3)
-                    let left = lw_ptr(mut lw, value)
-                    let call = lw_rt(mut lw, IR_RT_STR_EQ_BUF, left, text.p, -1, -1)
-                    is_it = lw.f.ins_res[call]
+                    is_it = lw_str_equal(mut lw, value, text)
                 }
                 let body = lw_block(mut lw)
                 next = lw_block(mut lw)

@@ -1,0 +1,45 @@
+// `if` and `match` that give a value, patterns inside patterns, and the
+// library calls that read an `Option`, a `Result` or a map in one line.
+enum Cmd {
+    Put(str, i64)
+    Get(str)
+    Stop
+}
+
+fn parse(line: str) -> Option[Cmd] {
+    let words = line.split(" ")
+    return match words.first().or("") {
+        "put" => {
+            if words.len() != 3 { return None }
+            let amount = words[2].to_i64()?
+            return Some(Put(words[1], amount))
+        }
+        "get" => {
+            if words.len() != 2 { return None }
+            return Some(Get(words[1]))
+        }
+        "stop" => Some(Stop)
+        _ => None
+    }
+}
+
+fn main() {
+    var store: Map[i64] = new_map()
+    var log: Map[List[str]] = new_map()
+    for line in ["put a 2", "put a 5", "get a", "get b", "put c", "put b 0", "jump", "stop", "get a"] {
+        let outcome = match parse(line) {
+            Some(Put(key, 0)) => "ignored {key}"
+            Some(Put(key, n)) => {
+                store.add(key, n)
+                log.append("changed", key)
+                continue
+            }
+            Some(Get(key)) => "{key} is {store.get_or(key, 0)}"
+            Some(Stop) => break
+            None => "what is `{line}`?"
+        }
+        print(outcome)
+    }
+    let size = if store.len() > 1 { "several keys" } else { "one key" }
+    print("{size}, changed: " + log.get_or("changed", []).join(" "))
+}

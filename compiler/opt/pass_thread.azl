@@ -1,0 +1,432 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The pass `thread`: a test whose answer is known on the way to it is
+// not made again.
+//
+//     fn ir_thread(f: mut IrFunc) -> i64      how many operands and edges changed
+//
+//   T1  After `br v, yes, no`, when the branch is the only way into
+//       `yes`, `v` is true in every block `yes` dominates: each use of
+//       it there becomes the constant 1. The same for `no` with 0.
+//       (`simplify` then folds the branches and the arithmetic that
+//       took it.) And what the branch itself passes on as `v` is the
+//       constant on either way out, whatever else leads there: the
+//       shape of `a && b`, which passes `a` on as the answer when it
+//       is false.
+//
+//   T2  A block that only tests one of its parameters,
+//
+//           j(p):
+//               c = slt p, 0          (any comparison with a constant;
+//               br c, yes, no          or `br p` itself for a `bool`)
+//
+//       is passed by: a way in that gives a constant for `p` goes
+//       straight to `yes` or `no`, with what `j` would have passed on.
+//       This is the shape `compare(a, b) < 0` has once `compare` is
+//       put into its caller: three ways in with -1, 0 and 1.
+//
+//       It is done when nothing outside `j` uses what `j` defines (its
+//       parameters and `c`), `j` holds nothing else, and `j` is not
+//       the header of a loop (a way into the loop past its header
+//       would make a loop with two ways in).
+//
+//   T3  Two tests of one number against two constants that leave the
+//       same way when it is too small and when it is too large,
+//
+//           a:  c = slt x, 48            b:  d = sgt x, 57
+//               br c, out, b                 br d, out, in
+//
+//       become one: `x - 48` as a number without a sign is above
+//       `57 - 48` exactly when `x` is outside 48 to 57. `b` must hold
+//       only its test, have `a` as its only way in, and pass on to
+//       `out` what `a` passes on. This is `c >= 48 && c <= 57`, and
+//       `x < 0 || x > limit`.
+//
+//   T4  The block of T2 again, and a way in that is a plain `jump`
+//       with a value that is not a constant: the jump becomes the
+//       test, `br v, yes, no` (after the comparison, when the block
+//       compares), with what the block would have passed on. A
+//       function that answers `a < b` and is put into the `if` that
+//       asks leaves this shape: the answer goes through a parameter
+//       only to be tested.
+//
+// Nothing here moves or removes an instruction that can be observed:
+// T1 changes operands, T2 the target of jumps past a block that only
+// reckons.
+
+// The outcome of comparison `op` on constants.
+fn th_compare(op: i64, a: i64, b: i64) -> bool {
+    return su_fold_binary(op, a, b) != 0
+}
+
+// T1 for the branch that ends block `b`. `uses` is from before any
+// change of this pass; only operands that still are the value change.
+fn th_known(f: mut IrFunc, cfg: IrCfg, uses: IrUses, b: i64) -> i64 {
+    let br = f.blk_last[b]
+    if br < 0 || f.ins_op[br] != IR_BR { return 0 }
+    let v = f.ins_a[br]
+    if v < 0 { return 0 }
+    let yes = f.edge_blk[f.ins_es[br]]
+    let no = f.edge_blk[f.ins_es[br] + 1]
+    if yes == no { return 0 }
+    var changed = 0
+    // What the branch itself passes on: `v` on its first way out is
+    // 1, on its second 0, however many other ways lead there.
+    var way = 0
+    while way < 2 {
+        let e = f.ins_es[br] + way
+        var a = 0
+        while a < f.edge_an[e] {
+            if f.args[f.edge_as[e] + a] == v {
+                f.args[f.edge_as[e] + a] = ir_const(mut f, 1 - way)
+                changed = changed + 1
+            }
+            a = a + 1
+        }
+        way = way + 1
+    }
+    var side = 0
+    while side < 2 {
+        var target = yes
+        if side == 1 { target = no }
+        side = side + 1
+        if cfg.pred_n[target] != 1 { continue }
+        var constant = -1
+        var k = 0
+        while k < uses.count[v] {
+            let user = uses.ins[uses.start[v] + k]
+            k = k + 1
+            if f.ins_op[user] == IR_NONE || f.ins_blk[user] < 0 { continue }
+            if !ir_dominates(cfg, target, f.ins_blk[user]) { continue }
+            let n = ir_operand_count(f, user)
+            var at = 0
+            while at < n {
+                if ir_operand(f, user, at) == v {
+                    if constant == -1 { constant = ir_const(mut f, 2 - side) }
+                    ir_set_operand(mut f, user, at, constant)
+                    changed = changed + 1
+                }
+                at = at + 1
+            }
+        }
+    }
+    return changed
+}
+
+// Whether block `j` only tests its parameter number `which.p`.
+struct ThTest {
+    ok: bool
+    // The place of the tested parameter among the block's.
+    p: i64
+    // The comparison, or -1 when the parameter itself is branched on;
+    // its constant, and whether the parameter is its right operand.
+    op: i64
+    with: i64
+    right: bool
+}
+
+fn th_test(f: IrFunc, uses: IrUses, j: i64) -> ThTest {
+    var none = ThTest { ok: false, p: -1, op: -1, with: 0, right: false }
+    let br = f.blk_last[j]
+    if br < 0 || f.ins_op[br] != IR_BR || f.blk_pn[j] == 0 { return none }
+    let first = f.blk_first[j]
+    var tested = f.ins_a[br]
+    var test = none
+    if first == br {
+        // `br p`
+    } else if f.ins_next[first] == br && ir_is_compare(f.ins_op[first]) && f.ins_res[first] == tested && tested >= 0 {
+        if uses.count[tested] != 1 { return none }
+        let a = f.ins_a[first]
+        let b = f.ins_b[first]
+        test.op = f.ins_op[first]
+        if ir_is_const(b) && a >= 0 {
+            tested = a
+            test.with = ir_const_value(f, b)
+        } else if ir_is_const(a) && b >= 0 {
+            tested = b
+            test.with = ir_const_value(f, a)
+            test.right = true
+        } else {
+            return none
+        }
+    } else {
+        return none
+    }
+    if tested < 0 { return none }
+    // The tested value is a parameter of `j`, and every use of every
+    // parameter is in `j`.
+    var k = 0
+    while k < f.blk_pn[j] {
+        let q = f.bparams[f.blk_ps[j] + k]
+        if q == tested { test.p = k }
+        var u = 0
+        while u < uses.count[q] {
+            if f.ins_blk[uses.ins[uses.start[q] + u]] != j { return none }
+            u = u + 1
+        }
+        k = k + 1
+    }
+    test.ok = test.p >= 0
+    return test
+}
+
+// What it says about `x` that the branch on comparison `cmp` leaves by
+// way `way` (0: the comparison holds): `x < bound` (`below`) or
+// `x > bound`.
+struct ThSide {
+    ok: bool
+    x: i64
+    below: bool
+    bound: i64
+}
+
+fn th_side(f: IrFunc, cmp: i64, way: i64) -> ThSide {
+    var side = ThSide { ok: false, x: -1, below: false, bound: 0 }
+    var op = f.ins_op[cmp]
+    let a = f.ins_a[cmp]
+    let b = f.ins_b[cmp]
+    var c = 0
+    if ir_is_const(b) && a >= 0 {
+        side.x = a
+        c = ir_const_value(f, b)
+    } else if ir_is_const(a) && b >= 0 {
+        side.x = b
+        c = ir_const_value(f, a)
+        // `c < x` is `x > c`.
+        if op == IR_SLT {
+            op = IR_SGT
+        } else if op == IR_SGT {
+            op = IR_SLT
+        } else if op == IR_SLE {
+            op = IR_SGE
+        } else if op == IR_SGE {
+            op = IR_SLE
+        }
+    } else {
+        return side
+    }
+    if f.val_ty[side.x] != IR_I64 { return side }
+    if c > 1152921504606846976 || c < -1152921504606846976 { return side }
+    let holds = way == 0
+    if op == IR_SLT {
+        side.below = holds
+        side.bound = c
+        if !holds { side.bound = c - 1 }
+    } else if op == IR_SLE {
+        side.below = holds
+        side.bound = c + 1
+        if !holds { side.bound = c }
+    } else if op == IR_SGT {
+        side.below = !holds
+        side.bound = c
+        if !holds { side.bound = c + 1 }
+    } else if op == IR_SGE {
+        side.below = !holds
+        side.bound = c - 1
+        if !holds { side.bound = c }
+    } else {
+        return side
+    }
+    side.ok = true
+    return side
+}
+
+// The comparison block `b` branches on, when it is defined by a
+// comparison; -1 otherwise.
+fn th_branch_test(f: IrFunc, b: i64) -> i64 {
+    let br = f.blk_last[b]
+    if br < 0 || f.ins_op[br] != IR_BR { return -1 }
+    let v = f.ins_a[br]
+    if v < 0 || f.val_ins[v] < 0 { return -1 }
+    let cmp = f.val_ins[v]
+    if !ir_is_compare(f.ins_op[cmp]) || f.ins_res[cmp] != v { return -1 }
+    return cmp
+}
+
+// T3 for block `a`.
+fn th_range(f: mut IrFunc, cfg: IrCfg, uses: IrUses, a: i64) -> i64 {
+    let first = th_branch_test(f, a)
+    if first < 0 { return 0 }
+    let br = f.blk_last[a]
+    var way = 0
+    while way < 2 {
+        let out_edge = f.ins_es[br] + way
+        let b = f.edge_blk[f.ins_es[br] + 1 - way]
+        let out = f.edge_blk[out_edge]
+        way = way + 1
+        if b == a || b == out || cfg.pred_n[b] != 1 || f.blk_pn[b] != 0 { continue }
+        if f.edge_an[f.ins_es[br] + 2 - way] != 0 { continue }
+        let second = th_branch_test(f, b)
+        if second < 0 || f.blk_first[b] != second || f.ins_next[second] != f.blk_last[b] {
+            continue
+        }
+        // A test this round made is looked at in the next.
+        if f.ins_res[second] >= uses.count.len() || uses.count[f.ins_res[second]] != 1 { continue }
+        let br2 = f.blk_last[b]
+        var way2 = 0
+        while way2 < 2 {
+            let e2 = f.ins_es[br2] + way2
+            let rest = f.ins_es[br2] + 1 - way2
+            way2 = way2 + 1
+            if f.edge_blk[e2] != out || f.edge_blk[rest] == b || f.edge_an[e2] != f.edge_an[out_edge] {
+                continue
+            }
+            var same = true
+            var k = 0
+            while k < f.edge_an[e2] {
+                let mine = f.args[f.edge_as[e2] + k]
+                let theirs = f.args[f.edge_as[out_edge] + k]
+                if ir_is_const(mine) && ir_is_const(theirs) {
+                    if ir_const_value(f, mine) != ir_const_value(f, theirs) { same = false }
+                } else if mine != theirs {
+                    same = false
+                }
+                k = k + 1
+            }
+            if !same { continue }
+            let one = th_side(f, first, way - 1)
+            let two = th_side(f, second, way2 - 1)
+            if !one.ok || !two.ok || one.x != two.x || one.below == two.below { continue }
+            var low = one.bound
+            var high = two.bound
+            if two.below {
+                low = two.bound
+                high = one.bound
+            }
+            if low > high { continue }
+            // From here on the two tests are one.
+            var out_args: List[i64] = []
+            k = 0
+            while k < f.edge_an[out_edge] {
+                out_args.push(f.args[f.edge_as[out_edge] + k])
+                k = k + 1
+            }
+            var rest_args: List[i64] = []
+            k = 0
+            while k < f.edge_an[rest] {
+                rest_args.push(f.args[f.edge_as[rest] + k])
+                k = k + 1
+            }
+            let onward = f.edge_blk[rest]
+            ir_remove(mut f, br)
+            var moved = one.x
+            if low != 0 {
+                let by = ir_const(mut f, low)
+                moved = ir_binary(mut f, a, IR_SUB, one.x, by)
+            }
+            let width = ir_const(mut f, high - low)
+            let outside = ir_binary(mut f, a, IR_UGT, moved, width)
+            ir_br(mut f, a, outside, out, out_args, onward, rest_args)
+            return 1
+        }
+    }
+    return 0
+}
+
+// What block `j` would pass on by its way out `out`, with its own
+// parameters replaced by what the way in `e` gives for them.
+fn th_onward(f: IrFunc, j: i64, e: i64, out: i64) -> List[i64] {
+    var onward: List[i64] = []
+    var a = 0
+    while a < f.edge_an[out] {
+        var x = f.args[f.edge_as[out] + a]
+        var q = 0
+        while q < f.blk_pn[j] {
+            if x == f.bparams[f.blk_ps[j] + q] {
+                x = f.args[f.edge_as[e] + q]
+                break
+            }
+            q = q + 1
+        }
+        onward.push(x)
+        a = a + 1
+    }
+    return onward
+}
+
+// One round of T1, T2, T3 and T4.
+fn th_round(f: mut IrFunc) -> i64 {
+    var changed = 0
+    var cfg = ir_cfg(f)
+    var uses = ir_uses(f)
+    for b in cfg.rpo {
+        changed = changed + th_known(mut f, cfg, uses, b)
+    }
+    if changed > 0 { uses = ir_uses(f) }
+    var ranges = 0
+    for b in cfg.rpo {
+        ranges = ranges + th_range(mut f, cfg, uses, b)
+    }
+    if ranges > 0 { return changed + ranges }
+    var header = false.filled(f.blk_first.len())
+    for h in cfg.loop_header {
+        header[h] = true
+    }
+    if cfg.irreducible > 0 { return changed }
+    for j in cfg.rpo {
+        if header[j] || j == f.order[0] { continue }
+        let test = th_test(f, uses, j)
+        if !test.ok { continue }
+        let br = f.blk_last[j]
+        var k = 0
+        while k < cfg.pred_n[j] {
+            let e = cfg.pred_edge[cfg.pred_s[j] + k]
+            let from = cfg.pred_blk[cfg.pred_s[j] + k]
+            k = k + 1
+            if from == j || f.edge_blk[e] != j { continue }
+            let given = f.args[f.edge_as[e] + test.p]
+            if !ir_is_const(given) {
+                // T4: a way in that is a plain `jump` does the test itself.
+                let jump = f.blk_last[from]
+                if f.ins_op[jump] != IR_JUMP || f.ins_es[jump] != e { continue }
+                let yes_args = th_onward(f, j, e, f.ins_es[br])
+                let no_args = th_onward(f, j, e, f.ins_es[br] + 1)
+                let yes = f.edge_blk[f.ins_es[br]]
+                let no = f.edge_blk[f.ins_es[br] + 1]
+                ir_remove(mut f, jump)
+                var cond = given
+                if test.op >= 0 {
+                    let with = ir_const(mut f, test.with)
+                    if test.right {
+                        cond = ir_binary(mut f, from, test.op, with, given)
+                    } else {
+                        cond = ir_binary(mut f, from, test.op, given, with)
+                    }
+                }
+                ir_br(mut f, from, cond, yes, yes_args, no, no_args)
+                changed = changed + 1
+                continue
+            }
+            let value = ir_const_value(f, given)
+            var holds = value != 0
+            if test.op >= 0 {
+                if test.right {
+                    holds = th_compare(test.op, test.with, value)
+                } else {
+                    holds = th_compare(test.op, value, test.with)
+                }
+            }
+            var out = f.ins_es[br]
+            if !holds { out = out + 1 }
+            let onward = th_onward(f, j, e, out)
+            f.edge_blk[e] = f.edge_blk[out]
+            ir_set_edge_args(mut f, e, onward)
+            changed = changed + 1
+        }
+    }
+    return changed
+}
+
+// Runs the rounds until one finds nothing: a way in that was passed by
+// can leave a block with one way in, which T1 then knows more about.
+fn ir_thread(f: mut IrFunc) -> i64 {
+    var changed = 0
+    var rounds = 0
+    while rounds < 8 {
+        rounds = rounds + 1
+        let n = th_round(mut f)
+        changed = changed + n
+        if n == 0 { break }
+    }
+    return changed
+}

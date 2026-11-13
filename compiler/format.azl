@@ -224,6 +224,78 @@ fn fmt_if_on_one_line(pieces: Pieces, shape: Shapes, keyword: i64, opener: i64, 
     return depth * 4 + fmt_width(pieces, keyword, closer) <= FMT_ONE_LINE
 }
 
+// The `if` that starts the chain `if ... else if ... else` which the
+// block at `opener` belongs to, when that chain gives a value: its `if`
+// follows `=`, an `op=` or `return`. Otherwise -1.
+fn fmt_value_head(pieces: Pieces, shape: Shapes, if_keyword: List[i64], opener: i64) -> i64 {
+    var at = opener
+    while true {
+        var keyword = if_keyword[at]
+        if keyword < 0 {
+            // The block of a final `else`.
+            if at == 0 || pieces.kinds[at - 1] != TOK_ELSE { return -1 }
+            keyword = at - 1
+        } else if keyword > 0 && pieces.kinds[keyword - 1] == TOK_ELSE {
+            keyword = keyword - 1
+        }
+        if keyword == 0 { return -1 }
+        let before = pieces.kinds[keyword - 1]
+        if pieces.kinds[keyword] != TOK_ELSE {
+            if before == TOK_ASSIGN || before == TOK_RETURN || (before >= TOK_PLUS_ASSIGN && before <= TOK_SHR_ASSIGN) {
+                return keyword
+            }
+            return -1
+        }
+        if before != TOK_RBRACE { return -1 }
+        at = shape.partner[keyword - 1]
+        if at < 0 { return -1 }
+    }
+    return -1
+}
+
+// Whether the value `if` whose first keyword is piece `head` is written
+// on one line: every branch one expression or one jump, no comment, and
+// the whole statement at most `FMT_ONE_LINE` columns wide. Otherwise
+// every branch gets lines of its own, like a statement `if`.
+fn fmt_value_on_one_line(pieces: Pieces, shape: Shapes, if_keyword: List[i64], head: i64, depth: i64) -> bool {
+    let count = pieces.kinds.len()
+    // The statement starts where its line starts.
+    var start = head
+    while start > 0 && pieces.newlines[start] == 0 && !opens_bracket(pieces.kinds[start - 1]) {
+        start = start - 1
+    }
+    var keyword = head
+    var end = head
+    while true {
+        // The block of this `if`, or of the final `else`.
+        var opener = keyword + 1
+        if pieces.kinds[keyword] == TOK_IF {
+            while opener < count && if_keyword[opener] != keyword {
+                if pieces.kinds[opener] == PIECE_COMMENT || pieces.newlines[opener] > 0 {
+                    return false
+                }
+                opener = opener + 1
+            }
+        }
+        if opener >= count || pieces.kinds[opener] != TOK_LBRACE { return false }
+        let closer = shape.partner[opener]
+        if closer <= opener + 1 { return false }
+        var k = opener + 1
+        while k < closer {
+            let kind = pieces.kinds[k]
+            if kind == PIECE_COMMENT { return false }
+            if kind == TOK_LBRACE && shape.bracket[k] != BRACKET_FREE { return false }
+            if k > opener + 1 && pieces.newlines[k] > 0 { return false }
+            k = k + 1
+        }
+        end = closer
+        if closer + 1 >= count || pieces.kinds[closer + 1] != TOK_ELSE { break }
+        keyword = closer + 1
+        if keyword + 1 < count && pieces.kinds[keyword + 1] == TOK_IF { keyword = keyword + 1 }
+    }
+    return depth * 4 + fmt_width(pieces, start, end) <= FMT_ONE_LINE
+}
+
 // Matches the brackets and works out what each one encloses.
 fn fmt_shapes(pieces: Pieces) -> Shapes {
     let count = pieces.kinds.len()
@@ -313,8 +385,19 @@ fn fmt_shapes(pieces: Pieces) -> Shapes {
         if opens_bracket(pieces.kinds[opener]) && closer >= 0 {
             let bracket = shape.bracket[opener]
             if bracket == BRACKET_BODY {
-                shape.multi[opener] = !(if_keyword[opener] >= 0 &&
-                        fmt_if_on_one_line(pieces, shape, if_keyword[opener], opener, closer, if_depth[opener]))
+                let head = fmt_value_head(pieces, shape, if_keyword, opener)
+                if head >= 0 {
+                    var head_block = head + 1
+                    while head_block < count && if_keyword[head_block] != head {
+                        head_block = head_block + 1
+                    }
+                    var depth = 0
+                    if head_block < count { depth = if_depth[head_block] }
+                    shape.multi[opener] = !fmt_value_on_one_line(pieces, shape, if_keyword, head, depth)
+                } else {
+                    shape.multi[opener] = !(if_keyword[opener] >= 0 &&
+                            fmt_if_on_one_line(pieces, shape, if_keyword[opener], opener, closer, if_depth[opener]))
+                }
             } else {
                 // For a free bracket only up to its first token.
                 var last = closer

@@ -86,8 +86,15 @@ fn str_split(s: str, separator: str) -> List[str] {
     let n = separator.len()
     var start = 0
     var i = 0
+    var first = 0
+    if n > 0 { first = separator[0] }
     while n > 0 && i + n <= s.len() {
-        var j = 0
+        // Most places do not even start like the separator.
+        if s[i] != first {
+            i = i + 1
+            continue
+        }
+        var j = 1
         while j < n && s[i + j] == separator[j] {
             j = j + 1
         }
@@ -211,8 +218,18 @@ fn str_index_of_from(s: str, part: str, start: i64) -> Option[i64] {
     var i = start
     if i < 0 { i = 0 }
     // `i <= len - n` and not `i + n <= len`: a huge `start` must not wrap.
+    if n == 0 {
+        if i <= s.len() { return Some(i) }
+        return None
+    }
+    let first = part[0]
     while i <= s.len() - n {
-        var j = 0
+        // Most places do not even start like `part`.
+        if s[i] != first {
+            i = i + 1
+            continue
+        }
+        var j = 1
         while j < n && s[i + j] == part[j] {
             j = j + 1
         }
@@ -455,42 +472,59 @@ fn list_max[T](items: List[T]) -> Option[T] {
 // list: for numbers and strings. Equal items keep their order. It
 // merges runs of 1, 2, 4, ... items, so the work grows as n log n.
 fn list_sorted[T](items: List[T]) -> List[T] {
+    // A merge sort between two lists of the full length: every pass
+    // merges runs of `width` items from one into the other.
     var from = items
     let n = from.len()
+    if n < 2 { return from }
+    var to = items
     var width = 1
     while width < n {
-        var to: List[T] = []
-        var start = 0
-        while start < n {
-            var middle = start + width
-            if middle > n { middle = n }
-            var end = middle + width
-            if end > n { end = n }
-            var a = start
-            var b = middle
-            while a < middle && b < end {
-                if from[b].compare(from[a]) < 0 {
-                    to.push(from[b])
-                    b = b + 1
-                } else {
-                    to.push(from[a])
-                    a = a + 1
-                }
-            }
-            while a < middle {
-                to.push(from[a])
-                a = a + 1
-            }
-            while b < end {
-                to.push(from[b])
-                b = b + 1
-            }
-            start = end
-        }
-        from = to
+        from.merge_runs(mut to, width)
+        width = width * 2
+        if width >= n { return to }
+        to.merge_runs(mut from, width)
         width = width * 2
     }
     return from
+}
+
+// One pass of `sorted`: the sorted runs of `width` items of `from`,
+// merged two by two, into `to`, which is as long as `from`. Of two
+// equal items the one from the earlier run comes first.
+fn list_merge_runs[T](from: List[T], to: mut List[T], width: i64) {
+    let n = from.len()
+    var start = 0
+    var k = 0
+    while start < n {
+        var middle = start + width
+        if middle > n { middle = n }
+        var end = middle + width
+        if end > n { end = n }
+        var a = start
+        var b = middle
+        while a < middle && b < end {
+            if from[b].compare(from[a]) < 0 {
+                to[k] = from[b]
+                b = b + 1
+            } else {
+                to[k] = from[a]
+                a = a + 1
+            }
+            k = k + 1
+        }
+        while a < middle {
+            to[k] = from[a]
+            a = a + 1
+            k = k + 1
+        }
+        while b < end {
+            to[k] = from[b]
+            b = b + 1
+            k = k + 1
+        }
+        start = end
+    }
 }
 
 // -1 when `n` is less than `other`, 1 when it is greater, 0 when they
@@ -801,4 +835,238 @@ fn any_filled[T](value: T, count: i64) -> List[T] {
 // The text itself: what `"{s}"` puts there for a `str`.
 fn str_text(s: str) -> str {
     return s
+}
+
+// ---- reading an `Option` or a `Result` in one call ------------------------
+
+// What `o` holds, or `default` when it holds nothing. `default` is worked
+// out either way; use `match` when that is costly.
+fn option_or[T](o: Option[T], default: T) -> T {
+    match o {
+        Some(value) => return value
+        None => return default
+    }
+}
+
+// What `o` holds. With `None` the program stops with `azol: <message>`.
+fn option_expect[T](o: Option[T], message: str) -> T {
+    match o {
+        Some(value) => return value
+        None => {
+            eprint("azol: " + message)
+            exit(1)
+        }
+    }
+}
+
+fn option_is_some[T](o: Option[T]) -> bool {
+    match o {
+        Some(_) => return true
+        None => return false
+    }
+}
+
+fn option_is_none[T](o: Option[T]) -> bool {
+    match o {
+        Some(_) => return false
+        None => return true
+    }
+}
+
+// What the `Ok` of `r` holds, or `default` when it is an `Err`.
+fn result_or[T, E](r: Result[T, E], default: T) -> T {
+    match r {
+        Ok(value) => return value
+        Err(_) => return default
+    }
+}
+
+// What the `Ok` of `r` holds. With an `Err` the program stops with
+// `azol: <message>: <the error>` when the error is a text or a number,
+// and with `azol: <message>` otherwise.
+fn result_expect[T](r: Result[T, str], message: str) -> T {
+    match r {
+        Ok(value) => return value
+        Err(why) => {
+            eprint("azol: " + message + ": " + why)
+            exit(1)
+        }
+    }
+}
+
+fn result_expect[T](r: Result[T, i64], message: str) -> T {
+    match r {
+        Ok(value) => return value
+        Err(why) => {
+            eprint("azol: " + message + ": " + str(why))
+            exit(1)
+        }
+    }
+}
+
+fn result_expect[T, E](r: Result[T, E], message: str) -> T {
+    match r {
+        Ok(value) => return value
+        Err(_) => {
+            eprint("azol: " + message)
+            exit(1)
+        }
+    }
+}
+
+fn result_is_ok[T, E](r: Result[T, E]) -> bool {
+    match r {
+        Ok(_) => return true
+        Err(_) => return false
+    }
+}
+
+fn result_is_err[T, E](r: Result[T, E]) -> bool {
+    match r {
+        Ok(_) => return false
+        Err(_) => return true
+    }
+}
+
+// The `Ok` of `r` as an `Option`; the error is dropped.
+fn result_ok[T, E](r: Result[T, E]) -> Option[T] {
+    match r {
+        Ok(value) => return Some(value)
+        Err(_) => return None
+    }
+}
+
+// ---- more for maps, lists, numbers and strings ----------------------------
+
+// A copy of the value of `key`, or `default` when the map does not have it.
+fn map_get_or[V](map: Map[V], key: str, default: V) -> V {
+    let found = map.slot_of(key)
+    if found < 0 { return default }
+    return map.values[map.table[found] - 1]
+}
+
+// Adds `amount` to the number of `key`; a key the map does not have
+// counts as 0.
+fn map_add(map: mut Map[i64], key: str, amount: i64) {
+    let found = map.slot_of(key)
+    if found < 0 {
+        map.set(key, amount)
+        return
+    }
+    let at = map.table[found] - 1
+    map.values[at] = map.values[at] + amount
+}
+
+// Adds `item` to the list of `key`; a key the map does not have starts
+// with an empty list.
+fn map_append[T](map: mut Map[List[T]], key: str, item: T) {
+    let found = map.slot_of(key)
+    if found < 0 {
+        map.set(key, [item])
+        return
+    }
+    let at = map.table[found] - 1
+    map.values[at].push(item)
+}
+
+// A copy of the values, in the order of `keys()`.
+fn map_values[V](map: Map[V]) -> List[V] {
+    return map.values
+}
+
+fn map_is_empty[V](map: Map[V]) -> bool {
+    return map.keys.len() == 0
+}
+
+// The texts of numbers or `bool`s in one string, with `separator` between
+// them.
+fn list_join[T](parts: List[T], separator: str) -> str {
+    var out = ""
+    for i, part in parts {
+        if i > 0 { out = out + separator }
+        out = out + str(part)
+    }
+    return out
+}
+
+// Exchanges the items at `i` and `j`.
+fn list_swap[T](items: mut List[T], i: i64, j: i64) {
+    let first = items[i]
+    items[i] = items[j]
+    items[j] = first
+}
+
+// Puts the items in the opposite order, in place.
+fn list_reverse[T](items: mut List[T]) {
+    var low = 0
+    var high = items.len() - 1
+    while low < high {
+        let first = items[low]
+        items[low] = items[high]
+        items[high] = first
+        low = low + 1
+        high = high - 1
+    }
+}
+
+// Takes the first item equal to `wanted` out; false when there is none.
+fn list_remove[T](items: mut List[T], wanted: T) -> bool {
+    var at = 0
+    while at < items.len() {
+        if items[at] == wanted {
+            items.remove_at(at)
+            return true
+        }
+        at = at + 1
+    }
+    return false
+}
+
+// The items `from` up to but not including `to`, as a new list. Stops
+// the program unless 0 <= `from` <= `to` <= `items.len()`.
+fn list_slice[T](items: List[T], from: i64, to: i64) -> List[T] {
+    if from < 0 || from > to || to > items.len() {
+        eprint("azol: slice out of range")
+        exit(1)
+    }
+    var out: List[T] = []
+    var at = from
+    while at < to {
+        out.push(items[at])
+        at = at + 1
+    }
+    return out
+}
+
+// -1, 0 or 1: whether `n` is below, at or above zero.
+fn i64_sign(n: i64) -> i64 {
+    if n > 0 { return 1 }
+    if n < 0 { return -1 }
+    return 0
+}
+
+// The characters of `s`, each as a string of its own: the bytes of one
+// UTF-8 character stay together. In a text that is not UTF-8, a byte
+// that starts no character is a string of its own.
+fn str_chars(s: str) -> List[str] {
+    var out: List[str] = []
+    var at = 0
+    while at < s.len() {
+        let lead = s[at]
+        var size = 1
+        if lead >= 0xF0 {
+            size = 4
+        } else if lead >= 0xE0 {
+            size = 3
+        } else if lead >= 0xC0 {
+            size = 2
+        }
+        var end = at + 1
+        while end < at + size && end < s.len() && (s[end] & 0xC0) == 0x80 {
+            end = end + 1
+        }
+        out.push(s.slice(at, end))
+        at = end
+    }
+    return out
 }

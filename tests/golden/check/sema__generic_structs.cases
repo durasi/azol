@@ -25,8 +25,8 @@ checked 16 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 68c568b3f5ed679e871431b63061c594b36c9496420d43fe1ab43f9c99fc44fa
-x86_64-linux 80ee230502d20b80bec7f645b1c95e20db996ef206aa480f89bf4f6c550a1fb2
-aarch64-linux 312e8e3204c860fa1880409be00c03aba2e8a6d1e93364d3ff958412314b5fd4
+x86_64-linux ef54568b773a41b433f4b453168c6055dafc3a3b5eaccb73435490e936cd04aa
+aarch64-linux 0712b8479234c554dfbdac83fe172a77b66545b2198570eb1849cd1c0df46b8d
 ==== 2
 ---- file a.azl (no newline at end)
 struct Pair[A, B] {
@@ -49,5 +49,5 @@ checked 12 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 375ec115ff671b6959e9b70ba8c25cd051162e9a08665a3b3ff8c914a391a838
-x86_64-linux f6e69486b2b1aa1052920fa6d66c24ed25b88d0b2f48d3d00eb789bf22a95996
-aarch64-linux 276974efb062ae66fb2d43da0f7d2bc8ca40a1ff97af5bdba7b582a60198be54
+x86_64-linux c4b79e8f679d440596e3a22b0ea960468496b1b109df43747b6ecf0efd08a703
+aarch64-linux eb8a241dbd6df542437dc2b0e4d4fa176b4eaaf6590b9dd3e5e752855bd9ac8d

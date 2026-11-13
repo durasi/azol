@@ -20,9 +20,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 46499388,
+        "azol": 32150989,
         "rust": 28876738,
-        "opt": 45479343
+        "opt": 31040955
       }
     },
     {
@@ -34,9 +34,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 27824558,
-        "rust": 19536751,
-        "opt": 18332211
+        "azol": 27086662,
+        "rust": 19536752,
+        "opt": 16295534
       }
     },
     {
@@ -48,9 +48,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 16720320,
-        "rust": 9138136,
-        "opt": 9004090
+        "azol": 16689517,
+        "rust": 9138139,
+        "opt": 8970792
       }
     },
     {
@@ -62,9 +62,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 98131889,
+        "azol": 98130969,
         "rust": 171954449,
-        "opt": 82667872
+        "opt": 82666952
       }
     },
     {
@@ -76,9 +76,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 223001019,
+        "azol": 223000877,
         "rust": 47442104,
-        "opt": 65000988
+        "opt": 64000846
       }
     },
     {
@@ -90,9 +90,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 103161283,
+        "azol": 102908117,
         "rust": 60740975,
-        "opt": 65411998
+        "opt": 63060160
       }
     },
     {
@@ -104,9 +104,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 133587177,
-        "rust": 31869069,
-        "opt": 66565319
+        "azol": 132358053,
+        "rust": 31869065,
+        "opt": 52655863
       }
     },
     {
@@ -118,9 +118,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 107259354,
+        "azol": 107121509,
         "rust": 28651361,
-        "opt": 57176335
+        "opt": 51420140
       }
     },
     {
@@ -132,9 +132,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 164840557,
-        "rust": 106700735,
-        "opt": 144579290
+        "azol": 164839305,
+        "rust": 106700731,
+        "opt": 126177278
       }
     },
     {
@@ -148,7 +148,7 @@
       "instructions": {
         "azol": 36349435,
         "rust": 26854973,
-        "opt": 23400974
+        "opt": 22886746
       }
     },
     {
@@ -160,9 +160,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 76057789,
+        "azol": 63558760,
         "rust": 67909124,
-        "opt": 65063142
+        "opt": 48574387
       }
     },
     {
@@ -174,9 +174,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 70810081,
-        "rust": 76174857,
-        "opt": 57514328
+        "azol": 70564339,
+        "rust": 76174853,
+        "opt": 54619595
       }
     },
     {
@@ -190,7 +190,7 @@
       "instructions": {
         "azol": 43536458,
         "rust": 38222825,
-        "opt": 30363010
+        "opt": 28386714
       }
     },
     {
@@ -202,9 +202,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 77599843,
-        "rust": 100614828,
-        "opt": 59955244
+        "azol": 74699261,
+        "rust": 100614831,
+        "opt": 55208915
       }
     },
     {
@@ -216,9 +216,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 86809454,
+        "azol": 81650817,
         "rust": 34312300,
-        "opt": 62368635
+        "opt": 52704221
       }
     },
     {
@@ -230,9 +230,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 99557762,
+        "azol": 99126500,
         "rust": 80962402,
-        "opt": 80609741
+        "opt": 74756657
       }
     },
     {
@@ -244,9 +244,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 72039898,
-        "rust": 37856928,
-        "opt": 44422482
+        "azol": 71302672,
+        "rust": 37856931,
+        "opt": 37535248
       }
     },
     {
@@ -258,9 +258,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 89014861,
+        "azol": 88984253,
         "rust": 60815270,
-        "opt": 108498330
+        "opt": 72438564
       }
     },
     {
@@ -272,9 +272,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 48525007,
+        "azol": 48033291,
         "rust": 21530598,
-        "opt": 29727925
+        "opt": 28835250
       }
     },
     {
@@ -286,9 +286,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 416214736,
+        "azol": 415966243,
         "rust": 95152741,
-        "opt": 169209280
+        "opt": 152330977
       }
     },
     {
@@ -300,9 +300,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 69691579,
+        "azol": 69445634,
         "rust": 49554538,
-        "opt": 51393093
+        "opt": 48849278
       }
     },
     {
@@ -314,9 +314,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 93341623,
+        "azol": 93218979,
         "rust": 23085066,
-        "opt": 72273556
+        "opt": 45173937
       }
     },
     {
@@ -328,9 +328,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 64098134,
+        "azol": 63852276,
         "rust": 50939112,
-        "opt": 49620285
+        "opt": 48201563
       }
     },
     {
@@ -342,9 +342,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 171701091,
+        "azol": 160325381,
         "rust": 40767411,
-        "opt": 114691385
+        "opt": 75425889
       }
     },
     {
@@ -356,9 +356,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 41699672,
+        "azol": 39902453,
         "rust": 10023257,
-        "opt": 35190162
+        "opt": 15297937
       }
     },
     {
@@ -384,9 +384,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 126818951,
+        "azol": 112370213,
         "rust": 58934612,
-        "opt": 105000722
+        "opt": 86670279
       }
     },
     {
@@ -398,9 +398,9 @@
       "ratio": null,
       "native_ratio": null,
       "instructions": {
-        "azol": 49096060,
+        "azol": 38802894,
         "rust": 18479005,
-        "opt": 43405227
+        "opt": 33172099
       }
     }
   ],
@@ -411,7 +411,7 @@
   ],
   "mean": null,
   "native_mean": null,
-  "instruction_mean": 1.8451502265987765,
+  "instruction_mean": 1.767971283842465,
   "bound": 1.1,
   "verdict": "GATE: NO VERDICT (no timing was asked for)",
   "failures": []

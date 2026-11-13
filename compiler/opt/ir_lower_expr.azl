@@ -457,6 +457,29 @@ fn lw_bool_as_number(lw: mut Lower, value: i64) -> i64 {
     return ir_select(mut lw.f, lw.b, value, one, zero)
 }
 
+// Whether the strings whose three slots are at `left` and `right`
+// hold the same bytes. The lengths are compared here; `str.same` is
+// asked only about two strings of the same length, and is given their
+// buffers, so that the slots need not stay in memory for it.
+fn lw_str_equal(lw: mut Lower, left: LwAddr, right: LwAddr) -> i64 {
+    let left_len = lw_load(mut lw, IR_I64, left, 8)
+    let right_len = lw_load(mut lw, IR_I64, right, 8)
+    let same_len = lw_bin(mut lw, IR_EQ, left_len, right_len)
+    let bytes = lw_block(mut lw)
+    let after = lw_block(mut lw)
+    let result = ir_add_block_param(mut lw.f, after, IR_BOOL)
+    let no = lw_const(mut lw, 0)
+    ir_br(mut lw.f, lw.b, same_len, bytes, lw.none, after, [no])
+    lw.b = bytes
+    let left_p = lw_load(mut lw, IR_PTR, left, 0)
+    let right_p = lw_load(mut lw, IR_PTR, right, 0)
+    lw.need_str_same = true
+    let call = ir_call(mut lw.f, lw.b, "str.same", [left_p, right_p, left_len], [IR_BOOL])
+    ir_jump(mut lw.f, lw.b, after, [lw.f.ins_res[call]])
+    lw.b = after
+    return result
+}
+
 fn lw_binary(lw: mut Lower, c: Checker, p: Parser, op: i64, lhs: i64, rhs: i64) -> i64 {
     if op == LW_AND || op == LW_OR {
         // Short circuit: the left value is the result when it decides.
@@ -493,8 +516,7 @@ fn lw_binary(lw: mut Lower, c: Checker, p: Parser, op: i64, lhs: i64, rhs: i64) 
         let right_at = lw_ptr(mut lw, right)
         if op == LW_EQ || op == LW_NE {
             // `==` and `!=` on strings compare the bytes.
-            let call = lw_rt(mut lw, IR_RT_STR_EQ_BUF, left_at, right_at, -1, -1)
-            let same = lw.f.ins_res[call]
+            let same = lw_str_equal(mut lw, left, right)
             if op == LW_EQ { return same }
             let one = lw_const(mut lw, 1)
             return lw_bin(mut lw, IR_XOR, same, one)

@@ -1,0 +1,19 @@
+; T4 with a comparison in the block: the ways in compare, and pass on what the block would have.
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v1 = slt p0, p1
+    br v1, b1, b2
+b1:
+    v2 = sub p0, p1
+    jump b3(v2, 5)
+b2:
+    v3 = add p0, p1
+    jump b3(v3, 6)
+b3(v4: i64, v5: i64):
+    v6 = slt v4, 0
+    br v6, b4(v5), b5
+b4(v7: i64):
+    ret v7
+b5:
+    ret 0
+}

@@ -1,0 +1,92 @@
+// expect-exit: 0
+// expect-line: 5 0 text none
+// expect-line: 7 9
+// expect-line: true false false true
+// expect-line: 3 -1 2 0
+// expect-line: true false false true
+// expect-line: 4 nothing
+// expect-line: 2 0
+// expect-line: 5 -3
+// expect-line: a,b|c
+// expect-line: 1,2 true
+// expect-line: true 0 false
+// expect-line: 1, 2, 3 true|false
+// expect-line: 3 2 1
+// expect-line: c b a
+// expect-line: true 2 false 2
+// expect-line: 1,2 0 b
+// expect-line: 1 0 -1
+// expect-line: 4 h é € 😀
+// expect-line: 3 1
+// The library functions that read an `Option` or a `Result` in one call,
+// and the additions for maps, lists, numbers and strings.
+struct P {
+    name: str
+    n: i64
+}
+
+fn parse(s: str) -> Result[i64, str] {
+    match s.to_i64() {
+        Some(n) => return Ok(n)
+        None => return Err("not a number: " + s)
+    }
+}
+
+fn code(n: i64) -> Result[str, i64] {
+    if n < 0 { return Err(n) }
+    return Ok("ok")
+}
+
+fn pair(n: i64) -> Result[P, P] {
+    if n < 0 { return Err(P { name: "bad", n: n }) }
+    return Ok(P { name: "good", n: n })
+}
+
+fn main() {
+    let some: Option[i64] = Some(5)
+    let none: Option[i64] = None
+    let word: Option[str] = Some("text")
+    let no_word: Option[str] = None
+    print("{some.or(0)} {none.or(0)} " + word.or("?") + " " + no_word.or("none"))
+    print(str(some.expect("there is one") + 2) + " " + str("9".to_i64().expect("a digit")))
+    print("{some.is_some()} {some.is_none()} {none.is_some()} {none.is_none()}")
+    print(str(parse("3").or(-1)) + " " + str(parse("x").or(-1)) + " " + str(parse("2").expect("a number")) + " " + str(pair(-1).or(P { name: "", n: 0 }).n))
+    let good = parse("3")
+    let bad = parse("x")
+    print("{good.is_ok()} {good.is_err()} {bad.is_ok()} {bad.is_err()}")
+    print(str(parse("4").ok().or(0)) + " " + code(-1).ok().or("nothing"))
+    print(str(pair(2).expect("a pair").n) + " " + str(code(1).expect("a code").len() - 2))
+    var counts: Map[i64] = new_map()
+    counts.add("a", 2)
+    counts.add("a", 3)
+    counts.add("b", -3)
+    print(str(counts.get_or("a", 0)) + " " + str(counts.get_or("b", 0) + counts.get_or("c", 0)))
+    var groups: Map[List[str]] = new_map()
+    groups.append("x", "a")
+    groups.append("y", "c")
+    groups.append("x", "b")
+    print(groups.get_or("x", []).join(",") + "|" + groups.get_or("y", []).join(","))
+    var by_number: Map[List[i64]] = new_map()
+    by_number.append("n", 1)
+    by_number.append("n", 2)
+    print(by_number.get_or("n", []).join(",") + " " + str(by_number.get_or("m", []).is_empty()))
+    let empty: Map[bool] = new_map()
+    print("{empty.is_empty()} {empty.values().len()} {counts.is_empty()}")
+    print([1, 2, 3].join(", ") + " " + [true, false].join("|"))
+    var xs = [1, 2, 3]
+    xs.swap(0, 2)
+    print("{xs[0]} {xs[1]} {xs[2]}")
+    var names = ["a", "b", "c"]
+    names.reverse()
+    print(names.join(" "))
+    var ys = [5, 6, 5, 7]
+    let first = ys.remove(5)
+    let size = ys.len() - 1
+    let second = ys.remove(9)
+    print("{first} {size} {second} {ys.index_of(7).or(-1)}")
+    print(xs.slice(1, 3).reversed().join(",") + " {xs.slice(2, 2).len()} " + names.slice(1, 2).join(""))
+    print("{(5).sign()} {(0).sign()} {(-12).sign()}")
+    let chars = "hé€😀".chars()
+    print("{chars.len()} " + chars.join(" "))
+    print("{counts.values().len() + 1} {groups.values()[1].len()}")
+}

@@ -1,0 +1,104 @@
+// expect-exit: 0
+// expect-line: put k=3
+// expect-line: get q
+// expect-line: stop
+// expect-line: nothing
+// expect-line: zero
+// expect-line: one more
+// expect-line: other 7
+// expect-line: failed: no
+// expect-line: yes ada
+// expect-line: off bob
+// expect-line: none
+// expect-line: hello
+// expect-line: text x
+// expect-line: deep 5
+// expect-line: deep none
+// expect-line: shallow
+// expect-line: 12
+// Patterns inside patterns: variants, numbers, `bool`s and strings
+// inside the `()` of a variant, to any depth, with names bound at every
+// level. The arms are tried from top to bottom.
+enum Cmd {
+    Put(str, i64)
+    Get(str)
+    Stop
+}
+
+enum Pair {
+    Both(bool, Option[str])
+}
+
+const LIMIT = 1
+
+fn show(c: Option[Cmd]) -> str {
+    match c {
+        Some(Put(key, value)) => return "put {key}={value}"
+        Some(Get(key)) => return "get " + key
+        Some(Stop) => return "stop"
+        None => return "nothing"
+    }
+}
+
+fn number(r: Result[i64, str]) -> str {
+    return match r {
+        Ok(0) => "zero"
+        Ok(LIMIT) => "one more"
+        Ok(n) => "other " + str(n)
+        Err("no") => "failed: no"
+        Err(text) => "failed with " + text
+    }
+}
+
+fn pair(p: Pair) -> str {
+    match p {
+        Both(true, Some(name)) => return "yes " + name
+        Both(false, Some(name)) => return "off " + name
+        Both(_, None) => return "none"
+    }
+}
+
+fn text(o: Option[str]) -> str {
+    match o {
+        Some("hi") => return "hello"
+        Some(other) => return "text " + other
+        None => return "no text"
+    }
+}
+
+fn deep(o: Option[Option[Option[i64]]]) -> str {
+    match o {
+        Some(Some(Some(n))) => return "deep " + str(n)
+        Some(Some(None)) => return "deep none"
+        _ => return "shallow"
+    }
+}
+
+fn main() {
+    print(show(Some(Put("k", 3))))
+    print(show(Some(Get("q"))))
+    print(show(Some(Stop)))
+    print(show(None))
+    print(number(Ok(0)))
+    print(number(Ok(1)))
+    print(number(Ok(7)))
+    print(number(Err("no")))
+    print(pair(Both(true, Some("ada"))))
+    print(pair(Both(false, Some("bob"))))
+    print(pair(Both(true, None)))
+    print(text(Some("hi")))
+    print(text(Some("x")))
+    print(deep(Some(Some(Some(5)))))
+    print(deep(Some(Some(None))))
+    print(deep(Some(None)))
+    var total = 0
+    let cmds = [Some(Put("a", 5)), None, Some(Get("zz")), Some(Put("b", 7)), Some(Stop)]
+    for c in cmds {
+        total += match c {
+            Some(Put(_, n)) => n
+            Some(Stop) => break
+            _ => 0
+        }
+    }
+    print(total)
+}

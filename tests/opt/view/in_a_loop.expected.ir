@@ -1,0 +1,44 @@
+data "hello, world"
+
+fn main(p0: i64, p1: i64) -> i64 {
+    frames 24, 24
+b0:
+    v0 = frame 0
+    v1 = frame 1
+    v2 = addr @data+0
+    store ptr, v0, 0, v2  [frame 0]
+    store i64, v0, 8, 12  [frame 0]
+    store i64, v0, 16, 0  [frame 0]
+    store i64, v1, 16, 0  [frame 1]
+    jump b1(0, 0)
+b1(v3: i64, v4: i64):
+    v5 = slt v3, p0
+    br v5, b2, b3
+b2:
+    v6 = add v3, p1
+    v11 = ult v6, v3
+    br v11, b5, b6
+b3:
+    ret v4
+b4:
+    v7 = load ptr, v1, 0  [frame 1]
+    v8 = load u8, v7, 0  [buf(frame 1)]
+    store i64, v1, 16, 0  [frame 1]
+    v9 = add v4, v8
+    v10 = add v3, 1
+    jump b1(v10, v9)
+b5:
+    trap slice
+b6:
+    v12 = load i64, v0, 8  [frame 0]
+    v13 = ugt v6, v12
+    br v13, b5, b7
+b7:
+    v14 = load ptr, v0, 0  [frame 0]
+    v15 = gep v14, v3, 1, 0
+    v16 = sub v6, v3
+    store ptr, v1, 0, v15  [frame 1]
+    store i64, v1, 8, v16  [frame 1]
+    store i64, v1, 16, 0  [frame 1]
+    jump b4
+}

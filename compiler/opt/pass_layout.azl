@@ -1,0 +1,123 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The pass `layout` (docs/design/optimizer.md, section 5.14): the order
+// the blocks of a function are written in, so that the way a branch
+// usually goes is the block that follows it and costs no jump.
+//
+//     fn ir_layout(f: mut IrFunc) -> i64      how many blocks changed place
+//
+// It changes `f.order` and nothing else: no instruction, no edge. The
+// back ends write the blocks in that order, leave out a jump to the
+// block that follows, and turn a `br` round when its first way out is
+// the block that follows.
+//
+// The order is made of chains. A chain starts at the first block of
+// the old order that has no place yet and goes on with one of the last
+// block's ways out that has no place yet, until there is none:
+//
+//   1. a way out that stays in the innermost loop of the block before
+//      one that leaves it;
+//   2. a block that goes on before one that ends the function or the
+//      program (`ret`, `trap`);
+//   3. a block that does not ask the runtime for a larger buffer (the
+//      slow way of a `push`) before one that does;
+//   4. the block fewer ways lead into: the arm of an `if` before the
+//      block after the `if`; of `a || b`, the test of `b` before the
+//      body both lead to;
+//   5. the second way out of a `br` before the first: what the source
+//      has after the `if` rather than in it.
+//
+// Blocks that only stop the program are put last by the back ends
+// whatever their place here.
+
+// Whether block `b` asks the runtime for a larger buffer: the slow
+// way of a `push`, taken once for many times the other way is.
+fn lo_grows(f: IrFunc, b: i64) -> bool {
+    var ins = f.blk_first[b]
+    while ins >= 0 {
+        if f.ins_op[ins] == IR_CALLRT {
+            let id = f.ins_imm[ins]
+            if id == IR_RT_REALLOC || id == IR_RT_LIST_PUSH || id == IR_RT_STR_APPEND || id == IR_RT_STR_APPEND_BUF {
+                return true
+            }
+        }
+        ins = f.ins_next[ins]
+    }
+    return false
+}
+
+// How little the chain wants to go on with block `to` after `from`:
+// the smaller the better.
+fn lo_cost(f: IrFunc, cfg: IrCfg, ways_in: List[i64], from: i64, to: i64, second: bool) -> i64 {
+    var cost = 0
+    let l = cfg.blk_loop[from]
+    if l >= 0 && !ir_in_loop(cfg, to, l) { cost = cost + 1000 }
+    let op = f.ins_op[f.blk_last[to]]
+    if op == IR_RET || op == IR_TRAP { cost = cost + 100 }
+    if lo_grows(f, to) { cost = cost + 50 }
+    var ways = ways_in[to]
+    if ways > 9 { ways = 9 }
+    cost = cost + ways * 10
+    if !second { cost = cost + 1 }
+    return cost
+}
+
+fn ir_layout(f: mut IrFunc) -> i64 {
+    if f.order.len() < 3 { return 0 }
+    let cfg = ir_cfg(f)
+    let blocks = f.blk_first.len()
+    var ways_in = 0.filled(blocks)
+    for b in cfg.rpo {
+        let last = f.blk_last[b]
+        var e = f.ins_es[last]
+        while e < f.ins_es[last] + f.ins_en[last] {
+            ways_in[f.edge_blk[e]] = ways_in[f.edge_blk[e]] + 1
+            e = e + 1
+        }
+    }
+    var placed = false.filled(blocks)
+    var order: List[i64] = []
+    var from = 0
+    while from < f.order.len() {
+        var b = f.order[from]
+        from = from + 1
+        if placed[b] { continue }
+        // A block nothing reaches keeps its place; `dce` removes it.
+        if cfg.rpo_at[b] < 0 {
+            placed[b] = true
+            order.push(b)
+            continue
+        }
+        while b >= 0 {
+            placed[b] = true
+            order.push(b)
+            let last = f.blk_last[b]
+            var best = -1
+            var best_cost = 0
+            if f.ins_op[last] == IR_JUMP || f.ins_op[last] == IR_BR {
+                var e = f.ins_es[last]
+                let end = e + f.ins_en[last]
+                while e < end {
+                    let to = f.edge_blk[e]
+                    if !placed[to] {
+                        let cost = lo_cost(f, cfg, ways_in, b, to, e > f.ins_es[last])
+                        if best < 0 || cost < best_cost {
+                            best = to
+                            best_cost = cost
+                        }
+                    }
+                    e = e + 1
+                }
+            }
+            b = best
+        }
+    }
+    var moved = 0
+    var k = 0
+    while k < order.len() {
+        if order[k] != f.order[k] { moved = moved + 1 }
+        k = k + 1
+    }
+    f.order = order
+    return moved
+}

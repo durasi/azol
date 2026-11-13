@@ -1,0 +1,130 @@
+// expect-exit: 0
+// expect-line: up
+// expect-line: pos 3 up
+// expect-line: neg down
+// expect-line: pos 7 up
+// expect-line: 102
+// expect-line: ada!
+// expect-line: 8
+// expect-line: some 2
+// expect-line: 3 a,b,c
+// expect-line: 0
+// expect-line: p7 q
+// expect-line: text more more
+// expect-line: 14
+// expect-line: 4 8
+// expect-line: none
+// `if` and `match` give a value as the whole right side of `let`, `var`,
+// `=`, `op=` and `return`. Every branch is one expression, or leaves
+// with `return`, `break`, `continue` or `exit`.
+enum Cmd {
+    Put(str, i64)
+    Get(str)
+    Stop
+}
+
+struct P {
+    name: str
+    n: i64
+}
+
+fn sign(n: i64) -> str {
+    return if n > 0 { "up" } else if n < 0 { "down" } else { "flat" }
+}
+
+fn size(c: Cmd) -> i64 {
+    return match c {
+        Put(key, n) => key.len() + n
+        Get(key) => key.len()
+        Stop => 0
+    }
+}
+
+fn first(xs: List[i64]) -> Option[i64] {
+    let n = if xs.len() > 0 { xs[0] } else { return None }
+    return Some(n * 2)
+}
+
+fn pick(flag: bool, a: List[str], b: List[str]) -> List[str] {
+    let chosen = if flag { a } else { b }
+    return chosen
+}
+
+fn main() {
+    let goal = if 3 > 0 { "up" } else { "down" }
+    print(goal)
+    var total = 0
+    let xs = [3, -1, 0, 7]
+    for x in xs {
+        let label = if x > 0 { "pos " + str(x) } else if x == 0 { continue } else { "neg" }
+        total += if x > 5 { 100 } else { 1 }
+        print("{label} {sign(x)}")
+    }
+    print(total)
+    var name: str = "?"
+    let o: Option[str] = Some("ada")
+    name = match o {
+        Some(name) => name + "!"
+        None => "nobody"
+    }
+    print(name)
+    let cmds = [Put("ab", 3), Get("xyz"), Stop]
+    var sum = 0
+    for c in cmds {
+        sum += size(c)
+    }
+    print(sum)
+    var maybe: Option[i64] = None
+    maybe = if sum > 5 { Some(2) } else { None }
+    let shown = match maybe {
+        Some(n) => "some " + str(n)
+        None => "none"
+    }
+    print(shown)
+    let list = pick(true, ["a", "b", "c"], [])
+    let empty: List[str] = if sum > 100 { ["x"] } else { [] }
+    print("{list.len()} " + list.join(","))
+    print(empty.len())
+    var p = P { name: "p", n: 1 }
+    p.n = if p.name == "p" { 7 } else { 0 }
+    let q = match p.n {
+        7 => P { name: "q", n: 0 }
+        _ => p
+    }
+    print("{p.name}{p.n} {q.name}")
+    var text = "text"
+    for i in 0..2 {
+        text += if i < 5 { " more" } else { break }
+    }
+    print(text)
+    var acc = 0
+    var k = 0
+    while true {
+        k += 1
+        let step = match k {
+            1 => 2
+            2 => continue
+            3 => 4
+            4 => {
+                acc += 8
+                break
+            }
+            _ => exit(3)
+        }
+        acc += step
+    }
+    print(acc)
+    match first([2]) {
+        Some(n) => print(str(n) + " " + str(size(Get("abcdefgh"))))
+        None => {}
+    }
+    let e: Option[i64] = if sum > 100 { Some(1) } else { None }
+    let last = match e {
+        Some(n) => str(n)
+        None => {
+            print("none")
+            return
+        }
+    }
+    print(last)
+}

@@ -364,6 +364,16 @@ fn sx_reg(f: IrFunc, s: mut Sx, mf: mut MFunc, x: i64) -> i64 {
 
 // Prepares `[base + index * scale + disp]` as the memory operand, where
 // `base` and `index` are IR operands (`index` -1 for none).
+// The `k` with `n == 1 << k`, or -1.
+fn sx_power_of_two(n: i64) -> i64 {
+    var k = 0
+    while k < 63 {
+        if n == 1 << k { return k }
+        k = k + 1
+    }
+    return -1
+}
+
 fn sx_address(f: IrFunc, s: mut Sx, mf: mut MFunc, base: i64, index: i64, scale: i64, disp: i64) {
     var total = disp
     var idx = index
@@ -377,7 +387,12 @@ fn sx_address(f: IrFunc, s: mut Sx, mf: mut MFunc, base: i64, index: i64, scale:
         index_reg = sx_reg(f, mut s, mut mf, idx)
         if factor != 1 && factor != 2 && factor != 4 && factor != 8 {
             let scaled = mf_vreg(mut mf)
-            if ex_fits32(factor) {
+            let shift = sx_power_of_two(factor)
+            if shift > 0 {
+                mf_ins(mut mf, SX_SHI, shift, EX_SHL, 0, 0)
+                mf_operand(mut mf, scaled, MF_DEF)
+                mf_operand(mut mf, index_reg, MF_USE)
+            } else if ex_fits32(factor) {
                 mf_ins(mut mf, SX_ALUI, factor, SX_IMUL, 0, 0)
                 mf_operand(mut mf, scaled, MF_DEF)
                 mf_operand(mut mf, index_reg, MF_USE)
@@ -513,6 +528,14 @@ fn sx_binary(f: IrFunc, s: mut Sx, mf: mut MFunc, ins: i64) {
         b = f.ins_a[ins]
     }
     let left = sx_reg(f, mut s, mut mf, a)
+    if op == IR_AND && sx_is_imm(f, b) && sx_imm(f, b) == 4294967295 {
+        // The low 32 bits: a 32-bit move clears the rest.
+        let d = sx_value(mut s, mut mf, f.ins_res[ins])
+        mf_ins(mut mf, SX_EXT, 0, IR_EXT32U, 0, 0)
+        mf_operand(mut mf, d, MF_DEF)
+        mf_operand(mut mf, left, MF_USE)
+        return
+    }
     if sx_is_imm32(f, b) {
         let d = sx_value(mut s, mut mf, f.ins_res[ins])
         mf_ins(mut mf, SX_ALUI, sx_imm(f, b), kind, 0, 0)
@@ -1137,7 +1160,13 @@ fn sx_folds(f: IrFunc, s: mut Sx) {
                 }
                 k = k + 1
             }
-            if only_addresses { s.fold[x] = 1 }
+            // An index times something the machine has no addressing
+            // mode for takes an instruction of its own: with several
+            // users the address is worked out once instead.
+            let scale = f.ins_imm2[def]
+            let index = f.ins_b[def]
+            let plain = index == -1 || sx_is_imm(f, index) || scale == 1 || scale == 2 || scale == 4 || scale == 8
+            if only_addresses && (plain || n == 1) { s.fold[x] = 1 }
         } else if ir_is_compare(op) && n == 1 {
             let user = uses.ins[from]
             let user_op = f.ins_op[user]

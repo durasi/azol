@@ -1,0 +1,23 @@
+; V2: the pointer of the part is stored somewhere: the part must own its bytes.
+data "hello, world"
+
+fn main(p0: i64, p1: i64) -> i64 {
+    frames 24, 24
+b0:
+    v0 = frame 0
+    v1 = frame 1
+    v2 = addr @data+0
+    store ptr, v0, 0, v2  [frame 0]
+    store i64, v0, 8, 12  [frame 0]
+    store i64, v0, 16, 0  [frame 0]
+    store i64, v1, 16, 0  [frame 1]
+    callrt str_slice(v0, p0, p1, v1)
+    v3 = load ptr, v1, 0  [frame 1]
+    v4 = load i64, v1, 8  [frame 1]
+    v5 = load i64, v1, 16  [frame 1]
+    store ptr, v0, 0, v3  [frame 0]
+    store i64, v0, 8, v4  [frame 0]
+    store i64, v0, 16, v5  [frame 0]
+    callrt drop(v0)
+    ret v4
+}

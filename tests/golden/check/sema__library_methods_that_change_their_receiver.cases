@@ -17,8 +17,8 @@ checked 8 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos a8289c02130959d3e4ffd3b86df4902d011244c0374be5a6012d776edaee6b18
-x86_64-linux 2d80a5a06e14a65deb722d314ecb8ae7ff2eb21e9894197a0a293570b2b6c80b
-aarch64-linux 64af4995409e4cc9a3e6ca315e3f6c081c8be075bf053636250fe0c2f3c2dfa2
+x86_64-linux 83435b823fcdccd67fde6dbb58668f6b775d9cabc44ae23ff4e8867fd8cef470
+aarch64-linux ea3815b20c00652cbc18f1f9df917ddd53db15b9faecb8b154af2a1b4c18cfe9
 ==== 2
 ---- file a.azl
 
@@ -36,8 +36,8 @@ checked 7 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos f69bb7ab36a8bbfb6936993beb9ff1ab8a73e59df7b938d4fd9159239356cafe
-x86_64-linux e62b0ef2e628835079086e0c041c44e78bbbe9bae7e7cfde5415309952673a62
-aarch64-linux 5daf63e87b09b29ba87be36c756a417ee26bb734e373707690062d1aacf45f02
+x86_64-linux 904ca59edd0be0c1da6b1022214e664c6388d9ef9bd6f786765f50ec4ec43064
+aarch64-linux eb0741ce0b60f06353e0c1b8f34ecbe693c356039671697f12ac9c8f4a06d500
 ==== 3
 ---- file a.azl
 fn f(xs: mut List[i64]) {
@@ -55,8 +55,8 @@ checked 7 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos a44543f5e3864d6043fc09f1e26d71b586d4251227d3a7b75651be854d308e14
-x86_64-linux 06d36ccc5b7cae3648e88d2596b894429e8900b01d592c5653dd5a4b478d4319
-aarch64-linux 8882fb4388859748e4a8560be8bf1c835105097f3de864d9cc1a59cda5b80543
+x86_64-linux 00e2fadc482a5b399689ef31fbd32b2386503c21d60b66c1c2f6994a76d5c0fa
+aarch64-linux 63ece2915499d8e464fdc52205204e53ffcac8df2116f04ce8a2d872c002da04
 ==== 4
 ---- file a.azl
 
@@ -74,5 +74,5 @@ checked 7 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos fdf7c3bc4b2740432d230a0aca87947aab668067e12c2f519c174830ab549545
-x86_64-linux f9e1dbee2b1f6b11dc6c7bdfd57e774e5f2d6003e7bbf3eb216fcf46ccd7ea3f
-aarch64-linux 7bfd7160e49568b06cc579256391ea55ab680f460eadec1099b4377b36229c7c
+x86_64-linux 4432d17e47a511aaacbe08d6d99eace82a4efc3e7caa32feb0038fbb90567ea0
+aarch64-linux fa9f37761483110248ec03267b51726bf5723e82dcfa3fb73b5df43abc8f31b7

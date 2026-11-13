@@ -49,12 +49,24 @@ import run_back_tests as back_tests
 
 HERE = base.HERE
 ROOT = base.ROOT
-PASSES = ["pass_simplify_util.azl", "pass_simplify.azl", "pass_dce.azl", "pass_dse.azl", "pass_sroa.azl", "pass_effects.azl", "pass_gvn.azl", "pass_licm.azl", "pass_range.azl", "pass_bce.azl", "pass_inline.azl", "pass_tailcall.azl", "pass_accrec.azl", "pipeline.azl"]
+PASSES = ["pass_simplify_util.azl", "pass_simplify.azl", "pass_dce.azl", "pass_dse.azl", "pass_sroa.azl", "pass_effects.azl", "pass_gvn.azl", "pass_licm.azl", "pass_range.azl", "pass_bce.azl", "pass_inline.azl", "pass_tailcall.azl", "pass_accrec.azl", "pass_layout.azl", "pass_thread.azl", "pass_view.azl", "pipeline.azl"]
 OPT_TOOL = ["ir.azl", "ir_text.azl", "ir_cfg.azl", "ir_verify.azl"] + PASSES + ["opt_tool_main.azl"]
 COMPILER = ["bytes.azl", "code_file.azl", "elf.azl", "runtime_x64.azl"]
-OPT_BUILD = (["ir.azl", "ir_text.azl", "ir_cfg.azl", "ir_verify.azl", "ir_interp.azl", "ir_lower.azl", "ir_lower_stmt.azl", "ir_lower_expr.azl"] + PASSES +
-             ["mach.azl", "regalloc.azl", "enc_x64.azl", "sel_x64.azl", "emit_x64.azl", "back_x64.azl", "opt_build_main.azl"])
-FOLDERS = ["simplify", "dce", "dse"]
+FOLDERS = ["simplify", "dce", "dse", "thread", "layout", "view"]
+
+
+def host_file():
+    """The file that tells a tool which machine it runs on, or None."""
+    name = {("Linux", "x86_64"): "host_x86_64_linux.azl", ("Linux", "aarch64"): "host_aarch64_linux.azl",
+            ("Darwin", "arm64"): "host_aarch64_macos.azl"}.get((platform.system(), platform.machine()))
+    return name and os.path.join(ROOT, "compiler", name)
+
+
+def opt_build_sources():
+    """The files of `azol-opt`: compiler/opt/OPT_SOURCES and the host's file."""
+    with open(os.path.join(ROOT, "compiler", "opt", "OPT_SOURCES"), encoding="utf-8") as handle:
+        names = [line.strip() for line in handle if line.strip() and not line.startswith("#")]
+    return [os.path.join(ROOT, "compiler", name) for name in names] + [host_file() or os.path.join(ROOT, "compiler", "host_x86_64_linux.azl")]
 
 
 def native():
@@ -66,8 +78,7 @@ def build_tools(azol, folder):
              "back": os.path.join(folder, "azol-back")}
     base.build(azol, OPT_TOOL, tools["opt"])
     base.build(azol, base.SOURCES, tools["ir"])
-    front = [os.path.join(ROOT, "compiler", name) for name in base.FRONT + COMPILER]
-    base.build(azol, front + OPT_BUILD, tools["build"])
+    base.build(azol, opt_build_sources(), tools["build"])
     base.build(azol, back_tests.BACK_SOURCES, tools["back"])
     return tools
 
@@ -326,7 +337,13 @@ def program_one(azol, tools, folder, at, label, files, want):
         if kind.startswith("passes, native"):
             # Under the same name as the default build, in its own folder.
             alias = os.path.join(work, os.path.basename(exe))
-            shutil.copy(command[0], alias)
+            # A link, not a copy: a copy is open for writing for a moment,
+            # another thread's child process can inherit that, and the
+            # system then refuses to run the file ("Text file busy").
+            try:
+                os.link(command[0], alias)
+            except OSError:
+                shutil.copy(command[0], alias)
             run = [alias]
         try:
             ran = subprocess.run(run, capture_output=True, timeout=900, cwd=work)

@@ -1,0 +1,163 @@
+# Habits from other languages that the short forms replace (docs/design/concise.md 3.8),
+# each with its own code, and the repair where it is mechanical.
+==== `if let` is a `match`
+---- file a.azl
+fn main() {
+    let o = Some(1)
+    if let Some(x) = o {
+        print(x)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1414 3:8
+---- no-fix
+==== `while let` is a loop with a test
+---- file a.azl
+fn main() {
+    var xs = [1]
+    while let Some(x) = xs.first() {
+        print(x)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1414 3:11
+---- no-fix
+==== `let ... else` is a `match` that gives a value
+---- file a.azl
+fn f(o: Option[i64]) -> i64 {
+    let Some(x) = o else { return 0 }
+    return x
+}
+
+fn main() {
+    print(f(None))
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1415 2:9
+---- no-fix
+==== a last line without `return`
+---- file a.azl
+fn f(n: i64) -> i64 {
+    n + 1
+}
+
+fn main() {
+    print(f(1))
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1416 2:5
+---- apply-fix
+---- after-has a.azl
+    return n + 1
+---- run check a.azl
+---- exit 0
+==== a tuple value
+---- file a.azl
+fn main() {
+    let t = (1, 2)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1417 2:13
+---- no-fix
+==== a tuple type
+---- file a.azl
+fn f() -> (i64, str) {
+    return f()
+}
+
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1417 1:11
+---- no-fix
+==== a tuple in `let`
+---- file a.azl
+fn main() {
+    let (a, b) = 1
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1417 2:9
+---- no-fix
+==== `unwrap` has no message
+---- file a.azl
+fn main() {
+    let o = Some(1)
+    print(o.unwrap())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1420 3:13
+---- no-fix
+==== `unwrap_or` is `or`
+---- file a.azl
+fn main() {
+    let o = Some(1)
+    print(o.unwrap_or(2))
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1420 3:13
+---- apply-fix
+---- after-has a.azl
+    print(o.or(2))
+---- run check a.azl
+---- exit 0
+==== a struct update
+---- file a.azl
+struct P {
+    x: i64
+    y: i64
+}
+
+fn main() {
+    let a = P { x: 1, y: 2 }
+    let b = P { x: 3, ..a }
+    print(b.x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1423 8:23
+---- no-fix
+==== a default value of a field
+---- file a.azl
+struct P {
+    x: i64 = 0
+}
+
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1423 2:12
+---- no-fix
+==== a ternary
+---- file a.azl
+fn main() {
+    let n = 3
+    let s = n > 0 ? "a" : "b"
+    print(s)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1409 3:19
+---- no-fix
+==== a brace that needs no backslash
+---- file a.azl
+fn main() {
+    print("a \} b")
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0103 2:14
+---- apply-fix
+---- after-has a.azl
+    print("a } b")
+---- run check a.azl
+---- exit 0

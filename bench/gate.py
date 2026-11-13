@@ -226,6 +226,23 @@ def render(results):
         ratio(results["mean"]), ratio(results["native_mean"])))
     if results["pending"]:
         lines.append("Not in the gate yet (they need `f64`): %s." % ", ".join("`%s`" % name for name in results["pending"]))
+    timed_opt = [row for row in results["programs"] if row.get("opt") and row["azol"] and row["rust"] and row["same_output"]]
+    if timed_opt:
+        lines.append("")
+        lines.append("The same programs through the optimising path (`azol-opt build`), timed in the same way:")
+        lines.append("")
+        lines.append("| Program | azoL default | azol-opt | Rust `-O` | azol-opt / default | azol-opt / Rust | Within %.2f |" % BOUND)
+        lines.append("|---|---|---|---|---|---|---|")
+        to_default, to_rust = [], []
+        for row in timed_opt:
+            to_default.append(row["opt"] / row["azol"])
+            to_rust.append(row["opt"] / row["rust"])
+            lines.append("| `%s` | %s | %s | %s | %s | %s | %s |" % (
+                row["name"], seconds(row["azol"]), seconds(row["opt"]), seconds(row["rust"]), ratio(row["opt"] / row["azol"]),
+                ratio(row["opt"] / row["rust"]), "yes" if row["opt"] / row["rust"] <= BOUND else "**no**"))
+        lines.append("")
+        lines.append("Geometric means of the times: azol-opt against the default build **%s**, against `rustc -O` **%s**; %d of %d programs above %.2f. The verdict below is still that of `azol`." % (
+            ratio(geometric_mean(to_default)), ratio(geometric_mean(to_rust)), sum(1 for value in to_rust if value > BOUND), len(to_rust), BOUND))
     if any("instructions" in row for row in results["programs"]):
         lines.append("")
         lines.append("Instructions executed on the small sizes (callgrind):")
@@ -288,6 +305,10 @@ def main():
     parser.add_argument("--keep", help="keep the built files in this folder")
     parser.add_argument("--azol-opt", help="an `azol-opt` executable (compiler/opt/opt_build_main.azl): adds its builds as a third column; the verdict stays that of `azol`")
     args = parser.parse_args()
+    if args.azol_opt:
+        args.azol_opt = os.path.abspath(args.azol_opt)
+        if not os.access(args.azol_opt, os.X_OK):
+            sys.exit("gate.py: there is no executable %s; build it with `sh build_opt.sh`" % args.azol_opt)
 
     names, pending = programs(args.only.split(",") if args.only else None)
     if args.list:

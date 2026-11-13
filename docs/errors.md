@@ -28,7 +28,7 @@ Messages:
 
 ## E0103
 
-After a backslash only `n`, `t`, `r`, `0`, `\`, `"` and `'` are allowed.
+After a backslash only `n`, `t`, `r`, `0`, `\`, `"`, `'` and, in a string, `\{` are allowed.
 
 To write a backslash itself, write two: `\\`.
 
@@ -36,6 +36,7 @@ Messages:
 
 - unknown escape sequence in string literal
 - unknown escape sequence in character literal
+- a `}` in a text needs no `\`: only `\{` is written with one
 
 ## E0104
 
@@ -846,6 +847,8 @@ Messages:
 
 - this pattern is ... but the `match` is on `...`
 - `...` is a variant of `...` but this `match` is on `...`
+- this pattern is ... but the value here is `...`
+- `...` is a variant of `...` but the value here is `...`
 
 ## E0506
 
@@ -879,33 +882,6 @@ Wrong: `Pair(a, a) => ...`. Right: `Pair(a, b) => ...`.
 Messages:
 
 - `...` is used twice in this pattern
-
-## E0508
-
-The values of a variant pattern are names or `_`; patterns are not nested yet.
-
-Wrong:
-
-    match outer {
-        Some(Some(value)) => print(value)
-        _ => {}
-    }
-
-Right:
-
-    match outer {
-        Some(inner) => {
-            match inner {
-                Some(value) => print(value)
-                None => {}
-            }
-        }
-        None => {}
-    }
-
-Messages:
-
-- a pattern inside a pattern is not supported yet; give the value a name and `match` on it inside the arm
 
 ## E0601
 
@@ -1134,6 +1110,95 @@ Messages:
 - there is no `range`; a loop over numbers is written `for i in 0..n`
 - a range has no methods; write `for i in a..b step 2`, and `step -1` to count down
 
+## E1406
+
+An `if` on the right side of `let`, `var`, `=` or `return` gives a value, so it has an `else`: there must be a value either way.
+
+What to do: Add `else { <value> }`.
+
+Wrong:
+
+    let step = if fast { 10 }
+
+Right:
+
+    let step = if fast { 10 } else { 1 }
+
+A branch may also leave instead of giving a value: `else { return }`, `else { continue }`, `else { break }`.
+
+Messages:
+
+- an `if` that gives a value needs an `else`
+
+## E1407
+
+Each branch of an `if` or `match` that gives a value is one expression, or a block that ends by leaving: `return`, `break`, `continue` or `exit`.
+
+A branch cannot do something and then give a value. Use the statement form and assign inside it:
+
+    var step = 1
+    if fast {
+        log("fast")
+        step = 10
+    }
+
+A branch that leaves may hold statements, as long as the last one leaves:
+
+    let n = match found {
+        Some(n) => n
+        None => {
+            print("missing")
+            return
+        }
+    }
+
+At least one branch must give a value.
+
+Messages:
+
+- a branch that gives a value is one expression; use the statement form and assign inside it
+- no branch of this `...` gives a value
+
+## E1408
+
+Every branch of an `if` or `match` that gives a value gives the same type; that is the type of the whole.
+
+The first branch that gives a value decides the type, unless the variable has a declared type:
+
+    let found: Option[i64] = if n > 0 { Some(n) } else { None }
+
+Wrong:
+
+    let label = if n > 0 { n } else { "none" }
+
+Right:
+
+    let label = if n > 0 { str(n) } else { "none" }
+
+Messages:
+
+- this branch gives `...` where `...` is expected: every branch of an `if` or `match` that gives a value has the same type
+
+## E1409
+
+`if` and `match` give a value only as the whole right side of `let`, `var`, an assignment or `return`, never inside a larger expression.
+
+Wrong:
+
+    print(if n > 0 { "up" } else { "down" })
+
+Right:
+
+    let way = if n > 0 { "up" } else { "down" }
+    print(way)
+
+There is no `c ? a : b`.
+
+Messages:
+
+- an `if` or `match` that gives a value is the whole right side of `let`, `var`, `=` or `return`; give it a name with `let` first
+- azoL has no `c ? a : b`; write `if c { a } else { b }` as the whole right side of `let`, `=` or `return`
+
 ## E1410
 
 In a text, `{value}` puts the text of `value` there: an `i64`, a `bool` or a `str` that exists at that point. A constant text holds no values.
@@ -1210,6 +1275,92 @@ Messages:
 - a text needs no `f` in front to hold values: write `"total: {sum}"`
 - a value in a text is one expression, and this is more than one; write `\{` if a brace was meant
 
+## E1414
+
+`match` is the one way to look inside a value; there is no `if let` and no `while let`.
+
+Wrong:
+
+    if let Some(n) = found {
+        print(n)
+    }
+
+Right:
+
+    match found {
+        Some(n) => print(n)
+        None => {}
+    }
+
+For one value out of an `Option`, `found.or(0)` and `found.expect("it is there")` are shorter still.
+
+Messages:
+
+- azoL has no `if let`; write `match value {` with an arm for each case, such as `None => ...`
+- azoL has no `while let`; write `while xs.len() > 0 {` and take the value inside, or `while true {` with a `match` that breaks
+
+## E1415
+
+`let` gives a name to one value. To take a value out of an `Option` or leave, use a `match` that gives a value.
+
+Wrong:
+
+    let Some(n) = found else { return }
+
+Right:
+
+    let n = match found {
+        Some(n) => n
+        None => return
+    }
+
+Messages:
+
+- a `let` takes a name, not a pattern, and has no `else`; write `let x = match value {` with an arm for each case, such as `None => return`
+
+## E1416
+
+`return` is always written. The last expression of a function is not its result.
+
+What to do: Write `return` in front of the value.
+
+Wrong:
+
+    fn double(n: i64) -> i64 {
+        n * 2
+    }
+
+Right:
+
+    fn double(n: i64) -> i64 {
+        return n * 2
+    }
+
+Messages:
+
+- a function gives its value with `return`; the last line alone does not return it
+
+## E1417
+
+Values are grouped in a struct, whose parts have names. There are no tuples and a function gives back one value.
+
+Wrong:
+
+    fn bounds(xs: List[i64]) -> (i64, i64) {
+
+Right:
+
+    struct Bounds {
+        low: i64
+        high: i64
+    }
+
+    fn bounds(xs: List[i64]) -> Bounds {
+
+Messages:
+
+- azoL has no tuples; declare a struct with named parts
+
 ## E1419
 
 In a struct literal `Pair { key, value }` means `Pair { key: key, value: value }`: a field written by its name alone takes the variable of that name.
@@ -1219,6 +1370,17 @@ A field may be given either way in the same literal: `Pair { key, value: 0 }`.
 Messages:
 
 - field `...` is given by its name alone, but there is no variable `...`; write `...: <value>`
+
+## E1420
+
+An `Option` or `Result` is read with `match`, `?`, `.or(default)` or `.expect(message)`. Stopping without a message does not exist.
+
+`o.expect("the list is not empty")` stops the program with `azol: the list is not empty` when `o` is `None`. `o.or(0)` gives 0 instead.
+
+Messages:
+
+- azoL has no `unwrap`; write `.expect("why it is there")` to stop with a message, or `.or(default)` for a value instead
+- azoL has no `unwrap_or`; write `.or(default)`
 
 ## E1421
 
@@ -1240,3 +1402,19 @@ Messages:
 Messages:
 
 - a loop over a range has one variable, the number itself: write `for ... in a..b`
+
+## E1423
+
+A struct literal names every field and its value: there are no default values and no `..base`.
+
+Values are copied on assignment, so a changed copy is two short lines:
+
+    var b = a
+    b.x = 1
+
+A field may be given by its name alone when a variable has that name: `Point { x, y }`.
+
+Messages:
+
+- a field has no default value; give every field its value where the struct is made
+- a struct literal gives every field; to change one field of a copy write `var b = a` and then `b.x = 1`

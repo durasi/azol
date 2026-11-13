@@ -39,7 +39,7 @@
 //
 // After `inline`: `effects` and `gvn` (loads and checks that repeat), then
 // the loop passes twice.
-const PL_ORDER = "simplify,sroa,simplify,tailcall,accrec,dce,inline,effects,gvn,simplify,dce,dse,dce,simplify,licm,bce,simplify,dce,licm,bce,simplify,dce"
+const PL_ORDER = "simplify,sroa,simplify,tailcall,accrec,dce,inline,view,simplify,effects,gvn,simplify,thread,simplify,dce,dse,dce,simplify,licm,bce,simplify,dce,licm,bce,simplify,thread,simplify,dce,layout"
 
 // Runs one pass on one function. Gives what the pass gives, or -1 for
 // a name that is no pass.
@@ -51,6 +51,9 @@ fn pl_run_pass(name: str, f: mut IrFunc) -> i64 {
     if name == "bce" { return ir_bce(mut f) }
     if name == "tailcall" { return ir_tailcall(mut f) }
     if name == "accrec" { return ir_accrec(mut f) }
+    if name == "layout" { return ir_layout(mut f) }
+    if name == "thread" { return ir_thread(mut f) }
+    if name == "view" { return ir_view(mut f) }
     return -1
 }
 
@@ -124,7 +127,7 @@ fn pl_size(f: IrFunc) -> i64 {
 // Whether the pass repeats itself until it finds nothing more, so that
 // a second run straight after the first has nothing to do.
 fn pl_settles(name: str) -> bool {
-    return name == "simplify"
+    return name == "simplify" || name == "layout"
 }
 
 fn pl_note(stats: mut PlStats, name: str, changed: i64, ns: i64) {

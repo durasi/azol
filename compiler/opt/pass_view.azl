@@ -1,0 +1,331 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The pass `view`: a part of a string that is only read is not copied.
+//
+//     fn ir_view(f: mut IrFunc) -> i64      how many `str_slice` calls went
+//
+// `text.slice(a, b)` asks the runtime for a block, copies the bytes
+// into it and frees it when the value dies. When the value is only
+// looked at (compared, searched, measured) and the string it came from
+// stays as it is for as long, the copy is the same bytes at another
+// address. The pass then writes into the three slots of the value the
+// address of the bytes inside the source, their number, and a capacity
+// of zero: the header of a string that owns nothing, which is what a
+// literal has, and which `drop` leaves alone. The two checks of the
+// runtime routine stay, as tests that end in the trap `slice`.
+//
+// A frame object D is changed when all of this holds:
+//
+//   V1  Every use of the address of D is one of: a `load` from it; a
+//       `store` of the constant 0 into it; `drop(D)`; `str_slice` with
+//       D as the place for the answer. So the value never leaves the
+//       function, is never moved, added to or passed on.
+//   V2  A pointer loaded from D is used only as the base of a `gep`
+//       whose result is used the same way, or as the address of a
+//       `load`: the bytes are read and the pointer goes nowhere.
+//   V3  The source S of every such `str_slice` is another frame object
+//       of the function, or a parameter the function may only read.
+//   V4  For a source in the frame: from the call to every `drop(D)` or
+//       next `str_slice` into D, along every way through the function,
+//       nothing can change S or free its bytes. That is: no `store`
+//       into S or its buffer, and no use of the address of S other than
+//       a `load` (a loaded pointer as in V2) and a runtime routine that
+//       only reads through that argument.
+//
+// A parameter that may only be read cannot change while the function
+// runs: the checker lets no other argument of the same call overlap it
+// when that one may be changed.
+//
+// When every `str_slice` into D went, every `drop(D)` goes too: D never
+// owns a block.
+
+struct ViewState {
+    // For every frame object, whether rule V1 and V2 hold for it.
+    plain: List[bool]
+    // For every value, the frame object whose address it is, or -1.
+    frame_of: List[i64]
+    trap: i64
+}
+
+// Rule V2 for pointer `p`.
+fn vw_only_read(f: IrFunc, uses: IrUses, p: i64, depth: i64) -> bool {
+    if depth > 6 { return false }
+    var u = uses.start[p]
+    while u < uses.start[p] + uses.count[p] {
+        let ins = uses.ins[u]
+        let op = f.ins_op[ins]
+        if op == IR_LOAD {
+            if f.ins_a[ins] != p { return false }
+        } else if op == IR_GEP {
+            if f.ins_a[ins] != p || f.ins_b[ins] == p { return false }
+            if !vw_only_read(f, uses, f.ins_res[ins], depth + 1) { return false }
+        } else {
+            return false
+        }
+        u = u + 1
+    }
+    return true
+}
+
+// Whether a `load` of the address `v` of a string is harmless: what it
+// reads is a number, or a pointer that is only read through.
+fn vw_load_ok(f: IrFunc, uses: IrUses, ins: i64, v: i64) -> bool {
+    if f.ins_a[ins] != v { return false }
+    if f.ins_ty[ins] != IR_PTR { return true }
+    return vw_only_read(f, uses, f.ins_res[ins], 0)
+}
+
+// Rule V1 and V2 for the value `v`, an address of frame object D.
+fn vw_plain(f: IrFunc, uses: IrUses, v: i64) -> bool {
+    var u = uses.start[v]
+    while u < uses.start[v] + uses.count[v] {
+        let ins = uses.ins[u]
+        let op = f.ins_op[ins]
+        if op == IR_LOAD {
+            if !vw_load_ok(f, uses, ins, v) { return false }
+        } else if op == IR_STORE {
+            if f.ins_a[ins] != v { return false }
+            let x = f.ins_b[ins]
+            if !ir_is_const(x) || ir_const_value(f, x) != 0 { return false }
+        } else if op == IR_CALLRT {
+            let id = f.ins_imm[ins]
+            let as = f.ins_as[ins]
+            if id == IR_RT_DROP {
+                if f.args[as] != v { return false }
+            } else if id == IR_RT_STR_SLICE {
+                if f.args[as] == v || f.args[as + 1] == v || f.args[as + 2] == v || f.args[as + 3] != v {
+                    return false
+                }
+            } else {
+                return false
+            }
+        } else {
+            return false
+        }
+        u = u + 1
+    }
+    return true
+}
+
+// Whether instruction `ins` can change the string in frame object `s`
+// or free its bytes (rule V4). `rs` and `rb` are the regions of its
+// header and of its buffer, or -1.
+fn vw_kills(f: IrFunc, uses: IrUses, st: ViewState, ins: i64, s: i64, rs: i64, rb: i64) -> bool {
+    let op = f.ins_op[ins]
+    if op == IR_STORE {
+        let r = f.ins_reg[ins]
+        if r < 0 || r == rs || r == rb { return true }
+    }
+    let n = ir_operand_count(f, ins)
+    var k = 0
+    while k < n {
+        let x = ir_operand(f, ins, k)
+        if x >= 0 && st.frame_of[x] == s {
+            if op == IR_LOAD {
+                if !vw_load_ok(f, uses, ins, x) { return true }
+            } else if op == IR_CALLRT {
+                // The arguments of a `callrt` are its only operands.
+                if ir_rt_arg_fx(f.ins_imm[ins], k) != IR_FX_READ { return true }
+            } else {
+                return true
+            }
+        }
+        k = k + 1
+    }
+    return false
+}
+
+// Whether `ins` ends the life of what a `str_slice` put into D.
+fn vw_ends(f: IrFunc, st: ViewState, ins: i64, d: i64) -> bool {
+    if f.ins_op[ins] != IR_CALLRT { return false }
+    let id = f.ins_imm[ins]
+    let as = f.ins_as[ins]
+    if id == IR_RT_DROP {
+        let x = f.args[as]
+        return x >= 0 && st.frame_of[x] == d
+    }
+    if id == IR_RT_STR_SLICE {
+        let x = f.args[as + 3]
+        return x >= 0 && st.frame_of[x] == d
+    }
+    return false
+}
+
+// Rule V4 for the call `call`, which fills D from frame object `s`.
+fn vw_source_stays(f: IrFunc, uses: IrUses, st: ViewState, call: i64, d: i64, s: i64) -> bool {
+    var rs = -1
+    var rb = -1
+    var i = 0
+    while i < f.reg_kind.len() {
+        if f.reg_kind[i] == IR_REGION_FRAME && f.reg_n[i] == s { rs = i }
+        i = i + 1
+    }
+    i = 0
+    while i < f.reg_kind.len() {
+        if rs >= 0 && f.reg_kind[i] == IR_REGION_BUF && f.reg_n[i] == rs { rb = i }
+        i = i + 1
+    }
+    var seen = false.filled(f.blk_first.len())
+    var work: List[i64] = []
+    // The rest of the block of the call first, then whole blocks.
+    var ins = f.ins_next[call]
+    while true {
+        var open = true
+        var last = -1
+        while ins >= 0 {
+            if vw_ends(f, st, ins, d) {
+                open = false
+                break
+            }
+            if vw_kills(f, uses, st, ins, s, rs, rb) { return false }
+            last = ins
+            ins = f.ins_next[ins]
+        }
+        if open && last >= 0 {
+            var e = f.ins_es[last]
+            while e < f.ins_es[last] + f.ins_en[last] {
+                let to = f.edge_blk[e]
+                if !seen[to] {
+                    seen[to] = true
+                    work.push(to)
+                }
+                e = e + 1
+            }
+        }
+        if work.len() == 0 { break }
+        let b = work[work.len() - 1]
+        work.truncate(work.len() - 1)
+        ins = f.blk_first[b]
+    }
+    return true
+}
+
+// Replaces the call by the two checks and the three stores.
+fn vw_rewrite(f: mut IrFunc, st: mut ViewState, call: i64, d: i64) {
+    let as = f.ins_as[call]
+    let source = f.args[as]
+    let start = f.args[as + 1]
+    let end = f.args[as + 2]
+    let out = f.args[as + 3]
+    let home = f.ins_blk[call]
+    var region = 0
+    if source < f.param_count {
+        region = ir_region(mut f, IR_REGION_PARAM, source)
+    } else {
+        region = ir_region(mut f, IR_REGION_FRAME, st.frame_of[source])
+    }
+    let own = ir_region(mut f, IR_REGION_FRAME, d)
+    // The rest of the block becomes a block of its own.
+    let cont = ir_add_block(mut f)
+    var rest = f.ins_next[call]
+    while rest >= 0 {
+        let after = f.ins_next[rest]
+        ir_unlink(mut f, rest)
+        ir_link_end(mut f, cont, rest)
+        rest = after
+    }
+    ir_remove(mut f, call)
+    if st.trap < 0 {
+        st.trap = ir_add_block(mut f)
+        ir_trap(mut f, st.trap, IR_TRAP_SLICE)
+    }
+    let second = ir_add_block(mut f)
+    let third = ir_add_block(mut f)
+    let none: List[i64] = []
+    let backwards = ir_binary(mut f, home, IR_ULT, end, start)
+    ir_br(mut f, home, backwards, st.trap, none, second, none)
+    let length = ir_load(mut f, second, IR_I64, source, 8, region)
+    let beyond = ir_binary(mut f, second, IR_UGT, end, length)
+    ir_br(mut f, second, beyond, st.trap, none, third, none)
+    let bytes = ir_load(mut f, third, IR_PTR, source, 0, region)
+    let first = ir_gep(mut f, third, bytes, start, 1, 0)
+    let count = ir_binary(mut f, third, IR_SUB, end, start)
+    ir_store(mut f, third, IR_PTR, out, 0, first, own)
+    ir_store(mut f, third, IR_I64, out, 8, count, own)
+    let zero = ir_const(mut f, 0)
+    ir_store(mut f, third, IR_I64, out, 16, zero, own)
+    ir_jump(mut f, third, cont, none)
+}
+
+fn ir_view(f: mut IrFunc) -> i64 {
+    // Is there anything to look at?
+    var calls: List[i64] = []
+    for b in f.order {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            if f.ins_op[ins] == IR_CALLRT && f.ins_imm[ins] == IR_RT_STR_SLICE { calls.push(ins) }
+            ins = f.ins_next[ins]
+        }
+    }
+    if calls.len() == 0 { return 0 }
+    let uses = ir_uses(f)
+    var st = ViewState { plain: true.filled(f.frames.len()), frame_of: (-1).filled(f.val_ty.len()), trap: -1 }
+    for b in f.order {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            if f.ins_op[ins] == IR_FRAME { st.frame_of[f.ins_res[ins]] = f.ins_imm[ins] }
+            ins = f.ins_next[ins]
+        }
+    }
+    var v = 0
+    while v < f.val_ty.len() {
+        let d = st.frame_of[v]
+        if d >= 0 && st.plain[d] && !vw_plain(f, uses, v) { st.plain[d] = false }
+        v = v + 1
+    }
+    // Every call into one object, or none of them.
+    var wanted = false.filled(f.frames.len())
+    for call in calls {
+        let as = f.ins_as[call]
+        let out = f.args[as + 3]
+        if out < 0 || st.frame_of[out] < 0 { continue }
+        wanted[st.frame_of[out]] = true
+    }
+    for call in calls {
+        let as = f.ins_as[call]
+        let out = f.args[as + 3]
+        if out < 0 || st.frame_of[out] < 0 { continue }
+        let d = st.frame_of[out]
+        if !st.plain[d] {
+            wanted[d] = false
+            continue
+        }
+        let source = f.args[as]
+        if source < 0 {
+            wanted[d] = false
+        } else if source < f.param_count {
+            if f.val_ty[source] != IR_PTR || f.param_fx[source] != IR_FX_READ { wanted[d] = false }
+        } else if st.frame_of[source] < 0 || st.frame_of[source] == d {
+            wanted[d] = false
+        } else if !vw_source_stays(f, uses, st, call, d, st.frame_of[source]) {
+            wanted[d] = false
+        }
+    }
+    var changed = 0
+    for call in calls {
+        let as = f.ins_as[call]
+        let out = f.args[as + 3]
+        if out < 0 || st.frame_of[out] < 0 { continue }
+        let d = st.frame_of[out]
+        if !wanted[d] { continue }
+        vw_rewrite(mut f, mut st, call, d)
+        changed = changed + 1
+    }
+    if changed == 0 { return 0 }
+    // No `drop` of an object that owns nothing.
+    var drops: List[i64] = []
+    for b in f.order {
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            if f.ins_op[ins] == IR_CALLRT && f.ins_imm[ins] == IR_RT_DROP {
+                let x = f.args[f.ins_as[ins]]
+                if x >= 0 && st.frame_of[x] >= 0 && wanted[st.frame_of[x]] { drops.push(ins) }
+            }
+            ins = f.ins_next[ins]
+        }
+    }
+    for ins in drops {
+        ir_remove(mut f, ins)
+    }
+    return changed
+}

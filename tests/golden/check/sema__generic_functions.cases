@@ -18,8 +18,8 @@ checked 9 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 6de13c68e3021fd299ba8ab8c968d7df9a6e6a96d6f2405381bc0a2e43197ca8
-x86_64-linux 51493ba62f8cbfeb3ab70a0499328777195d5a599057783d893df63b1dfdee31
-aarch64-linux 4f2ee40a266d6ee628d275d163fa55f1fb58700bb3d96acad1dfedcee9f80c49
+x86_64-linux da3611a67cde16ace5ae2113a5b413947b0f0c774f833356fb374f61f5a30dc9
+aarch64-linux f7777b1197c332c5d3b0afeeb61c06aabede72db350c88cbed0276aa46961a20
 ==== 2
 ---- file a.azl (no newline at end)
 fn none[T]() -> Option[T] {
@@ -38,8 +38,8 @@ checked 8 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos efe46603d2b6d94eda9d6e1484546918fcecdb8c2facc4ef9f717dcb3aa34056
-x86_64-linux c58976f07d2f38be80e21626661c565bb27354a5e58c19cf7f10e7de8ac617e2
-aarch64-linux 2424d32d35bc43342a8cee001e313af150525cfa329457ea643d9204e1bb6c12
+x86_64-linux e45ce1f049864cbe82b99653e12513ece4c399ee5386ec22cc2d0fd02f5fb5b4
+aarch64-linux 0386c04d56970ef6a483d5c4e28ee10b565c726ea8a27d28a46df50428a1b220
 ==== 3
 ---- file a.azl (no newline at end)
 fn show[T](x: T) {
@@ -58,8 +58,8 @@ checked 8 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 959e603843af74a3c5990f3cfcf3843b7f6cc6b3c527bcd8ec8b52aca44642a4
-x86_64-linux 2098fe8b011cefaf0d09e374833542d826131b0069df13df6e812921764b1bbd
-aarch64-linux 2df1898e91c7af7d560f56a955bfd780f265f38a33678cafb03bafa71d2b8ccb
+x86_64-linux 66b96ae16c3400ef511cdb19e6620d1b1256ff8475a1b6ec7421e29b890775f4
+aarch64-linux fa3eb62ec8a4efa0d5d5ad500b7322198c0c5a6cf184a21a18b9b162dbf6203c
 ==== 4
 ---- file a.azl (no newline at end)
 fn two[A, B](a: A, b: B) -> A {
@@ -76,8 +76,8 @@ checked 6 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 1f0f27ba6cdae020e95f96773d248b35479514205caacad1b064d063526d8164
-x86_64-linux afa288ffd23448a30ea7f582daecfaf6d2c62fd96e6db4f9d1eacc2436ab3a76
-aarch64-linux e0c208fa787382c1c3550887cc08e920f49cd10f7bb1b1f50eebfe3f5b8e080e
+x86_64-linux 71d081ea3905a0332a7eb40bba4c86ff314cb321cc2e4ef9eea0c19446e104fa
+aarch64-linux 39dcd693fc0d7de46ea5b1f263e01492bfbe8f2dc3d4fa4c044f8457be75c58d
 ==== 5
 ---- file a.azl (no newline at end)
 fn add[T](xs: mut List[T], x: T) {
@@ -95,8 +95,8 @@ checked 7 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos b14cb12f97292facb469a2887595dee76f3a7f7c35ab4a31b71f7f816b410123
-x86_64-linux 55764d693f008969cca626fc3ca42253533db9ae9b37ec249f9234bc2182f80f
-aarch64-linux 1c5d13a81028168b697b743d13ccb79c3f07a773281d2657353dba45164d9f04
+x86_64-linux 3efb432c3b526a2448aa0e8960599ae16f8fffbe669b06e385e3fef0d7ae8950
+aarch64-linux 651a7292dac15ae77779586e370003f4668c2e1977bed76f65516374a7989dc8
 ==== 6
 ---- file a.azl (no newline at end)
 fn id[T](x: T) -> T {
@@ -115,5 +115,5 @@ checked 8 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 6d2bfa167cf5e0f6cdbda46678115ef2ad20c489dd281de1c83ff19d77aace1d
-x86_64-linux fbdb9c4a2d64adcc0ff4b0f2e5b6230c19baeca0c3d4bea3a1332c91a1483a79
-aarch64-linux 0c47575cf815171f6f87c25850bd97a9241a8805c7186b2b18065437c4f9efd9
+x86_64-linux a6b51cb875f66913c38dc39df18238949499e2721b51b91fb7560831013061e1
+aarch64-linux bc02f923c42c8e8bd22ba1c7dba8c0879d8af0311250958b97f2078c7828b6d8

@@ -17,8 +17,8 @@ checked 8 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos c0151d6ca6704c9bfc4e0d1f02ade5c695c586323ba23c59aa7a02f35f90a365
-x86_64-linux 0bc1123a925135d8bfcfcfbb053f66d8285a4d1bd830a4532224d34dcb7dfd34
-aarch64-linux 1d3f534d9d8c51985b040199fb84daf44b4ea6f6e38a5129295873b730ee76b8
+x86_64-linux b551bd033ab814117a11bbce074a94fb2ae86855d97372e0886a2922c3692142
+aarch64-linux f841ea012c88e1f3754f7bba51298c1545f653e716184106ba563ed4308cccdd
 ==== 2
 ---- file a.azl (no newline at end)
 fn id(o: Option[i64]) -> Option[i64] {
@@ -39,8 +39,8 @@ checked 10 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos e176fa2de0384ad3bf6b2d1fc79ad4ce28375610152191c6dc9d9f998c0bc90d
-x86_64-linux 1ecfaed8e732fe66d67fe31695af775aee8a58e328e0ca3e043a6db250ecbc9d
-aarch64-linux 749254af2584462a8dc8601fbdd86eff4cb6f7e44efd4a3c088bfb395656f36e
+x86_64-linux 49f35bf6e3b6133b3099bd7cd0a57c5d4d126c47aeec2f2cd5e007d6d4357ba3
+aarch64-linux 06c230638204ac1d1e2dbf0d217a002087bd877ce89c953d573389107bf0fb77
 ==== 3
 ---- file a.azl (no newline at end)
 fn main() {
@@ -58,8 +58,8 @@ checked 7 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos d0d7c70cfb765ae4a85cc3fa713af31ebac5a4c051b38e16d45c0044a0484abb
-x86_64-linux 293ae384526c600af6c37e6551f88d64bcd83ac0e1b5280e4e12cafb6255683d
-aarch64-linux 9599fb3825e5268f7054251ee0960e1b6a4893cf13a94dd7f65e8954b70d543e
+x86_64-linux 5185548680bb6e8b6f948ad357252ecaaf230f57c9b1d55be25cc88c30de9068
+aarch64-linux 82ed5556dafc8bd5f338d1816ce1d1d25b618cc4c0bc728bf62026f9a1761d19
 ==== 4
 ---- file a.azl (no newline at end)
 fn f(o: Option[i64]) -> i64 {
@@ -78,5 +78,5 @@ checked 8 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 88df4bb7347ef6b75aaf9bf0d058dd3d5e9d8512bd37179e456639cfa53cc159
-x86_64-linux 2d3f0aa261a2832cf687cc05ac1bebeedeb08179c92ed777b0b0a95b185f317a
-aarch64-linux 7dd3c2622030444cb975089aff6115171f998ff779eff97f48192c4eec96427e
+x86_64-linux 03b3132e7cf8ef4149514f35f750d47ced3f03e9ad4ea9c523b4db6e3ab34f24
+aarch64-linux 6e41433ab20c294d51334363d37f91cf816ef61692fa5a55b5f030099aba14ec

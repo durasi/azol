@@ -916,6 +916,9 @@ def main():
     # The back end for ARM64, in emulators: tests/opt/run_back_arm64_tests.py.
     import run_back_arm64_tests
     run_back_arm64_tests.run(azol, binary, folder, total, seed, problems)
+    # `azol-opt build` from source to executable for ARM64: tests/opt/run_driver_tests.py.
+    import run_driver_tests
+    run_driver_tests.run(azol, folder, problems)
     for problem in problems:
         print("FAIL " + problem)
     if problems:

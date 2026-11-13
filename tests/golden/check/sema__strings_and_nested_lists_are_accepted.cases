@@ -16,8 +16,8 @@ checked 7 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 8921522191e3acfb35eeb22de57f5f9014072e983beda271250c732b68ba7636
-x86_64-linux 9ba2583068586f0bb6dd119e22f09f43ee148b5dd699f0c7ab3684805b834da6
-aarch64-linux 33d224be37229bb757511084c446a720c901d7c6f3638dad8a4e3b018c06e105
+x86_64-linux 02c1901a12ab18ee4840d71b322dbddcca6596397e693e5d48a68980d8d8c759
+aarch64-linux e2138f2b0756385159eaa9ac0da4d42a8779a320efc87b7a1ab0120905126165
 ==== 2
 ---- file a.azl (no newline at end)
 struct Point {
@@ -57,8 +57,8 @@ checked 29 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 5173eea1ac04ee7c67de46c4170a30d90478d6510c631a5c2011592b508b035d
-x86_64-linux 03bf5d16fd3c8de23f9669a26849ee23648adc75f3de4537f7a105c7a633e637
-aarch64-linux 51d2acd029092cf99de8710b0a5229abfcd611f5f21631937466f049235df89b
+x86_64-linux 55c12af2440749c967c131365afdc95b40311206f561d9bcab28b781c5c1a7bb
+aarch64-linux 59c730c8c5d3a5d43cddc2044378a61d8109f515f3b80e0303f7c3712b8c8b6b
 ==== 3
 ---- file a.azl (no newline at end)
 struct Point {
@@ -95,8 +95,8 @@ checked 26 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 48423a348e0e7bd02057c1205095caa917aa685e173e9af01cf07e5396e16a19
-x86_64-linux 655c7e0452b55b041f604f9587dbdddd0c144eee46dcd351e78b5b234a33f1f9
-aarch64-linux fa3f2a53721d3273ddded35209a2d199bd328f7bb5af466350fc74516b78b045
+x86_64-linux f8006bc4286020910566e8d08bc15a41f37bcb71c9f4a7e4724434279ce3f69d
+aarch64-linux c4acbe5b31832aa4613c4daf2ee560b44c72ee6260eca256bae1d93dfb1edcfe
 ==== 4
 ---- file a.azl (no newline at end)
 struct Node {
@@ -123,5 +123,5 @@ checked 16 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 3c5d8dd00da8276f84b17ee70cb62f308a5bc88af61ff8b82f39191a85a8e34f
-x86_64-linux 598edb56ce7950637ca72432541a9434e1c562301ae520533f85730b677fc6ef
-aarch64-linux a79e321ddc09d453507ce675b3bc71c636f950e9ce03407fd067870cc3500148
+x86_64-linux 13286cc5358e62972c80bbba13715c75c5869ce6e53bc59f0430ab4653474762
+aarch64-linux 60f0fe43bdedd78dfb6767fdf3de12eded42572a9f467ef48e75ac70909bb8c8

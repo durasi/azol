@@ -21,8 +21,8 @@ checked 12 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 4981f9a2331fba2273ee3d80ee814491b72c8ec782e705fcf2ca2f2f7054c70b
-x86_64-linux 697faf8b100a3c6a9c8e9816a47d1fb727095cb67bb1e371ae8b8dddda0b5120
-aarch64-linux 336067cba15410b89d0234aa026765fe85dc37c979403092444038601766b077
+x86_64-linux 05b5fb71eade03e08f0e5cc00e7a2a97c17383b0f0584dae31ee424edfc1ecfb
+aarch64-linux 74397693baf5e823baa6475518b07da6adb798d345c2e2a7c6c7c04cb21c02e3
 ==== 2
 ---- file a.azl (no newline at end)
 fn grow(xs: mut List[str]) -> str {
@@ -45,5 +45,5 @@ checked 12 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 8cf6dd3f7a34e548c187b1ae66cfc9e92c95c9a73455dea92e239f1c56c19347
-x86_64-linux ad27c9ad1da38316c5e32d0a1d57d16b584074166873fcc32441b6f67056eda8
-aarch64-linux 6f375230a022ced1c4928d328da26e7b0e456b0b16e8f746ec05636eae58ade3
+x86_64-linux d4cea0356c7cbd5bd1fdabe33f73ac9b9b40549a3622acfd473cd87c00da9edc
+aarch64-linux 39a5050e64c7de423e0493f1870228a1df5d398ab89f3e6b0f548aa0a2f44876

@@ -1,0 +1,15 @@
+; T1 must not fire: the block after the branch has a second way in, on which the condition is not known.
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v2 = slt p0, p1
+    v3 = slt p1, 0
+    br v3, b2, b1
+b1:
+    br v2, b2, b3
+b2:
+    br v2, b3, b4
+b3:
+    ret 1
+b4:
+    ret 2
+}

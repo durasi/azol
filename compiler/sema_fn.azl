@@ -255,6 +255,20 @@ fn ck_function_body(c: mut Checker, p: Parser, index: i64) {
     if c.failed { return }
     ck_close_scope(mut c, 0)
     if c.ret != TY_UNIT && !ck_always_returns(p, body) {
+        // A last line that is the value itself: the habit of languages
+        // where a block gives its last expression.
+        if body.len > 0 {
+            match p.ast.stmts[p.ast.lists[body.start + body.len - 1]] {
+                StmtExpr(last) => {
+                    if c.expr_ty[c.sh_e + last] == c.ret {
+                        ck_err_expr(p, last, "a function gives its value with `return`; the last line alone does not return it", mut c)
+                        c.error.fix = Fix { kind: FIX_REPLACE, start: p.ast.expr_pos[last], end: p.ast.expr_pos[last], text: "return " }
+                        return
+                    }
+                }
+                _ => {}
+            }
+        }
         ck_err(name.start, "function `" + span_text(p.src, name) + "` must return a value of type `" + ck_ty_name(c, c.ret) +
                 "` on every path", mut c)
         return
@@ -1070,7 +1084,58 @@ fn ck_wrong_return(c: mut Checker, at: i64, got: i64) {
     }
 }
 
+// The variable that a value `if` or `match` fills (see
+// `parse_value_into`): declared without a value. With a type known from
+// what is written, it has its slots at once; otherwise the first branch
+// that gives a value decides (`ck_fill_chosen`), and until then the
+// variable's type is `TY_NONE` and its slot is this statement's id.
+fn ck_declare_chosen(c: mut Checker, p: Parser, id: i64, name: Span, ty: i64) {
+    var known = TY_NONE
+    if ty >= 0 {
+        known = ck_ty(mut c, p, ty)
+        if c.failed { return }
+    } else if ty <= -2 {
+        let sym = ck_sym(mut c, p, -2 - ty)
+        let at = ck_lookup(c, sym)
+        if at >= 0 { known = c.loc_ty[at] }
+    }
+    let sym = ck_intern(mut c, p, name)
+    c.stmt_flag[c.sh_s + id] = TY_UNIT
+    ck_push_local(mut c, sym, id, TY_NONE, LOC_OWNS | LOC_MUTABLE)
+    if known != TY_NONE { ck_fill_chosen(mut c, c.locals_len - 1, known, name.start) }
+}
+
+// Gives the variable of a value `if` or `match` its type and its slots.
+fn ck_fill_chosen(c: mut Checker, at: i64, ty: i64, pos: i64) {
+    let decl = c.loc_slot[at]
+    let size = ck_size_of(c, ty)
+    let slot = ck_alloc(mut c, size, pos)
+    if c.failed { return }
+    c.loc_slot[at] = slot
+    c.loc_ty[at] = ty
+    if ty == TY_I64 || ty == TY_BOOL { c.loc_flags[at] = c.loc_flags[at] | LOC_SCALAR }
+    c.stmt_slot[c.sh_s + decl] = slot
+    c.stmt_flag[c.sh_s + decl] = ty
+}
+
+// The variable in scope that `target` names when it is the one a value
+// `if` or `match` fills, or -1.
+fn ck_chosen(c: mut Checker, p: Parser, target: i64) -> i64 {
+    match p.ast.exprs[target] {
+        ExprIdent(name) => {
+            if !span_is(p.src, name, "if") && !span_is(p.src, name, "match") { return -1 }
+            let sym = ck_sym(mut c, p, target)
+            return ck_lookup(c, sym)
+        }
+        _ => return -1
+    }
+}
+
 fn ck_let(c: mut Checker, p: Parser, id: i64, mutable: bool, name: Span, ty: i64, value: i64) {
+    if value == NO_NODE {
+        ck_declare_chosen(mut c, p, id, name, ty)
+        return
+    }
     var declared = TY_NONE
     if ty != NO_NODE {
         declared = ck_ty(mut c, p, ty)
@@ -1195,6 +1260,20 @@ fn ck_for(c: mut Checker, p: Parser, id: i64, has_index: bool, index: Span, item
 
 fn ck_assign(c: mut Checker, p: Parser, id: i64, target: i64, value: i64) {
     let pos = p.ast.stmt_pos[id]
+    // A branch of a value `if` or `match`. The first one that gives a
+    // value decides the type, so its value is checked before the target.
+    let chosen = ck_chosen(mut c, p, target)
+    var early_ty = TY_NONE
+    if chosen >= 0 && c.loc_ty[chosen] == TY_NONE {
+        early_ty = ck_expr_hint(mut c, p, value, TY_NONE)
+        if c.failed { return }
+        if early_ty == TY_UNIT || early_ty == TY_NONE {
+            ck_err_expr(p, value, "this expression has no value to store", mut c)
+            return
+        }
+        ck_fill_chosen(mut c, chosen, early_ty, pos)
+        if c.failed { return }
+    }
     let target_ty = ck_expr_hint(mut c, p, target, TY_NONE)
     if c.failed { return }
     match p.ast.exprs[target] {
@@ -1223,10 +1302,19 @@ fn ck_assign(c: mut Checker, p: Parser, id: i64, target: i64, value: i64) {
     ck_check_change(mut c, p, target, place)
     if c.failed { return }
     // The target is found after the value has been computed.
+    let target_tries = c.tries.len()
     c.late.push(target)
-    let value_ty = ck_expr_hint(mut c, p, value, target_ty)
-    if c.failed { return }
+    var value_ty = early_ty
+    if early_ty == TY_NONE {
+        value_ty = ck_expr_hint(mut c, p, value, target_ty)
+        if c.failed { return }
+    }
     if value_ty != target_ty {
+        if chosen >= 0 {
+            ck_err_expr(p, value, "this branch gives `" + ck_ty_name(c, value_ty) + "` where `" + ck_ty_name(c, target_ty) +
+                    "` is expected: every branch of an `if` or `match` that gives a value has the same type", mut c)
+            return
+        }
         ck_wrong_type(mut c, p, value, target_ty, value_ty)
         return
     }
@@ -1258,7 +1346,15 @@ fn ck_assign(c: mut Checker, p: Parser, id: i64, target: i64, value: i64) {
     }
     let owning = ck_needs_drop(c, target_ty)
     var moved = false
-    if owning { moved = ck_store_from(mut c, p, value) }
+    // Where the new value waits while the target is found: the
+    // temporary that computed it, or the copy made below.
+    var waiting = -1
+    if owning {
+        for entry in c.pending {
+            if entry.expr == value { waiting = entry.slot }
+        }
+        moved = ck_store_from(mut c, p, value)
+    }
     c.late.pop()
     if ty_is_aggregate(target_ty) && !moved && (owning || ck_contains_index(p, target)) {
         // The value is copied aside first. That lets `a = a` read the
@@ -1268,8 +1364,33 @@ fn ck_assign(c: mut Checker, p: Parser, id: i64, target: i64, value: i64) {
         let slot = ck_alloc(mut c, size, pos)
         if c.failed { return }
         c.stmt_slot[c.sh_s + id] = slot
+        waiting = slot
+    }
+    // A `?` in the target leaves after the value was computed and
+    // before it is stored: it frees the waiting value as well.
+    var leaving: List[i64] = []
+    if owning && waiting >= 0 {
+        var k = 0
+        while k < target_tries && k < c.tries.len() {
+            leaving.push(c.tries[k])
+            k = k + 1
+        }
     }
     ck_finish(mut c, id)
+    if leaving.len() > 0 {
+        let owned = ck_owned_count(c, target_ty)
+        var k = 0
+        while k < owned {
+            c.zero_slots.push(waiting + ck_owned_offset(c, target_ty, k) + idle_slot(ck_owned_ty(c, target_ty, k)))
+            k = k + 1
+        }
+        c.drop_slots.push(waiting)
+        c.drop_tys.push(target_ty)
+        for at in leaving {
+            let aux = c.expr_aux[c.sh_e + at]
+            c.expr_aux[c.sh_e + at] = (aux & 1) | (((aux >> 1) + 1) << 1)
+        }
+    }
 }
 
 // The bytes of string literal `a` are the bytes of string literal `b`.
@@ -1286,10 +1407,436 @@ fn ck_same_string(c: Checker, a: i64, b: i64) -> bool {
     return true
 }
 
+// The one value a pattern stands for when it is a literal or the name
+// of a constant: its kind (`CV_...`) and value. Kind -1 for any other
+// pattern.
+fn ck_pattern_literal(c: mut Checker, p: Parser, pat: i64) -> ConstValue {
+    let pat_pos = p.ast.pat_pos[pat]
+    let none = ConstValue { kind: -1, value: 0 }
+    match p.ast.patterns[pat] {
+        PatInt(negative, digits) => {
+            if p.src[digits.start] != '\'' {
+                var from = 0
+                if digits.len > 1 && (p.src[digits.start + 1] == 'x' || p.src[digits.start + 1] == 'b') {
+                    from = 2
+                }
+                let fault = number_fault(p.src, digits.start, digits.len, from)
+                if fault != 0 {
+                    ck_err(pat_pos, int_literal_message(fault), mut c)
+                    return none
+                }
+            }
+            let special = special_literal(p.src, digits.start, digits.len)
+            var value = 0
+            if special.code == 1 {
+                ck_err(pat_pos, "this number does not fit in 64 bits", mut c)
+                return none
+            }
+            if special.code == 0 {
+                value = special.value
+                if negative {
+                    if value == I64_MIN {
+                        ck_err(pat_pos, "this number does not fit in `i64`", mut c)
+                        return none
+                    }
+                    value = 0 - value
+                }
+            } else {
+                // Counted below zero, where there is room for one more.
+                var below = 0
+                var too_big = false
+                var i = 0
+                while i < digits.len && !too_big {
+                    let b = p.src[digits.start + i]
+                    i = i + 1
+                    if b != '_' {
+                        let digit = b - '0'
+                        if below < (I64_MIN + digit) / 10 {
+                            too_big = true
+                        } else {
+                            below = below * 10 - digit
+                        }
+                    }
+                }
+                if too_big || (!negative && below == I64_MIN) {
+                    ck_err(pat_pos, "this number does not fit in `i64`", mut c)
+                    return none
+                }
+                if negative {
+                    value = below
+                } else {
+                    value = 0 - below
+                }
+            }
+            return ConstValue { kind: CV_INT, value: value }
+        }
+        PatBool(value) => {
+            return ConstValue { kind: CV_BOOL, value: bool_number(value) }
+        }
+        PatStr(span) => {
+            let text = ck_string_literal(mut c, p, span)
+            return ConstValue { kind: CV_STR, value: text }
+        }
+        PatName(name) => {
+            let name_sym = ck_intern(mut c, p, name)
+            let constant = ck_constant(c, name.start, name_sym)
+            if constant >= 0 {
+                return ConstValue { kind: c.consts[constant].kind, value: c.consts[constant].value }
+            }
+            return none
+        }
+        _ => return none
+    }
+}
+
+// Checks a pattern inside a variant's `()`: it is matched against the
+// field of type `field`, `offset` slots into the value around it. The
+// names it binds join the ones bound since `scope`. True when not
+// every value of the field fits the pattern.
+fn ck_sub_pattern(c: mut Checker, p: Parser, sub: i64, field: i64, offset: i64, scope: i64) -> bool {
+    let pos = p.ast.pat_pos[sub]
+    let literal = ck_pattern_literal(mut c, p, sub)
+    if c.failed { return false }
+    if literal.kind >= 0 {
+        if field != const_ty(literal.kind) {
+            var kind = "a string"
+            if literal.kind == CV_INT {
+                kind = "a number"
+            } else if literal.kind == CV_BOOL {
+                kind = "a `bool`"
+            }
+            ck_err(pos, "this pattern is " + kind + " but the value here is `" + ck_ty_name(c, field) + "`", mut c)
+            return false
+        }
+        if literal.kind == CV_INT {
+            c.ints.push(literal.value)
+            c.pat_kind[c.sh_p + sub] = PAT_SUB_INT
+            c.pat_res[c.sh_p + sub] = offset | ((c.ints.len() - 1) << 16)
+            c.pat_slot[c.sh_p + sub] = 0
+        } else if literal.kind == CV_BOOL {
+            c.pat_kind[c.sh_p + sub] = PAT_SUB_BOOL
+            c.pat_res[c.sh_p + sub] = offset | (literal.value << 16)
+            c.pat_slot[c.sh_p + sub] = 0
+        } else {
+            let slot = ck_alloc(mut c, 3, pos)
+            if c.failed { return false }
+            c.pat_kind[c.sh_p + sub] = PAT_SUB_STR
+            c.pat_res[c.sh_p + sub] = offset | (literal.value << 16)
+            c.pat_slot[c.sh_p + sub] = slot
+        }
+        return true
+    }
+    // 0 `_`, 1 a name, 2 a variant with `()`.
+    var form = 0
+    var name = Span { start: 0, len: 0 }
+    var args = IdRange { start: 0, len: 0 }
+    match p.ast.patterns[sub] {
+        PatName(written) => {
+            form = 1
+            name = written
+        }
+        PatVariant(written, inner) => {
+            form = 2
+            name = written
+            args = inner
+        }
+        _ => {}
+    }
+    if form == 0 {
+        c.pat_kind[c.sh_p + sub] = PAT_ANY
+        c.pat_res[c.sh_p + sub] = 0
+        c.pat_slot[c.sh_p + sub] = 0
+        return false
+    }
+    let sym = ck_intern(mut c, p, name)
+    let found = tab_get(c.variant_names, sym)
+    if form == 1 && found < 0 {
+        var k = scope
+        while k < c.locals_len {
+            if c.loc_name[k] == sym {
+                ck_err(name.start, "`" + sym_text(c, sym) + "` is used twice in this pattern", mut c)
+                return false
+            }
+            k = k + 1
+        }
+        // The name refers to the field where it is.
+        let slot = ck_alloc(mut c, 1, name.start)
+        if c.failed { return false }
+        ck_push_view(mut c, sym, slot, field, true)
+        c.pat_kind[c.sh_p + sub] = PAT_BIND
+        c.pat_res[c.sh_p + sub] = offset
+        c.pat_slot[c.sh_p + sub] = slot
+        return false
+    }
+    if found < 0 {
+        ck_err(pos, "unknown variant `" + sym_text(c, sym) + "`", mut c)
+        return false
+    }
+    let template = found >> 10
+    let variant = found & 1023
+    var fits = false
+    if ty_is_enum(field) { fits = c.enums[ty_index(field)].template == template }
+    if !fits {
+        ck_err(pos, "`" + sym_text(c, sym) + "` is a variant of `" + sym_text(c, c.templates[template].name) +
+                "` but the value here is `" + ck_ty_name(c, field) + "`", mut c)
+        return false
+    }
+    let index = ty_index(field)
+    let want = c.enums[index].variants[variant].field_tys.len()
+    if form == 2 {
+        if want == 0 {
+            ck_err(pos, "`" + sym_text(c, sym) + "` holds no value; write it without `()`", mut c)
+            return false
+        }
+    } else if want > 0 {
+        let fields = repeated("_", want)
+        ck_err(pos, "`" + sym_text(c, sym) + "` holds " + str(want) + " value" + plural(want) + "; write `" + sym_text(c, sym) +
+                "(" + fields + ")` to match it", mut c)
+        c.error.fix = Fix { kind: FIX_AFTER_NAME, start: pos, end: 0, text: "(" + fields + ")" }
+        return false
+    }
+    if args.len != want {
+        ck_err(pos, "`" + sym_text(c, sym) + "` holds " + str(want) + " value" + plural(want) + " but this pattern lists " +
+                str(args.len), mut c)
+        return false
+    }
+    // A slot for the address of the value this pattern looks into.
+    let holder = ck_alloc(mut c, 1, pos)
+    if c.failed { return false }
+    c.pat_kind[c.sh_p + sub] = PAT_SUB_VARIANT
+    c.pat_res[c.sh_p + sub] = offset | (variant << 16)
+    c.pat_slot[c.sh_p + sub] = holder
+    var i = 0
+    while i < args.len {
+        let inner = p.ast.lists[args.start + i]
+        let inner_ty = c.enums[index].variants[variant].field_tys[i]
+        let inner_offset = c.enums[index].variants[variant].field_offsets[i]
+        ck_sub_pattern(mut c, p, inner, inner_ty, inner_offset, scope)
+        if c.failed { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// ---- which values a list of arms covers --------------------------------
+//
+// With patterns inside patterns, whether the arms cover every case, and
+// whether an arm can still run, is decided on the arms as wholes. A row
+// is what is left of one arm's pattern: one pattern (an id, or -1 for
+// "anything") per value still to be looked at, whose types are `tys`.
+
+// What kind of head a pattern is: 0 anything, 1 a variant, 2 a literal.
+fn pm_head(c: Checker, pat: i64) -> i64 {
+    if pat < 0 { return 0 }
+    let kind = c.pat_kind[c.sh_p + pat]
+    if kind == PAT_ANY || kind == PAT_BIND { return 0 }
+    if kind == PAT_VARIANT || kind == PAT_SUB_VARIANT { return 1 }
+    return 2
+}
+
+fn pm_variant(c: Checker, pat: i64) -> i64 {
+    if c.pat_kind[c.sh_p + pat] == PAT_VARIANT { return c.pat_res[c.sh_p + pat] }
+    return c.pat_res[c.sh_p + pat] >> 16
+}
+
+// True when two literal patterns of the same type stand for one value.
+fn pm_same_literal(c: Checker, a: i64, b: i64) -> bool {
+    let kind = c.pat_kind[c.sh_p + a]
+    let left = c.pat_res[c.sh_p + a] >> 16
+    let right = c.pat_res[c.sh_p + b] >> 16
+    if kind == PAT_SUB_INT { return c.ints[left] == c.ints[right] }
+    if kind == PAT_SUB_BOOL { return left == right }
+    return ck_same_string(c, left, right)
+}
+
+// The rows that fit variant `variant`, which holds `count` values, each
+// with the patterns for those values in front.
+fn pm_rows_of_variant(c: Checker, p: Parser, rows: List[List[i64]], variant: i64, count: i64) -> List[List[i64]] {
+    var out: List[List[i64]] = []
+    for row in rows {
+        let head = pm_head(c, row[0])
+        if head == 1 && pm_variant(c, row[0]) != variant { continue }
+        var next: List[i64] = []
+        if head == 1 && count > 0 {
+            match p.ast.patterns[row[0]] {
+                PatVariant(_, args) => {
+                    var k = 0
+                    while k < args.len {
+                        next.push(p.ast.lists[args.start + k])
+                        k = k + 1
+                    }
+                }
+                _ => {}
+            }
+        } else {
+            var k = 0
+            while k < count {
+                next.push(-1)
+                k = k + 1
+            }
+        }
+        var k = 1
+        while k < row.len() {
+            next.push(row[k])
+            k = k + 1
+        }
+        out.push(next)
+    }
+    return out
+}
+
+// The rows that fit the literal of pattern `literal` (or, with -1, a
+// value no row names), without their first pattern.
+fn pm_rows_of_literal(c: Checker, rows: List[List[i64]], literal: i64) -> List[List[i64]] {
+    var out: List[List[i64]] = []
+    for row in rows {
+        if pm_head(c, row[0]) != 0 {
+            if literal < 0 { continue }
+            if !pm_same_literal(c, row[0], literal) { continue }
+        }
+        var next: List[i64] = []
+        var k = 1
+        while k < row.len() {
+            next.push(row[k])
+            k = k + 1
+        }
+        out.push(next)
+    }
+    return out
+}
+
+// The types still to be looked at once the first one, an enum, is known
+// to be `variant`.
+fn pm_types_of_variant(c: Checker, tys: List[i64], variant: i64) -> List[i64] {
+    var out: List[i64] = []
+    for field in c.enums[ty_index(tys[0])].variants[variant].field_tys {
+        out.push(field)
+    }
+    var k = 1
+    while k < tys.len() {
+        out.push(tys[k])
+        k = k + 1
+    }
+    return out
+}
+
+// True when some value fits the row `q` and none of `rows`.
+fn pm_useful(c: Checker, p: Parser, rows: List[List[i64]], q: List[i64], tys: List[i64]) -> bool {
+    if q.len() == 0 { return rows.len() == 0 }
+    if rows.len() == 0 { return true }
+    let head = pm_head(c, q[0])
+    if ty_is_enum(tys[0]) {
+        let count = c.enums[ty_index(tys[0])].variants.len()
+        var variant = 0
+        while variant < count {
+            if head == 0 || pm_variant(c, q[0]) == variant {
+                let fields = c.enums[ty_index(tys[0])].variants[variant].field_tys.len()
+                let left = pm_rows_of_variant(c, p, rows, variant, fields)
+                let mine = pm_rows_of_variant(c, p, [q], variant, fields)
+                if pm_useful(c, p, left, mine[0], pm_types_of_variant(c, tys, variant)) {
+                    return true
+                }
+            }
+            variant = variant + 1
+        }
+        return false
+    }
+    let rest = tys.skip(1)
+    let tail = q.skip(1)
+    if head != 0 { return pm_useful(c, p, pm_rows_of_literal(c, rows, q[0]), tail, rest) }
+    if tys[0] == TY_BOOL {
+        // Both values, each as one of the rows writes it.
+        var value = 0
+        while value < 2 {
+            var named = -1
+            for row in rows {
+                if pm_head(c, row[0]) != 0 && (c.pat_res[c.sh_p + row[0]] >> 16) == value {
+                    named = row[0]
+                }
+            }
+            if named < 0 { return pm_useful(c, p, pm_rows_of_literal(c, rows, -1), tail, rest) }
+            if pm_useful(c, p, pm_rows_of_literal(c, rows, named), tail, rest) { return true }
+            value = value + 1
+        }
+        return false
+    }
+    return pm_useful(c, p, pm_rows_of_literal(c, rows, -1), tail, rest)
+}
+
+// A value none of the rows fits, written as a pattern for each of the
+// types, or `found: false` when the rows cover everything.
+struct Witness {
+    found: bool
+    parts: List[str]
+}
+
+fn pm_missing(c: Checker, p: Parser, rows: List[List[i64]], tys: List[i64]) -> Witness {
+    if tys.len() == 0 { return Witness { found: rows.len() == 0, parts: [] } }
+    if ty_is_enum(tys[0]) {
+        let index = ty_index(tys[0])
+        let template = c.enums[index].template
+        let count = c.enums[index].variants.len()
+        var variant = 0
+        while variant < count {
+            let fields = c.enums[index].variants[variant].field_tys.len()
+            let inner = pm_missing(c, p, pm_rows_of_variant(c, p, rows, variant, fields), pm_types_of_variant(c, tys, variant))
+            if inner.found {
+                var text = sym_text(c, c.templates[template].variant_names[variant])
+                if fields > 0 { text = text + "(" + inner.parts.take(fields).join(", ") + ")" }
+                var parts = [text]
+                parts.extend(inner.parts.skip(fields))
+                return Witness { found: true, parts: parts }
+            }
+            variant = variant + 1
+        }
+        return Witness { found: false, parts: [] }
+    }
+    let rest = tys.skip(1)
+    if tys[0] == TY_BOOL {
+        var value = 0
+        while value < 2 {
+            var named = -1
+            for row in rows {
+                if pm_head(c, row[0]) != 0 && (c.pat_res[c.sh_p + row[0]] >> 16) == value {
+                    named = row[0]
+                }
+            }
+            let inner = pm_missing(c, p, pm_rows_of_literal(c, rows, named), rest)
+            if inner.found {
+                var parts = [str(value == 1)]
+                parts.extend(inner.parts)
+                return Witness { found: true, parts: parts }
+            }
+            value = value + 1
+        }
+        return Witness { found: false, parts: [] }
+    }
+    let inner = pm_missing(c, p, pm_rows_of_literal(c, rows, -1), rest)
+    if !inner.found { return inner }
+    var parts = ["_"]
+    parts.extend(inner.parts)
+    return Witness { found: true, parts: parts }
+}
+
 // Checks a `match`. The value is looked at where it lives when it is a
 // variable (which then cannot change inside the arms), and is owned by
 // the statement when it was computed. Names bound by a pattern are
 // read-only views into it.
+// The arms that would complete a `match`, as a fix. A `match` that gives a
+// value gets none: an arm there needs a value, which only the author
+// knows. Such a `match` follows `=` or `return` on its line.
+fn match_fix(p: Parser, pos: i64, text: str) -> Fix {
+    var at = pos - 1
+    while at >= 0 && p.src[at] == ' ' {
+        at = at - 1
+    }
+    if at >= 0 && p.src[at] == '=' { return Fix { kind: FIX_NONE, start: 0, end: 0, text: "" } }
+    if at >= 5 && p.src.slice(at - 5, at + 1) == "return" {
+        return Fix { kind: FIX_NONE, start: 0, end: 0, text: "" }
+    }
+    return Fix { kind: FIX_MATCH_ARMS, start: pos, end: 0, text: text }
+}
+
 fn ck_match_stmt(c: mut Checker, p: Parser, id: i64, scrutinee: i64, arms: IdRange) {
     let pos = p.ast.stmt_pos[id]
     let at = p.ast.expr_pos[scrutinee]
@@ -1352,6 +1899,10 @@ fn ck_match_stmt(c: mut Checker, p: Parser, id: i64, scrutinee: i64, arms: IdRan
     var seen_strings: List[i64] = []
     var catch_all = false
     var literal_slot = -1
+    // True once an arm holds a pattern inside a pattern that not every
+    // value fits; from then on the arms are compared as wholes.
+    var any_partial = false
+    var rows: List[List[i64]] = []
 
     var arm_at = 0
     while arm_at < arms.len {
@@ -1376,88 +1927,21 @@ fn ck_match_stmt(c: mut Checker, p: Parser, id: i64, scrutinee: i64, arms: IdRan
         var form = 0
         var pat_name = Span { start: 0, len: 0 }
         var pat_args = IdRange { start: 0, len: 0 }
+        let literal = ck_pattern_literal(mut c, p, pat)
+        if c.failed { return }
+        literal_kind = literal.kind
+        literal_value = literal.value
         match p.ast.patterns[pat] {
-            PatInt(negative, digits) => {
-                if p.src[digits.start] != '\'' {
-                    var from = 0
-                    if digits.len > 1 && (p.src[digits.start + 1] == 'x' || p.src[digits.start + 1] == 'b') {
-                        from = 2
-                    }
-                    let fault = number_fault(p.src, digits.start, digits.len, from)
-                    if fault != 0 {
-                        ck_err(pat_pos, int_literal_message(fault), mut c)
-                        return
-                    }
-                }
-                let special = special_literal(p.src, digits.start, digits.len)
-                var value = 0
-                if special.code == 1 {
-                    ck_err(pat_pos, "this number does not fit in 64 bits", mut c)
-                    return
-                }
-                if special.code == 0 {
-                    value = special.value
-                    if negative {
-                        if value == I64_MIN {
-                            ck_err(pat_pos, "this number does not fit in `i64`", mut c)
-                            return
-                        }
-                        value = 0 - value
-                    }
-                } else {
-                    // Counted below zero, where there is room for one more.
-                    var below = 0
-                    var too_big = false
-                    var i = 0
-                    while i < digits.len && !too_big {
-                        let b = p.src[digits.start + i]
-                        i = i + 1
-                        if b != '_' {
-                            let digit = b - '0'
-                            if below < (I64_MIN + digit) / 10 {
-                                too_big = true
-                            } else {
-                                below = below * 10 - digit
-                            }
-                        }
-                    }
-                    if too_big || (!negative && below == I64_MIN) {
-                        ck_err(pat_pos, "this number does not fit in `i64`", mut c)
-                        return
-                    }
-                    if negative {
-                        value = below
-                    } else {
-                        value = 0 - below
-                    }
-                }
-                literal_kind = CV_INT
-                literal_value = value
-            }
-            PatBool(value) => {
-                literal_kind = CV_BOOL
-                literal_value = bool_number(value)
-            }
-            PatStr(span) => {
-                literal_kind = CV_STR
-                literal_value = ck_string_literal(mut c, p, span)
-            }
             PatName(name) => {
                 form = 1
                 pat_name = name
-                let name_sym = ck_intern(mut c, p, name)
-                let constant = ck_constant(c, name.start, name_sym)
-                if constant >= 0 {
-                    literal_kind = c.consts[constant].kind
-                    literal_value = c.consts[constant].value
-                }
             }
             PatVariant(name, args) => {
                 form = 2
                 pat_name = name
                 pat_args = args
             }
-            PatWildcard => {}
+            _ => {}
         }
         if literal_kind >= 0 {
             if ty != const_ty(literal_kind) {
@@ -1583,59 +2067,32 @@ fn ck_match_stmt(c: mut Checker, p: Parser, id: i64, scrutinee: i64, arms: IdRan
                 }
                 seen_variants[variant] = true
                 unseen_variants = unseen_variants - 1
+                var partial = false
                 var i = 0
                 while i < pat_args.len {
                     let sub = p.ast.lists[pat_args.start + i]
-                    // 0 `_`, 1 a name to bind, 2 anything else.
-                    var sub_form = 2
-                    var binding = Span { start: 0, len: 0 }
-                    match p.ast.patterns[sub] {
-                        PatWildcard => {
-                            sub_form = 0
-                        }
-                        PatName(name) => {
-                            binding = name
-                            sub_form = 1
-                        }
-                        _ => {}
-                    }
-                    var binding_sym = -1
-                    if sub_form == 1 {
-                        binding_sym = ck_intern(mut c, p, binding)
-                        if tab_get(c.variant_names, binding_sym) >= 0 || ck_constant(c, binding.start, binding_sym) >= 0 {
-                            sub_form = 2
-                        }
-                    }
-                    if sub_form == 2 {
-                        ck_err(p.ast.pat_pos[sub], "a pattern inside a pattern is not supported yet; give the value a name and `match` on it inside the arm", mut c)
-                        return
-                    }
-                    if sub_form == 1 {
-                        var k = scope
-                        while k < c.locals_len {
-                            if c.loc_name[k] == binding_sym {
-                                ck_err(binding.start, "`" + sym_text(c, binding_sym) + "` is used twice in this pattern", mut c)
-                                return
-                            }
-                            k = k + 1
-                        }
-                        let field = c.enums[enum_index].variants[variant].field_tys[i]
-                        let offset = c.enums[enum_index].variants[variant].field_offsets[i]
-                        // The name refers to the field where it is.
-                        let slot = ck_alloc(mut c, 1, binding.start)
-                        if c.failed { return }
-                        ck_push_view(mut c, binding_sym, slot, field, true)
-                        c.pat_kind[c.sh_p + sub] = PAT_BIND
-                        c.pat_res[c.sh_p + sub] = offset
-                        c.pat_slot[c.sh_p + sub] = slot
-                    }
+                    let field = c.enums[enum_index].variants[variant].field_tys[i]
+                    let offset = c.enums[enum_index].variants[variant].field_offsets[i]
+                    if ck_sub_pattern(mut c, p, sub, field, offset, scope) { partial = true }
+                    if c.failed { return }
                     i = i + 1
+                }
+                if partial {
+                    // Only some of the values of this variant: it stays unseen.
+                    any_partial = true
+                    seen_variants[variant] = false
+                    unseen_variants = unseen_variants + 1
                 }
                 c.pat_kind[c.sh_p + pat] = PAT_VARIANT
                 c.pat_res[c.sh_p + pat] = variant
                 c.pat_slot[c.sh_p + pat] = 0
             }
         }
+        if any_partial && !pm_useful(c, p, rows, [pat], [ty]) {
+            ck_err(pat_pos, "this arm can never run: the arms above already cover every case", mut c)
+            return
+        }
+        rows.push([pat])
         ck_block(mut c, p, arm.body)
         if c.failed { return }
         ck_close_scope(mut c, scope)
@@ -1647,6 +2104,13 @@ fn ck_match_stmt(c: mut Checker, p: Parser, id: i64, scrutinee: i64, arms: IdRan
     if catch_all { return }
     if is_enum {
         if unseen_variants == 0 { return }
+        if any_partial {
+            let witness = pm_missing(c, p, rows, [ty])
+            if !witness.found { return }
+            ck_err(pos, "this `match` does not handle `" + witness.parts[0] + "`; add an arm for it or a final `_ =>` arm", mut c)
+            c.error.fix = match_fix(p, pos, witness.parts[0] + " => \{}")
+            return
+        }
         var missing: List[str] = []
         for variant, seen in seen_variants {
             if !seen {
@@ -1666,7 +2130,7 @@ fn ck_match_stmt(c: mut Checker, p: Parser, id: i64, scrutinee: i64, arms: IdRan
                 }
             }
         }
-        let fix = Fix { kind: FIX_MATCH_ARMS, start: pos, end: 0, text: arms.join("\n") }
+        let fix = match_fix(p, pos, arms.join("\n"))
         if missing.len() == 1 {
             ck_err(pos, "this `match` does not handle " + missing[0] + "; add an arm for it or a final `_ =>` arm", mut c)
             c.error.fix = fix
@@ -1681,11 +2145,11 @@ fn ck_match_stmt(c: mut Checker, p: Parser, id: i64, scrutinee: i64, arms: IdRan
     if ty == TY_BOOL {
         if seen_false && seen_true { return }
         ck_err(pos, "this `match` does not handle `" + str(!seen_true) + "`; add an arm for it or a final `_ =>` arm", mut c)
-        c.error.fix = Fix { kind: FIX_MATCH_ARMS, start: pos, end: 0, text: str(!seen_true) + " => \{}" }
+        c.error.fix = match_fix(p, pos, str(!seen_true) + " => \{}")
         return
     }
     ck_err(pos, "a `match` on `" + ck_ty_name(c, ty) + "` needs a final `_ =>` arm: the arms cannot list every value", mut c)
-    c.error.fix = Fix { kind: FIX_MATCH_ARMS, start: pos, end: 0, text: "_ => \{}" }
+    c.error.fix = match_fix(p, pos, "_ => \{}")
 }
 
 fn ck_condition(c: mut Checker, p: Parser, cond: i64) {
@@ -2004,6 +2468,10 @@ fn ck_name(c: mut Checker, p: Parser, id: i64, hint: i64) -> i64 {
     let sym = ck_sym(mut c, p, id)
     let at = ck_lookup(c, sym)
     if at < 0 { return ck_name_other(mut c, p, id, sym, hint) }
+    if c.loc_ty[at] == TY_NONE {
+        ck_err_expr(p, id, "no branch of this `" + sym_text(c, sym) + "` gives a value", mut c)
+        return TY_UNIT
+    }
     var depth = c.loop_depth
     if depth > 6 { depth = 6 }
     // Mentioned again: an earlier store was not its last use.
@@ -3178,6 +3646,21 @@ fn ck_library_method(c: mut Checker, p: Parser, id: i64, base: i64, name: Span, 
                 return ck_call_generic(mut c, p, id, generic, sym, base, args, TY_NONE)
             }
             k = k + 1
+        }
+    }
+    var template = -1
+    if ty_is_enum(base_ty) { template = c.enums[ty_index(base_ty)].template }
+    if template == OPTION_TEMPLATE || template == RESULT_TEMPLATE {
+        let wanted = sym_text(c, sym)
+        if wanted == "unwrap" {
+            ck_err(name.start, "azoL has no `unwrap`; write `.expect(\"why it is there\")` to stop with a message, or `.or(default)` for a value instead",
+                mut c)
+            return TY_UNIT
+        }
+        if wanted == "unwrap_or" {
+            ck_err(name.start, "azoL has no `unwrap_or`; write `.or(default)`", mut c)
+            c.error.fix = Fix { kind: FIX_REPLACE, start: name.start, end: name.start + name.len, text: "or" }
+            return TY_UNIT
         }
     }
     if base_ty == TY_I64 && (sym_text(c, sym) == "step_by" || sym_text(c, sym) == "rev") {

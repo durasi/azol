@@ -59,7 +59,7 @@ fn a_stmt(g: mut AGen, c: Checker, p: Parser, id: i64) {
     // Every other statement starts and ends knowing nothing.
     var keeps = false
     match p.ast.stmts[id] {
-        StmtLet(_, _, _, value) => keeps = c.expr_ty[g.sh_e + value] < 3
+        StmtLet(_, _, _, value) => keeps = value < 0 || c.expr_ty[g.sh_e + value] < 3
         StmtAssign(target, _) => keeps = c.expr_ty[g.sh_e + target] < 3
         StmtIf(_, _, _) => keeps = true
         _ => {}
@@ -122,6 +122,16 @@ fn a_stmt_inner(g: mut AGen, c: Checker, p: Parser, id: i64) {
     match p.ast.stmts[id] {
         StmtLet(_, _, _, value) => {
             let slot = c.stmt_slot[g.sh_s + id]
+            if value < 0 {
+                // The variable a value `if` or `match` fills: empty for now.
+                let chosen_ty = c.stmt_flag[g.sh_s + id]
+                if ck_needs_drop(c, chosen_ty) {
+                    a_zero_idle(mut g, c, slot, chosen_ty)
+                    g.live_slots.push(slot)
+                    g.live_tys.push(chosen_ty)
+                }
+                return
+            }
             let ty = c.expr_ty[g.sh_e + value]
             a_store(mut g, c, p, value, slot)
             a_drop_temps(mut g, c, id, false)
@@ -346,8 +356,6 @@ fn a_return_stmt(g: mut AGen, c: Checker, p: Parser, id: i64, value: i64) {
             a_value(mut g, c, p, value)
             scalar = true
         }
-    } else {
-        a_mov_imm(mut g, X0, 0)
     }
     let frees_something = c.stmt_drops_len[g.sh_s + id] > 0 || g.live_slots.len() > 0
     if scalar && frees_something { g.words.push(A_PUSH_X0) }
@@ -360,6 +368,8 @@ fn a_return_stmt(g: mut AGen, c: Checker, p: Parser, id: i64, value: i64) {
         i = i - 1
     }
     if scalar && frees_something { g.words.push(a_pop(X0)) }
+    // `main` hands back exit code 0, whatever the frees left in x0.
+    if value < 0 { a_mov_imm(mut g, X0, 0) }
     a_epilogue(mut g)
 }
 
@@ -457,6 +467,76 @@ fn a_for_stmt(g: mut AGen, c: Checker, p: Parser, id: i64, has_index: bool, iter
     }
 }
 
+// The patterns inside the `()` of variant pattern `pattern`, whose value
+// is at the address kept in slot `holder`: binds the names and, with
+// `test`, adds to `fails` a branch for every value that does not fit,
+// with its kind: on the flags of a compare (0), on x0 zero (1) or not
+// zero (2).
+fn a_sub_patterns(g: mut AGen, c: Checker, p: Parser, pattern: i64, holder: i64, test: bool, fails: mut List[i64], kinds: mut List[i64]) {
+    var args = IdRange { start: 0, len: 0 }
+    match p.ast.patterns[pattern] {
+        PatVariant(_, inner) => {
+            args = inner
+        }
+        _ => {}
+    }
+    var k = 0
+    while k < args.len {
+        let inner = p.ast.lists[args.start + k]
+        let sub = g.sh_p + inner
+        let kind = c.pat_kind[sub]
+        let res = c.pat_res[sub]
+        let offset = res & 65535
+        k = k + 1
+        if kind == PAT_BIND {
+            // The name stands for the field where it is.
+            a_load(mut g, X9, holder)
+            g.words.push(a_add_slots(X9, X9, res))
+            a_store_slot(mut g, c.pat_slot[sub], X9)
+        } else if kind == PAT_SUB_VARIANT {
+            a_load(mut g, X9, holder)
+            g.words.push(a_add_slots(X9, X9, offset))
+            a_store_slot(mut g, c.pat_slot[sub], X9)
+            if test {
+                // tag
+                g.words.push(a_ldr(X9, X9, 0))
+                g.words.push(a_cmp_x9_imm((res >> 16) + 1))
+                fails.push(a_placeholder(mut g))
+                kinds.push(0)
+            }
+            a_sub_patterns(mut g, c, p, inner, c.pat_slot[sub], test, mut fails, mut kinds)
+        } else if !test {
+            continue
+        } else if kind == PAT_SUB_INT {
+            a_load(mut g, X9, holder)
+            g.words.push(a_ldr(X1, X9, offset))
+            a_mov_imm(mut g, X0, c.ints[res >> 16])
+            // cmp x1, x0
+            g.words.push(0xEB00003F)
+            fails.push(a_placeholder(mut g))
+            kinds.push(0)
+        } else if kind == PAT_SUB_BOOL {
+            a_load(mut g, X9, holder)
+            g.words.push(a_ldr(X0, X9, offset))
+            fails.push(a_placeholder(mut g))
+            if (res >> 16) == 0 {
+                kinds.push(2)
+            } else {
+                kinds.push(1)
+            }
+        } else if kind == PAT_SUB_STR {
+            let slot = c.pat_slot[sub]
+            a_string_value(mut g, c, res >> 16, slot)
+            a_load(mut g, X0, holder)
+            g.words.push(a_add_slots(X0, X0, offset))
+            a_frame_address(mut g, X1, slot)
+            a_runtime(mut g, ART_STR_EQ)
+            fails.push(a_placeholder(mut g))
+            kinds.push(1)
+        }
+    }
+}
+
 fn a_match_stmt(g: mut AGen, c: Checker, p: Parser, id: i64, scrutinee: i64, arms: IdRange) {
     let ty = c.expr_ty[g.sh_e + scrutinee]
     let base = c.stmt_slot[g.sh_s + id]
@@ -505,6 +585,8 @@ fn a_match_stmt(g: mut AGen, c: Checker, p: Parser, id: i64, scrutinee: i64, arm
         // compare (0), on zero (1) or on not zero (2).
         var next = -1
         var next_kind = 0
+        var fails: List[i64] = []
+        var fail_kinds: List[i64] = []
         if kind == PAT_VARIANT {
             if test {
                 if g.words.len() == fresh {
@@ -518,22 +600,7 @@ fn a_match_stmt(g: mut AGen, c: Checker, p: Parser, id: i64, scrutinee: i64, arm
                 g.words.push(a_cmp_x9_imm(res + 1))
                 next = a_placeholder(mut g)
             }
-            match p.ast.patterns[pattern] {
-                PatVariant(_, args) => {
-                    var k = 0
-                    while k < args.len {
-                        let sub = g.sh_p + p.ast.lists[args.start + k]
-                        if c.pat_kind[sub] == PAT_BIND {
-                            // The name stands for the field where it is.
-                            a_load(mut g, X9, base)
-                            g.words.push(a_add_slots(X9, X9, c.pat_res[sub]))
-                            a_store_slot(mut g, c.pat_slot[sub], X9)
-                        }
-                        k = k + 1
-                    }
-                }
-                _ => {}
-            }
+            a_sub_patterns(mut g, c, p, pattern, base, test, mut fails, mut fail_kinds)
         } else if kind == PAT_LITERAL {
             if test {
                 if ty == TY_I64 {
@@ -572,6 +639,13 @@ fn a_match_stmt(g: mut AGen, c: Checker, p: Parser, id: i64, scrutinee: i64, arm
                 a_patch_branch_if(mut g, next, A_NE)
             } else {
                 a_patch_cbz_reg(mut g, next, next_kind == 2, X0)
+            }
+        }
+        for at, fail_kind in fail_kinds {
+            if fail_kind == 0 {
+                a_patch_branch_if(mut g, fails[at], A_NE)
+            } else {
+                a_patch_cbz_reg(mut g, fails[at], fail_kind == 2, X0)
             }
         }
         i = i + 1

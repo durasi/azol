@@ -1,0 +1,16 @@
+fn main(p0: i64) -> i64 {
+b0:
+    v1 = sgt p0, 96
+    v4 = sub p0, 97
+    v5 = ugt v4, 25
+    br v5, b4, b3
+b1:
+    v2 = slt p0, 123
+    br v2, b3, b4
+b2(v3: bool):
+    br v3, b3, b4
+b3:
+    ret 1
+b4:
+    ret 0
+}

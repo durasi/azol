@@ -17,8 +17,8 @@ checked 8 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos b849997103a3cdc4290593fdb2de290d26845830a6ef5204661b1812c35f8260
-x86_64-linux 40679e919db70eb157caa3a3cacb2cc46da31cbf863583f7c35f15513ff60fe7
-aarch64-linux c0605b491aff3eafa41ddac460ee6b998d0289e803b28d77175dfd267ebb7341
+x86_64-linux 8f2f8b60baeceefa01e3eaf0b3360703b7866f40802e10a7ac09886deefa4b15
+aarch64-linux e2f901f4fd9996d8dc9aabe0b7d10b5f060a9c3fcf1158e92654526acfd95ab3
 ==== 2
 ---- file a.azl (no newline at end)
 fn main() {
@@ -33,8 +33,8 @@ checked 4 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos e26f3f5f02a184b289b4b7b00c64302fe438229c70aac19c21f6c90e61eb4141
-x86_64-linux cd09a953ca972a7c0a3f50d318ee034e9fda22c5159c1c0f3bb1729885a52f73
-aarch64-linux 19dff578770e61568ccb7b02139bbf50d6394b93d28725bec86dbd773538a7f9
+x86_64-linux fbd52b72970b4e86e49c2f46b2dd7f4cb8aec8838399eff36203e19603e44457
+aarch64-linux 4150ffe851bc5e3f9ea794f691eb07d4b823b4725cdaf019d5adfcb0bf5b54ab
 ==== 3
 ---- file a.azl (no newline at end)
 fn main() {
@@ -49,8 +49,8 @@ checked 4 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos a254014301e2ddf8c352dcdf75298fda6b124a384f4efefa47546a43958469b5
-x86_64-linux 136a46250fa66e6187546b88a334ababd873365aab7fe378df1e9df0249d0064
-aarch64-linux 1b52babb9c94c6c8ea794ef67e88af78823c50092c8bfa062222c66a95b9e49d
+x86_64-linux 11781e0efc9c11846144c21eda50b2b8076c3d33414ad8e6379f453fe42db239
+aarch64-linux b0e33a3fe6d4a480634bd2438352721b23b3f50661683bb07723fbbfade50f12
 ==== 4
 ---- file a.azl (no newline at end)
 fn main() {
@@ -65,8 +65,8 @@ checked 4 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 92d95c9dc50d04544ae9a2950c2f89035ab8c2e8ceca96013ab175bb756e9974
-x86_64-linux 7298bc08babf04b69310b2ebbb87d1f40eca6345c17bfea978fc0bb00f63f089
-aarch64-linux ac5b5e3a5a7176e94c74506de2bbfe8bcdb5a924e4c6cee3e3b34ef3095531cd
+x86_64-linux 3359f8e04c7057a1fec31e04fd16d23c042d6d0b42aa666899088e8284124631
+aarch64-linux 9a23da35f449acc0cc7bce0645df8c0bb93967628ca08805443aa832f636fa04
 ==== 5
 ---- file a.azl (no newline at end)
 fn main() {
@@ -82,5 +82,5 @@ checked 5 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
 aarch64-macos 8c27117393de0a60bd79faec8060b3495625eab211e015238cd70044fffb9721
-x86_64-linux 8e5306a80b6819e7290606b4c55b89e8747b987d01f8d0617274952c6b58ee63
-aarch64-linux 69845185d2c28d533974350f391f07e549bc5726e168c8db8359bb3cf615ee7b
+x86_64-linux 1964c954697c203e0e4c5a34c4a421f30da2b733d648d24db17520c3a303057b
+aarch64-linux 16fed06be1392f43f744c95a4a13d5cd750c0f8c6584a97655488a9d4d13f9cb

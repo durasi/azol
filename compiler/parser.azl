@@ -11,6 +11,9 @@
 
 const MAX_PARSE_DEPTH = 200
 
+const NO_IF_LET = "azoL has no `if let`; write `match value \{` with an arm for each case, such as `None => \{}`"
+const NO_TUPLES = "azoL has no tuples; declare a struct with named parts"
+
 // Why a text could not be parsed, and at which byte.
 struct ParseError {
     message: str
@@ -37,6 +40,10 @@ struct Parser {
     // The last text with values that was parsed (see `parse_text`), or
     // `NO_NODE`.
     text_chain: i64
+    // The two statements that go in front of the one `parse_statement`
+    // just returned (see `parse_value_form`), or `NO_NODE`.
+    before_a: i64
+    before_b: i64
     failed: bool
     error: ParseError
 }
@@ -55,6 +62,8 @@ fn new_parser(src: str) -> Parser {
         no_struct: false,
         depth: 0,
         text_chain: NO_NODE,
+        before_a: NO_NODE,
+        before_b: NO_NODE,
         failed: false,
         error: ParseError { message: "", offset: 0 },
     }
@@ -318,6 +327,10 @@ fn parse_struct(p: mut Parser) {
         if p.failed { return }
         let ty = parse_type(mut p)
         if p.failed { return }
+        if p.kind == TOK_ASSIGN {
+            parse_fail(mut p, "a field has no default value; give every field its value where the struct is made")
+            return
+        }
         p.ast.fields.push(FieldDecl { name: field_name, ty: ty })
         collect(mut p, p.ast.fields.len() - 1)
         member_separator(mut p)
@@ -388,6 +401,10 @@ fn member_separator(p: mut Parser) {
 
 // A type: a name, with type arguments in `[...]` if it takes any.
 fn parse_type(p: mut Parser) -> i64 {
+    if p.kind == TOK_LPAREN {
+        parse_fail(mut p, NO_TUPLES)
+        return NO_NODE
+    }
     enter(mut p)
     if p.failed { return NO_NODE }
     let name = expect_name(mut p, "a type")
@@ -429,6 +446,11 @@ fn parse_block(p: mut Parser) -> IdRange {
         }
         let stmt = parse_statement(mut p)
         if p.failed { return empty_range() }
+        if p.before_a != NO_NODE {
+            collect(mut p, p.before_a)
+            collect(mut p, p.before_b)
+            p.before_a = NO_NODE
+        }
         collect(mut p, stmt)
         if p.kind != TOK_RBRACE {
             line_end(mut p)
@@ -526,6 +548,10 @@ fn parse_statement(p: mut Parser) -> i64 {
             if p.kind == TOK_NEWLINE || p.kind == TOK_RBRACE || p.kind == TOK_EOF {
                 return push_stmt(mut p, StmtReturn(NO_NODE), pos)
             }
+            if p.kind == TOK_IF || p.kind == TOK_MATCH {
+                // `return if ...`: every branch returns its value.
+                return parse_value_form(mut p, Span { start: 0, len: 0 }, true)
+            }
             let value = parse_expr(mut p)
             if p.failed { return NO_NODE }
             return push_stmt(mut p, StmtReturn(value), pos)
@@ -533,6 +559,10 @@ fn parse_statement(p: mut Parser) -> i64 {
         TOK_IF => return parse_if(mut p)
         TOK_WHILE => {
             bump(mut p)
+            if p.kind == TOK_LET {
+                parse_fail(mut p, "azoL has no `while let`; write `while xs.len() > 0 \{` and take the value inside, or `while true \{` with a `match` that breaks")
+                return NO_NODE
+            }
             let cond = parse_condition(mut p)
             if p.failed { return NO_NODE }
             let body = parse_block(mut p)
@@ -602,7 +632,13 @@ fn parse_statement(p: mut Parser) -> i64 {
             return NO_NODE
         }
         skip_newlines(mut p)
-        let operand = parse_expr(mut p)
+        var operand = NO_NODE
+        if p.kind == TOK_IF || p.kind == TOK_MATCH {
+            let hint = hint_of(mut p, expr)
+            operand = parse_value_into(mut p, NO_NODE, hint)
+        } else {
+            operand = parse_expr(mut p)
+        }
         if p.failed { return NO_NODE }
         var value = NO_NODE
         if operand == p.text_chain && is_add(op) {
@@ -632,7 +668,13 @@ fn parse_statement(p: mut Parser) -> i64 {
         }
     }
     skip_newlines(mut p)
-    let value = parse_expr(mut p)
+    var value = NO_NODE
+    if p.kind == TOK_IF || p.kind == TOK_MATCH {
+        let hint = hint_of(mut p, expr)
+        value = parse_value_into(mut p, NO_NODE, hint)
+    } else {
+        value = parse_expr(mut p)
+    }
     if p.failed { return NO_NODE }
     return push_stmt(mut p, StmtAssign(expr, value), pos)
 }
@@ -829,8 +871,16 @@ fn ends_statement(kind: i64) -> bool {
 fn parse_let(p: mut Parser, pos: i64) -> i64 {
     let mutable = p.kind == TOK_VAR
     bump(mut p)
+    if p.kind == TOK_LPAREN {
+        parse_fail(mut p, NO_TUPLES)
+        return NO_NODE
+    }
     let name = expect_name(mut p, "a variable name")
     if p.failed { return NO_NODE }
+    if p.kind == TOK_LPAREN {
+        parse_fail_at(mut p, "a `let` takes a name, not a pattern, and has no `else`; write `let x = match value \{` with an arm for each case, such as `None => return`", name.start)
+        return NO_NODE
+    }
     var ty = NO_NODE
     if eat(mut p, TOK_COLON) {
         ty = parse_type(mut p)
@@ -839,9 +889,263 @@ fn parse_let(p: mut Parser, pos: i64) -> i64 {
     expect(mut p, TOK_ASSIGN)
     if p.failed { return NO_NODE }
     skip_newlines(mut p)
-    let value = parse_expr(mut p)
+    var value = NO_NODE
+    if p.kind == TOK_IF || p.kind == TOK_MATCH {
+        value = parse_value_into(mut p, ty, NO_NODE)
+    } else {
+        value = parse_expr(mut p)
+    }
     if p.failed { return NO_NODE }
     return push_stmt(mut p, StmtLet(mutable, name, ty, value), pos)
+}
+
+// ---- `if` and `match` that give a value --------------------------------
+//
+// `let x = if c { a } else { b }`, and the same after `var`, `=`, `op=`
+// and `return`, with `match` as well. The tree has no node for it: it is
+// built here from statements that exist,
+//
+//     var chosen            a variable without a value yet
+//     if c { chosen = a } else { chosen = b }
+//     let x = chosen
+//
+// and after `return` each branch simply returns its value. `chosen` is
+// named by the text of the word `if` or `match` itself, which no
+// variable of the program can be called. Its declaration is a `var`
+// without a value (`NO_NODE`); the checker gives it the type of the
+// first branch and the generators leave it empty. A branch may leave
+// instead of giving a value: `return`, `break`, `continue` or `exit`.
+
+const VALUE_NEEDS_ELSE = "an `if` that gives a value needs an `else`"
+const VALUE_ONE_EXPRESSION = "a branch that gives a value is one expression; use the statement form and assign inside it"
+const VALUE_WHOLE_SIDE = "an `if` or `match` that gives a value is the whole right side of `let`, `var`, `=` or `return`; give it a name with `let` first"
+
+// The type the value of an assignment to `target` will have, for the
+// declaration of `chosen`: a second copy of a plain name, as `-2 - id`,
+// or `NO_NODE`.
+fn hint_of(p: mut Parser, target: i64) -> i64 {
+    let expr = p.ast.exprs[target]
+    match expr {
+        ExprIdent(name) => return -2 - push_expr(mut p, ExprIdent(name), p.ast.expr_pos[target])
+        _ => return NO_NODE
+    }
+}
+
+// Parses a value `if` or `match` and returns the expression that reads
+// what it chose. The declaration and the statement itself are left in
+// `before_a` and `before_b` for the caller of `parse_statement`.
+fn parse_value_into(p: mut Parser, ty: i64, hint: i64) -> i64 {
+    let hidden = Span { start: here(p), len: p.tokens.lens[p.pos] }
+    var declared = ty
+    if declared == NO_NODE { declared = hint }
+    let declare = push_stmt(mut p, StmtLet(true, hidden, declared, NO_NODE), hidden.start)
+    let chosen = parse_value_form(mut p, hidden, false)
+    if p.failed { return NO_NODE }
+    p.before_a = declare
+    p.before_b = chosen
+    return hidden_name(mut p, hidden, hidden.start)
+}
+
+fn parse_value_form(p: mut Parser, hidden: Span, returns: bool) -> i64 {
+    var stmt = NO_NODE
+    if p.kind == TOK_IF {
+        stmt = parse_value_if(mut p, hidden, returns)
+    } else {
+        stmt = parse_value_match(mut p, hidden, returns)
+    }
+    if p.failed { return NO_NODE }
+    if !ends_statement(p.kind) && p.kind != TOK_COMMA {
+        parse_fail(mut p, VALUE_WHOLE_SIDE)
+        return NO_NODE
+    }
+    return stmt
+}
+
+// True for a call of the built-in `exit`.
+fn is_exit_call(p: Parser, expr: i64) -> bool {
+    match p.ast.exprs[expr] {
+        ExprCall(callee, _) => {
+            match p.ast.exprs[callee] {
+                ExprIdent(name) => return span_is(p.src, name, "exit")
+                _ => return false
+            }
+        }
+        _ => return false
+    }
+}
+
+// The statement a branch with the value `value` becomes.
+fn value_stmt(p: mut Parser, value: i64, pos: i64, hidden: Span, returns: bool) -> i64 {
+    if is_exit_call(p, value) { return push_stmt(mut p, StmtExpr(value), pos) }
+    if returns { return push_stmt(mut p, StmtReturn(value), pos) }
+    let target = hidden_name(mut p, hidden, pos)
+    return push_stmt(mut p, StmtAssign(target, value), pos)
+}
+
+// True when the last statement of a block leaves it.
+fn ends_in_jump(p: Parser, body: IdRange) -> bool {
+    if body.len == 0 { return false }
+    match p.ast.stmts[p.ast.lists[body.start + body.len - 1]] {
+        StmtReturn(_) => return true
+        StmtBreak => return true
+        StmtContinue => return true
+        StmtExpr(expr) => return is_exit_call(p, expr)
+        _ => return false
+    }
+}
+
+// True when the block that starts at the current `{` is made of
+// statements: it begins with a word only a statement begins with, or
+// one of its own statements is a `return`, `break` or `continue`.
+fn block_of_statements(p: Parser) -> bool {
+    var at = p.pos + 1
+    while p.tokens.kinds[at] == TOK_NEWLINE {
+        at = at + 1
+    }
+    let first = p.tokens.kinds[at]
+    if first == TOK_LET || first == TOK_VAR || first == TOK_IF || first == TOK_WHILE || first == TOK_FOR || first == TOK_MATCH {
+        return true
+    }
+    var depth = 1
+    while depth > 0 {
+        let kind = p.tokens.kinds[at]
+        if kind == TOK_EOF { return false }
+        if kind == TOK_LBRACE {
+            depth = depth + 1
+        } else if kind == TOK_RBRACE {
+            depth = depth - 1
+        } else if depth == 1 && (kind == TOK_RETURN || kind == TOK_BREAK || kind == TOK_CONTINUE) {
+            return true
+        }
+        at = at + 1
+    }
+    return false
+}
+
+// A block of statements where a value was expected: it must leave.
+fn parse_leaving_block(p: mut Parser) -> IdRange {
+    let at = here(p)
+    let body = parse_block(mut p)
+    if p.failed { return empty_range() }
+    if !ends_in_jump(p, body) {
+        parse_fail_at(mut p, VALUE_ONE_EXPRESSION, at)
+        return empty_range()
+    }
+    return body
+}
+
+// `{ expression }`, or a block that leaves.
+fn parse_value_branch(p: mut Parser, hidden: Span, returns: bool) -> IdRange {
+    if p.kind != TOK_LBRACE {
+        expect(mut p, TOK_LBRACE)
+        return empty_range()
+    }
+    if block_of_statements(p) { return parse_leaving_block(mut p) }
+    enter(mut p)
+    if p.failed { return empty_range() }
+    bump(mut p)
+    skip_newlines(mut p)
+    let saved = p.no_struct
+    p.no_struct = false
+    let pos = here(p)
+    let value = parse_expr(mut p)
+    if p.failed { return empty_range() }
+    p.no_struct = saved
+    skip_newlines(mut p)
+    if p.kind != TOK_RBRACE {
+        parse_fail(mut p, VALUE_ONE_EXPRESSION)
+        return empty_range()
+    }
+    bump(mut p)
+    p.depth = p.depth - 1
+    let stmt = value_stmt(mut p, value, pos, hidden, returns)
+    let start = p.scratch_len
+    collect(mut p, stmt)
+    return finish_list(mut p, start)
+}
+
+fn parse_value_if(p: mut Parser, hidden: Span, returns: bool) -> i64 {
+    enter(mut p)
+    if p.failed { return NO_NODE }
+    let pos = here(p)
+    bump(mut p)
+    if p.kind == TOK_LET {
+        parse_fail(mut p, NO_IF_LET)
+        return NO_NODE
+    }
+    let cond = parse_condition(mut p)
+    if p.failed { return NO_NODE }
+    let then_block = parse_value_branch(mut p, hidden, returns)
+    if p.failed { return NO_NODE }
+    if kind_after_newlines(p) != TOK_ELSE {
+        parse_fail_at(mut p, VALUE_NEEDS_ELSE, pos)
+        return NO_NODE
+    }
+    skip_newlines(mut p)
+    bump(mut p)
+    var else_branch = ElseNone
+    if p.kind == TOK_IF {
+        let next = parse_value_if(mut p, hidden, returns)
+        if p.failed { return NO_NODE }
+        else_branch = ElseIf(next)
+    } else {
+        let body = parse_value_branch(mut p, hidden, returns)
+        if p.failed { return NO_NODE }
+        else_branch = ElseBlock(body)
+    }
+    p.depth = p.depth - 1
+    return push_stmt(mut p, StmtIf(cond, then_block, else_branch), pos)
+}
+
+fn parse_value_match(p: mut Parser, hidden: Span, returns: bool) -> i64 {
+    let pos = here(p)
+    bump(mut p)
+    let scrutinee = parse_condition(mut p)
+    if p.failed { return NO_NODE }
+    expect(mut p, TOK_LBRACE)
+    if p.failed { return NO_NODE }
+    let start = p.scratch_len
+    while true {
+        skip_newlines(mut p)
+        if p.kind == TOK_RBRACE { break }
+        let pattern = parse_pattern(mut p)
+        if p.failed { return NO_NODE }
+        expect(mut p, TOK_FAT_ARROW)
+        if p.failed { return NO_NODE }
+        var body = empty_range()
+        if p.kind == TOK_LBRACE {
+            body = parse_leaving_block(mut p)
+            if p.failed { return NO_NODE }
+        } else {
+            let body_start = p.scratch_len
+            let saved = p.no_struct
+            p.no_struct = false
+            var stmt = NO_NODE
+            if p.kind == TOK_RETURN || p.kind == TOK_BREAK || p.kind == TOK_CONTINUE {
+                stmt = parse_statement(mut p)
+                if p.failed { return NO_NODE }
+            } else {
+                let at = here(p)
+                let value = parse_expr(mut p)
+                if p.failed { return NO_NODE }
+                if !ends_statement(p.kind) && p.kind != TOK_COMMA {
+                    parse_fail(mut p, VALUE_ONE_EXPRESSION)
+                    return NO_NODE
+                }
+                stmt = value_stmt(mut p, value, at, hidden, returns)
+            }
+            p.no_struct = saved
+            collect(mut p, stmt)
+            body = finish_list(mut p, body_start)
+        }
+        p.ast.arms.push(Arm { pattern: pattern, body: body })
+        collect(mut p, p.ast.arms.len() - 1)
+        member_separator(mut p)
+        if p.failed { return NO_NODE }
+    }
+    bump(mut p)
+    let arms = finish_list(mut p, start)
+    return push_stmt(mut p, StmtMatch(scrutinee, arms), pos)
 }
 
 fn parse_if(p: mut Parser) -> i64 {
@@ -849,6 +1153,10 @@ fn parse_if(p: mut Parser) -> i64 {
     if p.failed { return NO_NODE }
     let pos = here(p)
     bump(mut p)
+    if p.kind == TOK_LET {
+        parse_fail(mut p, NO_IF_LET)
+        return NO_NODE
+    }
     let cond = parse_condition(mut p)
     if p.failed { return NO_NODE }
     let then_block = parse_block(mut p)
@@ -894,9 +1202,19 @@ fn parse_match(p: mut Parser, pos: i64) -> i64 {
             let body_start = p.scratch_len
             let saved = p.no_struct
             p.no_struct = false
-            let stmt = parse_statement(mut p)
+            var stmt = parse_statement(mut p)
             if p.failed { return NO_NODE }
             p.no_struct = saved
+            if p.before_a != NO_NODE {
+                // Three statements where one is expected: `if true { ... }`.
+                collect(mut p, p.before_a)
+                collect(mut p, p.before_b)
+                p.before_a = NO_NODE
+                collect(mut p, stmt)
+                let three = finish_list(mut p, body_start)
+                let always = push_expr(mut p, ExprBool(true), p.ast.stmt_pos[stmt])
+                stmt = push_stmt(mut p, StmtIf(always, three, ElseNone), p.ast.stmt_pos[stmt])
+            }
             collect(mut p, stmt)
             body = finish_list(mut p, body_start)
         }
@@ -1332,7 +1650,13 @@ fn parse_postfix(p: mut Parser) -> i64 {
             if p.failed { return NO_NODE }
             expr = push_expr(mut p, ExprField(expr, name), pos)
         } else if p.kind == TOK_QUESTION {
+            let mark = here(p)
             bump(mut p)
+            if p.kind == TOK_IDENT || p.kind == TOK_INT || p.kind == TOK_STR || p.kind == TOK_TRUE || p.kind == TOK_FALSE {
+                // `c ? a : b`: nothing can follow the `?` that leaves early.
+                parse_fail_at(mut p, "azoL has no `c ? a : b`; write `if c \{ a } else \{ b }` as the whole right side of `let`, `=` or `return`", mark)
+                return NO_NODE
+            }
             expr = push_expr(mut p, ExprTry(expr), pos)
         } else if p.kind == TOK_NEWLINE && kind_after_newlines(p) == TOK_DOT {
             // A line that starts with `.` continues the previous one.
@@ -1395,6 +1719,10 @@ fn parse_primary(p: mut Parser) -> i64 {
             let inner = parse_expr(mut p)
             if p.failed { return NO_NODE }
             skip_newlines(mut p)
+            if p.kind == TOK_COMMA {
+                parse_fail_at(mut p, NO_TUPLES, pos)
+                return NO_NODE
+            }
             expect(mut p, TOK_RPAREN)
             if p.failed { return NO_NODE }
             p.no_struct = saved
@@ -1425,6 +1753,10 @@ fn parse_primary(p: mut Parser) -> i64 {
             return push_expr(mut p, ExprArrayLit(items), pos)
         }
         _ => {
+            if p.kind == TOK_IF || p.kind == TOK_MATCH {
+                parse_fail(mut p, VALUE_WHOLE_SIDE)
+                return NO_NODE
+            }
             parse_fail(mut p, "expected an expression but found " + describe_token(p.kind))
             return NO_NODE
         }
@@ -1439,6 +1771,10 @@ fn parse_struct_literal(p: mut Parser, name: Span) -> i64 {
     let start = p.scratch_len
     skip_newlines(mut p)
     while p.kind != TOK_RBRACE {
+        if p.kind == TOK_DOT_DOT {
+            parse_fail(mut p, "a struct literal gives every field; to change one field of a copy write `var b = a` and then `b.x = 1`")
+            return NO_NODE
+        }
         let field = expect_name(mut p, "a field name")
         if p.failed { return NO_NODE }
         var value = NO_NODE
