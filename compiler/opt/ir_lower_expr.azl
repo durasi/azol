@@ -100,6 +100,13 @@ fn lw_variable_slot(lw: Lower, c: Checker, id: i64) -> i64 {
 
 // When `id` is an element of a list or a part of one, however deep: the
 // list, the index, and how many bytes into the element the part starts.
+// True when `id` is an element of a list that keeps one byte for each.
+fn lw_is_byte_element(lw: Lower, c: Checker, id: i64) -> bool {
+    if lw.kinds[id] != LW_INDEX { return false }
+    let base_ty = c.expr_ty[lw.sh_e + lw.ea[id]]
+    return ty_is_list(base_ty) && ck_elem_bytes(c, c.lists[ty_index(base_ty)]) == 1
+}
+
 fn lw_element_path(lw: Lower, c: Checker, id: i64) -> LwPath {
     var at = id
     var offset = 0
@@ -246,8 +253,8 @@ fn lw_address(lw: mut Lower, c: Checker, p: Parser, id: i64) -> LwAddr {
     if place >= 0 { return lw_place_address(mut lw, place, lw_slots_of(c, ty)) }
     let path = lw_element_path(lw, c, id)
     if path.ok {
-        let slots = ck_size_of(c, c.lists[ty_index(c.expr_ty[lw.sh_e + path.base])])
-        let element = lw_element(mut lw, c, p, path.base, path.index, 8 * slots)
+        let bytes = ck_elem_bytes(c, c.lists[ty_index(c.expr_ty[lw.sh_e + path.base])])
+        let element = lw_element(mut lw, c, p, path.base, path.index, bytes)
         return lw_add(element, path.offset)
     }
     let kind = lw_kind(lw, c, id)
@@ -378,7 +385,8 @@ fn lw_list_literal(lw: mut Lower, c: Checker, p: Parser, id: i64) -> LwAddr {
     }
     let elem = c.expr_ty[lw.sh_e + p.ast.lists[start]]
     let elem_size = lw_slots_of(c, elem)
-    let bytes = lw_const(mut lw, count * elem_size * 8)
+    let elem_bytes = ck_elem_bytes(c, elem)
+    let bytes = lw_const(mut lw, count * elem_bytes)
     let made = lw_rt(mut lw, IR_RT_ALLOC, bytes, -1, -1, -1)
     let buffer = lw.f.ins_res[made]
     lw_store(mut lw, IR_PTR, at, 0, buffer)
@@ -386,7 +394,7 @@ fn lw_list_literal(lw: mut Lower, c: Checker, p: Parser, id: i64) -> LwAddr {
     var i = 0
     while i < count {
         let item = p.ast.lists[start + i]
-        let to = LwAddr { p: buffer, off: 8 * i * elem_size, reg: inside }
+        let to = LwAddr { p: buffer, off: i * elem_bytes, reg: inside }
         let item_ty = c.expr_ty[lw.sh_e + item]
         if item_ty >= 3 {
             let from = lw_address(mut lw, c, p, item)
@@ -397,6 +405,9 @@ fn lw_list_literal(lw: mut Lower, c: Checker, p: Parser, id: i64) -> LwAddr {
                 lw_clone_value(mut lw, c, to, item_ty)
             }
             lw_moved_out(mut lw, c, item)
+        } else if elem_bytes == 1 {
+            let value = lw_value(mut lw, c, p, item)
+            lw_store_bool_byte(mut lw, to, value)
         } else {
             let value = lw_value(mut lw, c, p, item)
             lw_store(mut lw, lw_scalar_ty(item_ty), to, 0, value)
@@ -432,6 +443,7 @@ fn lw_value(lw: mut Lower, c: Checker, p: Parser, id: i64) -> i64 {
         // A variable, a field, a list element or a part of one, read
         // where it is; or a field of a computed value.
         let at = lw_address(mut lw, c, p, id)
+        if lw_is_byte_element(lw, c, id) { return lw_load_bool_byte(mut lw, at) }
         return lw_load(mut lw, lw_scalar_ty(ty), at, 0)
     }
     if kind == LW_UNARY {
@@ -580,12 +592,76 @@ fn lw_compare_op(op: i64) -> i64 {
 
 // Whether argument `i` of the call target travels as an address.
 fn lw_arg_by_ref(c: Checker, target: i64, i: i64) -> bool {
-    if target >= BUILTIN_STR_IS_UTF8 {
+    if target >= BUILTIN_LIST_FILLED {
         return target == BUILTIN_PRINT_STR || target == BUILTIN_EPRINT || target == BUILTIN_READ_FILE ||
             target == BUILTIN_WRITE_FILE || target == BUILTIN_SET_EXECUTABLE || target == BUILTIN_REMOVE_FILE ||
             target == BUILTIN_RENAME_FILE || target == BUILTIN_STR_IS_UTF8
     }
     return c.fns[target].param_by_ref[i]
+}
+
+// `value.filled(count)` for a number or a `bool`: one buffer of `count`
+// elements, every one of them `value`, in this call's temporary. No
+// buffer at all when the count is zero or less. The loop that fills it
+// keeps its position in a value of its own, so nothing in it goes
+// through the list's three slots.
+fn lw_filled(lw: mut Lower, c: Checker, p: Parser, id: i64, receiver: i64) -> i64 {
+    let tmp = c.expr_tmp[lw.sh_e + id]
+    let elem = c.expr_ty[lw.sh_e + receiver]
+    let elem_bytes = ck_elem_bytes(c, elem)
+    let value = lw_value(mut lw, c, p, receiver)
+    let count = lw_value(mut lw, c, p, p.ast.lists[lw.eb[id]])
+    let at = lw_slot(mut lw, tmp, 3)
+    let zero = lw_const(mut lw, 0)
+    let one = lw_const(mut lw, 1)
+    lw_store(mut lw, IR_PTR, at, 0, zero)
+    lw_store(mut lw, IR_I64, at, 8, zero)
+    lw_store(mut lw, IR_I64, at, 16, zero)
+    let some = lw_bin(mut lw, IR_SGT, count, zero)
+    let make = lw_block(mut lw)
+    let test = lw_block(mut lw)
+    let body = lw_block(mut lw)
+    let after = lw_block(mut lw)
+    lw_br(mut lw, some, make, after)
+
+    lw.b = make
+    lw_store(mut lw, IR_I64, at, 8, count)
+    lw_store(mut lw, IR_I64, at, 16, count)
+    let most = lw_const(mut lw, FILLED_MOST)
+    let fits = lw_bin(mut lw, IR_ULE, count, most)
+    var size = count
+    if elem_bytes != 1 {
+        let width = lw_const(mut lw, elem_bytes)
+        size = lw_bin(mut lw, IR_MUL, count, width)
+    }
+    let too_much = lw_const(mut lw, FILLED_TOO_MUCH)
+    let bytes = ir_select(mut lw.f, lw.b, fits, size, too_much)
+    let made = lw_rt(mut lw, IR_RT_ALLOC, bytes, -1, -1, -1)
+    let buffer = lw.f.ins_res[made]
+    lw_store(mut lw, IR_PTR, at, 0, buffer)
+    let inside = lw_buf_region(mut lw, at.reg)
+    var item = value
+    if elem_bytes == 1 && !ir_is_const(value) { item = ir_select(mut lw.f, lw.b, value, one, zero) }
+    let position = ir_add_block_param(mut lw.f, test, IR_I64)
+    let enter = ir_jump(mut lw.f, lw.b, test, [zero])
+
+    lw.b = test
+    let more = lw_bin(mut lw, IR_ULT, position, count)
+    lw_br(mut lw, more, body, after)
+
+    lw.b = body
+    let element = ir_gep(mut lw.f, lw.b, buffer, position, elem_bytes, 0)
+    let to = LwAddr { p: element, off: 0, reg: inside }
+    if elem_bytes == 1 {
+        lw_store(mut lw, IR_U8, to, 0, item)
+    } else {
+        lw_store(mut lw, lw_scalar_ty(elem), to, 0, item)
+    }
+    let next = lw_bin(mut lw, IR_ADD, position, one)
+    let round = ir_jump(mut lw.f, lw.b, test, [next])
+
+    lw.b = after
+    return -1
 }
 
 // Calls a function or a built-in. A number or `bool` it gives is the
@@ -606,6 +682,7 @@ fn lw_call(lw: mut Lower, c: Checker, p: Parser, id: i64) -> i64 {
     if target == BUILTIN_LEN || target == BUILTIN_LIST_PUSH || target == BUILTIN_LIST_POP || target == BUILTIN_STR_SLICE {
         return lw_list_method(mut lw, c, p, id, target, receiver)
     }
+    if target == BUILTIN_LIST_FILLED { return lw_filled(mut lw, c, p, id, receiver) }
     // A method the standard library writes in azoL is a function whose
     // first argument is the receiver. Arguments are evaluated in the
     // order written.
@@ -613,11 +690,29 @@ fn lw_call(lw: mut Lower, c: Checker, p: Parser, id: i64) -> i64 {
     if receiver >= 0 { first = 1 }
     let count = first + args_len
     var arguments: List[i64] = []
+    // The one-byte elements passed as `mut`: where each is, in which
+    // region, and the temporary the function is given instead.
+    var byte_ats: List[i64] = []
+    var byte_regs: List[i64] = []
+    var byte_slots: List[i64] = []
     var i = 0
     while i < count {
         var arg = receiver
         if i >= first { arg = p.ast.lists[args_start + i - first] }
-        if lw.kinds[arg] == LW_MUTARG {
+        if lw.kinds[arg] == LW_MUTARG && lw_is_byte_element(lw, c, lw.ea[arg]) {
+            // The function wants the address of a slot and the element
+            // is one byte: it gets a temporary holding the value, and
+            // what it leaves there goes back into the list afterwards.
+            let at = lw_address(mut lw, c, p, lw.ea[arg])
+            let value = lw_load_bool_byte(mut lw, at)
+            let slot = c.expr_tmp[lw.sh_e + arg]
+            let aside = lw_slot(mut lw, slot, 1)
+            lw_store(mut lw, IR_BOOL, aside, 0, value)
+            byte_ats.push(lw_ptr(mut lw, at))
+            byte_regs.push(at.reg)
+            byte_slots.push(slot)
+            arguments.push(aside.p)
+        } else if lw.kinds[arg] == LW_MUTARG {
             let at = lw_address(mut lw, c, p, lw.ea[arg])
             arguments.push(lw_ptr(mut lw, at))
         } else if lw_arg_by_ref(c, target, i) {
@@ -630,7 +725,7 @@ fn lw_call(lw: mut Lower, c: Checker, p: Parser, id: i64) -> i64 {
     }
     let ty = c.expr_ty[lw.sh_e + id]
     let tmp = c.expr_tmp[lw.sh_e + id]
-    if target < BUILTIN_STR_IS_UTF8 {
+    if target < BUILTIN_LIST_FILLED {
         var gives: List[i64] = []
         if ty >= 3 {
             // The callee writes its result where the last argument
@@ -641,6 +736,11 @@ fn lw_call(lw: mut Lower, c: Checker, p: Parser, id: i64) -> i64 {
             gives.push(lw_scalar_ty(ty))
         }
         let call = ir_call(mut lw.f, lw.b, lw.names[target], arguments, gives)
+        for k, element in byte_ats {
+            let aside = lw_slot(mut lw, byte_slots[k], 1)
+            let left = lw_load(mut lw, IR_BOOL, aside, 0)
+            lw_store_bool_byte(mut lw, LwAddr { p: element, off: 0, reg: byte_regs[k] }, left)
+        }
         return lw.f.ins_res[call]
     }
     if target == BUILTIN_PRINT_I64 {
@@ -819,6 +919,7 @@ fn lw_list_method(lw: mut Lower, c: Checker, p: Parser, id: i64, method: i64, ba
     }
     let elem = c.lists[ty_index(c.expr_ty[lw.sh_e + base])]
     let elem_size = lw_slots_of(c, elem)
+    let elem_bytes = ck_elem_bytes(c, elem)
     if method == BUILTIN_LIST_PUSH {
         // The element is copied aside first: it may live in this very
         // list, whose buffer can move while it grows.
@@ -837,7 +938,7 @@ fn lw_list_method(lw: mut Lower, c: Checker, p: Parser, id: i64, method: i64, ba
         }
         let list = lw_address(mut lw, c, p, base)
         let list_at = lw_ptr(mut lw, list)
-        let bytes = lw_const(mut lw, elem_size * 8)
+        let bytes = lw_const(mut lw, elem_bytes)
         let done = lw_block(mut lw)
         if elem < 3 || elem_size <= LW_INLINE_PUSH {
             // A value this small goes straight into a list that has
@@ -850,10 +951,12 @@ fn lw_list_method(lw: mut Lower, c: Checker, p: Parser, id: i64, method: i64, ba
             lw_br(mut lw, has_room, quick, full)
             lw.b = quick
             let buffer = lw_load(mut lw, IR_PTR, list, 0)
-            let element = ir_gep(mut lw.f, lw.b, buffer, len, elem_size * 8, 0)
+            let element = ir_gep(mut lw.f, lw.b, buffer, len, elem_bytes, 0)
             let to = LwAddr { p: element, off: 0, reg: lw_buf_region(mut lw, list.reg) }
             if elem >= 3 {
                 lw_copy(mut lw, c, to, aside, elem)
+            } else if elem_bytes == 1 {
+                lw_store_bool_byte(mut lw, to, value)
             } else {
                 lw_store(mut lw, lw_scalar_ty(elem), to, 0, value)
             }
@@ -878,12 +981,13 @@ fn lw_list_method(lw: mut Lower, c: Checker, p: Parser, id: i64, method: i64, ba
     let shorter = lw_bin(mut lw, IR_SUB, len, one)
     lw_store(mut lw, IR_I64, list, 8, shorter)
     let buffer = lw_load(mut lw, IR_PTR, list, 0)
-    let element = ir_gep(mut lw.f, lw.b, buffer, shorter, elem_size * 8, 0)
+    let element = ir_gep(mut lw.f, lw.b, buffer, shorter, elem_bytes, 0)
     let from = LwAddr { p: element, off: 0, reg: lw_buf_region(mut lw, list.reg) }
     if elem >= 3 {
         let out = lw_slot(mut lw, tmp, elem_size)
         lw_copy(mut lw, c, out, from, elem)
         return -1
     }
+    if elem_bytes == 1 { return lw_load_bool_byte(mut lw, from) }
     return lw_load(mut lw, lw_scalar_ty(elem), from, 0)
 }

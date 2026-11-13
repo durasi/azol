@@ -1,4 +1,9 @@
 <p align="center">
+  <a href="README.md"><img src="assets/lang/en-on.svg" alt="English" height="28"></a>
+  <a href="README.tr.md"><img src="assets/lang/tr-off.svg" alt="Türkçe" height="28"></a>
+</p>
+
+<p align="center">
   <img src="assets/logo.svg#gh-light-mode-only" alt="azoL" height="104">
   <img src="assets/logo-dark.svg#gh-dark-mode-only" alt="azoL" height="104">
 </p>
@@ -7,7 +12,7 @@
 
 <p align="center">
   <strong>A memory-safe systems language with no garbage collector and no lifetime annotations,<br>
-  whose compiler turns 44,000 lines into an executable in 24 milliseconds.</strong>
+  whose compiler turns 44,000 lines into an executable in 25 milliseconds.</strong>
 </p>
 
 <p align="center">
@@ -75,28 +80,28 @@ Lower is better everywhere. In every row the best value is bold, and nothing els
 |  | <img src="assets/compare/azol.svg" alt="azoL" height="28"><br><sub>default</sub> | <img src="assets/compare/azol.svg" alt="azoL" height="28"><br><sub><code>-O</code></sub> | <img src="assets/third-party/rust-logo-blk.svg#gh-light-mode-only" alt="Rust" height="28"><img src="assets/compare/rust.svg#gh-dark-mode-only" alt="Rust" height="28"><br><sub>Rust&nbsp;<code>-O</code></sub> | <img src="assets/compare/c.svg" alt="C" height="28"><br><sub><code>-O2</code></sub> | <img src="assets/compare/go.svg" alt="Go" height="28"><br><sub>go&nbsp;build</sub> | <img src="assets/third-party/js.png" alt="JavaScript" height="28"><br><sub>Node.js</sub> |
 |:---|---:|---:|---:|---:|---:|---:|
 | <sub>BUILD TIME</sub> | | | | | | |
-| The same 44,004-line program | **0.024&nbsp;s** | 0.45&nbsp;s | 9.51&nbsp;s | 127.04&nbsp;s | 0.67&nbsp;s | no&nbsp;build |
+| The same 44,004-line program | **0.025&nbsp;s** | 0.38&nbsp;s | 9.46&nbsp;s | 131.60&nbsp;s | 0.81&nbsp;s | no&nbsp;build |
 | <sub>EXECUTABLE SIZE</sub> | | | | | | |
 | `fib40` | **33&nbsp;KB** | **33&nbsp;KB** | 460&nbsp;KB | **33&nbsp;KB** | 2373&nbsp;KB | needs&nbsp;Node.js |
 | <sub>RUN TIME</sub> | | | | | | |
-| `fib40` <sub>recursive calls</sub> | 0.29&nbsp;s | **0.15&nbsp;s** | **0.15&nbsp;s** | **0.15&nbsp;s** | 0.23&nbsp;s | 0.52&nbsp;s |
-| `loops` <sub>nested loops</sub> | 0.017&nbsp;s | **0.016&nbsp;s** | 0.018&nbsp;s | 0.018&nbsp;s | 0.018&nbsp;s | 0.054&nbsp;s |
-| `sort` <sub>quicksort, 2 million numbers</sub> | 0.14&nbsp;s | **0.11&nbsp;s** | **0.11&nbsp;s** | **0.11&nbsp;s** | **0.11&nbsp;s** | 0.27&nbsp;s |
-| `sieve` <sub>primes up to 20 million</sub> | 0.16&nbsp;s | 0.15&nbsp;s | 0.045&nbsp;s | 0.041&nbsp;s | **0.036&nbsp;s** | 0.30&nbsp;s |
-| `particles` <sub>structs updated in place</sub> | 0.096&nbsp;s | 0.073&nbsp;s | **0.039&nbsp;s** | 0.050&nbsp;s | 0.051&nbsp;s | 0.17&nbsp;s |
-| `tree` <sub>building and walking trees</sub> | 0.094&nbsp;s | 0.085&nbsp;s | **0.054&nbsp;s** | 0.058&nbsp;s | 0.065&nbsp;s | 0.42&nbsp;s |
-| `append` <sub>building long strings</sub> | 0.026&nbsp;s | 0.025&nbsp;s | 0.021&nbsp;s | **0.019&nbsp;s** | 0.027&nbsp;s | 0.12&nbsp;s |
-| `words` <sub>splitting and joining text</sub> | 0.034&nbsp;s | 0.030&nbsp;s | 0.025&nbsp;s | 0.026&nbsp;s | **0.018&nbsp;s** | 0.10&nbsp;s |
+| `fib40` <sub>recursive calls</sub> | 0.25&nbsp;s | **0.15&nbsp;s** | **0.15&nbsp;s** | **0.15&nbsp;s** | 0.22&nbsp;s | 0.46&nbsp;s |
+| `loops` <sub>nested loops</sub> | 0.016&nbsp;s | **0.014&nbsp;s** | 0.018&nbsp;s | 0.018&nbsp;s | 0.018&nbsp;s | 0.041&nbsp;s |
+| `sort` <sub>quicksort, 2 million numbers</sub> | 0.13&nbsp;s | 0.11&nbsp;s | 0.11&nbsp;s | **0.10&nbsp;s** | 0.11&nbsp;s | 0.27&nbsp;s |
+| `sieve` <sub>primes up to 20 million</sub> | 0.080&nbsp;s | 0.071&nbsp;s | 0.045&nbsp;s | 0.042&nbsp;s | **0.037&nbsp;s** | 0.29&nbsp;s |
+| `particles` <sub>structs updated in place</sub> | 0.097&nbsp;s | 0.074&nbsp;s | **0.039&nbsp;s** | 0.050&nbsp;s | 0.052&nbsp;s | 0.17&nbsp;s |
+| `tree` <sub>building and walking trees</sub> | 0.091&nbsp;s | 0.082&nbsp;s | **0.053&nbsp;s** | 0.054&nbsp;s | 0.064&nbsp;s | 0.36&nbsp;s |
+| `append` <sub>building long strings</sub> | 0.023&nbsp;s | 0.023&nbsp;s | 0.020&nbsp;s | **0.018&nbsp;s** | 0.026&nbsp;s | 0.11&nbsp;s |
+| `words` <sub>splitting and joining text</sub> | 0.035&nbsp;s | 0.030&nbsp;s | 0.026&nbsp;s | 0.026&nbsp;s | **0.019&nbsp;s** | 0.10&nbsp;s |
 
 The generated program is 44,004 lines in azoL, 45,006 lines in Rust, 49,035 lines in C, 44,008 lines in Go, 38,002 lines in JavaScript.
 
-Build: azoL's default build is 400 times faster than `rustc -O` (9.51 s), 54 times faster than an unoptimized `rustc` build (1.28 s), 29 times faster than `rustc`'s type check alone (`--emit=metadata`) (0.69 s), 5400 times faster than `cc -O2` (127.04 s), 29 times faster than `go build` (0.67 s).
+Build: azoL's default build is 380 times faster than `rustc -O` (9.46 s), 60 times faster than an unoptimized `rustc` build (1.48 s), 31 times faster than `rustc`'s type check alone (`--emit=metadata`) (0.78 s), 5300 times faster than `cc -O2` (131.60 s), 33 times faster than `go build` (0.81 s).
 
-Node.js has nothing to build; checking the syntax of the JavaScript version (`node --check`) takes 0.024 s.
+Node.js has nothing to build; checking the syntax of the JavaScript version (`node --check`) takes 0.027 s.
 
 Run: azoL's default build is ahead of Rust `-O` in 1 of 8, of C `-O2` in 1 of 8, of Go in 2 of 8, of Node.js in 8 of 8.
 
-Run: `azol build -O` is ahead of Rust `-O` in 1 of 8 (level in 2), of C `-O2` in 1 of 8 (level in 2), of Go in 3 of 8 (level in 1), of Node.js in 8 of 8.
+Run: `azol build -O` is ahead of Rust `-O` in 1 of 8 (level in 2), of C `-O2` in 1 of 8 (level in 1), of Go in 3 of 8 (level in 1), of Node.js in 8 of 8.
 <!-- bench:end -->
 
 **Reading these fairly.**
@@ -254,7 +259,7 @@ dog: never
 
 ### What azoL does not have
 
-Floating-point numbers, integer types other than `i64`, closures, traits, methods on your own types, threads, modules or a package manager, patterns inside patterns, `if` as an expression. Integer overflow wraps. [The reference lists all of it](docs/language.md#19-what-azol-does-not-have), each with what to write instead.
+Floating-point numbers, integer types other than `i64`, closures, traits, methods on your own types, threads, modules or a package manager. Integer overflow wraps. [The reference lists all of it](docs/language.md#19-what-azol-does-not-have), each with what to write instead.
 
 ## How the safety works
 
@@ -363,7 +368,7 @@ The compiler is written in azoL: about 20,000 lines in [`compiler/`](compiler/) 
 - **The proof it is the same compiler.** Built by the seed, the sources produce a compiler; that compiler produces another from the same sources; the two are the same file, byte for byte, and equal to the seed. `build.sh` checks this on every build.
 - **Where that has been seen.** On x86-64 Linux natively. On macOS on an Apple Silicon Mac, with an earlier state of the sources (611,936 bytes then). For ARM64 Linux only on an emulated CPU, never on real hardware.
 - **Where it came from.** The first compiler was written in Rust. Every part of the azoL one was accepted only when its output equalled the Rust one's byte for byte, over the repository's programs and thousands of deliberately broken ones: tokens, syntax trees, the checker's tables, error reports, and whole executables for all three targets. The scripts that did that, [`compiler/check_*.py`](compiler/), now compare a changed compiler with the one before it.
-- **What it costs today.** The azoL-written compiler runs about twice as many instructions as the Rust one did for the same build (2.0 times for x86-64 Linux, 1.9 times for macOS, on the 132,000-line benchmark program, counted on x86-64 Linux). The build-time numbers above were measured with the Rust-hosted compiler; they will be measured again.
+- **What it costs today.** The azoL-written compiler runs about twice as many instructions as the Rust one did for the same build (2.0 times for x86-64 Linux, 1.9 times for macOS, on the 132,000-line benchmark program, counted on x86-64 Linux). The build-time numbers above were measured with the compiler written in azoL.
 
 ## Roadmap
 
@@ -374,9 +379,9 @@ What is not done, in the order planned. Finished work is not listed here; it is 
 1. `azol build -O` exists and is experimental. Still to do: the compiler itself built with it (new seeds), so that the default build gets its speed back.
 2. The programs still far from `rustc -O`: lists of structs, the library sort, maps, building text.
 3. The remaining passes: unrolling, copy elision, string building, vectorising.
-4. Packed lists and structs, a faster allocator, an internal calling convention.
+4. Packed structs and small enums in lists (lists of `bool` are packed), a faster allocator, an internal calling convention.
 5. `-O` compile speed.
-6. The gate that defines the claim: the 28 programs of [`bench/suite/`](bench/suite/) at a geometric mean of 1.00 or better against `rustc -O`, none worse than 1.10, on Apple M5 and on x86-64. Today: 1.60 in time on the Apple M5 (the default build: 2.13), with 6 of the 28 inside 1.10; 1.09 in instructions on x86-64.
+6. The gate that defines the claim: the 28 programs of [`bench/suite/`](bench/suite/) at a geometric mean of 1.00 or better against `rustc -O`, none worse than 1.10, on Apple M5 and on x86-64. Today: 1.48 in time on the Apple M5 (the default build: 2.12), with 9 of the 28 inside 1.10.
 
 **Language**
 

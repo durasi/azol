@@ -1,0 +1,125 @@
+// A list of `bool` keeps one byte for each element: reading, writing,
+// growing, copying and passing an element as `mut` all still behave as
+// if it kept a slot.
+// expect-exit: 1
+// expect-line: 10110111101
+// expect-line: 01110111101
+// expect-line: 42
+// expect-line: 01111111101
+// expect-line: 01011110001
+// expect-line: 01011110001101001001001001001001001001001001001001001
+// expect-line: 53
+// expect-line: 516
+// expect-line: true
+// expect-line: false
+// expect-line: 110111100011010010010010010010010010010010010010010
+// expect-line: 010111100011010010010010010010010010010010010010010
+// expect-line: 101
+// expect-line: 101
+// expect-line: 010111100011010010010010010010010010010010010010010
+// expect-line: 0000000000000
+// expect-line: 111111110
+// expect-line: ok
+// expect-line: 8
+// expect-line: true false
+// expect-line: 0
+// expect-stderr: azol: index out of range
+struct Bag {
+    name: str
+    flags: List[bool]
+}
+
+fn flip(b: mut bool) {
+    b = !b
+}
+
+fn both(a: mut bool, n: i64) -> i64 {
+    if a {
+        a = false
+    } else {
+        a = true
+    }
+    return n + 1
+}
+
+fn show(xs: List[bool]) -> str {
+    var s = ""
+    for x in xs {
+        if x {
+            s.push(49)
+        } else {
+            s.push(48)
+        }
+    }
+    return s
+}
+
+fn count(xs: List[bool]) -> i64 {
+    var n = 0
+    for i, x in xs {
+        if x { n += i + 1 }
+    }
+    return n
+}
+
+fn main() {
+    var xs = [true, false, true, true, false, true, true, true, true, false, true]
+    print(show(xs))
+    flip(mut xs[1])
+    flip(mut xs[0])
+    print(show(xs))
+    let r = both(mut xs[4], 41)
+    print(r)
+    print(show(xs))
+    xs[2] = false
+    xs[3] = xs[5] && xs[6]
+    var i = 7
+    xs[i] = !xs[i]
+    xs[i + 1] = xs[i] || xs[0]
+    print(show(xs))
+    xs.push(true)
+    xs.push(xs[0])
+    var j = 0
+    while j < 40 {
+        xs.push(j % 3 == 0)
+        j += 1
+    }
+    print(show(xs))
+    print(xs.len())
+    print(count(xs))
+    let last = xs.pop()
+    print(last)
+    print(xs.pop())
+    var ys = xs
+    ys[0] = true
+    xs[0] = false
+    print(show(ys))
+    print(show(xs))
+    var bag = Bag { name: "b", flags: [false, true] }
+    bag.flags.push(true)
+    flip(mut bag.flags[0])
+    bag.flags[1] = bag.flags[2] && false
+    print(show(bag.flags))
+    var grid: List[List[bool]] = []
+    grid.push([true, true, false])
+    grid.push(xs)
+    grid[0][1] = false
+    flip(mut grid[0][2])
+    print(show(grid[0]))
+    print(show(grid[1]))
+    let fs = false.filled(13)
+    print(show(fs))
+    var ts = true.filled(9)
+    ts[8] = false
+    print(show(ts))
+    if ts[7] && !ts[8] { print("ok") }
+    var total = 0
+    for k in 0..ts.len() {
+        if ts[k] { total += 1 }
+    }
+    print(total)
+    print("{ts[0]} {ts[8]}")
+    let e: List[bool] = []
+    print(e.len())
+    print(ts[9])
+}

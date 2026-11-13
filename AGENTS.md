@@ -215,3 +215,15 @@ pattern may hold patterns: `Some(1)`, `Ok(Put(key, 0))`.
 Floating-point numbers, closures, traits, threads, packages and calling C.
 Do not write them. [docs/language.md](docs/language.md) has the full list
 under "What azoL does not have".
+
+## Changing the README
+
+The README exists in English ([README.md](README.md)) and in Turkish
+([README.tr.md](README.tr.md)), with a switch at the top of each. Any change
+to one must be made in the other in the same commit: a new section, a table
+row, a list item, a number, a link, a code block. Code, commands, paths,
+error codes and compiler output are never translated. The block between
+`<!-- bench:start -->` and `<!-- bench:end -->` is written in both files by
+`python3 bench/compare.py --write-readme`, from one table of words in that
+script. `sh test.sh` fails when the two files stop having the same shape
+(`python3 docs/check_readme_langs.py` says where); it cannot judge the words.

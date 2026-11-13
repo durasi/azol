@@ -436,6 +436,16 @@ fn a_ldrb_index(rt: i64, rn: i64, rm: i64) -> i64 {
     return 0x38606800 | rm << 16 | rn << 5 | rt
 }
 
+// `strb rt, [rn, rm]`: the low byte of the register.
+fn a_strb_index(rt: i64, rn: i64, rm: i64) -> i64 {
+    return 0x38206800 | rm << 16 | rn << 5 | rt
+}
+
+// `strb rt, [rn, #bytes]`
+fn a_strb(rt: i64, rn: i64, bytes: i64) -> i64 {
+    return 0x39000000 | bytes << 10 | rn << 5 | rt
+}
+
 // `ldrb rt, [rn, #bytes]`
 fn a_ldrb(rt: i64, rn: i64, bytes: i64) -> i64 {
     return 0x39400000 | bytes << 10 | rn << 5 | rt
@@ -1110,7 +1120,7 @@ fn a_clone_value(g: mut AGen, c: Checker, ty: i64) {
         a_mov_imm(mut g, X1, 1)
         a_runtime(mut g, ART_LIST_CLONE)
     } else if ty_is_list(ty) && !ck_needs_drop(c, c.lists[ty_index(ty)]) {
-        a_mov_imm(mut g, X1, ck_size_of(c, c.lists[ty_index(ty)]) * 8)
+        a_mov_imm(mut g, X1, ck_elem_bytes(c, c.lists[ty_index(ty)]))
         a_runtime(mut g, ART_LIST_CLONE)
     } else {
         a_glue_call(mut g, ty, true)

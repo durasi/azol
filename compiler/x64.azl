@@ -125,7 +125,7 @@ const OP_SHL = 16
 const OP_SHR = 17
 
 // The first of the call resolutions that stand for built-ins.
-const FIRST_BUILTIN = 4294967273
+const FIRST_BUILTIN = 4294967272
 
 // How many index checks are remembered at a time.
 const KNOWN = 4
@@ -641,6 +641,52 @@ fn x_load_byte(g: mut Gen, at: XMem) {
     } else {
         x_mem(mut g, RAX, at.base, at.disp)
     }
+}
+
+// `movzx dst, byte [at]` in its 32-bit form, which clears the rest of
+// `dst`.
+fn x_load_byte_to(g: mut Gen, dst: i64, at: XMem) {
+    x_writes(mut g, dst)
+    var index = 0
+    if at.index >= 0 { index = at.index }
+    if dst >= 8 || at.base >= 8 || index >= 8 {
+        g.code.push(0x40 | ((dst >> 3) << 2) | ((index >> 3) << 1) | (at.base >> 3))
+    }
+    g.code.push(0x0F)
+    g.code.push(0xB6)
+    if at.index >= 0 {
+        x_mem_index(mut g, dst, at.base, at.index, at.scale, at.disp)
+    } else {
+        x_mem(mut g, dst, at.base, at.disp)
+    }
+}
+
+// `mov byte [at], low byte of src`. The prefix is always written: with
+// it every register has a low byte.
+fn x_store_byte_at(g: mut Gen, at: XMem, src: i64) {
+    var index = 0
+    if at.index >= 0 { index = at.index }
+    g.code.push(0x40 | ((src >> 3) << 2) | ((index >> 3) << 1) | (at.base >> 3))
+    g.code.push(0x88)
+    if at.index >= 0 {
+        x_mem_index(mut g, src, at.base, at.index, at.scale, at.disp)
+    } else {
+        x_mem(mut g, src, at.base, at.disp)
+    }
+}
+
+// `mov byte [at], value`
+fn x_store_byte_imm_at(g: mut Gen, at: XMem, value: i64) {
+    var index = 0
+    if at.index >= 0 { index = at.index }
+    if at.base >= 8 || index >= 8 { g.code.push(0x40 | ((index >> 3) << 1) | (at.base >> 3)) }
+    g.code.push(0xC6)
+    if at.index >= 0 {
+        x_mem_index(mut g, 0, at.base, at.index, at.scale, at.disp)
+    } else {
+        x_mem(mut g, 0, at.base, at.disp)
+    }
+    g.code.push(value & 255)
 }
 
 // `mov dst, [at + extra]`
@@ -1390,7 +1436,7 @@ fn x_clone_value(g: mut Gen, c: Checker, ty: i64) {
         x_mov_imm(mut g, RSI, 1)
         x_runtime(mut g, RT_LIST_CLONE)
     } else if ty_is_list(ty) && !ck_needs_drop(c, c.lists[ty_index(ty)]) {
-        x_mov_imm(mut g, RSI, ck_size_of(c, c.lists[ty_index(ty)]) * 8)
+        x_mov_imm(mut g, RSI, ck_elem_bytes(c, c.lists[ty_index(ty)]))
         x_runtime(mut g, RT_LIST_CLONE)
     } else {
         x_glue_call(mut g, ty, true)

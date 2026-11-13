@@ -347,3 +347,15 @@ The macOS runtime (`runtime/runtime.s`) needed no port of the faster copy: it ha
 Geometric means against the default build: 0.62 before, 0.64 after.
 
 The mean went up, and that is `divconst`: a division that was two instructions (`sdiv`, `msub`) is five or six that do not divide (`loops` 0.89 to 1.11, `bfs` 0.67 to 0.79, `particles` 0.55 to 0.67, `bignum` 0.50 to 0.61; 18 of the 28 programs make their data with `% 2147483647`). The instruction ratio against `rustc -O` on x86-64 will rise for the same reason, while the times fall: where the two disagree, the gate is defined in time. `binary_trees`, `tree`, `prefix`, `bits`, `json`, `words` and `append` run fewer instructions (paired copies, `carry`, shifted operands).
+
+## `sieve` after packed lists (x86-64 Linux, 13 November 2026)
+
+A `List[bool]` now keeps one byte for each element, in both modes, and
+`false.filled(n)` is one allocation and a fill. In the sandbox, in time
+(best of 5 to 7): `sieve` under `-O` 0.75 s to 0.18 s, where
+`rustc -O` takes 0.18 s; the default build 0.82 s to 0.21 s; peak
+memory 229 MB to 29 MB (Rust: 31 MB). The fill alone was 0.041 s as a
+loop of `push` over a doubling buffer and is 0.023 s as one loop of
+byte stores. The details are in `optimizer-notes.md`, "Packed lists".
+Not measured on the M5.
+

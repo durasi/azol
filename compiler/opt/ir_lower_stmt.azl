@@ -194,6 +194,10 @@ fn lw_assign(lw: mut Lower, c: Checker, p: Parser, id: i64, target: i64, value: 
             to = lw_place_address(mut lw, place, 1)
         } else {
             to = lw_address(mut lw, c, p, target)
+            if lw_is_byte_element(lw, c, target) {
+                lw_store_bool_byte(mut lw, to, source)
+                return
+            }
         }
         lw_store(mut lw, lw_scalar_ty(ty), to, 0, source)
         return
@@ -348,10 +352,15 @@ fn lw_for(lw: mut Lower, c: Checker, p: Parser, id: i64, has_index: bool, iter: 
         lw_store(mut lw, IR_I64, index_at, 0, at)
     }
     let buffer = lw_load(mut lw, IR_PTR, header, 0)
-    let element = ir_gep(mut lw.f, lw.b, buffer, at, 8 * elem_size, 0)
+    let element = ir_gep(mut lw.f, lw.b, buffer, at, ck_elem_bytes(c, elem), 0)
     let item = lw_slot(mut lw, item_slot, elem_size)
     let inside = lw_buf_region(mut lw, header.reg)
-    lw_copy(mut lw, c, item, LwAddr { p: element, off: 0, reg: inside }, elem)
+    if ck_elem_bytes(c, elem) == 1 {
+        let value = lw_load_bool_byte(mut lw, LwAddr { p: element, off: 0, reg: inside })
+        lw_store(mut lw, IR_BOOL, item, 0, value)
+    } else {
+        lw_copy(mut lw, c, item, LwAddr { p: element, off: 0, reg: inside }, elem)
+    }
 
     lw.loop_live.push(lw.live_slots.len())
     lw.loop_break.push(after)

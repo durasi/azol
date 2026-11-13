@@ -394,6 +394,19 @@ fn x_assign_element(g: mut Gen, c: Checker, p: Parser, path: XPath, value: i64) 
         if waits { x_push(mut g) }
     }
     let at = x_element(mut g, c, p, path.base, path.index)
+    if x_byte_list(g, c, path.base) {
+        if is_constant {
+            x_store_byte_imm_at(mut g, at, constant)
+        } else {
+            if waits { x_pop(mut g, RAX) }
+            if register >= 0 {
+                x_store_byte_at(mut g, at, register)
+            } else {
+                x_store_byte_at(mut g, at, RAX)
+            }
+        }
+        return
+    }
     if is_constant {
         x_store_imm_at(mut g, at, path.offset, constant)
     } else {
@@ -454,6 +467,7 @@ fn x_return_stmt(g: mut Gen, c: Checker, p: Parser, id: i64, value: i64) {
 fn x_for_stmt(g: mut Gen, c: Checker, p: Parser, id: i64, has_index: bool, iter: i64, body: IdRange) {
     let list_ty = c.expr_ty[g.sh_e + iter]
     let elem_size = ck_size_of(c, c.lists[ty_index(list_ty)])
+    let bytes = ck_elem_bytes(c, c.lists[ty_index(list_ty)]) == 1
     let base = c.stmt_slot[g.sh_s + id]
     let position = base
     let own_list = base + 1
@@ -488,12 +502,17 @@ fn x_for_stmt(g: mut Gen, c: Checker, p: Parser, id: i64, has_index: bool, iter:
     if has_index { x_store_slot(mut g, index_slot, RCX) }
     // buffer
     x_load_mem(mut g, R8, header, disp)
-    let at = x_scaled(mut g, RCX, elem_size)
-    var i = 0
-    while i < elem_size {
-        x_load_index(mut g, R9, R8, at, 3, 8 * i)
-        x_store_slot(mut g, item_slot + i, R9)
-        i = i + 1
+    if bytes {
+        x_load_byte_to(mut g, R9, XMem { base: R8, index: RCX, scale: 0, disp: 0 })
+        x_store_slot(mut g, item_slot, R9)
+    } else {
+        let at = x_scaled(mut g, RCX, elem_size)
+        var i = 0
+        while i < elem_size {
+            x_load_index(mut g, R9, R8, at, 3, 8 * i)
+            x_store_slot(mut g, item_slot + i, R9)
+            i = i + 1
+        }
     }
 
     x_enter_loop(mut g)
@@ -861,6 +880,17 @@ fn x_is_element(g: Gen, c: Checker, id: i64) -> bool {
     return kind == K_INDEX && ty_is_list(c.expr_ty[g.sh_e + g.ea[at]])
 }
 
+// True when the list `base` keeps one byte for each element.
+fn x_byte_list(g: Gen, c: Checker, base: i64) -> bool {
+    return ck_elem_bytes(c, c.lists[ty_index(c.expr_ty[g.sh_e + base])]) == 1
+}
+
+// True when `id` is an element of a list that keeps one byte for each.
+fn x_is_byte_element(g: Gen, c: Checker, id: i64) -> bool {
+    if g.kinds[id] != K_INDEX { return false }
+    return ty_is_list(c.expr_ty[g.sh_e + g.ea[id]]) && x_byte_list(g, c, g.ea[id])
+}
+
 // How many slots an element of the list `base` takes.
 fn x_element_slots(g: Gen, c: Checker, base: i64) -> i64 {
     return ck_size_of(c, c.lists[ty_index(c.expr_ty[g.sh_e + base])])
@@ -911,6 +941,7 @@ fn x_checked_index(g: mut Gen, c: Checker, p: Parser, base: i64, index: i64) -> 
 // take to evaluate.
 fn x_element(g: mut Gen, c: Checker, p: Parser, base: i64, index: i64) -> XMem {
     let slots = x_element_slots(g, c, base)
+    if x_byte_list(g, c, base) { return x_indexed(mut g, c, p, base, index, 1, 0) }
     return x_indexed(mut g, c, p, base, index, slots, 3)
 }
 
@@ -1016,6 +1047,8 @@ fn x_in_memory(g: Gen, c: Checker, id: i64) -> bool {
     let place = x_place(g, c, id)
     if place >= 0 { return x_register(g, place) < 0 }
     let path = x_element_path(g, c, id)
+    // An element of one byte is not an operand of eight: it is loaded.
+    if path.ok && x_byte_list(g, c, path.base) { return false }
     return path.ok && x_index_keeps_rax(g, c, path.base, path.index)
 }
 
@@ -1246,7 +1279,8 @@ fn x_list_literal(g: mut Gen, c: Checker, p: Parser, id: i64) {
     }
     let elem = c.expr_ty[g.sh_e + p.ast.lists[start]]
     let elem_size = ck_size_of(c, elem)
-    x_mov_imm(mut g, RDI, count * elem_size * 8)
+    let bytes = ck_elem_bytes(c, elem) == 1
+    x_mov_imm(mut g, RDI, count * ck_elem_bytes(c, elem))
     x_runtime(mut g, RT_ALLOC)
     x_store_slot(mut g, tmp, RAX)
     var i = 0
@@ -1266,6 +1300,8 @@ fn x_list_literal(g: mut Gen, c: Checker, p: Parser, id: i64) {
                 x_clone_value(mut g, c, item_ty)
             }
             x_moved_out(mut g, c, item)
+        } else if bytes {
+            x_store_byte_at(mut g, XMem { base: R8, index: -1, scale: 0, disp: i }, RAX)
         } else {
             x_store_mem(mut g, R8, 8 * offset, RAX)
         }
@@ -1526,7 +1562,11 @@ fn x_value(g: mut Gen, c: Checker, p: Parser, id: i64) {
         if path.ok {
             // A list element or a part of one, read where it is.
             let at = x_element(mut g, c, p, path.base, path.index)
-            x_load_at(mut g, RAX, at, path.offset)
+            if x_byte_list(g, c, path.base) {
+                x_load_byte(mut g, at)
+            } else {
+                x_load_at(mut g, RAX, at, path.offset)
+            }
         } else {
             // A field of a computed value.
             x_address(mut g, c, p, id)
@@ -2028,6 +2068,10 @@ fn x_call(g: mut Gen, c: Checker, p: Parser, id: i64) {
         x_list_method(mut g, c, p, id, target, receiver)
         return
     }
+    if target == BUILTIN_LIST_FILLED {
+        x_filled(mut g, c, p, id, receiver)
+        return
+    }
     // A method the standard library writes in azoL is a function whose
     // first argument is the receiver. Arguments are evaluated in the
     // order written. Those up to the last one that needs real work wait
@@ -2054,7 +2098,18 @@ fn x_call(g: mut Gen, c: Checker, p: Parser, id: i64) {
         } else {
             let last = i + 1 == worked
             let is_mut = g.kinds[arg] == K_MUTARG
-            if is_mut {
+            if is_mut && x_is_byte_element(g, c, g.ea[arg]) {
+                // The function wants the address of a slot and the
+                // element is one byte: it gets a temporary holding the
+                // value, and the element's address waits beside it.
+                let slot = c.expr_tmp[g.sh_e + arg]
+                let at = x_element(mut g, c, p, g.ea[g.ea[arg]], g.eb[g.ea[arg]])
+                x_lea_at(mut g, RAX, at, 0)
+                x_store_slot(mut g, slot + 1, RAX)
+                x_load_byte(mut g, XMem { base: RAX, index: -1, scale: 0, disp: 0 })
+                x_store_slot(mut g, slot, RAX)
+                x_frame_address(mut g, RAX, slot)
+            } else if is_mut {
                 x_address(mut g, c, p, g.ea[arg])
             } else if by_ref {
                 x_address(mut g, c, p, arg)
@@ -2090,6 +2145,19 @@ fn x_call(g: mut Gen, c: Checker, p: Parser, id: i64) {
         let at = x_call_field(mut g)
         g.call_ats.push(at)
         g.call_targets.push(target)
+        // What the function left in the temporary of a one-byte element
+        // goes back into the list. rax may hold the result.
+        i = first
+        while i < count {
+            let arg = p.ast.lists[args_start + i - first]
+            if g.kinds[arg] == K_MUTARG && x_is_byte_element(g, c, g.ea[arg]) {
+                let slot = c.expr_tmp[g.sh_e + arg]
+                x_load(mut g, R8, slot + 1)
+                x_load(mut g, R9, slot)
+                x_store_byte_at(mut g, XMem { base: R8, index: -1, scale: 0, disp: 0 }, R9)
+            }
+            i = i + 1
+        }
     } else if target == BUILTIN_PRINT_I64 {
         x_runtime(mut g, RT_PRINT_I64)
     } else if target == BUILTIN_PRINT_BOOL {
@@ -2260,6 +2328,54 @@ fn x_one_byte_string(g: mut Gen, tmp: i64) {
     x_frame_address(mut g, RSI, tmp + 1)
 }
 
+// `value.filled(count)` for a number or a `bool`: one buffer of `count`
+// elements, every one of them `value`, in this call's temporary. No
+// buffer at all when the count is zero or less.
+fn x_filled(g: mut Gen, c: Checker, p: Parser, id: i64, value: i64) {
+    let tmp = c.expr_tmp[g.sh_e + id]
+    let count = p.ast.lists[g.eb[id]]
+    let bytes = ck_elem_bytes(c, c.expr_ty[g.sh_e + value])
+    x_value(mut g, c, p, value)
+    x_push(mut g)
+    x_value(mut g, c, p, count)
+    x_pop(mut g, RDX)
+    x_zero_slot(mut g, tmp)
+    x_zero_slot(mut g, tmp + 1)
+    x_zero_slot(mut g, tmp + 2)
+    x_op(mut g, X_TEST, RAX, RAX)
+    let nothing = x_jump_if(mut g, CC_LE)
+    // length and capacity
+    x_store_slot(mut g, tmp + 1, RAX)
+    x_store_slot(mut g, tmp + 2, RAX)
+    // The value waits where the buffer will be written.
+    x_store_slot(mut g, tmp, RDX)
+    if bytes == 1 {
+        x_mov(mut g, RDI, RAX)
+    } else {
+        x_lea_scaled(mut g, RDI, RAX, 3)
+    }
+    x_mov_imm(mut g, RCX, FILLED_MOST)
+    x_op(mut g, X_CMP, RAX, RCX)
+    let fits = x_jump_if(mut g, CC_BE)
+    x_mov_imm(mut g, RDI, FILLED_TOO_MUCH)
+    x_patch(mut g, fits)
+    x_runtime(mut g, RT_ALLOC)
+    x_mov(mut g, RDI, RAX)
+    x_load(mut g, RAX, tmp)
+    x_store_slot(mut g, tmp, RDI)
+    x_load(mut g, RCX, tmp + 1)
+    // rep stosb, or rep stosq: rcx copies of al or rax from rdi on
+    g.code.push(0xF3)
+    if bytes != 1 { g.code.push(0x48) }
+    if bytes == 1 {
+        g.code.push(0xAA)
+    } else {
+        g.code.push(0xAB)
+    }
+    x_patch(mut g, nothing)
+    x_forget(mut g)
+}
+
 // `mov byte [base + index], low byte of src`
 fn x_store_byte_index(g: mut Gen, base: i64, index: i64, src: i64) {
     x_rex_index(mut g, src, index, base)
@@ -2299,6 +2415,7 @@ fn x_list_method(g: mut Gen, c: Checker, p: Parser, id: i64, method: i64, base: 
     }
     let elem = c.lists[ty_index(c.expr_ty[g.sh_e + base])]
     let elem_size = ck_size_of(c, elem)
+    let bytes = ck_elem_bytes(c, elem) == 1
     if method == BUILTIN_LIST_PUSH {
         // The element is copied aside first: it may live in this very
         // list, whose buffer can move while it grows.
@@ -2329,7 +2446,11 @@ fn x_list_method(g: mut Gen, c: Checker, p: Parser, id: i64, method: i64, base: 
                 let full = x_jump_if(mut g, CC_AE)
                 // buffer
                 x_load_mem(mut g, R9, header, disp)
-                x_store_index(mut g, R9, R8, 3, 0, RAX)
+                if bytes {
+                    x_store_byte_at(mut g, XMem { base: R9, index: R8, scale: 0, disp: 0 }, RAX)
+                } else {
+                    x_store_index(mut g, R9, R8, 3, 0, RAX)
+                }
                 x_op_mem_imm(mut g, ADD_I, header, disp + 8, 1)
                 done = x_jump(mut g)
                 x_patch(mut g, full)
@@ -2363,7 +2484,7 @@ fn x_list_method(g: mut Gen, c: Checker, p: Parser, id: i64, method: i64, base: 
         }
         x_mov(mut g, RDI, RAX)
         x_frame_address(mut g, RSI, tmp)
-        x_mov_imm(mut g, RDX, elem_size * 8)
+        x_mov_imm(mut g, RDX, ck_elem_bytes(c, elem))
         x_runtime(mut g, RT_LIST_PUSH)
         if done >= 0 { x_patch(mut g, done) }
         // The list is longer now and may have moved.
@@ -2385,6 +2506,8 @@ fn x_list_method(g: mut Gen, c: Checker, p: Parser, id: i64, method: i64, base: 
     if elem >= 3 {
         x_lea_index(mut g, RAX, R9, at, 3, 0)
         x_copy_to_frame(mut g, tmp, elem_size)
+    } else if bytes {
+        x_load_byte(mut g, XMem { base: R9, index: R8, scale: 0, disp: 0 })
     } else {
         x_load_index(mut g, RAX, R9, at, 3, 0)
     }

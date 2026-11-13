@@ -95,6 +95,15 @@ const BUILTIN_RENAME_FILE = 4294967275
 const BUILTIN_CLOCK = 4294967274
 // `is_utf8()` on a string: whether its bytes are well-formed UTF-8.
 const BUILTIN_STR_IS_UTF8 = 4294967273
+// `value.filled(count)` on a number or a `bool`: the list is made in one
+// piece by the generators, not by the library's loop of `push`. The
+// lowest of the built-ins: `FIRST_BUILTIN`.
+const BUILTIN_LIST_FILLED = 4294967272
+// A list is never made with more elements than this in one piece: asking
+// for more memory than there can be stops the program as running out of
+// memory does, before the count times the size of an element overflows.
+const FILLED_MOST = 1099511627776
+const FILLED_TOO_MUCH = 4611686018427387904
 
 // In `expr_aux` of a name that is a constant.
 const CONST_INT = 4294967295
@@ -781,6 +790,15 @@ fn ck_size_of(c: Checker, ty: i64) -> i64 {
     if ty_is_struct(ty) { return c.structs[ty_index(ty)].size }
     if ty_is_enum(ty) { return c.enums[ty_index(ty)].size }
     return 3
+}
+
+// How many bytes one element of a list of `elem` takes in the list's
+// buffer. A `bool` is packed into one byte; everything else keeps its
+// slots of eight bytes. Outside a list a `bool` is a slot like any other
+// value, so only the code that reads and writes list buffers asks this.
+fn ck_elem_bytes(c: Checker, elem: i64) -> i64 {
+    if elem == TY_BOOL { return 1 }
+    return ck_size_of(c, elem) * 8
 }
 
 fn ck_needs_drop(c: Checker, ty: i64) -> bool {

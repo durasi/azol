@@ -1,0 +1,87 @@
+// `value.filled(count)`: a list made in one piece for a number or a
+// `bool`, by the library's loop for anything else; no list at all for a
+// count of zero or less.
+// expect-exit: 0
+// expect-line: 5
+// expect-line: 35
+// expect-line: 1001
+// expect-line: -2983
+// expect-line: 0
+// expect-line: 0
+// expect-line: 38
+// expect-line: 37
+// expect-line: 0
+// expect-line: 100000
+// expect-line: 0
+// expect-line: 24
+// expect-line: 3
+// expect-line: 2
+// expect-line: ab
+// expect-line: 5
+// expect-line: 3
+struct P {
+    x: i64
+    on: bool
+}
+
+fn make(n: i64, v: i64) -> List[i64] {
+    return v.filled(n)
+}
+
+fn flags(n: i64, v: bool) -> List[bool] {
+    return v.filled(n)
+}
+
+fn sum(xs: List[i64]) -> i64 {
+    var t = 0
+    for x in xs {
+        t += x
+    }
+    return t
+}
+
+fn ones(xs: List[bool]) -> i64 {
+    var t = 0
+    for x in xs {
+        if x { t += 1 }
+    }
+    return t
+}
+
+fn main() {
+    let a = 7.filled(5)
+    print(a.len())
+    print(sum(a))
+    var b = make(1000, -3)
+    b[999] = 4
+    b.push(10)
+    print(b.len())
+    print(sum(b))
+    let none = 9.filled(0)
+    print(none.len())
+    let less = 9.filled(-4)
+    print(less.len())
+    var f = flags(37, true)
+    f[36] = false
+    f.push(true)
+    print(f.len())
+    print(ones(f))
+    let g = flags(100000, false)
+    print(ones(g))
+    print(g.len())
+    let e = true.filled(0)
+    print(e.len())
+    var k = 3
+    let h = (k * 2).filled(k + 1)
+    print(sum(h))
+    let ps = P { x: 2, on: true }.filled(3)
+    print(ps.len())
+    print(ps[2].x)
+    let ss = "ab".filled(4)
+    print(ss[3])
+    var grid = 0.filled(3).filled(2)
+    grid[1][2] = 5
+    print(grid[0][2] + grid[1][2])
+    let t = (k > 2).filled(k)
+    print(ones(t))
+}

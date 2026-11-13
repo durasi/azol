@@ -181,9 +181,9 @@ print(f)
 checked 27 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 781b1ad0d4c3f7cc943bb7cfd017064b16b7e0b01bb8902e6a731fd89642fc4f
-x86_64-linux f68ef5ef465892d03ea3b42e63ba6a73b4c9ceadd826f57a4bef597a87f8445b
-aarch64-linux f9848e5f841e4b8d69845358b65c5f334cb2a2901d2349f23194c6d003b3f80f
+aarch64-macos dd85b0500c32f8e070a8356d92873bb82e1bb9be494bd0bb96532dc13724ce54
+x86_64-linux 96eb746d5ef1208b83fa3ac4e2f33ea67f9d5e2d9c5961245a80dbcfe75da6e0
+aarch64-linux b48641d0f19434b78665ab8f29721bb2362d496d17ed69c1f4cc6b38e89a87d8
 ==== 6
 ---- file a.azl (no newline at end)
 struct Point {

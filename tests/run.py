@@ -14,7 +14,8 @@ Sections (all of them when none is named):
               with the exact report they must get, the tokens and syntax trees
               of right ones, the command line; damaged input; the error codes
     format    `azol fmt`: the pairs in tests/format, the case files in
-              tests/golden/format and its guarantees
+              tests/golden/format and its guarantees; README.md and
+              README.tr.md have the same shape
     cross     every program built for all three targets; each executable is
               checked for its structure (and a Mach-O for its signature) and its
               SHA-256 is compared with tests/golden/executables.txt
@@ -1146,6 +1147,12 @@ def section_format(suite):
             section.fail(label, detail)
     section.checks += 2 * len(programs)
     section.check(total >= len(programs), "the formatter had something to change in the ugly spellings", "%d inputs changed" % total)
+    # The README in two languages: the same document in both (docs/check_readme_langs.py).
+    langs = os.path.join(ROOT, "docs", "check_readme_langs.py")
+    if os.path.isfile(langs):
+        done = subprocess.run([sys.executable, langs], capture_output=True)
+        section.check(done.returncode == 0, "README.md and README.tr.md are the same document in two languages", text_of(done.stdout))
+
     return section
 
 

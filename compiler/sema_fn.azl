@@ -3354,10 +3354,25 @@ fn ck_wrong_mut(c: mut Checker, at: i64, text: i64, number: i64, missing: bool) 
 // Last part of checking an argument, whose type is `ty`: that the place
 // it names is free to be handed over. `text` is the function's name and
 // `receiver` says that this is the receiver of a method.
+// True when `id` is `list[index]`.
+fn ck_is_list_element(c: Checker, p: Parser, id: i64) -> bool {
+    match p.ast.exprs[id] {
+        ExprIndex(base, _) => return ty_is_list(c.expr_ty[c.sh_e + base])
+        _ => return false
+    }
+}
+
 fn ck_arg_pass(c: mut Checker, p: Parser, arg: i64, value: i64, mutable: bool, ty: i64, text: i64, receiver: bool) {
     let arg_pos = p.ast.expr_pos[arg]
     if mutable {
         c.expr_ty[c.sh_e + arg] = ty
+        if ty == TY_BOOL && ck_is_list_element(c, p, value) {
+            // A `bool` in a list is one byte, and the function is given
+            // the address of a whole slot: the value travels through a
+            // temporary, with the element's address kept beside it for
+            // writing the result back.
+            c.expr_tmp[c.sh_e + arg] = ck_alloc(mut c, 2, arg_pos)
+        }
         let place = ck_place(c, p, value)
         if !place.ok {
             if receiver {
@@ -3763,7 +3778,16 @@ fn ck_method(c: mut Checker, p: Parser, id: i64, base: i64, name: Span, args: Id
         }
         return ck_library_method(mut c, p, id, base, name, args)
     }
-    if !ty_is_list(base_ty) { return ck_library_method(mut c, p, id, base, name, args) }
+    if !ty_is_list(base_ty) {
+        let ty = ck_library_method(mut c, p, id, base, name, args)
+        // The library's `filled` is checked like any other method; for
+        // a number or a `bool` the generators then make the list in one
+        // piece instead of calling it.
+        if !c.failed && (base_ty == TY_I64 || base_ty == TY_BOOL) && args.len == 1 && ty_is_list(ty) && sym_text(c, sym) == "filled" {
+            if c.lists[ty_index(ty)] == base_ty { c.expr_res[c.sh_e + id] = BUILTIN_LIST_FILLED }
+        }
+        return ty
+    }
     let elem = c.lists[ty_index(base_ty)]
     if sym == SYM_LEN {
         if args.len != 0 {

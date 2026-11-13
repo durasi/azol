@@ -63,8 +63,10 @@ seconds; `--random 0` skips the random functions and takes 3).
    three slots, since a header is scalarised; `cap` 0 means the bytes
    are not the string's own (a literal).
 5. **`bool` in memory is eight bytes**, like the default generators
-   store it today. A packed `bool` (design section 7.1) is a `load u8`
-   or `store u8`.
+   store it, everywhere but in a list: an element of a `List[bool]` is
+   one byte (design section 7.1, and "Packed lists" at the end of these
+   notes), read by `load u8` and `ne 0`, written by `store u8` of 1
+   or 0.
 6. **Type rules the design leaves open.** `and`, `or`, `xor` take two
    `i64` or two `bool` and give what they take. `eq` and `ne` take two
    of the same type, `ptr` and `bool` included. The unsigned orderings
@@ -2534,3 +2536,126 @@ the file. What is left out on purpose:
 `dp_lcs` needs the first and the third. Tests: `tests/opt/carry/`
 (two cases it takes, seven it must leave), and
 `tests/programs/running_sums.azl`.
+
+## Packed lists: one byte for a `bool` in a list
+
+Design section 7.1, for `bool` only. Both the default build and `-O`.
+
+### The decision: the same layout in both modes
+
+A `List[bool]` keeps one byte for each element in the default build
+and under `-O` alike. The reasons, from the code:
+
+- A list crosses between the two paths' code only inside one
+  executable, which is built by one path, so different layouts would
+  work. But the runtime routines (`list_push`, `list_clone`), the
+  helpers the generators write for dropping and copying, and every
+  generic function of the library are shared in meaning, and all of
+  them already take the size of an element in bytes as a number. With
+  one layout that number is one function, `ck_elem_bytes` in
+  `sema.azl`; with two, every one of those places would have to ask
+  which mode it is in.
+- The tests that prove the optimiser compare its executables with the
+  default build's, run by run. They stay comparable in memory use and
+  in what an out-of-range index does only when the layouts agree.
+- The gain is memory, and the default build wants it as much: `sieve`
+  goes from 229 MB to 29 MB in both.
+
+Only the buffer of a list is packed. A `bool` in a variable, a field or
+a parameter is still a slot of eight bytes, so nothing else in the
+generators changes. The library's functions on lists are written in
+azoL and follow by themselves.
+
+### Where an element is one byte
+
+`ck_elem_bytes(c, elem)` is 1 for `bool` and eight times the slots for
+everything else. It is asked where a buffer is allocated (a list
+literal, `filled`), grown or copied (`list_push`, `list_clone`, which
+take it as an argument and needed no change in any of the three
+runtimes), and where an element is reached:
+
+| | x86-64 default | ARM64 default | lowering |
+|---|---|---|---|
+| read | `x_value`: `movzx` | `a_value`, `a_load_element`: `ldrb` | `lw_load_bool_byte`: `load u8`, `ne 0` |
+| write | `x_assign_element`: a byte `mov` | `a_store_element`, `a_assign`: `strb` | `lw_store_bool_byte`: `store u8` of a constant, or of `select b, 1, 0` |
+| `for` | `x_for_stmt` | `a_for_stmt` | `lw_for` |
+| `push`, `pop` | `x_list_method` | `a_list_method` | `lw_list_method` |
+
+The x86-64 generator no longer treats such an element as a memory
+operand of another instruction (`x_in_memory` says no): it is loaded
+first. The ARM64 generator reaches it as it reaches a byte of a string
+(`ATracked.bytes`).
+
+An index is checked against the length exactly as before; the check
+does not know the size of an element.
+
+### A `bool` element passed as `mut`
+
+`flip(mut flags[i])` gives the function the address of a slot, and the
+function reads and writes eight bytes there. The element has one. So
+the checker gives such an argument a temporary of two slots
+(`ck_arg_pass`), and the caller copies the element into it, passes the
+temporary's address, and writes its low byte back after the call (the
+second slot keeps the element's address meanwhile in the default
+generators; the lowering keeps it in a value). The rules of exclusive
+access make this the same thing: nothing else can look at that list
+during the call. Only `mut` arguments of type `bool` that are list
+elements pay for it.
+
+### `filled` in one piece
+
+`value.filled(count)` is checked as the library's generic `filled`
+and, when `value` is an `i64` or a `bool`, then marked as the built-in
+`BUILTIN_LIST_FILLED` (`ck_method`): one `alloc` of `count` elements
+and a loop that stores the value, instead of `count` calls of `push`
+with a buffer that doubles on the way. A count of zero or less gives
+the empty list, as the loop did. A count above `FILLED_MOST` (2^40
+elements) asks `alloc` for more than there can be, so the program
+stops with `azol: out of memory` instead of multiplying the count into
+a small number; the library's loop used to run until the system killed
+the program.
+
+- x86-64 default: `rep stosb` or `rep stosq`.
+- ARM64 default: a loop of `strb` or `str`.
+- lowering (`lw_filled`): a loop whose position is a block parameter,
+  not a slot of the list, so that it is not read back from memory on
+  every turn.
+
+No runtime routine was added, so the three runtimes are untouched. The
+generic instance of the library's `filled` is still compiled for the
+type, and is then dead code: a few dozen bytes for each of `i64` and
+`bool` in a program that uses them. Other types (`"".filled(n)`, a
+struct) still run the library's loop, since each copy may need buffers
+of its own.
+
+### Measured (x86-64 Linux sandbox, 13 November 2026, best of 5 to 7)
+
+| `sieve` | before | after | Rust `-O` |
+|---|---|---|---|
+| default build | 0.82 s | 0.21 s | |
+| `-O` | 0.75 s | 0.18 s | 0.18 s |
+| peak memory | 229 MB | 29 MB | 31 MB |
+
+Nothing here ran on Apple hardware; both ARM64 targets were run in the
+emulators only (`tests/programs/packed_bools.azl`,
+`tests/programs/filled_lists.azl`, default and `-O`).
+
+### Not done, and what it would take
+
+- **An enum without values in one byte.** Such an enum is an aggregate
+  to the checker (`ty_is_enum`, a tag slot, reached by address and
+  copied slot by slot), not a scalar like `bool`. It would first have to
+  become a scalar in the checker and in all three generators, which is
+  the larger half of packed structs.
+- **`List[i32]` and the like** wait for the narrow integer types of
+  `legacy.md`; `ck_elem_bytes` is where their width goes, and the read
+  and write rows of the table above each get one more width.
+- **Packed structs (7.2).** Every field offset in the checker is in
+  slots (`field_offsets`, `expr_res` of a field, `8192 *` in a place):
+  they would become byte offsets with a width beside them, in the
+  checker, the three generators and the helpers that drop and copy.
+- **`filled` for the default ARM64 build** stores one element a turn;
+  a `memset` from the system library on macOS, or eight bytes a turn,
+  would be faster. Under `-O` the loop is ordinary IR and gets whatever
+  the loop passes learn to do.
+

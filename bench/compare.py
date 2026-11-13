@@ -107,6 +107,74 @@ SHORT = {
 }
 
 
+# The README exists in two languages, README.md and README.tr.md, and this
+# script writes the block between the markers in both. Every word the block
+# uses is here: English is the key, Turkish the value. `say` refuses a text
+# that has no Turkish, so the two blocks cannot drift apart. Numbers are
+# written the same way in both (a point for decimals, a comma for thousands).
+READMES = (("README.md", "en"), ("README.tr.md", "tr"))
+TURKISH = {
+    "Measured on %s, %s. Best of %d runs.": "%s, %s üzerinde ölçüldü. %d çalıştırmanın en iyisi.",
+    "Tools: %s.": "Araçlar: %s.",
+    "Lower is better everywhere. In every row the best value is bold, and nothing else in the table is.":
+        "Her yerde düşük olan daha iyidir. Her satırda en iyi değer kalın yazılmıştır; tabloda başka hiçbir şey kalın değildir.",
+    "Lower is better everywhere. Cells that say *to be measured* have not been run on this machine yet, "
+    "and nothing is bold until they have: bold will mean the best value of its row and nothing else.":
+        "Her yerde düşük olan daha iyidir. *ölçülecek* yazan hücreler bu makinede henüz çalıştırılmadı ve onlar "
+        "ölçülene kadar hiçbir şey kalın değildir: kalın, satırının en iyi değeri anlamına gelecek, başka bir anlama gelmeyecek.",
+    "default": "varsayılan",
+    "BUILD TIME": "DERLEME SÜRESİ",
+    "EXECUTABLE SIZE": "ÇALIŞTIRILABİLİR DOSYA BOYUTU",
+    "RUN TIME": "ÇALIŞMA SÜRESİ",
+    "The same %s-line program": "Aynı %s satırlık program",
+    "no build": "derleme yok",
+    "needs Node.js": "Node.js gerekir",
+    "to be measured": "ölçülecek",
+    "n/a": "yok",
+    "recursive calls": "özyinelemeli çağrılar",
+    "nested loops": "iç içe döngüler",
+    "quicksort, 2 million numbers": "quicksort, 2 milyon sayı",
+    "primes up to 20 million": "20 milyona kadar asal sayılar",
+    "structs updated in place": "yerinde güncellenen struct'lar",
+    "building and walking trees": "ağaç kurma ve dolaşma",
+    "building long strings": "uzun metinler oluşturma",
+    "splitting and joining text": "metni bölme ve birleştirme",
+    "The generated program is %s.": "Üretilen programın uzunluğu: %s.",
+    "%s lines in %s": "%s satır (%s)",
+    "%(ratio)s times faster than %(name)s (%(took)s)": "%(name)s (%(took)s) karşısında %(ratio)s kat hızlı",
+    "%(ratio)s times slower than %(name)s (%(took)s)": "%(name)s (%(took)s) karşısında %(ratio)s kat yavaş",
+    "`rustc -O`": "`rustc -O`",
+    "an unoptimized `rustc` build": "iyileştirmesiz `rustc` derlemesi",
+    "`rustc`'s type check alone (`--emit=metadata`)": "yalnızca `rustc` tür denetimi (`--emit=metadata`)",
+    "`cc -O2`": "`cc -O2`",
+    "`go build`": "`go build`",
+    "Build: azoL's default build is %s.": "Derleme: azoL'un varsayılan derlemesi %s.",
+    "Node.js has nothing to build; checking the syntax of the JavaScript version (`node --check`) takes %s.":
+        "Node.js için derlenecek bir şey yoktur; JavaScript sürümünün sözdizimini denetlemek (`node --check`) %s sürer.",
+    "azoL's default build": "azoL'un varsayılan derlemesinin",
+    "`azol build -O`": "`azol build -O` derlemesinin",
+    "%(name)s in %(ahead)d of %(rows)d": "%(name)s karşısında %(rows)d programdan %(ahead)d",
+    " (level in %d)": " (%d programda eşit)",
+    "Run: %s is ahead of %s.": "Çalışma: %s önde olduğu program sayısı: %s.",
+    ", of ": ", ",
+    "The %s column is left out: %s was not found on this machine.": "%s sütunu yok: %s bu makinede bulunamadı.",
+    "a C compiler (`clang`, `cc` or `gcc`)": "bir C derleyicisi (`clang`, `cc` ya da `gcc`)",
+}
+
+
+def say(lang, text):
+    """`text` in the language of one README. English is the text itself."""
+    if lang == "en":
+        return text
+    if text not in TURKISH:
+        sys.exit("compare.py: no Turkish for %r; add it to TURKISH" % text)
+    return TURKISH[text]
+
+
+def heading(lang, key, fallback):
+    return HEADINGS.get(key, fallback).replace("<sub>default</sub>", "<sub>%s</sub>" % say(lang, "default"))
+
+
 def section(name, columns):
     return "| <sub>%s</sub> |" % name + " |" * columns
 
@@ -365,14 +433,16 @@ def ratio(value):
     return "%.1f" % value
 
 
-def against(mine, theirs):
-    """`3.2 times faster than` or `1.4 times slower than`."""
+def against(lang, mine, theirs, name, took):
+    """`3.2 times faster than X (0.5 s)` or `1.4 times slower than X (0.5 s)`."""
     if mine <= theirs:
-        return "%s times faster than" % ratio(theirs / mine)
-    return "%s times slower than" % ratio(mine / theirs)
+        return say(lang, "%(ratio)s times faster than %(name)s (%(took)s)") % {
+            "ratio": ratio(theirs / mine), "name": say(lang, name), "took": took}
+    return say(lang, "%(ratio)s times slower than %(name)s (%(took)s)") % {
+        "ratio": ratio(mine / theirs), "name": say(lang, name), "took": took}
 
 
-def row(label, values, show, pending, never=()):
+def row(label, values, show, pending, never=(), lang="en"):
     """One row of the table. `values` is {column: number or None}; the best
     (smallest) is bold, with every cell that reads the same. `never` holds
     {column: text} for cells that are words and are never bold."""
@@ -382,9 +452,9 @@ def row(label, values, show, pending, never=()):
     out = [label]
     for key, value in values.items():
         if key in never:
-            out.append(never[key])
+            out.append(say(lang, never[key]))
         elif value is None:
-            out.append("to be measured" if pending else "n/a")
+            out.append(say(lang, "to be measured" if pending else "n/a"))
         elif show(value) == winner:
             out.append("**%s**" % show(value))
         else:
@@ -407,15 +477,15 @@ def counts(run_results, mine, theirs):
     return ahead, level, rows
 
 
-def summary(run_results, build_result, shown):
+def summary(run_results, build_result, shown, lang="en"):
     """Sentences worked out from the numbers, so that they stay true."""
     out = []
     if build_result:
         times, lines = build_result["seconds"], build_result.get("all_lines", {})
         if lines:
             names = ((".azl", "azoL"), (".rs", "Rust"), (".c", "C"), (".go", "Go"), (".js", "JavaScript"))
-            out.append("The generated program is %s."
-                       % ", ".join("%s lines in %s" % (format(lines[ext], ","), name) for ext, name in names if ext in lines))
+            out.append(say(lang, "The generated program is %s.")
+                       % ", ".join(say(lang, "%s lines in %s") % (format(lines[ext], ","), name) for ext, name in names if ext in lines))
         azol = times.get("azol")
         if azol:
             parts = []
@@ -423,12 +493,12 @@ def summary(run_results, build_result, shown):
                               ("rust_check", "`rustc`'s type check alone (`--emit=metadata`)"),
                               ("c", "`cc -O2`"), ("go", "`go build`")):
                 if times.get(key):
-                    parts.append("%s %s (%s)" % (against(azol, times[key]), name, seconds(times[key])))
+                    parts.append(against(lang, azol, times[key], name, seconds(times[key])))
             if parts:
-                out.append("Build: azoL's default build is %s." % ", ".join(parts))
+                out.append(say(lang, "Build: azoL's default build is %s.") % ", ".join(parts))
             if times.get("node_check"):
-                out.append("Node.js has nothing to build; checking the syntax of the JavaScript version "
-                           "(`node --check`) takes %s." % seconds(times["node_check"]))
+                out.append(say(lang, "Node.js has nothing to build; checking the syntax of the JavaScript version "
+                                     "(`node --check`) takes %s.") % seconds(times["node_check"]))
     for mine, name in (("azol", "azoL's default build"), ("azol_opt", "`azol build -O`")):
         parts = []
         for theirs in ("rust_opt", "c", "go", "node"):
@@ -436,70 +506,82 @@ def summary(run_results, build_result, shown):
                 continue
             ahead, level, rows = counts(run_results, mine, theirs)
             if rows:
-                text = "%s in %d of %d" % (NAMES[theirs], ahead, rows)
+                text = say(lang, "%(name)s in %(ahead)d of %(rows)d") % {"name": NAMES[theirs], "ahead": ahead, "rows": rows}
                 if level:
-                    text += " (level in %d)" % level
+                    text += say(lang, " (level in %d)") % level
                 parts.append(text)
         if parts:
-            out.append("Run: %s is ahead of %s." % (name, ", of ".join(parts)))
+            out.append(say(lang, "Run: %s is ahead of %s.") % (say(lang, name), say(lang, ", of ").join(parts)))
     return out
 
 
-def report(results):
-    """The Markdown report, as a list of lines, from what `results.json` holds."""
+def report(results, lang="en"):
+    """The Markdown report, as a list of lines, from what `results.json` holds,
+    in the language of one README."""
     info, runs = results["machine"], results["runs"]
     run_results, build_result, sizes = results["run_time"], results["build_time"], results["sizes"]
     pending = bool(results.get("pending"))
     shown = [(key, heading) for key, heading, tool in COLUMNS if tool is None or info.get(tool)]
     keys = [key for key, _ in shown]
     out = []
-    out.append("Measured on %s, %s. Best of %d runs." % (info["cpu"], info["os"], runs))
-    out.append("Tools: %s." % "; ".join(str(info[tool]) for tool in ("azol", "rustc", "cc", "go", "node") if info.get(tool)))
+    out.append(say(lang, "Measured on %s, %s. Best of %d runs.") % (info["cpu"], info["os"], runs))
+    out.append(say(lang, "Tools: %s.") % "; ".join(str(info[tool]) for tool in ("azol", "rustc", "cc", "go", "node") if info.get(tool)))
     out.append("")
     if pending:
-        out.append("Lower is better everywhere. Cells that say *to be measured* have not been run on this machine yet, "
-                   "and nothing is bold until they have: bold will mean the best value of its row and nothing else.")
+        out.append(say(lang, "Lower is better everywhere. Cells that say *to be measured* have not been run on this machine yet, "
+                             "and nothing is bold until they have: bold will mean the best value of its row and nothing else."))
     else:
-        out.append("Lower is better everywhere. In every row the best value is bold, and nothing else in the table is.")
+        out.append(say(lang, "Lower is better everywhere. In every row the best value is bold, and nothing else in the table is."))
     out.append("")
-    out.append("|  | " + " | ".join(HEADINGS.get(key, heading) for key, heading in shown) + " |")
+    out.append("|  | " + " | ".join(heading(lang, key, fallback) for key, fallback in shown) + " |")
     out.append("|:---|" + "---:|" * len(shown))
     if build_result:
         times = build_result["seconds"]
-        out.append(section("BUILD TIME", len(shown)))
-        out.append(row("The same %s-line program" % format(build_result["lines"], ","),
-                       {key: times.get(key) for key in keys}, seconds, pending, {"node": "no build"}))
+        out.append(section(say(lang, "BUILD TIME"), len(shown)))
+        out.append(row(say(lang, "The same %s-line program") % format(build_result["lines"], ","),
+                       {key: times.get(key) for key in keys}, seconds, pending, {"node": "no build"}, lang))
     if sizes.get("azol"):
-        out.append(section("EXECUTABLE SIZE", len(shown)))
+        out.append(section(say(lang, "EXECUTABLE SIZE"), len(shown)))
         out.append(row("`fib40`", {key: sizes.get(key) for key in keys}, kilobytes, pending,
-                       {"node": "needs Node.js"}))
+                       {"node": "needs Node.js"}, lang))
     if run_results:
-        out.append(section("RUN TIME", len(shown)))
+        out.append(section(say(lang, "RUN TIME"), len(shown)))
     for name, result in run_results.items():
-        out.append(row("`%s` <sub>%s</sub>" % (name, SHORT.get(name, ABOUT.get(name, ""))),
-                       {key: result["seconds"].get(key) for key in keys}, seconds, pending))
+        about = SHORT.get(name)
+        out.append(row("`%s` <sub>%s</sub>" % (name, say(lang, about) if about else name),
+                       {key: result["seconds"].get(key) for key in keys}, seconds, pending, (), lang))
     out.append("")
-    for note in results.get("left_out", []):
-        out.append(note)
+    for tool in results.get("left_out_tools", []):
+        out.append(left_out_note(lang, tool))
         out.append("")
-    for line in summary(run_results, build_result, keys):
+    for line in summary(run_results, build_result, keys, lang):
         out.append(line)
         out.append("")
     return out
 
 
-def write_readme(lines):
-    """Replaces what is between the two markers in README.md."""
-    path = os.path.join(ROOT, "README.md")
-    text = open(path, encoding="utf-8").read()
-    if README_START not in text or README_END not in text:
-        sys.exit("README.md has no %s ... %s block" % (README_START, README_END))
-    head, rest = text.split(README_START, 1)
-    tail = rest.split(README_END, 1)[1]
-    block = "\n".join(lines).rstrip("\n")
-    with open(path, "w", encoding="utf-8") as out:
-        out.write(head + README_START + "\n" + block + "\n" + README_END + tail)
-    print("README.md: the benchmark block is updated", file=sys.stderr)
+LEFT_OUT = {"rustc": "Rust", "cc": "C", "go": "Go", "node": "JavaScript"}
+
+
+def left_out_note(lang, tool):
+    name = say(lang, "a C compiler (`clang`, `cc` or `gcc`)") if tool == "cc" else "`%s`" % tool
+    return say(lang, "The %s column is left out: %s was not found on this machine.") % (LEFT_OUT[tool], name)
+
+
+def write_readme(results):
+    """Replaces what is between the two markers in README.md and in
+    README.tr.md, each in its own language, from the same results."""
+    for name, lang in READMES:
+        path = os.path.join(ROOT, name)
+        text = open(path, encoding="utf-8").read()
+        if README_START not in text or README_END not in text:
+            sys.exit("%s has no %s ... %s block" % (name, README_START, README_END))
+        head, rest = text.split(README_START, 1)
+        tail = rest.split(README_END, 1)[1]
+        block = "\n".join(report(results, lang)).rstrip("\n")
+        with open(path, "w", encoding="utf-8") as out:
+            out.write(head + README_START + "\n" + block + "\n" + README_END + tail)
+        print("%s: the benchmark block is updated" % name, file=sys.stderr)
 
 
 def main():
@@ -520,7 +602,7 @@ def main():
         lines = report(results)
         print("\n".join(lines))
         if readme:
-            write_readme(lines)
+            write_readme(results)
         return
 
     if not os.path.exists(AZOL):
@@ -534,7 +616,7 @@ def main():
                             ("node", "JavaScript", "install Node.js from https://nodejs.org")):
         if tool not in have:
             name = "a C compiler (`clang`, `cc` or `gcc`)" if tool == "cc" else "`%s`" % tool
-            left_out.append("The %s column is left out: %s was not found on this machine." % (what, name))
+            left_out.append(tool)
             print("note: no %s column: %s was not found; to have it, %s" % (what, name, how), file=sys.stderr)
 
     info = machine(have)
@@ -543,7 +625,7 @@ def main():
     build_result = None if only else measure_build(runs, have, problems)
     sizes = measure_sizes()
     results = {"machine": info, "runs": runs, "run_time": run_results, "build_time": build_result,
-               "sizes": sizes, "left_out": left_out, "problems": problems}
+               "sizes": sizes, "left_out_tools": left_out, "problems": problems}
 
     lines = report(results)
     print()
@@ -559,7 +641,7 @@ def main():
             sys.exit("README.md is left alone: it takes a full run with no problems")
         if "rustc" not in have or "node" not in have:
             sys.exit("README.md is left alone: the table there needs at least rustc and node")
-        write_readme(lines)
+        write_readme(results)
 
 
 if __name__ == "__main__":

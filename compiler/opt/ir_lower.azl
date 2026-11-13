@@ -345,6 +345,25 @@ fn lw_add(at: LwAddr, bytes: i64) -> LwAddr {
 }
 
 // The region of the buffer whose three slots are in region `reg`.
+// A `bool` in a list is kept in one byte (`ck_elem_bytes`). Reads the
+// one at `at`: any byte but 0 is `true`.
+fn lw_load_bool_byte(lw: mut Lower, at: LwAddr) -> i64 {
+    let byte = lw_load(mut lw, IR_U8, at, 0)
+    let zero = lw_const(mut lw, 0)
+    return lw_bin(mut lw, IR_NE, byte, zero)
+}
+
+// Writes the `bool` `value` into the byte at `at`: 1 or 0.
+fn lw_store_bool_byte(lw: mut Lower, at: LwAddr, value: i64) {
+    var byte = value
+    if !ir_is_const(value) {
+        let one = lw_const(mut lw, 1)
+        let zero = lw_const(mut lw, 0)
+        byte = ir_select(mut lw.f, lw.b, value, one, zero)
+    }
+    lw_store(mut lw, IR_U8, at, 0, byte)
+}
+
 fn lw_buf_region(lw: mut Lower, reg: i64) -> i64 {
     return ir_region(mut lw.f, IR_REGION_BUF, reg)
 }
@@ -649,7 +668,7 @@ fn lw_clone_value(lw: mut Lower, c: Checker, at: LwAddr, ty: i64) {
         let one = lw_const(mut lw, 1)
         lw_rt(mut lw, IR_RT_LIST_CLONE, p, one, -1, -1)
     } else if ty_is_list(ty) && !ck_needs_drop(c, c.lists[ty_index(ty)]) {
-        let bytes = lw_const(mut lw, ck_size_of(c, c.lists[ty_index(ty)]) * 8)
+        let bytes = lw_const(mut lw, ck_elem_bytes(c, c.lists[ty_index(ty)]))
         lw_rt(mut lw, IR_RT_LIST_CLONE, p, bytes, -1, -1)
     } else {
         let name = lw_glue(mut lw, ty, true)

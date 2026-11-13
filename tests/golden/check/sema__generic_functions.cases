@@ -17,9 +17,9 @@ let d: i64 = id(id(2))
 checked 9 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 6de13c68e3021fd299ba8ab8c968d7df9a6e6a96d6f2405381bc0a2e43197ca8
-x86_64-linux da3611a67cde16ace5ae2113a5b413947b0f0c774f833356fb374f61f5a30dc9
-aarch64-linux f7777b1197c332c5d3b0afeeb61c06aabede72db350c88cbed0276aa46961a20
+aarch64-macos 14855113c3ccfe1e86daa316b502a08ee40b7c2dd7f687562893c8cd74d54c3b
+x86_64-linux cf1780f90ac1be12cd3c6f542557d9b8f74931c950491ad427ac55c12a570725
+aarch64-linux 57a3a6d367a82aae7bb23c93ab57028d7494671b36c8e53a61120d24ac84ef7f
 ==== 2
 ---- file a.azl (no newline at end)
 fn none[T]() -> Option[T] {
