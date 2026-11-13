@@ -36,11 +36,6 @@
 // file `compiler/host_<target>.azl` that says which machine the tool
 // runs on; `sh build_opt.sh` does it.
 
-// The targets, numbered as `HOST_TARGET` of the host files numbers them.
-const OB_AARCH64_MACOS = 0
-const OB_X86_64_LINUX = 1
-const OB_AARCH64_LINUX = 2
-
 fn ob_usage() {
     eprint("usage: azol-opt build <file.azl>... -o <out> [--target TARGET] [--passes a,b,c] [--fixpoint] [--verify-each] [--stats] [--emit-ir <path>] [--map <path>] [--check] [--stress]")
     eprint("       azol-opt run <file.azl>... [--passes a,b,c] [--fixpoint] [--verify-each] [--argv0 NAME] [-- arguments]")
@@ -90,14 +85,6 @@ fn ob_program(files: List[str]) -> Lower {
     lw_program(mut lw, c, p)
     // The whole state and not `lw.m` alone, which would be copied.
     return lw
-}
-
-fn ob_parse(text: str, what: str, m: mut IrModule) {
-    let problem = ir_parse_module(text, mut m)
-    if problem.message.len() > 0 {
-        eprint("error: " + what + ":" + str(problem.line) + ":" + str(problem.column) + ": " + problem.message)
-        exit(1)
-    }
 }
 
 fn ob_verify(m: IrModule, when: str) {
@@ -246,17 +233,18 @@ fn main() {
         ob_run(lw, at, argv0, arguments)
         return
     }
-    ob_parse(BK_HELPERS, "(helpers)", mut lw.m)
-    let start = bk_program_start(lw.m, at)
-    ob_parse(start, "(start)", mut lw.m)
-    if options.verify_each { ob_verify(lw.m, "after the passes") }
-    let entry = ir_find_func(lw.m, "__start")
-    var built = bk_fail("")
-    if target == OB_X86_64_LINUX {
-        built = bk_build(mut lw.m, entry, back, RUNTIME_X64)
-    } else {
-        built = bka_build(lw.m, entry, back, target == OB_AARCH64_MACOS, out, RUNTIME_ARM64_DATA, RUNTIME_ARM64_LINUX)
+    if options.verify_each {
+        // The helpers and the start code are verified with the program.
+        var whole = lw.m
+        var said = ob_add_text(BK_HELPERS, "(helpers)", mut whole)
+        if said.len() == 0 { said = ob_add_text(bk_program_start(whole, at), "(start)", mut whole) }
+        if said.len() > 0 {
+            eprint("error: " + said)
+            exit(1)
+        }
+        ob_verify(whole, "after the passes")
     }
+    let built = ob_finish(mut lw.m, target, out, back)
     if !built.ok {
         eprint("error: " + built.error)
         exit(1)

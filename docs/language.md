@@ -2603,6 +2603,7 @@ azol build <file.azl>              compile to an executable next to the source f
 azol build <file.azl> -o <out>     compile to the given path
 azol build <a.azl> <b.azl> ...     compile several files as one program
 azol build --target <target> ...   compile for another machine
+azol build -O ...                  compile through the optimiser (experimental)
 azol build --json ...              report errors as JSON, as `check --json` does
 azol check <a.azl> <b.azl> ...     report the errors, write nothing
 azol check --json ...              the same as one JSON object per line
@@ -2620,6 +2621,14 @@ azol --version                     print the version
 
 Without `-o`, the executable is named after the first source file, without
 `.azl`, in the same folder.
+
+`-O` builds the same program through the optimiser: an intermediate form,
+passes over it (inlining, value numbering, loop work, removal of bounds
+checks that cannot fail) and a register allocator, for all three targets.
+The program behaves the same: the same output, the same messages, the same
+exit code. It usually runs faster; the build takes several times longer, and
+the mode is experimental, so the default build is the one to rely on. `-O`
+goes with `--target`, `-o`, `--json` and `--map`, in any order.
 
 On success `build` prints one line to standard error, of the form
 `built hello (3800 bytes of code) in 0.399 ms (...)`, and exits with 0.

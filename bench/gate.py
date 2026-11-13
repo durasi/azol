@@ -8,6 +8,11 @@
     python3 bench/gate.py --instructions   also count instructions on the small sizes (needs valgrind)
     python3 bench/gate.py --readme         print only the block for the README
     python3 bench/gate.py --force          give a verdict even when the machine is busy
+    python3 bench/gate.py --opt            the default build and `azol build -O`, each against Rust
+    python3 bench/gate.py --default        the default build only, as before `-O` existed
+
+With no option the gate measures `azol build -O` when the compiler has it:
+that is the build the claim is about.
 
 Every program in bench/suite exists as `<name>.azl` and `<name>.rs`
 (sometimes also `<name>.fx.rs`, the same Rust program with a cheaper
@@ -116,9 +121,9 @@ def build_all(azol, name, work, optimised, small, azol_opt=None):
         # A third column: the same source through the optimising path
         # while it is still a tool of its own (`azol-opt build`).
         exe = os.path.join(work, "%s_opt_%s" % (name, tag))
-        done = run([azol_opt, "build", path, "-o", exe])
+        done = run([azol, "build", "-O", path, "-o", exe] if azol_opt == "-O" else [azol_opt, "build", path, "-o", exe])
         if done.returncode != 0:
-            raise RuntimeError("azol-opt build fails for %s:\n%s" % (name, done.stderr.decode(errors="replace")))
+            raise RuntimeError("the optimising build fails for %s:\n%s" % (name, done.stderr.decode(errors="replace")))
         built["opt"] = exe
     for variant in ("rs", "fx.rs"):
         file = os.path.join(SUITE, "%s.%s" % (name, variant))
@@ -303,8 +308,12 @@ def main():
     parser.add_argument("--force", action="store_true", help="give a verdict even when the machine is busy")
     parser.add_argument("--readme", action="store_true", help="print only the block for the README")
     parser.add_argument("--keep", help="keep the built files in this folder")
+    parser.add_argument("--opt", action="store_true", help="two tables: the default build, and `azol build -O` beside it and Rust; the verdict is then that of the default build")
+    parser.add_argument("--default", action="store_true", help="measure the default build even when `azol build -O` exists")
     parser.add_argument("--azol-opt", help="an `azol-opt` executable (compiler/opt/opt_build_main.azl): adds its builds as a third column; the verdict stays that of `azol`")
     args = parser.parse_args()
+    if args.opt and args.azol_opt:
+        sys.exit("gate.py: --opt and --azol-opt are two ways to say where the optimiser is; give one")
     if args.azol_opt:
         args.azol_opt = os.path.abspath(args.azol_opt)
         if not os.access(args.azol_opt, os.X_OK):
@@ -332,7 +341,13 @@ def main():
     work = args.keep or tempfile.mkdtemp(prefix="azol-gate-")
     os.makedirs(work, exist_ok=True)
     optimised = has_optimiser(azol, work)
-    mode = "`azol build -O`" if optimised else "default build (this compiler has no `-O` yet)"
+    if args.opt:
+        if not optimised:
+            sys.exit("gate.py: %s has no `build -O`" % azol)
+        args.azol_opt = "-O"
+    if args.opt or args.default:
+        optimised = False
+    mode = "`azol build -O`" if optimised else "default build" + ("" if args.opt or args.default or args.azol_opt else " (this compiler has no `-O` yet)")
     rows, failures = [], []
     for name in names:
         say("gate: %s ..." % name)
@@ -413,7 +428,10 @@ def main():
         with open(out, "w", encoding="utf-8") as handle:
             json.dump(results, handle, indent=2)
             handle.write("\n")
-    print(render(results))
+    text = render(results)
+    if args.opt:
+        text = text.replace("`azol-opt build`", "`azol build -O`").replace("azol-opt", "azoL `-O`")
+    print(text)
     for failure in failures:
         print(failure, file=sys.stderr)
     return code

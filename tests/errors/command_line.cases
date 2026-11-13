@@ -66,6 +66,8 @@ Usage:
     azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
                                      `aarch64-linux`
                                      instead of the machine the compiler runs on
+    azol build -O ...                Compile through the optimiser: a faster program,
+                                     a slower build (experimental)
     azol check <a.azl> <b.azl> ...   Report every independent error of a program
                                      without writing an executable
     azol check --json ...            Report errors as one JSON object per line on
@@ -98,6 +100,8 @@ Usage:
     azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
                                      `aarch64-linux`
                                      instead of the machine the compiler runs on
+    azol build -O ...                Compile through the optimiser: a faster program,
+                                     a slower build (experimental)
     azol check <a.azl> <b.azl> ...   Report every independent error of a program
                                      without writing an executable
     azol check --json ...            Report errors as one JSON object per line on
@@ -130,6 +134,8 @@ Usage:
     azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
                                      `aarch64-linux`
                                      instead of the machine the compiler runs on
+    azol build -O ...                Compile through the optimiser: a faster program,
+                                     a slower build (experimental)
     azol check <a.azl> <b.azl> ...   Report every independent error of a program
                                      without writing an executable
     azol check --json ...            Report errors as one JSON object per line on
@@ -166,6 +172,8 @@ Usage:
     azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
                                      `aarch64-linux`
                                      instead of the machine the compiler runs on
+    azol build -O ...                Compile through the optimiser: a faster program,
+                                     a slower build (experimental)
     azol check <a.azl> <b.azl> ...   Report every independent error of a program
                                      without writing an executable
     azol check --json ...            Report errors as one JSON object per line on
@@ -202,6 +210,8 @@ Usage:
     azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
                                      `aarch64-linux`
                                      instead of the machine the compiler runs on
+    azol build -O ...                Compile through the optimiser: a faster program,
+                                     a slower build (experimental)
     azol check <a.azl> <b.azl> ...   Report every independent error of a program
                                      without writing an executable
     azol check --json ...            Report errors as one JSON object per line on
@@ -238,6 +248,8 @@ Usage:
     azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
                                      `aarch64-linux`
                                      instead of the machine the compiler runs on
+    azol build -O ...                Compile through the optimiser: a faster program,
+                                     a slower build (experimental)
     azol check <a.azl> <b.azl> ...   Report every independent error of a program
                                      without writing an executable
     azol check --json ...            Report errors as one JSON object per line on
@@ -275,6 +287,8 @@ Usage:
     azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
                                      `aarch64-linux`
                                      instead of the machine the compiler runs on
+    azol build -O ...                Compile through the optimiser: a faster program,
+                                     a slower build (experimental)
     azol check <a.azl> <b.azl> ...   Report every independent error of a program
                                      without writing an executable
     azol check --json ...            Report errors as one JSON object per line on
@@ -308,6 +322,8 @@ Usage:
     azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
                                      `aarch64-linux`
                                      instead of the machine the compiler runs on
+    azol build -O ...                Compile through the optimiser: a faster program,
+                                     a slower build (experimental)
     azol check <a.azl> <b.azl> ...   Report every independent error of a program
                                      without writing an executable
     azol check --json ...            Report errors as one JSON object per line on
@@ -340,6 +356,8 @@ Usage:
     azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
                                      `aarch64-linux`
                                      instead of the machine the compiler runs on
+    azol build -O ...                Compile through the optimiser: a faster program,
+                                     a slower build (experimental)
     azol check <a.azl> <b.azl> ...   Report every independent error of a program
                                      without writing an executable
     azol check --json ...            Report errors as one JSON object per line on
@@ -372,6 +390,8 @@ Usage:
     azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
                                      `aarch64-linux`
                                      instead of the machine the compiler runs on
+    azol build -O ...                Compile through the optimiser: a faster program,
+                                     a slower build (experimental)
     azol check <a.azl> <b.azl> ...   Report every independent error of a program
                                      without writing an executable
     azol check --json ...            Report errors as one JSON object per line on
@@ -404,6 +424,8 @@ Usage:
     azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
                                      `aarch64-linux`
                                      instead of the machine the compiler runs on
+    azol build -O ...                Compile through the optimiser: a faster program,
+                                     a slower build (experimental)
     azol check <a.azl> <b.azl> ...   Report every independent error of a program
                                      without writing an executable
     azol check --json ...            Report errors as one JSON object per line on
@@ -440,6 +462,8 @@ Usage:
     azol build --target <target> ... Compile for `aarch64-macos`, `x86_64-linux` or
                                      `aarch64-linux`
                                      instead of the machine the compiler runs on
+    azol build -O ...                Compile through the optimiser: a faster program,
+                                     a slower build (experimental)
     azol check <a.azl> <b.azl> ...   Report every independent error of a program
                                      without writing an executable
     azol check --json ...            Report errors as one JSON object per line on
@@ -501,6 +525,58 @@ fn main() {
 ---- stderr
 built one (25 bytes of code)
 ---- exists one
+==== `build -O` writes the executable, for this machine and for the others
+---- file one.azl
+fn main() {
+    print(1)
+}
+---- run build -O one.azl
+---- exit 0
+---- contains built one (
+---- exists one
+---- run build one.azl --target aarch64-linux -O -o two
+---- exit 0
+---- contains built two (
+---- exists two
+---- run build -O --target aarch64-macos -o three one.azl
+---- exit 0
+---- exists three
+==== `build -O` reports the mistakes of a program as `build` does
+---- file bad.azl
+fn main() {
+    print(missing)
+}
+---- run build -O bad.azl
+---- exit 1
+---- asserted 2:11 unknown variable `missing`
+---- missing bad
+==== `--emit-code` is not available with `-O`
+---- file one.azl
+fn main() {
+    print(1)
+}
+---- run build -O --emit-code one.code one.azl
+---- exit 1
+---- stdout (empty)
+---- stderr
+error: `--emit-code` is not available with `-O`
+---- missing one
+==== `check -O` is not a command
+---- file one.azl
+fn main() {
+    print(1)
+}
+---- run check -O one.azl
+---- exit 2
+---- contains azol build -O ...
+==== `-o` is not `-O`
+---- file one.azl
+fn main() {
+    print(1)
+}
+---- run build one.azl -O1
+---- exit 2
+---- contains Usage:
 ==== `explain` with a code that is not one
 ---- run explain nonsense
 ---- exit 1

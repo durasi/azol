@@ -2290,31 +2290,66 @@ live locals after it, and freeing changes x0; on Linux the exit code of
 value), x86-64 was not seen to be. The optimising path gives 0. Left as
 it is here: a fix changes the default compiler and so the seeds.
 
-### `azol build -O`: the plan, not done here
+### `azol build -O`: done
 
-1. Add the files of `OPT_SOURCES` that the compiler does not have yet
-   (those of `compiler/opt`, without `ir_interp.azl`, which only
-   `azol-opt run` needs; `ir_text.azl` stays, because the helpers of
-   `BK_HELPERS` are read from text) to
-   `compiler/SOURCES`, and move the body of `main` in
-   `opt_build_main.azl` after the front end into a function
-   `opt_build(c, p, target, out) -> BkResult`.
-2. In `self_main.azl`, `build_arguments` accepts `-O`; `build` calls
-   `opt_build` instead of the generator when it is set. The messages for
-   mistakes stay those of `azol build` (the driver here prints offsets,
-   not the diagnostics with codes; `-O` must reuse `report_errors`).
-3. `--emit-code` and `--map` under `-O`: refuse the first, keep the
-   second (`BkResult.map`).
-4. The compiler grows by about 550 KiB of code and its own build by the
-   time to check 20,000 more lines; the seeds must be rebuilt for the
-   three targets, in the usual two steps (old seed builds the new
-   compiler, the new compiler builds itself, fixed point).
-5. `bench/gate.py` already asks `azol build -O` when it exists
-   (`has_optimiser`); the `--azol-opt` column can then go.
-6. Before that: `ob_program` reads the whole program again for every
-   build; nothing to share yet, but the 300,000 lines a second target is
-   measured on this path, so the driver's own overhead should be looked
-   at first (see "Doubts" of the earlier sections).
+`compiler/SOURCES` lists the optimiser's files (all of `OPT_SOURCES`
+under `opt/` but `ir_interp.azl`, which only `azol-opt run` needs, and
+`opt_build_main.azl`, the tool's own `main`). `opt/opt_build.azl` holds
+the path as one function, `opt_build(c, p, target, out) -> BkResult`,
+which neither prints nor ends the process; `build_optimised` in
+`self_main.azl` calls it after the checker, so mistakes in a program are
+reported exactly as without `-O`. `azol-opt build` calls the same
+function (`ob_finish`), and `tests/opt/run_driver_tests.py` requires
+`azol build -O` and `azol-opt build` to write the same file for the
+three targets. `-O` goes with `--target`, `-o`, `--json` and `--map`;
+`--emit-code -O` and `check -O` are refused. `azol-opt` stays for its
+options (`--passes`, `--stats`, `--emit-ir`, `run`).
+
+Measured on the x86-64 Linux sandbox (two cores, other work running, so
+the times are rough; best of 7 to 9):
+
+- The compiler grew from 880,640 to 1,695,744 bytes. The default build
+  did not change: every line of `tests/golden/executables.txt` holds,
+  the 44,004-line program builds in 83.5 ms before and 80.8 ms after,
+  `azol --version` takes the same fraction of a millisecond.
+- `azol build -O` of the compiler's own sources takes 2.0 to 2.5 s (the
+  default build of them: 0.09 s) and gives 1,552,384 bytes.
+- The compiler built with `-O` builds itself with `-O` to the same file
+  (stage 1 = 2 = 3), its default build of the compiler's sources is
+  `./azol` byte for byte, and it passes the whole `test.sh`.
+- It builds the 44,004-line program in 48 ms where the default-built
+  compiler takes 84 ms: 1.7 times faster, not the 4 times that were
+  lost when the compiler left Rust. Parsing, checking and generating
+  each gain about a quarter to a third; the rest of the gap is in what
+  the remaining items of the plan are about (the allocator, packed
+  lists, copies of strings).
+
+### Seeds built with `-O`: what it takes, not done here
+
+1. On each of the three targets' seeds: `sh build.sh`, then
+   `./azol build -O <SOURCES> compiler/host_<target>.azl -o seed` for the
+   three targets (cross-building works from any one machine), then the
+   check above: the new seed builds itself with `-O` to the same file
+   and its default build of the sources equals the default-built
+   compiler.
+2. `build.sh` must then build with `-O` in its three stages, or its
+   fixed point compares a default-built compiler with a seed that was
+   built another way and the "equals the seed" note is lost; with `-O`
+   in the stages a build of the compiler takes about 7 s instead of
+   0.3 s.
+3. Risks. The optimiser becomes part of what every build depends on: a
+   wrong pass no longer breaks `-O` programs only but the compiler
+   itself, and a seed with such a fault can keep rebuilding itself
+   wrongly. The defence is the one in step 1 (the default build of the
+   sources by the new seed must be the default-built compiler byte for
+   byte, since both run the same algorithm) and keeping the last
+   default-built seeds to fall back on. The ARM64 seeds built with `-O`
+   have only run in the emulators, and there only through the back end
+   and `sroa`; on a Mac the three-stage check has to pass first. The
+   seeds grow from about 0.9 to 1.6 MB each.
+4. Worth doing only when the gain is larger than 1.7 times; until then
+   the default-built seeds stay.
+
 ## `view`, range tests, and where a spilled value is cut
 
 ### `view` (`pass_view.azl`, after `inline` in the order)

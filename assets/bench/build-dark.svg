@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 200" width="760" height="200" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+<title>Build time</title>
+<text x="0" y="18" font-size="15" font-weight="600" fill="#E6EDF3">Build time</text>
+<text x="0" y="38" font-size="12.5" fill="#9198A1">Seconds from source to result for the same generated program. Shorter is better.</text>
+<path d="M232 54V186" stroke="#3D444D" stroke-width="1"/>
+<text x="222" y="74.5" font-size="12.5" fill="#E6EDF3" text-anchor="end">azoL, source to executable</text>
+<path d="M232 62h1.0a1.0 1.0 0 0 1 1.0 1.0v14.0a1.0 1.0 0 0 1 -1.0 1.0h-1.0z" fill="#0B9BB0"/>
+<text x="242.0" y="74.5" font-size="12.5" font-weight="600" fill="#E6EDF3">0.040 s</text>
+<text x="222" y="104.5" font-size="12.5" fill="#E6EDF3" text-anchor="end">Rust, type checking only</text>
+<path d="M232 92h32.2a4.0 4.0 0 0 1 4.0 4.0v8.0a4.0 4.0 0 0 1 -4.0 4.0h-32.2z" fill="#CE422B"/>
+<text x="276.2" y="104.5" font-size="12.5" font-weight="600" fill="#E6EDF3">1.05 s</text>
+<text x="222" y="134.5" font-size="12.5" fill="#E6EDF3" text-anchor="end">Rust, unoptimized build</text>
+<path d="M232 122h57.0a4.0 4.0 0 0 1 4.0 4.0v8.0a4.0 4.0 0 0 1 -4.0 4.0h-57.0z" fill="#CE422B"/>
+<text x="301.0" y="134.5" font-size="12.5" font-weight="600" fill="#E6EDF3">1.77 s</text>
+<text x="222" y="164.5" font-size="12.5" fill="#E6EDF3" text-anchor="end">Rust, optimized build</text>
+<path d="M232 152h428.0a4.0 4.0 0 0 1 4.0 4.0v8.0a4.0 4.0 0 0 1 -4.0 4.0h-428.0z" fill="#CE422B"/>
+<text x="672.0" y="164.5" font-size="12.5" font-weight="600" fill="#E6EDF3">12.5 s</text>
+</svg>

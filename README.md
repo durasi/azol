@@ -70,10 +70,12 @@ One machine, one run of [`bench/compare.py`](bench/compare.py), which writes thi
 Measured on Apple M5, Darwin 27.2.0 (arm64). Best of 5 runs.
 Tools: azol 0.1.0, rustc 1.99.1 (58cf8f9c3 2026-10-13), v22.17.0.
 
+<p><img src="assets/bench/run-light.svg#gh-light-mode-only" alt="azoL's run time against optimized Rust, program by program" width="760"><img src="assets/bench/run-dark.svg#gh-dark-mode-only" alt="azoL's run time against optimized Rust, program by program" width="760"></p>
+
 **Run time** (whole process, lower is better)
 
 |  | azoL | Rust (`-O`) | Rust (unoptimized) | JavaScript (Node.js) |
-|---|---|---|---|---|
+|:---|---:|---:|---:|---:|
 | `fib40`: function calls (recursive `fib(40)`) | **0.24 s** | 0.14 s | 0.36 s | 0.46 s |
 | `loops`: nested loops and arithmetic | **0.016 s** | 0.018 s | 0.065 s | 0.043 s |
 | `sort`: quicksort of 2 million numbers | **0.12 s** | 0.11 s | 0.30 s | 0.27 s |
@@ -83,10 +85,12 @@ Tools: azol 0.1.0, rustc 1.99.1 (58cf8f9c3 2026-10-13), v22.17.0.
 | `append`: building long strings | **0.037 s** | 0.028 s | 0.088 s | 0.15 s |
 | `words`: splitting and joining text | **0.047 s** | 0.035 s | 0.11 s | 0.13 s |
 
+<p><img src="assets/bench/build-light.svg#gh-light-mode-only" alt="Build time of azoL and of Rust for the same program" width="760"><img src="assets/bench/build-dark.svg#gh-dark-mode-only" alt="Build time of azoL and of Rust for the same program" width="760"></p>
+
 **Build time** of the same 44,004-line program
 
 |  | Time |
-|---|---|
+|:---|---:|
 | azoL, source to executable | **0.040 s** |
 | Rust, type checking only (`--emit=metadata`) | 1.05 s |
 | Rust, unoptimized build | 1.77 s |
@@ -97,7 +101,7 @@ Tools: azol 0.1.0, rustc 1.99.1 (58cf8f9c3 2026-10-13), v22.17.0.
 **Executable size** of a small program (`fib40`)
 
 |  | Size |
-|---|---|
+|:---|---:|
 | azoL | **33 KB** |
 | Rust (`-O`) | 460 KB |
 | Rust (unoptimized) | 461 KB |
@@ -112,15 +116,16 @@ Run: azoL is faster than unoptimized Rust in 8 of 8 and faster than Node.js in 8
 
 **Reading these fairly.**
 
-- azoL has one build mode. There is no slow debug build and no optimizer to wait for; the code generator makes one pass and checks every index and every division.
+- The azoL column is its default build: one fast pass that checks every index and every division. `azol build -O` is new and experimental, and is not what these tables measure yet.
 - The build-time program is generated and repetitive ([`bench/gen.py`](bench/gen.py)), and azoL does less work than `rustc`: no traits, a small standard library, no optimizer passes.
 - Run times are whole processes, so they include start-up, which is tens of milliseconds for Node.js.
-- These are eight small programs, not a benchmark suite. Where azoL trails optimized Rust, the reasons are known: Rust inlines calls and removes index checks it can prove unnecessary; azoL does neither yet.
+- These are eight small programs, not a benchmark suite. Where azoL trails optimized Rust, the reasons are known: Rust inlines calls and removes index checks it can prove unnecessary; azoL's default build does neither; `-O` does both.
 
 ## azoL, Rust and JavaScript
 
 | | <img src="assets/compare/azol.svg" alt="azoL" height="30"> | <img src="assets/compare/rust.svg" alt="Rust" height="30"> | <img src="assets/compare/javascript.svg" alt="JavaScript" height="30"> |
-|---|---|---|---|
+|:---|:---|:---|:---|
+| <sub>SAFETY</sub> | | | |
 | **Memory safety** | Yes, checked when compiling | Yes, checked when compiling | Yes, by the runtime |
 | **Garbage collector** | None | None | Yes |
 | **Lifetime annotations** | Never | Wherever the compiler cannot infer them | Not applicable |
@@ -128,20 +133,24 @@ Run: azoL is faster than unoptimized Rust in 8 of 8 and faster than Node.js in 8
 | **What stops two parts of a program changing the same data** | Four exclusivity rules, checked one function at a time | The borrow checker | Nothing |
 | **Null** | None. `Option[T]` | None in safe code. `Option<T>` | `null` and `undefined` |
 | **Errors** | `Result[T, E]`, `?`, exhaustive `match` | `Result<T, E>`, `?`, exhaustive `match`, panics | Exceptions |
+| <sub>LANGUAGE</sub> | | | |
 | **Types** | Static, inferred inside functions | Static, inferred inside functions | Dynamic |
 | **Generics** | Functions, structs and enums, checked for each set of types used. No traits | With traits and bounds | Not needed |
 | **Numbers** | `i64` only. No floating point | Integers of every size, floats | 64-bit floats, `BigInt` |
 | **Closures, functions as values** | No | Yes | Yes |
 | **Threads** | No | Yes, with data races ruled out when compiling | Workers and an event loop |
 | **Modules and packages** | Several files, one namespace. No package manager | Modules, crates, Cargo, crates.io | Modules, npm |
+| <sub>BUILDING AND SHIPPING</sub> | | | |
 | **From source to running** | Compiled ahead of time, in milliseconds | Compiled ahead of time, in seconds to minutes | Compiled while it runs |
 | **What you ship** | One small executable | One executable | Source, and the user needs a runtime |
 | **Needed to build** | `azol` alone | `rustc`, LLVM, and the system linker | Nothing; Node.js or a browser to run |
 | **Building for another system** | Built in: `--target`, nothing to install | A target to install and a linker for it | Not applicable |
+| **Targets** | Apple Silicon macOS, x86-64 Linux, ARM64 Linux | Dozens | Wherever an engine runs |
+| <sub>TOOLS</sub> | | | |
 | **Compiler output for tools and AI agents** | `check --json`: code, exact span, the rule that was broken, and the edit when the repair is mechanical | `--error-format=json`, with suggested edits marked by how safe they are to apply | No compiler; errors appear when the code runs, linters are separate tools |
 | **Formatter** | `azol fmt`, one layout, no options | `rustfmt`, ships with the toolchain | Separate tools |
+| <sub>PROJECT</sub> | | | |
 | **Written in** | azoL: the compiler compiles itself. The first compiler was written in Rust | Rust | Engines are written in C++ |
-| **Targets** | Apple Silicon macOS, x86-64 Linux, ARM64 Linux | Dozens | Wherever an engine runs |
 | **Maturity** | Experimental. Do not depend on it | Stable since 2015 | In use since 1995 |
 
 Rust and JavaScript can do far more than azoL can today. What azoL offers is the compile-time memory safety of the first with a full build that takes less time than Node.js needs to check the same program's syntax, in a language whose whole reference is one document.
@@ -326,6 +335,7 @@ A `fix` is only given when applying exactly that edit resolves the error; the te
 |---|---|
 | `azol build <files...> [-o out]` | Compile to an executable. Several files make one program |
 | `azol build --target <target> ...` | Compile for another system |
+| `azol build -O ...` | Compile through the optimiser: a faster program, a slower build. Experimental |
 | `azol check <files...>` | Report every independent error and write nothing. `--json` for tools |
 | `azol explain [code]` | Explain an error code, or list them all |
 | `azol fmt <files...>` | Rewrite files in the canonical layout. `--check` only lists them, `-` formats standard input |
@@ -373,12 +383,12 @@ What is not done, in the order planned. Finished work is not listed here; it is 
 
 **Speed: `azol build -O`, as fast as optimized Rust** ([design](docs/design/optimizer.md), [findings](docs/design/optimizer-findings.md))
 
-1. The `-O` flag in `azol build`. Today the optimising path is a separate tool, `azol-opt build`, made by `sh build_opt.sh`.
+1. `azol build -O` exists and is experimental. Still to do: the compiler itself built with it (new seeds), so that the default build gets its speed back.
 2. The programs still far from `rustc -O`: lists of structs, the library sort, maps, building text.
 3. The remaining passes: unrolling, copy elision, string building, vectorising.
 4. Packed lists and structs, a faster allocator, an internal calling convention.
 5. `-O` compile speed.
-6. The gate that defines the claim: the 28 programs of [`bench/suite/`](bench/suite/) at a geometric mean of 1.00 or better against `rustc -O`, none worse than 1.10, on Apple M5 and on x86-64. Today, in instructions on x86-64: 1.09, with 13 of the 28 at or under 1.00 and the furthest at 1.96.
+6. The gate that defines the claim: the 28 programs of [`bench/suite/`](bench/suite/) at a geometric mean of 1.00 or better against `rustc -O`, none worse than 1.10, on Apple M5 and on x86-64. Today: 1.60 in time on the Apple M5 (the default build: 2.13), with 6 of the 28 inside 1.10; 1.09 in instructions on x86-64.
 
 **Language**
 

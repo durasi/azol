@@ -14,6 +14,7 @@ azol check --json <files...>     errors as JSON: code, line, column, rule, help,
 azol explain E0410               the rule behind an error code, with a wrong and a right example
 azol fmt <files...>              the one canonical layout; never format by hand
 azol build <files...> -o <out>   source to executable in milliseconds; no other tool is needed
+azol build -O <files...> -o <out>  the same program through the optimiser: faster to run, slower to build, experimental
 ```
 
 `check` reports the first error of every function at once. When an error

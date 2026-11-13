@@ -1,0 +1,45 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The optimising path as one call, for `azol build -O` and for
+// `azol-opt build`: a checked program is lowered to the intermediate
+// form, the passes of `pipeline.azl` run in their order, and the back
+// end for the target writes the executable's bytes. Nothing here prints
+// or ends the process: what went wrong comes back in the result.
+
+// The targets, numbered as `HOST_TARGET` of the host files numbers them.
+const OB_AARCH64_MACOS = 0
+const OB_X86_64_LINUX = 1
+const OB_AARCH64_LINUX = 2
+
+// The helpers and the start code, which are kept as text of the
+// intermediate form, added to the module. An empty text when it worked.
+fn ob_add_text(text: str, what: str, m: mut IrModule) -> str {
+    let problem = ir_parse_module(text, mut m)
+    if problem.message.len() == 0 { return "" }
+    return what + ":" + str(problem.line) + ":" + str(problem.column) + ": " + problem.message
+}
+
+// From the module after the passes to the executable for `target`.
+// `out` is the path it will be written to: macOS signs the name.
+fn ob_finish(m: mut IrModule, target: i64, out: str, back: BkOptions) -> BkResult {
+    let at = ir_find_func(m, "main")
+    if at < 0 { return bk_fail("there is no function `main`") }
+    var problem = ob_add_text(BK_HELPERS, "(helpers)", mut m)
+    if problem.len() > 0 { return bk_fail(problem) }
+    let start = bk_program_start(m, at)
+    problem = ob_add_text(start, "(start)", mut m)
+    if problem.len() > 0 { return bk_fail(problem) }
+    let entry = ir_find_func(m, "__start")
+    if target == OB_X86_64_LINUX { return bk_build(mut m, entry, back, RUNTIME_X64) }
+    return bka_build(m, entry, back, target == OB_AARCH64_MACOS, out, RUNTIME_ARM64_DATA, RUNTIME_ARM64_LINUX)
+}
+
+// The whole path for a program that was checked without errors.
+fn opt_build(c: Checker, p: Parser, target: i64, out: str) -> BkResult {
+    var lw = lw_new()
+    lw_program(mut lw, c, p)
+    var stats = pl_new_stats()
+    let problem = pl_run(mut lw.m, pl_default_options(), mut stats)
+    if problem.len() > 0 { return bk_fail(problem) }
+    return ob_finish(mut lw.m, target, out, BkOptions { stress: false, check: false, dump: false })
+}

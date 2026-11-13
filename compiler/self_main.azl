@@ -295,12 +295,14 @@ struct BuildArguments {
     map: str
     // Report errors as JSON on standard output.
     json: bool
+    // `-O`: build through the optimiser of `compiler/opt`.
+    optimise: bool
 }
 
 // Reads the arguments from `first` on: the source files, and `-o`,
 // `--target` and the like with their values, in any order.
 fn build_arguments(arguments: List[str], first: i64) -> BuildArguments {
-    var found = BuildArguments { ok: false, paths: [], out: "", target: HOST_TARGET, emit_code: "", map: "", json: false }
+    var found = BuildArguments { ok: false, paths: [], out: "", target: HOST_TARGET, emit_code: "", map: "", json: false, optimise: false }
     var has_out = false
     var at = first
     while at < arguments.len() {
@@ -308,6 +310,8 @@ fn build_arguments(arguments: List[str], first: i64) -> BuildArguments {
         at = at + 1
         if word == "--json" {
             found.json = true
+        } else if word == "-O" {
+            found.optimise = true
         } else if word == "-o" || word == "--emit-code" || word == "--target" || word == "--map" {
             if at >= arguments.len() { return found }
             let value = arguments[at]
@@ -613,6 +617,9 @@ fn run_build(arguments: BuildArguments, check_only: bool) -> i64 {
         eprint("error: the output would overwrite the source file; pass `-o <out>`")
         return 1
     }
+    if arguments.optimise {
+        return build_optimised(arguments, c, p, files.len(), [started, read, parsed, checked])
+    }
     if arguments.target != TARGET_X86_64_LINUX {
         return build_arm64(arguments, c, p, files.len(), [started, read, parsed, checked])
     }
@@ -661,6 +668,31 @@ fn say_built(out: str, code_bytes: i64, at: List[i64]) {
     eprint("built " + out + " (" + str(code_bytes) + " bytes of code) in " + millis(at[5]) + " ms (read " + millis(at[0]) +
             ", parse " + millis(at[1] - at[0]) + ", check " + millis(at[2] - at[1]) + ", codegen " + millis(at[3] - at[2]) +
             ", link " + millis(at[4] - at[3]) + ", write " + millis(at[5] - at[4]) + ")")
+}
+
+// The rest of a build with `-O`, once the program has been checked:
+// the optimiser's passes and its back end for the target instead of
+// the code generators. `times` is as for `build_arm64`.
+fn build_optimised(arguments: BuildArguments, c: Checker, p: Parser, file_count: i64, times: List[i64]) -> i64 {
+    let started = times[0]
+    if arguments.emit_code.len() > 0 {
+        eprint("error: `--emit-code` is not available with `-O`")
+        return 1
+    }
+    let built = opt_build(c, p, arguments.target, arguments.out)
+    if !built.ok {
+        eprint("error: the optimiser failed: " + built.error + " (this is a bug in azoL; the build without `-O` is not affected)")
+        return 1
+    }
+    let generated = clock() - started
+    if !write_executable(arguments.out, built.image) { return 1 }
+    let total = clock() - started
+    if arguments.map.len() > 0 {
+        if !write_or_say(arguments.map, built.map) { return 1 }
+    }
+    if arguments.json { print(json_summary(0, file_count)) }
+    say_built(arguments.out, built.code_bytes, [times[1], times[2], times[3], generated, generated, total])
+    return 0
 }
 
 // The rest of a build for macOS or Linux on ARM64, once the program has
@@ -742,6 +774,8 @@ fn main() -> i64 {
     if command == "build" || command == "check" {
         let found = build_arguments(arguments, 2)
         if !found.ok { return usage() }
+        // `-O` changes how an executable is made; `check` makes none.
+        if found.optimise && command == "check" { return usage() }
         return run_build(found, command == "check")
     }
     if command == "explain" {

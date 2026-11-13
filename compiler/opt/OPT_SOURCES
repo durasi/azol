@@ -50,4 +50,5 @@ opt/enc_arm64.azl
 opt/sel_arm64.azl
 opt/emit_arm64.azl
 opt/back_arm64.azl
+opt/opt_build.azl
 opt/opt_build_main.azl

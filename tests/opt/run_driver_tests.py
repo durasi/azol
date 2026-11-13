@@ -200,7 +200,7 @@ def count_table(table):
     return lines
 
 
-def same_twice(driver, folder, problems):
+def same_twice(azol, driver, folder, problems):
     """Two builds of one program are the same bytes, for each target, and
     the build with no target is the host's."""
     source = os.path.join(ROOT, "examples", "hello.azl")
@@ -221,6 +221,13 @@ def same_twice(driver, folder, problems):
             built += 1
             if images[0] != images[1]:
                 problems.append("azol-opt build --target %s: two builds of examples/hello.azl differ" % target)
+        if images:
+            # `azol build -O` is the same path inside the compiler.
+            exe = os.path.join(folder, "twice-b", "hello")
+            done = subprocess.run([azol, "build", "-O", source, "-o", exe, "--target", target], capture_output=True)
+            with open(exe, "rb") as handle:
+                if done.returncode != 0 or handle.read() != images[0]:
+                    problems.append("azol build -O --target %s does not give the file azol-opt build gives" % target)
         host = os.path.basename(passes.host_file() or "")[5:-4].replace("_linux", "-linux").replace("_macos", "-macos")
         if images and host == target:
             exe = os.path.join(folder, "twice-a", "hello")
@@ -247,7 +254,7 @@ def run(azol, folder, problems, counted=False):
     if counted:
         for line in count_table(table):
             print(line)
-    print("azol-opt: the same bytes from two builds on %d targets; no target means this machine; an unknown target is refused" % same_twice(driver, folder, problems))
+    print("azol-opt: the same bytes from two builds on %d targets, and from `azol build -O`; no target means this machine; an unknown target is refused" % same_twice(azol, driver, folder, problems))
 
 
 def main():

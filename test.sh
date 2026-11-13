@@ -9,7 +9,7 @@
 here=$(cd "$(dirname "$0")" && pwd)
 azol=$here/azol
 case "${1:-}" in
-    programs | errors | format | cross | self | --*) ;;
+    programs | errors | format | cross | optimised | self | --*) ;;
     "") ;;
     *)
         azol=$1

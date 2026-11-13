@@ -1,7 +1,8 @@
 #!/bin/sh
 # Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
 #
-# Builds `./azol-opt`, the optimising path as a tool of its own
+# `azol build -O` is this path inside the compiler. This script builds
+# `./azol-opt`, the same path as a tool of its own with more options
 # (compiler/opt/opt_build_main.azl), with `./azol`:
 #
 #     sh build.sh && sh build_opt.sh [-o PATH]

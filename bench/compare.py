@@ -230,9 +230,16 @@ def measure_sizes(have_rust, problems):
 
 
 def table(header, rows):
-    out = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+    """A Markdown table whose first column is text and whose others are numbers."""
+    out = ["| " + " | ".join(header) + " |", "|:---|" + "---:|" * (len(header) - 1)]
     out.extend("| " + " | ".join(row) + " |" for row in rows)
     return "\n".join(out)
+
+
+def picture(name, about):
+    """The two drawings of bench/chart.py, one for light pages and one for dark."""
+    return ('<p><img src="assets/bench/%s-light.svg#gh-light-mode-only" alt="%s" width="760">'
+            '<img src="assets/bench/%s-dark.svg#gh-dark-mode-only" alt="%s" width="760"></p>\n' % (name, about, name, about))
 
 
 def ratio(value):
@@ -287,6 +294,7 @@ def report(results):
     out.append("Tools: %s." % ", ".join(str(info[tool]) for tool in ("azol", "rustc", "node") if info[tool]))
     out.append("")
     if run_results:
+        out.append(picture("run", "azoL's run time against optimized Rust, program by program"))
         out.append("**Run time** (whole process, lower is better)\n")
         rows = []
         for name, result in run_results.items():
@@ -302,6 +310,7 @@ def report(results):
         out.append("")
     if build_result:
         times = build_result["seconds"]
+        out.append(picture("build", "Build time of azoL and of Rust for the same program"))
         out.append("**Build time** of the same %s-line program\n" % format(build_result["lines"], ","))
         rows = [["azoL, source to executable", "**%s**" % seconds(times.get("azol"))]]
         if have_rust:
@@ -341,6 +350,9 @@ def write_readme(lines):
     with open(path, "w", encoding="utf-8") as out:
         out.write(head + README_START + "\n" + block + "\n" + README_END + tail)
     print("README.md: the benchmark block is updated", file=sys.stderr)
+    sys.path.insert(0, HERE)
+    import chart
+    chart.main()
 
 
 def main():

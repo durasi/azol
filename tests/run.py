@@ -18,6 +18,10 @@ Sections (all of them when none is named):
     cross     every program built for all three targets; each executable is
               checked for its structure (and a Mach-O for its signature) and its
               SHA-256 is compared with tests/golden/executables.txt
+    optimised `azol build -O`: every program of tests/programs, tests/multi and
+              examples built with and without it for this machine must print the
+              same and end the same; for the other targets the executable is
+              checked for its structure; two builds give the same file
     self      the compiler builds itself to a fixed point (build.sh)
               and the compiler that comes out passes the four sections above
 
@@ -79,7 +83,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 TARGETS = ["aarch64-macos", "x86_64-linux", "aarch64-linux"]
-SECTIONS = ["programs", "errors", "format", "cross", "self"]
+SECTIONS = ["programs", "errors", "format", "cross", "optimised", "self"]
 TIMEOUT = 120
 
 
@@ -1210,6 +1214,57 @@ def section_cross(suite):
     return section
 
 
+# ---- optimised ----------------------------------------------------------
+
+
+def section_optimised(suite):
+    """`azol build -O` against the default build of the same program."""
+    section = Section("optimised")
+    programs = [(name, files) for name, files in cross_programs(suite) if not name.startswith("bench/")]
+    section.check(len(programs) >= 30, "there are programs to build with -O", "%d found" % len(programs))
+
+    def one(job):
+        name, files = job
+        work = suite.folder("optimised")
+        problems = []
+        try:
+            plain_exe, fast_exe = os.path.join(work, "program"), os.path.join(work, "fast", "program")
+            os.makedirs(os.path.dirname(fast_exe))
+            code, _, err = suite.run(["build"] + files + ["-o", plain_exe])
+            if code != 0:
+                return [("%s builds without -O" % name, text_of(err)[:400])]
+            for target in TARGETS:
+                exe = fast_exe if target == HOST else os.path.join(work, "other")
+                code, _, err = suite.run(["build", "-O", "--target", target] + files + ["-o", exe])
+                if code != 0 or not os.path.isfile(exe):
+                    problems.append(("%s builds with -O for %s" % (name, target), text_of(err)[:400]))
+                    continue
+                data = read(exe)
+                problem = structure_problem(data, target, "program" if target == HOST else "other")
+                if problem:
+                    problems.append(("%s with -O for %s: a sound executable" % (name, target), problem))
+                again = os.path.join(work, "again", os.path.basename(exe))
+                os.makedirs(os.path.dirname(again), exist_ok=True)
+                suite.run(["build", "-O", "--target", target] + files + ["-o", again])
+                if not os.path.isfile(again) or read(again) != data:
+                    problems.append(("%s with -O for %s: two builds give the same file" % (name, target), "they differ"))
+            if HOST is not None and os.path.isfile(fast_exe):
+                want, got = run_program(plain_exe), run_program(fast_exe)
+                if want[1] != got[1]:
+                    problems.append(("%s with -O: the same output" % name, difference(want[1], got[1])))
+                if want[0] != got[0]:
+                    problems.append(("%s with -O: the same exit code" % name, "without %d, with %d" % (want[0], got[0])))
+                if want[2] != got[2]:
+                    problems.append(("%s with -O: the same error output" % name, difference(want[2], got[2])))
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        return problems
+
+    for (name, _), problems in zip(programs, in_parallel(suite, programs, one)):
+        section.check(not problems, "%s: -O behaves like the default build" % name, "; ".join(label for label, _ in problems[:3]) + ("\n" + str(problems[0][1]) if problems else ""))
+    return section
+
+
 # ---- self ---------------------------------------------------------------
 
 
@@ -1274,6 +1329,8 @@ def main(args):
                 section, inner = section_self(suite)
                 done.extend(inner)
                 done.append(section)
+            elif name == "optimised":
+                done.append(section_optimised(suite))
             else:
                 done.append(RUN[name](suite))
             done[-1].seconds = time.time() - done[-1].started
