@@ -123,7 +123,7 @@ Run: azoL is faster than unoptimized Rust in 8 of 8 and faster than Node.js in 8
 
 ## azoL, Rust and JavaScript
 
-| | <img src="assets/compare/azol.svg" alt="azoL" height="30"> | <img src="assets/compare/rust.svg" alt="Rust" height="30"> | <img src="assets/compare/javascript.svg" alt="JavaScript" height="30"> |
+| | <img src="assets/compare/azol.svg" alt="azoL" height="30"> | <img src="assets/third-party/rust-logo-blk.svg#gh-light-mode-only" alt="" height="30"><img src="assets/compare/rust.svg#gh-dark-mode-only" alt="" height="30"> <strong>Rust</strong> | <img src="assets/third-party/js.png" alt="" height="30"> <strong>JavaScript</strong> |
 |:---|:---|:---|:---|
 | <sub>SAFETY</sub> | | | |
 | **Memory safety** | Yes, checked when compiling | Yes, checked when compiling | Yes, by the runtime |
@@ -154,6 +154,8 @@ Run: azoL is faster than unoptimized Rust in 8 of 8 and faster than Node.js in 8
 | **Maturity** | Experimental. Do not depend on it | Stable since 2015 | In use since 1995 |
 
 Rust and JavaScript can do far more than azoL can today. What azoL offers is the compile-time memory safety of the first with a full build that takes less time than Node.js needs to check the same program's syntax, in a language whose whole reference is one document.
+
+<sub>The Rust logo belongs to the Rust Foundation and the JS logo to its community; they only label the columns. azoL is not affiliated with or endorsed by either. Sources and terms: [assets/third-party](assets/third-party/README.md).</sub>
 
 ## Quick start
 
