@@ -426,16 +426,18 @@ fn ea_alu(e: mut Ea, m: MFunc, i: i64) {
     let a = mf_reg(m, i, 1)
     let b = mf_reg(m, i, 2)
     let kind = m.x[i]
-    let shift = m.y[i]
+    let shift = m.y[i] & 63
+    // Bits 22 and 23 of the instruction: 0 `lsl`, 1 `lsr`, 2 `asr`.
+    let how = (m.y[i] >> 6) << 22
     let flags = m.z[i]
     if kind == SA_K_ADD || kind == SA_K_SUB {
-        e.w.push(ax_addsub(kind, flags, d, a, b, shift))
+        e.w.push(ax_addsub(kind, flags, d, a, b, shift) | how)
     } else if kind == SA_K_AND {
-        e.w.push(ax_logic(AX_AND + flags * 3, d, a, b, shift))
+        e.w.push(ax_logic(AX_AND + flags * 3, d, a, b, shift) | how)
     } else if kind == SA_K_OR {
-        e.w.push(ax_logic(AX_ORR, d, a, b, shift))
+        e.w.push(ax_logic(AX_ORR, d, a, b, shift) | how)
     } else if kind == SA_K_XOR {
-        e.w.push(ax_logic(AX_EOR, d, a, b, shift))
+        e.w.push(ax_logic(AX_EOR, d, a, b, shift) | how)
     } else if kind == SA_K_MUL {
         e.w.push(ax_madd(d, a, b, AX_ZR))
     } else if kind == SA_K_SDIV {

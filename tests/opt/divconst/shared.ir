@@ -1,0 +1,8 @@
+; A division and a remainder of the same number by the same divisor share the quotient.
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v0 = srem p0, 1000000000
+    v1 = sdiv p0, 1000000000
+    v2 = xor v0, v1
+    ret v2
+}

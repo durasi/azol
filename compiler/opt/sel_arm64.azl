@@ -57,7 +57,9 @@
 //   SA_LEA     d mem   d = the address
 //   SA_COPY    d s     d = s (s may be in a slot)
 //   SA_ALU     d a b   d = a x b, x one of SA_K_*; `y` is how far b is
-//                      shifted left first (add, sub, and, or, xor); with
+//                      shifted first (add, sub, and, or, xor): to the
+//                      left, or plus 64 to the right, or plus 128 to
+//                      the right keeping the sign; with
 //                      `z` 1 the flags are set
 //   SA_ALUI    d a     d = a x imm, x one of SA_K_ADD .. SA_K_XOR; `z`
 //                      as for SA_ALU
@@ -294,6 +296,8 @@ struct Sa {
     ea_val: List[i64]
     // The instruction that was done together with the one before it.
     done: i64
+    // A load further down that went into a pair with an earlier one.
+    done_far: i64
     // The constants made once for the loops: the value, its virtual
     // register, the instruction that makes it, and whether a loop used
     // it. `in_loop` says the block being selected is in a loop.
@@ -607,7 +611,12 @@ fn sa_binary_folded(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64, other: i64, f
     let left = sa_reg(f, mut s, mut mf, other)
     let right = sa_reg(f, mut s, mut mf, f.ins_a[inner])
     let d = sa_value(mut s, mut mf, res)
-    sa_alu(mut mf, kind, d, left, right, sa_imm(f, f.ins_b[inner]) & 63, s.flags[res])
+    // The way the operand is shifted goes with the distance: 64 for a
+    // logical shift right, 128 for an arithmetic one.
+    var how = 0
+    if f.ins_op[inner] == IR_SHR { how = 64 }
+    if f.ins_op[inner] == IR_SAR { how = 128 }
+    sa_alu(mut mf, kind, d, left, right, how + (sa_imm(f, f.ins_b[inner]) & 63), s.flags[res])
 }
 
 fn sa_binary(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
@@ -775,6 +784,16 @@ fn sa_pairs(f: IrFunc, s: Sa, p: i64) -> bool {
     return true
 }
 
+// Whether the store `store` can write what the load `load` reads, as
+// far as their regions say: the same region, two buffers, or a region
+// that is not known.
+fn sa_may_write(f: IrFunc, store: i64, load: i64) -> bool {
+    let written = f.ins_reg[store]
+    let read = f.ins_reg[load]
+    if written < 0 || read < 0 || written == read { return true }
+    return f.reg_kind[written] == IR_REGION_BUF && f.reg_kind[read] == IR_REGION_BUF
+}
+
 fn sa_load(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
     let next = f.ins_next[ins]
     if next >= 0 && f.ins_op[next] == IR_LOAD && sa_is_word(f, ins) && sa_is_word(f, next) && f.ins_a[next] == f.ins_a[ins] && sa_pairs(f, s, f.ins_a[ins]) {
@@ -795,6 +814,33 @@ fn sa_load(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
             sa_mem_regs(s, mut mf)
             s.done = next
             return
+        }
+    }
+    // A struct copied a word at a time is load, store, load, store: the
+    // second load goes up to the first when the store between them
+    // cannot write what it reads, and `sa_store` then finds the two
+    // stores side by side.
+    if next >= 0 && f.ins_op[next] == IR_STORE && sa_is_word(f, ins) && sa_pairs(f, s, f.ins_a[ins]) {
+        let far = f.ins_next[next]
+        if far >= 0 && f.ins_op[far] == IR_LOAD && sa_is_word(f, far) && f.ins_a[far] == f.ins_a[ins] && !sa_may_write(f, next, far) {
+            let apart = f.ins_imm[far] - f.ins_imm[ins]
+            if apart == 8 || apart == -8 {
+                var low = ins
+                var high = far
+                if apart < 0 {
+                    low = far
+                    high = ins
+                }
+                sa_access(f, mut s, mut mf, f.ins_a[low], f.ins_imm[low])
+                let d = sa_value(mut s, mut mf, f.ins_res[low])
+                let e = sa_value(mut s, mut mf, f.ins_res[high])
+                mf_ins(mut mf, SA_LOADP, 0, 0, sa_mem_now(s), s.mem_disp)
+                mf_operand(mut mf, d, MF_DEF)
+                mf_operand(mut mf, e, MF_DEF)
+                sa_mem_regs(s, mut mf)
+                s.done_far = far
+                return
+            }
         }
     }
     sa_access(f, mut s, mut mf, f.ins_a[ins], f.ins_imm[ins])
@@ -834,7 +880,9 @@ fn sa_store_pair(s: Sa, mf: mut MFunc, v: i64, w: i64) {
 }
 
 fn sa_store(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
-    let next = f.ins_next[ins]
+    var next = f.ins_next[ins]
+    // A load that has been done already is not between two stores.
+    if next >= 0 && next == s.done_far { next = f.ins_next[next] }
     if next >= 0 && f.ins_op[next] == IR_STORE && sa_is_word(f, ins) && sa_is_word(f, next) && f.ins_a[next] == f.ins_a[ins] && sa_pairs(f, s, f.ins_a[ins]) {
         let apart = f.ins_imm[next] - f.ins_imm[ins]
         if apart == 8 || apart == -8 {
@@ -1200,7 +1248,7 @@ fn sa_terminator(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
 
 fn sa_instruction(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
     let op = f.ins_op[ins]
-    if op == IR_ICONST || op == IR_BCONST || op == IR_ADDR || op == IR_FRAME || ins == s.done {
+    if op == IR_ICONST || op == IR_BCONST || op == IR_ADDR || op == IR_FRAME || ins == s.done || ins == s.done_far {
         return
     }
     if ir_is_terminator(op) {
@@ -1249,12 +1297,12 @@ fn sa_gep_is_free(f: IrFunc, gep: i64, user: i64) -> bool {
 }
 
 // Whether value `x` is used once and is a `mul` (`want` SA_F_MADD) or a
-// `shl` by a constant (`want` SA_F_SHIFTED) that nothing has claimed.
+// shift by a constant (`want` SA_F_SHIFTED) that nothing has claimed.
 fn sa_can_fold(f: IrFunc, s: Sa, uses: IrUses, x: i64, want: i64) -> bool {
     if x < 0 || uses.count[x] != 1 || s.fold[x] != 0 { return false }
     let op = sa_def_op(f, x)
     if want == SA_F_MADD { return op == IR_MUL }
-    if op != IR_SHL { return false }
+    if op != IR_SHL && op != IR_SHR && op != IR_SAR { return false }
     let inner = f.val_ins[x]
     return sa_is_imm(f, f.ins_b[inner]) && !sa_is_imm(f, f.ins_a[inner])
 }
@@ -1467,6 +1515,7 @@ fn sa_function(f: mut IrFunc, targets: List[i64], memcpy_fn: i64) -> SaFunc {
         ea_kind: [],
         ea_val: [],
         done: -1,
+        done_far: -1,
         pool_val: [],
         pool_vr: [],
         pool_at: [],

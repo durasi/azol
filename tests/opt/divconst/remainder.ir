@@ -1,0 +1,6 @@
+; A remainder is the number less the quotient times the divisor.
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v0 = srem p0, 1000000000
+    ret v0
+}

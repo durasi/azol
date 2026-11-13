@@ -1,0 +1,6 @@
+; A division by 2 is left to simplify.
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v0 = srem p0, 2
+    ret v0
+}

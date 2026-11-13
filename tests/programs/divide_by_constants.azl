@@ -1,0 +1,48 @@
+// expect-exit: 0
+// expect-line: 2031163542763502829
+// expect-line: 2688681950737049634
+// expect-line: -6834041495934669608
+// expect-line: 4427975890876525810
+// expect-line: 0
+// Divisions and remainders by known numbers: the optimising path does
+// them with a multiplication, and must give what the division gives,
+// also for the largest and the smallest numbers.
+fn mix(sum: i64, n: i64) -> i64 {
+    return (sum ^ n) * 1099511628211
+}
+
+fn main() {
+    let most = 9223372036854775807
+    var values = [0, 1, -1, 2, -2, 3, -3, 6, 7, -7, 9, 10, -10, 14, 15, -15, 99, 100, 641, 999999999, 1000000000, -1000000000, most, 0 - most, 0 - most - 1, most - 1, 4611686018427387903, 4611686018427387904, -4611686018427387904]
+    var x = 88172645463325252
+    for round in 0..400 {
+        x = x ^ x << 13
+        x = x ^ x >> 7
+        x = x ^ x << 17
+        values.push(x)
+        values.push(x >> round % 60)
+        values.push(0 - (x >> round % 61))
+    }
+    var a = 0
+    var b = 0
+    var c = 0
+    var d = 0
+    for n in values {
+        a = mix(mix(a, n / 3), n % 3)
+        a = mix(mix(a, n / 7), n % 7)
+        a = mix(mix(a, n / 10), n % 10)
+        b = mix(mix(b, n / 15), n % 15)
+        b = mix(mix(b, n / 641), n % 6)
+        b = mix(mix(b, n / 1000000000), n % 1000000000)
+        c = mix(mix(c, n / 4611686018427387903), n % 4611686018427387903)
+        c = mix(mix(c, n / 9223372036854775807), n % 9223372036854775807)
+        c = mix(mix(c, n / 4294967297), n % 4294967295)
+        d = mix(mix(d, n / -10), n % -10)
+        d = mix(mix(d, n / 8), n % 8)
+    }
+    print(a)
+    print(b)
+    print(c)
+    print(d)
+    print(values[3] / 3 + values[9] % 7 + 1000000007 / 10 % 10)
+}

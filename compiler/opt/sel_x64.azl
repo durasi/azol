@@ -1167,10 +1167,25 @@ fn sx_folds(f: IrFunc, s: mut Sx) {
             let index = f.ins_b[def]
             let plain = index == -1 || sx_is_imm(f, index) || scale == 1 || scale == 2 || scale == 4 || scale == 8
             if only_addresses && (plain || n == 1) { s.fold[x] = 1 }
-        } else if ir_is_compare(op) && n == 1 {
-            let user = uses.ins[from]
-            let user_op = f.ins_op[user]
-            if (user_op == IR_BR || user_op == IR_SELECT) && f.ins_a[user] == x { s.fold[x] = 2 }
+        } else if ir_is_compare(op) && n >= 1 && n <= 3 {
+            // With two or three users the comparison is made again in
+            // front of each: that is one instruction, where keeping
+            // the answer in a register costs two and a test at each
+            // user. (`fold_loads` leaves such a comparison alone.)
+            var only_conditions = true
+            var k = 0
+            while k < n {
+                let user = uses.ins[from + k]
+                let user_op = f.ins_op[user]
+                if user_op != IR_BR && user_op != IR_SELECT || f.ins_a[user] != x {
+                    only_conditions = false
+                }
+                if user_op == IR_SELECT && (f.ins_b[user] == x || f.ins_c[user] == x) {
+                    only_conditions = false
+                }
+                k = k + 1
+            }
+            if only_conditions { s.fold[x] = 2 }
         }
     }
 }
@@ -1198,7 +1213,7 @@ fn sx_fold_loads(f: IrFunc, s: mut Sx, blocks: List[i64]) {
         if c < 0 { continue }
         if loads.contains(c) {
             s.fold[c] = 3
-        } else if s.fold[c] == 2 {
+        } else if s.fold[c] == 2 && uses.count[c] == 1 {
             let cmp = f.val_ins[c]
             let a = f.ins_a[cmp]
             let other = f.ins_b[cmp]

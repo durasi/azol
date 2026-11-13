@@ -1,0 +1,389 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The pass `ifconv` (docs/design/optimizer.md, section 5.9): a small
+// `if` that only chooses between values becomes `select`, and its
+// branch goes.
+//
+//     fn ir_ifconv(f: mut IrFunc) -> i64      how many branches went
+//
+// A processor guesses which way a branch goes and loses a dozen
+// instructions' worth of time when the guess is wrong. A branch on
+// data that is as good as random (the comparison of a merge, the
+// larger of two table entries) is guessed wrong half the time; a
+// `select` is never guessed.
+//
+// The shape: block `a` ends in `br c, t, e`; each way either goes
+// straight to a block `m` or through one block (an arm) that has `a`
+// as its only way in, takes no parameters and ends in `jump m(...)`.
+// Both ways arrive at the same `m` (both may go straight to it, with
+// different values). Then
+//
+//   - the instructions of the arms move to the end of `a`, the first
+//     way's before the second's;
+//   - for every parameter of `m` that the two ways give different
+//     values, `select c, first, second` is worked out in `a`;
+//   - `a` ends in `jump m(...)`. The arms are left without a way in;
+//     `simplify` removes them.
+//
+// An arm may hold only instructions that reckon: no `load` (the branch
+// may be what keeps the address valid), no `store`, no call, no
+// division (it can stop the program), nothing that can be observed.
+// So running an arm that the program would not have run changes
+// nothing but the time it takes, and that is bounded: at most IC_ARM
+// instructions in the two arms together and at most IC_SELECTS values
+// chosen. More than that and the branch is cheaper than the work.
+//
+// Only a branch on a comparison of two values read from memory is
+// taken (`ic_data_test` says why), and only when what is chosen is a
+// counter that steps or stays, or an index whose reads are replaced
+// by a choice between values already read (`ic_choice_folds`): a
+// chosen index that later reads still wait for (the smaller child in
+// a heap) is left to the branch, because the processor reads ahead on
+// its guess and a `select` makes it wait. Measured on `dijkstra`: the
+// `select` there cost a tenth of the run.
+//
+// What it leaves: a `br` with a way to a block that stops the program
+// (a bounds check: it is almost never taken, the processor guesses it
+// right, and it must stay a branch); arms with several ways in; a
+// branch that is the test of a loop (one of its ways is not `m`).
+
+const IC_ARM = 4
+const IC_SELECTS = 3
+
+// Whether the comparison `ins` is of the same two values as the
+// comparison `cmp`, in either order.
+fn ic_same_two(f: IrFunc, ins: i64, cmp: i64) -> bool {
+    if cmp < 0 { return false }
+    let a = f.ins_a[ins]
+    let b = f.ins_b[ins]
+    return a == f.ins_a[cmp] && b == f.ins_b[cmp] || a == f.ins_b[cmp] && b == f.ins_a[cmp]
+}
+
+// The comparison a branch on `cond` is worth turning into a `select`
+// for, or -1: one of two values that were both read from memory. Such
+// a comparison is of data with data (two items of a list, two entries
+// of a table) and goes either way; one with a counter, a length or a
+// number mostly goes the same way, the processor guesses it, and a
+// `select` would only make what follows wait for both sides.
+fn ic_data_test(f: IrFunc, cond: i64) -> i64 {
+    let cmp = su_def(f, cond)
+    if cmp < 0 || !ir_is_compare(f.ins_op[cmp]) { return -1 }
+    let x = su_def(f, f.ins_a[cmp])
+    let y = su_def(f, f.ins_b[cmp])
+    if x < 0 || y < 0 || f.ins_op[x] != IR_LOAD || f.ins_op[y] != IR_LOAD { return -1 }
+    return cmp
+}
+
+// Whether instruction `ins` may run without having been asked for.
+fn ic_reckons(f: IrFunc, ins: i64, cmp: i64) -> bool {
+    let op = f.ins_op[ins]
+    if op == IR_SDIV || op == IR_SREM { return false }
+    // A comparison in an arm is the second half of `a && b` or
+    // `a || b`: the first half usually decides, the processor guesses
+    // it, and the second is then not worked out at all. Unless it
+    // compares the same two values again (`x < y`, then `x > y`: a
+    // function that answers -1, 0 or 1).
+    if ir_is_compare(op) { return ic_same_two(f, ins, cmp) }
+    if op == IR_GEP || op == IR_FRAME { return true }
+    return op >= IR_ICONST && op <= IR_SELECT
+}
+
+// How many instructions the arm `b` holds before its `jump`, or -1
+// when `b` cannot be an arm of `from`.
+fn ic_arm(f: IrFunc, ways_in: List[i64], b: i64, cmp: i64) -> i64 {
+    if ways_in[b] != 1 || f.blk_pn[b] != 0 { return -1 }
+    let last = f.blk_last[b]
+    if last < 0 || f.ins_op[last] != IR_JUMP { return -1 }
+    var n = 0
+    var ins = f.blk_first[b]
+    while ins != last {
+        if !ic_reckons(f, ins, cmp) { return -1 }
+        n = n + 1
+        ins = f.ins_next[ins]
+    }
+    return n
+}
+
+// Moves what arm `b` holds before its `jump` to just before `at`.
+fn ic_lift(f: mut IrFunc, b: i64, at: i64) {
+    let last = f.blk_last[b]
+    var ins = f.blk_first[b]
+    while ins != last {
+        let next = f.ins_next[ins]
+        ir_unlink(mut f, ins)
+        ir_link_before(mut f, at, ins)
+        ins = next
+    }
+}
+
+// What a `load` of type `ty` at `gep base, index, scale, offset` plus
+// `off` gave, looking backwards from the end of block `from` through
+// the blocks that lead only to it, as far as nothing has written
+// memory since; -1 when no such `load` is found.
+fn ic_read_before(f: IrFunc, cfg: IrCfg, from: i64, like: i64, index: i64, off: i64, ty: i64) -> i64 {
+    var b = from
+    var steps = 0
+    while steps < 4 {
+        var ins = f.blk_last[b]
+        while ins >= 0 {
+            let op = f.ins_op[ins]
+            if op == IR_STORE || op == IR_CALL || op == IR_CALLRT { return -1 }
+            if op == IR_LOAD && f.ins_ty[ins] == ty && f.ins_imm[ins] == off {
+                let g = su_def(f, f.ins_a[ins])
+                if g >= 0 && f.ins_op[g] == IR_GEP && f.ins_a[g] == f.ins_a[like] && f.ins_b[g] == index {
+                    if f.ins_imm[g] == f.ins_imm[like] && f.ins_imm2[g] == f.ins_imm2[like] {
+                        return f.ins_res[ins]
+                    }
+                }
+            }
+            ins = f.ins_prev[ins]
+        }
+        if cfg.pred_n[b] != 1 { return -1 }
+        b = cfg.pred_blk[cfg.pred_s[b]]
+        steps = steps + 1
+    }
+    return -1
+}
+
+// Whether `x` is a number, or a choice between numbers: the answer of
+// a function that gives -1, 0 or 1.
+fn ic_number(f: IrFunc, x: i64, depth: i64) -> bool {
+    if ir_is_const(x) { return true }
+    let d = su_def(f, x)
+    if d < 0 || f.ins_op[d] != IR_SELECT || depth > 2 { return false }
+    return ic_number(f, f.ins_b[d], depth + 1) && ic_number(f, f.ins_c[d], depth + 1)
+}
+
+// Whether one of `x` and `y` is the other plus a number: a counter
+// that either steps or stays.
+fn ic_step_apart(f: IrFunc, x: i64, y: i64) -> bool {
+    let dx = su_def(f, x)
+    if dx >= 0 && f.ins_op[dx] == IR_ADD && (f.ins_a[dx] == y && ir_is_const(f.ins_b[dx]) || f.ins_b[dx] == y && ir_is_const(f.ins_a[dx])) {
+        return true
+    }
+    let dy = su_def(f, y)
+    return dy >= 0 && f.ins_op[dy] == IR_ADD && (f.ins_a[dy] == x && ir_is_const(f.ins_b[dy]) || f.ins_b[dy] == x && ir_is_const(f.ins_a[dy]))
+}
+
+// Whether the `load` `ins` of block `m` stands before everything in
+// `m` that writes memory.
+fn ic_reads_first(f: IrFunc, m: i64, ins: i64) -> bool {
+    var at = f.blk_first[m]
+    while at >= 0 && at != ins {
+        let op = f.ins_op[at]
+        if op == IR_STORE || op == IR_CALL || op == IR_CALLRT { return false }
+        at = f.ins_next[at]
+    }
+    return at == ins
+}
+
+// Whether parameter `p` of `m`, chosen between `x` and `y` at the end
+// of `a`, is only ever the index of loads that `ic_loads_of_choice`
+// turns into a choice between two values already read: then nothing
+// is left that waits for the chosen index.
+fn ic_choice_folds(f: IrFunc, cfg: IrCfg, uses: IrUses, a: i64, m: i64, p: i64, x: i64, y: i64) -> bool {
+    var k = 0
+    while k < uses.count[p] {
+        let g = uses.ins[uses.start[p] + k]
+        k = k + 1
+        if f.ins_op[g] != IR_GEP || f.ins_b[g] != p || f.ins_a[g] == p { return false }
+        let address = f.ins_res[g]
+        var j = 0
+        while j < uses.count[address] {
+            let l = uses.ins[uses.start[address] + j]
+            j = j + 1
+            if f.ins_op[l] != IR_LOAD || f.ins_blk[l] != m || !ic_reads_first(f, m, l) {
+                return false
+            }
+            if ic_read_before(f, cfg, a, g, x, f.ins_imm[l], f.ins_ty[l]) == -1 { return false }
+            if ic_read_before(f, cfg, a, g, y, f.ins_imm[l], f.ins_ty[l]) == -1 { return false }
+        }
+    }
+    return true
+}
+
+// After block `a` came to choose parameter `p` of `m` between `x` and
+// `y` on `cond`, and `a` is the only way into `m`: a `load` at the
+// start of `m` of `xs[p]`, when `xs[x]` and `xs[y]` were both read on
+// the way to `a` and nothing has written memory since, becomes the
+// same choice between the two values read. A merge that has read both
+// heads and then reads the one it chose reads nothing the third time.
+fn ic_loads_of_choice(f: mut IrFunc, cfg: IrCfg, a: i64, m: i64, p: i64, cond: i64, x: i64, y: i64) {
+    var ins = f.blk_first[m]
+    while ins >= 0 {
+        let op = f.ins_op[ins]
+        if op == IR_STORE || op == IR_CALL || op == IR_CALLRT || ir_is_terminator(op) { return }
+        if op == IR_LOAD {
+            let g = su_def(f, f.ins_a[ins])
+            if g >= 0 && f.ins_op[g] == IR_GEP && f.ins_b[g] == p && f.ins_a[g] != p {
+                let first = ic_read_before(f, cfg, a, g, x, f.ins_imm[ins], f.ins_ty[ins])
+                if first != -1 {
+                    let second = ic_read_before(f, cfg, a, g, y, f.ins_imm[ins], f.ins_ty[ins])
+                    let res = f.ins_res[ins]
+                    if second != -1 && f.val_ty[first] == f.val_ty[res] && f.val_ty[second] == f.val_ty[res] {
+                        f.ins_op[ins] = IR_SELECT
+                        f.ins_ty[ins] = f.val_ty[res]
+                        f.ins_a[ins] = cond
+                        f.ins_b[ins] = first
+                        f.ins_c[ins] = second
+                        f.ins_imm[ins] = 0
+                        f.ins_reg[ins] = -1
+                    }
+                }
+            }
+        }
+        ins = f.ins_next[ins]
+    }
+}
+
+fn ic_block(f: mut IrFunc, cfg: IrCfg, uses: IrUses, ways_in: mut List[i64], a: i64) -> bool {
+    let br = f.blk_last[a]
+    if br < 0 || f.ins_op[br] != IR_BR || f.ins_en[br] != 2 { return false }
+    let cond = f.ins_a[br]
+    let e_then = f.ins_es[br]
+    let e_else = e_then + 1
+    let cmp = ic_data_test(f, cond)
+    if cmp < 0 { return false }
+    let t = f.edge_blk[e_then]
+    let e = f.edge_blk[e_else]
+    if t == a || e == a { return false }
+    // The edge that reaches `m` on each way, and the arm if there is one.
+    var arm_t = -1
+    var arm_e = -1
+    var into_t = e_then
+    var into_e = e_else
+    var work = 0
+    let n_t = ic_arm(f, ways_in, t, cmp)
+    let n_e = ic_arm(f, ways_in, e, cmp)
+    if t == e {
+        // Both ways straight to `m`, with different values.
+        work = 0
+    } else if n_t >= 0 && n_e >= 0 && f.edge_blk[f.ins_es[f.blk_last[t]]] == f.edge_blk[f.ins_es[f.blk_last[e]]] {
+        arm_t = t
+        arm_e = e
+        into_t = f.ins_es[f.blk_last[t]]
+        into_e = f.ins_es[f.blk_last[e]]
+        work = n_t + n_e
+    } else if n_t >= 0 && f.edge_blk[f.ins_es[f.blk_last[t]]] == e {
+        arm_t = t
+        into_t = f.ins_es[f.blk_last[t]]
+        work = n_t
+    } else if n_e >= 0 && f.edge_blk[f.ins_es[f.blk_last[e]]] == t {
+        arm_e = e
+        into_e = f.ins_es[f.blk_last[e]]
+        work = n_e
+    } else {
+        return false
+    }
+    let m = f.edge_blk[into_t]
+    if m == a || m == t && arm_t >= 0 || m == e && arm_e >= 0 { return false }
+    if work > IC_ARM { return false }
+    let count = f.edge_an[into_t]
+    if count != f.edge_an[into_e] || count != f.blk_pn[m] { return false }
+    // What `m` is given, and how many values have to be chosen.
+    var first: List[i64] = []
+    var second: List[i64] = []
+    var chosen = 0
+    var k = 0
+    while k < count {
+        let x = f.args[f.edge_as[into_t] + k]
+        let y = f.args[f.edge_as[into_e] + k]
+        first.push(x)
+        second.push(y)
+        if x != y {
+            chosen = chosen + 1
+            // What is chosen must not be something the next reads of
+            // memory wait for (the smaller child of a heap: the
+            // processor would have read ahead on a guess), unless it
+            // is a counter that steps or stays, a number, or the
+            // reads go.
+            if !ic_step_apart(f, x, y) && !(ic_number(f, x, 0) && ic_number(f, y, 0)) {
+                let p = ir_block_param(f, m, k)
+                if t != e || ways_in[m] != 2 || uses.count[p] == 0 || !ic_choice_folds(f, cfg, uses, a, m, p, x, y) {
+                    return false
+                }
+            }
+            if ir_is_const(x) && ir_is_const(y) && f.val_ty[ir_block_param(f, m, k)] != IR_I64 {
+                return false
+            }
+        }
+        k = k + 1
+    }
+    if chosen == 0 || chosen > IC_SELECTS { return false }
+    if arm_t >= 0 { ic_lift(mut f, arm_t, br) }
+    if arm_e >= 0 { ic_lift(mut f, arm_e, br) }
+    var given: List[i64] = []
+    k = 0
+    while k < count {
+        if first[k] == second[k] {
+            given.push(first[k])
+        } else {
+            let ty = ir_result_type(f, IR_SELECT, IR_I64, first[k], second[k])
+            let pick = ir_make(mut f, IR_SELECT, ty, cond, first[k], second[k], 0)
+            let v = ir_add_result(mut f, pick, ty)
+            ir_link_before(mut f, br, pick)
+            given.push(v)
+        }
+        k = k + 1
+    }
+    let jump = ir_make(mut f, IR_JUMP, IR_I64, -1, -1, -1, 0)
+    let onward = ir_add_edge(mut f, jump, m, 0)
+    for x in given {
+        ir_add_edge_arg(mut f, onward, x)
+    }
+    ir_remove(mut f, br)
+    ir_link_end(mut f, a, jump)
+    // `a` reaches `m` once now; an arm is reached by nothing.
+    if t == e {
+        ways_in[m] = ways_in[m] - 1
+        if ways_in[m] == 1 {
+            k = 0
+            while k < count {
+                if first[k] != second[k] {
+                    let p = ir_block_param(f, m, k)
+                    ic_loads_of_choice(mut f, cfg, a, m, p, cond, first[k], second[k])
+                }
+                k = k + 1
+            }
+        }
+    } else {
+        ways_in[t] = ways_in[t] - 1
+        ways_in[e] = ways_in[e] - 1
+        ways_in[m] = ways_in[m] + 1
+    }
+    return true
+}
+
+fn ir_ifconv(f: mut IrFunc) -> i64 {
+    // Most functions have no branch on data: they cost one look.
+    var any = false
+    for b in f.order {
+        let last = f.blk_last[b]
+        if last >= 0 && f.ins_op[last] == IR_BR && ic_data_test(f, f.ins_a[last]) >= 0 {
+            any = true
+        }
+    }
+    if !any { return 0 }
+    let cfg = ir_cfg(f)
+    let blocks = f.blk_first.len()
+    var ways_in = 0.filled(blocks)
+    for b in cfg.rpo {
+        let last = f.blk_last[b]
+        var e = f.ins_es[last]
+        while e < f.ins_es[last] + f.ins_en[last] {
+            ways_in[f.edge_blk[e]] = ways_in[f.edge_blk[e]] + 1
+            e = e + 1
+        }
+    }
+    let uses = ir_uses(f)
+    var changed = 0
+    // Backwards, so that the inner `if` of two goes first and the outer
+    // one finds a small arm.
+    var at = cfg.rpo.len() - 1
+    while at >= 0 {
+        if ic_block(mut f, cfg, uses, mut ways_in, cfg.rpo[at]) { changed = changed + 1 }
+        at = at - 1
+    }
+    if changed > 0 { su_remove_unreachable(mut f) }
+    return changed
+}

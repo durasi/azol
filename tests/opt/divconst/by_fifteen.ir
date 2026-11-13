@@ -1,0 +1,6 @@
+; A division by 15: the multiplier does not fit 63 bits, so the number is added to the high half.
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v0 = sdiv p0, 15
+    ret v0
+}

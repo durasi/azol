@@ -123,6 +123,77 @@ fn sm_divide_by_power(f: mut IrFunc, s: mut Simp, ins: i64, a: i64, k: i64) {
 // A comparison with a constant on the right, in one form: `<=` and
 // `>=` become `<` and `>` of the neighbouring number, and what no
 // number can do is answered.
+// A new instruction with two operands and a `bool` result, just before
+// `at`. Gives the result.
+fn sm_before_bool(f: mut IrFunc, s: mut Simp, at: i64, op: i64, a: i64, b: i64) -> i64 {
+    let ins = ir_make(mut f, op, IR_BOOL, a, b, -1, 0)
+    let v = ir_add_result(mut f, ins, IR_BOOL)
+    ir_link_before(mut f, at, ins)
+    sm_grow(f, mut s)
+    return v
+}
+
+// A comparison of `select p, x, y` with the number `c`, where `x` or
+// `y` is a number too: the comparison of that side is known, and the
+// answer is `p`, its opposite, or one of them joined with the
+// comparison of the other side. What a function that answers -1, 0 or
+// 1 leaves when its answer is only asked `< 0`: the test it made.
+fn sm_compare_select(f: mut IrFunc, s: mut Simp, ins: i64, a: i64, c: i64) -> bool {
+    let d = su_def(f, a)
+    if d < 0 || f.ins_op[d] != IR_SELECT { return false }
+    let op = f.ins_op[ins]
+    let p = sm_resolve(s, f.ins_a[d])
+    let x = sm_resolve(s, f.ins_b[d])
+    let y = sm_resolve(s, f.ins_c[d])
+    if ir_is_const(p) || !ir_is_const(x) && !ir_is_const(y) { return false }
+    if ir_is_const(x) && ir_is_const(y) {
+        let first = su_fold_binary(op, ir_const_value(f, x), c)
+        let second = su_fold_binary(op, ir_const_value(f, y), c)
+        if first == second {
+            sm_replace_const(mut f, mut s, ins, first)
+        } else if first != 0 {
+            sm_replace(mut f, mut s, ins, p)
+        } else {
+            f.ins_op[ins] = IR_XOR
+            f.ins_a[ins] = p
+            f.ins_b[ins] = ir_const(mut f, 1)
+            s.changed = s.changed + 1
+        }
+        return true
+    }
+    let number = ir_const(mut f, c)
+    let one = ir_const(mut f, 1)
+    if ir_is_const(x) {
+        // p ? known : (y op c)
+        let rest = sm_before_bool(mut f, mut s, ins, op, y, number)
+        if su_fold_binary(op, ir_const_value(f, x), c) != 0 {
+            f.ins_op[ins] = IR_OR
+            f.ins_a[ins] = p
+            f.ins_b[ins] = rest
+        } else {
+            let not_p = sm_before_bool(mut f, mut s, ins, IR_XOR, p, one)
+            f.ins_op[ins] = IR_AND
+            f.ins_a[ins] = not_p
+            f.ins_b[ins] = rest
+        }
+    } else {
+        // p ? (x op c) : known
+        let rest = sm_before_bool(mut f, mut s, ins, op, x, number)
+        if su_fold_binary(op, ir_const_value(f, y), c) != 0 {
+            let not_p = sm_before_bool(mut f, mut s, ins, IR_XOR, p, one)
+            f.ins_op[ins] = IR_OR
+            f.ins_a[ins] = not_p
+            f.ins_b[ins] = rest
+        } else {
+            f.ins_op[ins] = IR_AND
+            f.ins_a[ins] = p
+            f.ins_b[ins] = rest
+        }
+    }
+    s.changed = s.changed + 1
+    return true
+}
+
 fn sm_compare_const(f: mut IrFunc, s: mut Simp, ins: i64, a: i64, c: i64) -> bool {
     let op = f.ins_op[ins]
     let smallest = 1 << 63
@@ -141,6 +212,7 @@ fn sm_compare_const(f: mut IrFunc, s: mut Simp, ins: i64, a: i64, c: i64) -> boo
         return false
     }
     if ir_operand_type(f, a) != IR_I64 { return false }
+    if sm_compare_select(mut f, mut s, ins, a, c) { return true }
     var answer = -1
     var to = -1
     var with = 0

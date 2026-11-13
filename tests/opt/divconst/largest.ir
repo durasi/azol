@@ -1,0 +1,8 @@
+; A division by the largest number.
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v0 = sdiv p0, 9223372036854775807
+    v1 = srem p0, 9223372036854775807
+    v2 = add v0, v1
+    ret v2
+}

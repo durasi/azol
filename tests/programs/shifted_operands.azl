@@ -1,0 +1,46 @@
+// expect-exit: 0
+// expect-line: 1252812583497894352
+// expect-line: 7772268411133898242
+// expect-line: -8893249218540776026
+// Operations whose second operand is a number shifted by a known
+// distance: the ARM64 back end does the shift in the operation itself.
+fn mix(sum: i64, n: i64) -> i64 {
+    return (sum ^ n) * 1099511628211
+}
+
+fn main() {
+    var values = [0, 1, -1, 2, -2, 255, -256, 65535, 4294967296, -4294967297, 9223372036854775807, 0 - 9223372036854775807 - 1]
+    var x = 88172645463325252
+    for round in 0..300 {
+        x = x ^ x << 13
+        x = x ^ x >> 7
+        x = x ^ x << 17
+        values.push(x)
+        values.push(0 - x)
+    }
+    var a = 0
+    var b = 0
+    var c = 0
+    var i = 0
+    while i < values.len() {
+        let p = values[i]
+        let q = values[(i * 7 + 3) % values.len()]
+        a = mix(a, p + (q >> 3))
+        a = mix(a, p - (q >> 5))
+        a = mix(a, p ^ q >> 7)
+        a = mix(a, p & q >> 1)
+        a = mix(a, p | q >> 63)
+        b = mix(b, p + (q >> 9 & 36028797018963967))
+        b = mix(b, p ^ (q >> 8 & 72057594037927935))
+        b = mix(b, p - (q >> 60 & 15))
+        b = mix(b, (q >> 1 & 9223372036854775807) | p)
+        c = mix(c, p + (q << 4))
+        c = mix(c, p - (q << 62))
+        c = mix(c, (p >> 2) + (q >> 2))
+        if p > q >> 4 { c = c + 1 }
+        i = i + 1
+    }
+    print(a)
+    print(b)
+    print(c)
+}

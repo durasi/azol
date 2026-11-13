@@ -50,6 +50,14 @@ struct Em {
     m_index: i64
     m_scale: i64
     m_disp: i64
+    // The comparison the flags hold when `fl_ok`: of register `fl_a`
+    // with register or slot `fl_b`, or with the number `fl_imm` when
+    // `fl_b` is -1. A `select` that asks the same again right after
+    // does not compare again.
+    fl_ok: bool
+    fl_a: i64
+    fl_b: i64
+    fl_imm: i64
     // For every block: where a jump to it really goes (through blocks
     // that are nothing but a jump), and the block that is emitted after
     // it. A block that only jumps on is not emitted at all.
@@ -352,12 +360,23 @@ fn em_select(e: mut Em, m: MFunc, i: i64) {
     let a = mf_reg(m, i, 1)
     let flags = m.y[i]
     var k = 2
+    var b = -1
+    var imm = 0
     if flags & 1 != 0 {
-        em_cmp(mut e, a, -1, true, m.imm[i])
+        imm = m.imm[i]
     } else {
-        em_cmp(mut e, a, mf_reg(m, i, 2), false, 0)
+        b = mf_reg(m, i, 2)
         k = 3
     }
+    if !(e.fl_ok && e.fl_a == a && e.fl_b == b && e.fl_imm == imm) {
+        em_cmp(mut e, a, b, b == -1, imm)
+    }
+    // A `mov` and a `cmov` leave the flags as they are: they still
+    // hold this comparison unless one of its operands is written.
+    e.fl_ok = d != a && d != b
+    e.fl_a = a
+    e.fl_b = b
+    e.fl_imm = imm
     if flags & 2 != 0 {
         ex_mov_imm(mut e.c, d, m.z[i])
     } else {
@@ -475,6 +494,7 @@ fn em_terminator(e: mut Em, m: MFunc, result: RaResult, of: i64, next: i64, i: i
 // The moves the allocator wants before instruction `i`.
 fn em_moves(e: mut Em, m: MFunc, result: RaResult, i: i64) {
     var k = result.mv_start[i]
+    if k < result.mv_start[i + 1] { e.fl_ok = false }
     while k < result.mv_start[i + 1] {
         em_move(mut e, m, result.mv_kind[k], result.mv_a[k], result.mv_b[k])
         k = k + 1
@@ -484,6 +504,14 @@ fn em_moves(e: mut Em, m: MFunc, result: RaResult, i: i64) {
 fn em_instruction(e: mut Em, m: MFunc, result: RaResult, b: i64, i: i64) {
     let op = m.op[i]
     if op == SX_ENTRY { return }
+    if op == SX_MOVI || op == SX_LEA {
+        // Neither changes the flags; the register it writes may be
+        // one the comparison in the flags read.
+        let d = mf_reg(m, i, 0)
+        if d == e.fl_a || d == e.fl_b { e.fl_ok = false }
+    } else if op != SX_SELECT {
+        e.fl_ok = false
+    }
     if op == SX_MOVI {
         ex_mov_imm(mut e.c, mf_reg(m, i, 0), m.imm[i])
     } else if op == SX_LEA {
@@ -706,6 +734,10 @@ fn em_function(sx: SxFunc, result: RaResult, frames: List[i64], trap_at: List[i6
         m_index: -1,
         m_scale: 1,
         m_disp: 0,
+        fl_ok: false,
+        fl_a: -1,
+        fl_b: -1,
+        fl_imm: 0,
         thru: [],
         nxt: []
     }

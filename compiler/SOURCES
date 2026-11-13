@@ -47,6 +47,9 @@ opt/pass_accrec.azl
 opt/pass_thread.azl
 opt/pass_layout.azl
 opt/pass_view.azl
+opt/pass_ifconv.azl
+opt/pass_divconst.azl
+opt/pass_carry.azl
 opt/pipeline.azl
 opt/mach.azl
 opt/regalloc.azl

@@ -1,0 +1,166 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The pass `divconst`: a division or a remainder by a known number that
+// is no power of two, without the processor's division.
+//
+//     fn ir_divconst(f: mut IrFunc) -> i64      how many were rewritten
+//
+// A division takes a processor many times as long as a multiplication,
+// and no instruction count shows it. For a divisor `d` of 3 or more
+// there is a number `m` and a shift `s` (Granlund and Montgomery; the
+// method of "Hacker's Delight", chapter 10) with, for every `n`,
+//
+//     h = smulh n, m          the high half of the product
+//     h = add h, n            only when `m` does not fit 63 bits
+//     h = sar h, s            only when `s` is not 0
+//     q = add h, (shr n, 63)  one more for a negative number: towards 0
+//
+// (`h` is negative exactly when `n` is, and the sign of `n` is there
+// before the product is: the wait is for the product alone)
+//
+// and `q` is `n / d` as azoL divides. The remainder is `n - q * d`. A
+// division and a remainder of the same number by the same divisor in
+// one block share `q`.
+//
+// It runs last, after the passes that read a division for what it
+// says about its result (`range`, `bce`): they do not see through the
+// multiplication. Divisors below 3 and powers of two are `simplify`'s;
+// a negative divisor keeps its division.
+
+struct DivMagic {
+    m: i64
+    s: i64
+}
+
+// `m` and `s` for a divisor of 3 or more that is no power of two. The
+// numbers of the method are unsigned and up to 64 bits wide: they are
+// kept as they wrap, and compared with `su_unsigned_less`.
+fn dc_magic(d: i64) -> DivMagic {
+    let most = 9223372036854775807
+    var r = most % d + 1
+    if r == d { r = 0 }
+    let anc = most - r
+    var q1 = most / anc
+    var r1 = most % anc + 1
+    if r1 == anc {
+        q1 = q1 + 1
+        r1 = 0
+    }
+    var q2 = most / d
+    var r2 = most % d + 1
+    if r2 == d {
+        q2 = q2 + 1
+        r2 = 0
+    }
+    var p = 63
+    var more = true
+    while more {
+        p = p + 1
+        q1 = q1 * 2
+        r1 = r1 * 2
+        if !su_unsigned_less(r1, anc) {
+            q1 = q1 + 1
+            r1 = r1 - anc
+        }
+        q2 = q2 * 2
+        r2 = r2 * 2
+        if !su_unsigned_less(r2, d) {
+            q2 = q2 + 1
+            r2 = r2 - d
+        }
+        let delta = d - r2
+        more = su_unsigned_less(q1, delta) || q1 == delta && r1 == 0
+    }
+    return DivMagic { m: q2 + 1, s: p - 64 }
+}
+
+fn dc_before(f: mut IrFunc, at: i64, op: i64, a: i64, b: i64) -> i64 {
+    let ins = ir_make(mut f, op, IR_I64, a, b, -1, 0)
+    let v = ir_add_result(mut f, ins, IR_I64)
+    ir_link_before(mut f, at, ins)
+    return v
+}
+
+// The instructions that give all of `a / d` but the last one, before
+// `at`. Gives the two operands of the last one, an `add`.
+struct DivLast {
+    h: i64
+    sign: i64
+}
+
+fn dc_quotient(f: mut IrFunc, at: i64, a: i64, d: i64) -> DivLast {
+    let magic = dc_magic(d)
+    let by = ir_const(mut f, magic.m)
+    var h = dc_before(mut f, at, IR_SMULH, a, by)
+    if magic.m < 0 { h = dc_before(mut f, at, IR_ADD, h, a) }
+    if magic.s > 0 {
+        let count = ir_const(mut f, magic.s)
+        h = dc_before(mut f, at, IR_SAR, h, count)
+    }
+    let top = ir_const(mut f, 63)
+    let sign = dc_before(mut f, at, IR_SHR, a, top)
+    return DivLast { h: h, sign: sign }
+}
+
+fn ir_divconst(f: mut IrFunc) -> i64 {
+    var changed = 0
+    var at = 0
+    while at < f.order.len() {
+        let b = f.order[at]
+        at = at + 1
+        // The quotients this block has so far: the number divided, the
+        // divisor and the value.
+        var seen_a: List[i64] = []
+        var seen_d: List[i64] = []
+        var seen_q: List[i64] = []
+        var ins = f.blk_first[b]
+        while ins >= 0 {
+            let next = f.ins_next[ins]
+            let op = f.ins_op[ins]
+            if (op == IR_SDIV || op == IR_SREM) && ir_is_const(f.ins_b[ins]) && ir_is_value(f.ins_a[ins]) {
+                let a = f.ins_a[ins]
+                let d = ir_const_value(f, f.ins_b[ins])
+                if d >= 3 && d & d - 1 != 0 {
+                    var q = -1
+                    var k = 0
+                    while k < seen_a.len() {
+                        if seen_a[k] == a && seen_d[k] == d { q = seen_q[k] }
+                        k = k + 1
+                    }
+                    if op == IR_SDIV {
+                        if q >= 0 {
+                            f.ins_op[ins] = IR_ADD
+                            f.ins_a[ins] = q
+                            let zero = ir_const(mut f, 0)
+                            f.ins_b[ins] = zero
+                        } else {
+                            let last = dc_quotient(mut f, ins, a, d)
+                            f.ins_op[ins] = IR_ADD
+                            f.ins_a[ins] = last.h
+                            f.ins_b[ins] = last.sign
+                            seen_a.push(a)
+                            seen_d.push(d)
+                            seen_q.push(f.ins_res[ins])
+                        }
+                    } else {
+                        if q < 0 {
+                            let last = dc_quotient(mut f, ins, a, d)
+                            q = dc_before(mut f, ins, IR_ADD, last.h, last.sign)
+                            seen_a.push(a)
+                            seen_d.push(d)
+                            seen_q.push(q)
+                        }
+                        let by = ir_const(mut f, d)
+                        let product = dc_before(mut f, ins, IR_MUL, q, by)
+                        f.ins_op[ins] = IR_SUB
+                        f.ins_a[ins] = a
+                        f.ins_b[ins] = product
+                    }
+                    changed = changed + 1
+                }
+            }
+            ins = next
+        }
+    }
+    return changed
+}

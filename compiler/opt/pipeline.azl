@@ -39,7 +39,11 @@
 //
 // After `inline`: `effects` and `gvn` (loads and checks that repeat), then
 // the loop passes twice.
-const PL_ORDER = "simplify,sroa,simplify,tailcall,accrec,dce,inline,view,simplify,effects,gvn,simplify,thread,simplify,dce,dse,dce,simplify,licm,bce,simplify,dce,licm,bce,simplify,thread,simplify,dce,layout"
+//
+// `divconst` is last but for `layout`: the passes before it read a
+// division for what it says about its result, and do not see through
+// the multiplication it becomes. `simplify` and `dce` tidy up after it.
+const PL_ORDER = "simplify,sroa,simplify,tailcall,accrec,dce,inline,view,simplify,effects,gvn,simplify,thread,simplify,dce,dse,dce,simplify,licm,bce,simplify,dce,licm,bce,simplify,thread,simplify,dce,ifconv,simplify,ifconv,simplify,dce,carry,dce,divconst,simplify,dce,layout"
 
 // Runs one pass on one function. Gives what the pass gives, or -1 for
 // a name that is no pass.
@@ -54,6 +58,9 @@ fn pl_run_pass(name: str, f: mut IrFunc) -> i64 {
     if name == "layout" { return ir_layout(mut f) }
     if name == "thread" { return ir_thread(mut f) }
     if name == "view" { return ir_view(mut f) }
+    if name == "ifconv" { return ir_ifconv(mut f) }
+    if name == "divconst" { return ir_divconst(mut f) }
+    if name == "carry" { return ir_carry(mut f) }
     return -1
 }
 

@@ -1,0 +1,6 @@
+; A division by 10: the high half of a product, a shift, and one more for a negative number.
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v0 = sdiv p0, 10
+    ret v0
+}

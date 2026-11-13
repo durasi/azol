@@ -2403,3 +2403,134 @@ and `tests/opt/thread`); the two ARM64 emulator runs and the x86-64 one
 of `/home/claude/ref` say `ALL OK` for the default builds with the new
 runtime. Nothing here ran on Apple hardware; the macOS runtime
 (`runtime/runtime.s`) was not changed, so the copy there is as it was.
+
+
+### `ifconv` (`pass_ifconv.azl`, twice round a `simplify` near the end of the order)
+
+A small `if` that only chooses between values becomes `select`, when
+the branch is on a comparison of two values read from memory
+(`ic_data_test`): the comparison of a merge goes either way, the
+processor guesses it wrong half the time, and a `select` is never
+guessed. Three shapes: both ways straight to one block with different
+values; one way through an arm; both through arms. An arm holds at
+most `IC_ARM` instructions that only reckon; a comparison in an arm is
+allowed only of the same two values as the branch (`x < y`, then
+`x > y`: a function that answers -1, 0 or 1), because any other is the
+second half of `a && b`.
+
+What is chosen must be a counter that steps or stays, a number, or an
+index whose loads the pass can replace by a choice between two values
+already read (`ic_loads_of_choice`: `xs[select c, i, j]` after `xs[i]`
+and `xs[j]` with nothing written in between). A chosen index that
+later loads wait for is left to the branch: in `dijkstra` (the smaller
+child of a heap) the `select` made the run a tenth slower on the
+x86-64 machine the work was done on, because the processor reads
+ahead on its guess and a `select` makes it wait for both loads.
+
+It runs twice with `simplify` in between: the first run turns the
+three-way comparison into selects of numbers, `simplify` (a new rule,
+`sm_compare_select`: a comparison of `select p, x, y` with a number
+when `x` or `y` is a number) turns `that < 0` back into the first
+test, and the second run finds the branches on it. It was tried early
+in the order (after `inline`) and cost `tokenizer` 43 percent and
+`dijkstra` 12 percent more instructions: `thread` and `bce` read
+branches, not selects. A late `effects, gvn` after it was tried too
+and made `tokenizer` 6 percent slower with the same instruction
+count; the load of the chosen item is folded in the pass itself
+instead.
+
+The library's merge (`list_merge_runs`) is written so that the pass
+applies: the comparison is a `let`, the item is read at the chosen
+index, and the two counters step in an `if`/`else`.
+
+### Changes outside the passes that came with it
+
+- `regalloc.azl`, `ra_next_need`: when a register has to be given up,
+  a value that is read inside a loop around the place and alive at
+  the top of that loop counts as needed again where the loop ends,
+  however far below the loop its next read in the order of the blocks
+  is. Before, the tail of a loop body saw loop values and values of
+  the function around it as equally far and sent loop values to their
+  slots.
+- `sel_x64.azl`: a comparison with two or three users that are all
+  the condition of a `select` or `br` is made again in front of each
+  (one instruction) instead of being kept as a `bool` (two, and a
+  test at each user). `emit_x64.azl`: a `select` that asks the same
+  comparison as the `select` just before it, with no instruction in
+  between that changes the flags or an operand, does not compare
+  again. The ARM64 back end was not touched.
+## `divconst`, and shifted operands on ARM64
+
+### `divconst` (`pass_divconst.azl`, last before `layout`)
+
+`sdiv x, d` and `srem x, d` with a known `d` of 3 or more that is no
+power of two become
+
+    h = smulh x, m
+    h = add h, x        when m does not fit 63 bits (d = 15, 21, 23, ...)
+    h = sar h, s        when s is not 0 (d = 3, 6, 9, ... need none)
+    q = add h, (shr x, 63)
+
+and, for a remainder, `x - q * d`. `m` and `s` come from `dc_magic`
+(the signed method of "Hacker's Delight", chapter 10, for 64 bits),
+which works with wrapping `i64` and `su_unsigned_less`, since the
+numbers of the method are unsigned and up to 64 bits wide. The sign is
+taken from `x`, not from `h` (`h` is negative exactly when `x` is): it
+is ready before the product, so the chain a loop waits for is the
+multiplication, the shift and one addition.
+
+Within a block a division and a remainder of the same value by the
+same divisor share `q`; the second one is left as `add q, 0` for the
+`simplify` that follows. Across blocks nothing is shared.
+
+Left alone: divisors below 3 and powers of two (`simplify` has them),
+negative divisors, an unknown divisor. A pass that comes after
+`divconst` must not expect to find the division: `range` and `bce`
+read `srem x, n` as "from -(n-1) to n-1", which is why this pass is
+last.
+
+Tests: `tests/opt/divconst/` (nine cases, each run in the interpreter
+before and after on eleven numbers that include the largest and the
+smallest), `tests/programs/divide_by_constants.azl` (twelve divisors,
+1,229 numbers, against the processor's division of the default build,
+on the three targets).
+
+### An operand shifted right (`sel_arm64.azl`, `emit_arm64.azl`)
+
+`SA_ALU`'s `y` was how far the second operand is shifted left. It now
+also says which way: the distance, plus 64 for `lsr`, plus 128 for
+`asr`. `sa_can_fold` takes a `shr` or `sar` by a constant with one use
+as it took a `shl`; `ea_alu` puts the two bits into the instruction.
+x86-64 has no such operand and is unchanged. Test:
+`tests/programs/shifted_operands.azl`.
+
+### Two words at a time in a struct copy (`sel_arm64.azl`)
+
+A struct is copied as `load, store, load, store, ...`, one word each.
+`sa_load` paired two loads only when they were side by side. It now
+also takes the load after the store that follows it, when the two
+loads are eight bytes apart from the same address and the store cannot
+write what the second load reads (`sa_may_write`: the same region, two
+buffers, or a region that is not known). The second load is marked in
+`done_far`; `sa_store` steps over it and so finds the two stores side
+by side. Four instructions (`ldp`, `stp`) where there were eight.
+Test: `tests/programs/copy_words.azl`.
+
+## `carry`
+
+`pass_carry.azl`, after the last `thread, simplify, dce` and before
+`divconst`. The shape it takes and what it checks are at the head of
+the file. What is left out on purpose:
+
+- a loop of more than two blocks (an `if` in the body): the stored
+  value would have to be a parameter of the join too;
+- a first turn that is not a known number, or a place before the loop
+  that the block before the loop did not just store: the first load
+  would have to be done before the loop, and a loop that does not run
+  at all must not load;
+- distances other than one turn (`a[i - 2]`), and loads that carry
+  from loads (`prev[j - 1]` after `prev[j]`).
+
+`dp_lcs` needs the first and the third. Tests: `tests/opt/carry/`
+(two cases it takes, seven it must leave), and
+`tests/programs/running_sums.azl`.

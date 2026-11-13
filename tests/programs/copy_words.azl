@@ -1,0 +1,55 @@
+// expect-exit: 0
+// expect-line: 130923
+// expect-line: b1+ b0 b14+ b13 b27+ b26 end
+// expect-line: b39+ b1+ 353
+// Structs of several words copied between lists, variables, parameters
+// and results: on ARM64 the optimising path moves the words two at a
+// time.
+struct Box {
+    left: i64
+    top: i64
+    right: i64
+    bottom: i64
+    name: str
+}
+
+struct Pair {
+    first: Box
+    second: Box
+}
+
+fn wider(box: Box, by: i64) -> Box {
+    return Box { left: box.left - by, top: box.top, right: box.right + by, bottom: box.bottom, name: box.name + "+" }
+}
+
+fn swap(pair: mut Pair) {
+    let held = pair.first
+    pair.first = pair.second
+    pair.second = held
+}
+
+fn area(box: Box) -> i64 {
+    return (box.right - box.left) * (box.bottom - box.top)
+}
+
+fn main() {
+    var boxes: List[Box] = []
+    for i in 0..40 {
+        boxes.push(Box { left: i, top: i * 2, right: i * 3 + 1, bottom: i * 5 + 2, name: "b" + str(i) })
+    }
+    var total = 0
+    var names = ""
+    for i in 0..39 {
+        var pair = Pair { first: boxes[i], second: wider(boxes[i + 1], i) }
+        swap(mut pair)
+        boxes[i] = pair.first
+        total = total + area(pair.first) - area(pair.second)
+        if i % 13 == 0 { names = names + pair.first.name + " " + pair.second.name + " " }
+    }
+    let last = boxes[38]
+    var copy = boxes
+    copy[0] = last
+    print(total)
+    print(names + "end")
+    print(copy[0].name + " " + boxes[0].name + " " + str(copy[0].right + copy[0].bottom))
+}

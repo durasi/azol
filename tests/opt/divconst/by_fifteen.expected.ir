@@ -1,0 +1,9 @@
+fn main(p0: i64, p1: i64) -> i64 {
+b0:
+    v1 = smulh p0, -8608480567731124087
+    v2 = add v1, p0
+    v3 = sar v2, 3
+    v4 = shr p0, 63
+    v0 = add v3, v4
+    ret v0
+}

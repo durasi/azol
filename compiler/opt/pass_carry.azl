@@ -1,0 +1,236 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// The pass `carry`: what one turn of a loop stores and the next turn
+// loads is carried in a value.
+//
+//     fn ir_carry(f: mut IrFunc) -> i64      how many loads were removed
+//
+//     sums[0] = first
+//     while i < n {
+//         sums[i] = sums[i - 1] + source[i]
+//         i = i + 1
+//     }
+//
+// Each turn loads `sums[i - 1]`, which the turn before stored. A
+// processor has to wait for that store to reach the load, several times
+// as long as an addition takes, and the loop goes no faster than that
+// whatever else is removed from it. The value is given to the header of
+// the loop as a parameter instead: what is stored, from the turn
+// before; what was stored at that place before the loop, on the way in.
+//
+// Only this shape is taken, and each part of it is checked:
+//
+//   - the loop is two blocks, a header `H` that tests and a body `B`
+//     that jumps back; `H` has one more way in, a `jump` from a block
+//     `P` outside the loop;
+//   - `i` is a parameter of `H` that `B` gives back as `add i, 1` and
+//     `P` gives as a known number `k`;
+//   - `B` has the store `store i64, (gep base, i, 8, 0), 0, x` and the
+//     load `load i64, (gep base, (add i, -1), 8, 0), 0` of the same
+//     region, `base` from outside the loop;
+//   - nothing else in the loop can write that region: no other store
+//     to it (or, for a buffer, to any buffer), no call;
+//   - `P` ends with a store of some `first` to `base` at `8 * (k - 1)`
+//     in that region, with nothing after it that can write the region.
+//
+// Then the load in turn `k` reads what `P` stored, and the load in
+// every later turn reads what the turn before stored.
+
+// Whether a store to region `written` can change what a load from
+// region `read` gives.
+fn cy_may_write(f: IrFunc, written: i64, read: i64) -> bool {
+    if written < 0 || read < 0 || written == read { return true }
+    return f.reg_kind[written] == IR_REGION_BUF && f.reg_kind[read] == IR_REGION_BUF
+}
+
+// Whether operand `x` is made in neither of the two blocks.
+fn cy_outside(f: IrFunc, x: i64, h: i64, b: i64) -> bool {
+    if x < 0 { return true }
+    let def = f.val_ins[x]
+    if def >= 0 { return f.ins_blk[def] != h && f.ins_blk[def] != b }
+    return f.val_blk[x] != h && f.val_blk[x] != b
+}
+
+// The instruction that makes `x` when it is of kind `op`, or -1.
+fn cy_def(f: IrFunc, x: i64, op: i64) -> i64 {
+    if x < 0 { return -1 }
+    let def = f.val_ins[x]
+    if def >= 0 && f.ins_op[def] == op { return def }
+    return -1
+}
+
+// Whether `x` is `add of, n` for the known number `n`.
+fn cy_is_plus(f: IrFunc, x: i64, of: i64, n: i64) -> bool {
+    let add = cy_def(f, x, IR_ADD)
+    if add < 0 { return false }
+    let a = f.ins_a[add]
+    let b = f.ins_b[add]
+    if a == of && ir_is_const(b) { return ir_const_value(f, b) == n }
+    if b == of && ir_is_const(a) { return ir_const_value(f, a) == n }
+    return false
+}
+
+// The arguments of edge `e` with `x` after them.
+fn cy_add_arg(f: mut IrFunc, e: i64, x: i64) {
+    var values: List[i64] = []
+    var k = 0
+    while k < f.edge_an[e] {
+        values.push(f.args[f.edge_as[e] + k])
+        k = k + 1
+    }
+    values.push(x)
+    ir_set_edge_args(mut f, e, values)
+}
+
+// A loop of two blocks: the header `h`, the body `b`, the block `p` it
+// is entered from by edge `in_edge`, and the edge `back` that repeats
+// it.
+struct CyLoop {
+    h: i64
+    b: i64
+    p: i64
+    in_edge: i64
+    back: i64
+}
+
+// Does the work for one loop. Gives 1 when a load was removed.
+fn cy_loop(f: mut IrFunc, lp: CyLoop) -> i64 {
+    let h = lp.h
+    let b = lp.b
+    let in_edge = lp.in_edge
+    let back = lp.back
+    // Nothing in the header writes or calls; the body does not call.
+    var ins = f.blk_first[h]
+    while ins >= 0 {
+        let op = f.ins_op[ins]
+        if op == IR_STORE || op == IR_CALL || op == IR_CALLRT { return 0 }
+        ins = f.ins_next[ins]
+    }
+    ins = f.blk_first[b]
+    while ins >= 0 {
+        let op = f.ins_op[ins]
+        if op == IR_CALL || op == IR_CALLRT { return 0 }
+        ins = f.ins_next[ins]
+    }
+    // A store to `base[i]` for a parameter `i` that goes up by one.
+    var store = f.blk_first[b]
+    while store >= 0 {
+        let next = f.ins_next[store]
+        if f.ins_op[store] == IR_STORE && f.ins_ty[store] == IR_I64 && f.ins_imm[store] == 0 {
+            let to = cy_def(f, f.ins_a[store], IR_GEP)
+            if to >= 0 && f.ins_imm2[to] == 8 && f.ins_imm[to] == 0 {
+                let base = f.ins_a[to]
+                let i = f.ins_b[to]
+                var place = -1
+                var k = 0
+                while k < f.blk_pn[h] {
+                    if ir_block_param(f, h, k) == i { place = k }
+                    k = k + 1
+                }
+                if place >= 0 && place < f.edge_an[back] && place < f.edge_an[in_edge] && cy_outside(f, base, h, b) {
+                    let start = f.args[f.edge_as[in_edge] + place]
+                    if cy_is_plus(f, f.args[f.edge_as[back] + place], i, 1) && ir_is_const(start) {
+                        let first_turn = ir_const_value(f, start)
+                        let done = cy_store(mut f, lp, store, base, i, first_turn)
+                        if done > 0 { return done }
+                    }
+                }
+            }
+        }
+        store = next
+    }
+    return 0
+}
+
+fn cy_store(f: mut IrFunc, lp: CyLoop, store: i64, base: i64, i: i64, first_turn: i64) -> i64 {
+    let b = lp.b
+    let p = lp.p
+    let region = f.ins_reg[store]
+    if region < 0 { return 0 }
+    // No other store of the body may write the region.
+    var ins = f.blk_first[b]
+    while ins >= 0 {
+        if f.ins_op[ins] == IR_STORE && ins != store && cy_may_write(f, f.ins_reg[ins], region) {
+            return 0
+        }
+        ins = f.ins_next[ins]
+    }
+    // The load of `base[i - 1]`.
+    var load = -1
+    ins = f.blk_first[b]
+    while ins >= 0 {
+        if f.ins_op[ins] == IR_LOAD && f.ins_ty[ins] == IR_I64 && f.ins_imm[ins] == 0 && f.ins_reg[ins] == region {
+            let from = cy_def(f, f.ins_a[ins], IR_GEP)
+            if from >= 0 && f.ins_imm2[from] == 8 && f.ins_imm[from] == 0 && f.ins_a[from] == base && cy_is_plus(f, f.ins_b[from], i, -1) {
+                load = ins
+            }
+        }
+        ins = f.ins_next[ins]
+    }
+    if load < 0 { return 0 }
+    // What the block before the loop stored at `base[first_turn - 1]`,
+    // with nothing after it that can write the region.
+    var first = -1
+    var found = false
+    ins = f.ins_prev[f.blk_last[p]]
+    while ins >= 0 && !found {
+        let op = f.ins_op[ins]
+        if op == IR_CALL || op == IR_CALLRT { return 0 }
+        if op == IR_STORE {
+            if f.ins_reg[ins] == region && f.ins_ty[ins] == IR_I64 && f.ins_a[ins] == base && f.ins_imm[ins] == 8 * (first_turn - 1) {
+                first = f.ins_b[ins]
+                found = true
+            } else if cy_may_write(f, f.ins_reg[ins], region) {
+                return 0
+            }
+        }
+        ins = f.ins_prev[ins]
+    }
+    if !found { return 0 }
+    let carried = ir_add_block_param(mut f, lp.h, IR_I64)
+    cy_add_arg(mut f, lp.in_edge, first)
+    let stored = f.ins_b[store]
+    cy_add_arg(mut f, lp.back, stored)
+    let old = f.ins_res[load]
+    ir_replace_value(mut f, old, carried)
+    ir_remove(mut f, load)
+    return 1
+}
+
+fn ir_carry(f: mut IrFunc) -> i64 {
+    var changed = 0
+    var again = true
+    while again {
+        again = false
+        let cfg = ir_cfg(f)
+        var l = 0
+        while l < cfg.loop_header.len() && !again {
+            let h = cfg.loop_header[l]
+            if cfg.loop_bn[l] == 2 && cfg.loop_ln[l] == 1 && cfg.pred_n[h] == 2 {
+                let b = cfg.loop_latches[cfg.loop_ls[l]]
+                var p = -1
+                var in_edge = -1
+                var back = -1
+                var k = 0
+                while k < 2 {
+                    let from = cfg.pred_blk[cfg.pred_s[h] + k]
+                    if from == b {
+                        back = cfg.pred_edge[cfg.pred_s[h] + k]
+                    } else {
+                        p = from
+                        in_edge = cfg.pred_edge[cfg.pred_s[h] + k]
+                    }
+                    k = k + 1
+                }
+                if p >= 0 && back >= 0 && b != h && f.ins_op[f.blk_last[p]] == IR_JUMP && f.ins_op[f.blk_last[b]] == IR_JUMP {
+                    if cy_loop(mut f, CyLoop { h, b, p, in_edge, back }) > 0 {
+                        changed = changed + 1
+                        again = true
+                    }
+                }
+            }
+            l = l + 1
+        }
+    }
+    return changed
+}

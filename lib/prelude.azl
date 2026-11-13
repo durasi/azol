@@ -504,11 +504,16 @@ fn list_merge_runs[T](from: List[T], to: mut List[T], width: i64) {
         var a = start
         var b = middle
         while a < middle && b < end {
-            if from[b].compare(from[a]) < 0 {
-                to[k] = from[b]
+            // Written so that no branch depends on the outcome of the
+            // comparison: which item is next is as good as random, and
+            // a processor guesses a random branch wrong half the time.
+            let second = from[b].compare(from[a]) < 0
+            var next = a
+            if second { next = b }
+            to[k] = from[next]
+            if second {
                 b = b + 1
             } else {
-                to[k] = from[a]
                 a = a + 1
             }
             k = k + 1

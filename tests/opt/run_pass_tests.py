@@ -49,10 +49,10 @@ import run_back_tests as back_tests
 
 HERE = base.HERE
 ROOT = base.ROOT
-PASSES = ["pass_simplify_util.azl", "pass_simplify.azl", "pass_dce.azl", "pass_dse.azl", "pass_sroa.azl", "pass_effects.azl", "pass_gvn.azl", "pass_licm.azl", "pass_range.azl", "pass_bce.azl", "pass_inline.azl", "pass_tailcall.azl", "pass_accrec.azl", "pass_layout.azl", "pass_thread.azl", "pass_view.azl", "pipeline.azl"]
+PASSES = ["pass_simplify_util.azl", "pass_simplify.azl", "pass_dce.azl", "pass_dse.azl", "pass_sroa.azl", "pass_effects.azl", "pass_gvn.azl", "pass_licm.azl", "pass_range.azl", "pass_bce.azl", "pass_inline.azl", "pass_tailcall.azl", "pass_accrec.azl", "pass_layout.azl", "pass_thread.azl", "pass_view.azl", "pass_ifconv.azl", "pass_divconst.azl", "pass_carry.azl", "pipeline.azl"]
 OPT_TOOL = ["ir.azl", "ir_text.azl", "ir_cfg.azl", "ir_verify.azl"] + PASSES + ["opt_tool_main.azl"]
 COMPILER = ["bytes.azl", "code_file.azl", "elf.azl", "runtime_x64.azl"]
-FOLDERS = ["simplify", "dce", "dse", "thread", "layout", "view"]
+FOLDERS = ["simplify", "dce", "dse", "thread", "layout", "view", "ifconv", "divconst", "carry"]
 
 
 def host_file():

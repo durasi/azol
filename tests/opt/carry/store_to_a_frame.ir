@@ -1,0 +1,43 @@
+; A store of the body to a frame cannot be to the buffer.
+fn main(p0: i64, p1: i64) -> i64 {
+    frames 24, 24
+b0:
+    v0 = frame 0
+    v20 = frame 1
+    v1 = callrt alloc(80)
+    v21 = callrt alloc(80)
+    store ptr, v0, 0, v1  [frame 0]
+    store ptr, v20, 0, v21  [frame 1]
+    store i64, v21, 0, 3  [buf(frame 1)]
+    store i64, v1, 8, 101  [buf(frame 0)]
+    store i64, v1, 16, 102  [buf(frame 0)]
+    store i64, v1, 24, 103  [buf(frame 0)]
+    store i64, v1, 32, 104  [buf(frame 0)]
+    store i64, v1, 40, 105  [buf(frame 0)]
+    store i64, v1, 48, 106  [buf(frame 0)]
+    store i64, v1, 56, 107  [buf(frame 0)]
+    store i64, v1, 64, 108  [buf(frame 0)]
+    store i64, v1, 72, 109  [buf(frame 0)]
+    store i64, v1, 0, p0  [buf(frame 0)]
+    jump b1(1)
+b1(v2: i64):
+    v3 = slt v2, 10
+    br v3, b2, b3
+b2:
+    v4 = add v2, -1
+    v5 = gep v1, v4, 8, 0
+    v6 = load i64, v5, 0  [buf(frame 0)]
+    v7 = add v6, v2
+    v8 = gep v1, v2, 8, 0
+    store i64, v0, 8, v6  [frame 0]
+    store i64, v8, 0, v7  [buf(frame 0)]
+    v9 = add v2, 1
+    jump b1(v9)
+b3:
+    v10 = load i64, v1, 72  [buf(frame 0)]
+    v11 = load i64, v1, 16  [buf(frame 0)]
+    v12 = add v10, v11
+    callrt free(v1)
+    callrt free(v21)
+    ret v12
+}
