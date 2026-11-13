@@ -79,6 +79,38 @@ COLUMNS = [
     ("go", "Go", "go"),
     ("node", "JavaScript (Node.js)", "node"),
 ]
+# The heading cell of each column in the README: a logo or a name tile, and
+# under it the mode that was measured. The Rust logo is black, so dark pages
+# get the name tile instead. Paths are relative to README.md.
+def _img(src, alt, more=""):
+    return '<img src="%s%s" alt="%s" height="28">' % (src, more, alt)
+
+
+HEADINGS = {
+    "azol": _img("assets/compare/azol.svg", "azoL") + "<br><sub>default</sub>",
+    "azol_opt": _img("assets/compare/azol.svg", "azoL") + "<br><sub><code>-O</code></sub>",
+    "rust_opt": (_img("assets/third-party/rust-logo-blk.svg", "Rust", "#gh-light-mode-only")
+                 + _img("assets/compare/rust.svg", "Rust", "#gh-dark-mode-only") + "<br><sub>Rust&nbsp;<code>-O</code></sub>"),
+    "c": _img("assets/compare/c.svg", "C") + "<br><sub><code>-O2</code></sub>",
+    "go": _img("assets/compare/go.svg", "Go") + "<br><sub>go&nbsp;build</sub>",
+    "node": _img("assets/third-party/js.png", "JavaScript") + "<br><sub>Node.js</sub>",
+}
+SHORT = {
+    "fib40": "recursive calls",
+    "loops": "nested loops",
+    "sort": "quicksort, 2 million numbers",
+    "sieve": "primes up to 20 million",
+    "particles": "structs updated in place",
+    "tree": "building and walking trees",
+    "append": "building long strings",
+    "words": "splitting and joining text",
+}
+
+
+def section(name, columns):
+    return "| <sub>%s</sub> |" % name + " |" * columns
+
+
 NAMES = {"rust_opt": "Rust `-O`", "c": "C `-O2`", "go": "Go", "node": "Node.js"}
 SOURCES = {"azol": ".azl", "rust_opt": ".rs", "c": ".c", "go": ".go", "node": ".js"}
 
@@ -357,7 +389,7 @@ def row(label, values, show, pending, never=()):
             out.append("**%s**" % show(value))
         else:
             out.append(show(value))
-    return "| " + " | ".join(out) + " |"
+    return "| " + " | ".join([out[0]] + [cell.replace(" ", "&nbsp;") for cell in out[1:]]) + " |"
 
 
 def counts(run_results, mine, theirs):
@@ -430,17 +462,21 @@ def report(results):
     else:
         out.append("Lower is better everywhere. In every row the best value is bold, and nothing else in the table is.")
     out.append("")
-    out.append("|  | " + " | ".join(heading for _, heading in shown) + " |")
+    out.append("|  | " + " | ".join(HEADINGS.get(key, heading) for key, heading in shown) + " |")
     out.append("|:---|" + "---:|" * len(shown))
     if build_result:
         times = build_result["seconds"]
-        out.append(row("Build time, the same %s-line program" % format(build_result["lines"], ","),
-                       {key: times.get(key) for key in keys}, seconds, pending, {"node": "nothing to build"}))
+        out.append(section("BUILD TIME", len(shown)))
+        out.append(row("The same %s-line program" % format(build_result["lines"], ","),
+                       {key: times.get(key) for key in keys}, seconds, pending, {"node": "no build"}))
     if sizes.get("azol"):
-        out.append(row("Executable size, `fib40`", {key: sizes.get(key) for key in keys}, kilobytes, pending,
+        out.append(section("EXECUTABLE SIZE", len(shown)))
+        out.append(row("`fib40`", {key: sizes.get(key) for key in keys}, kilobytes, pending,
                        {"node": "needs Node.js"}))
+    if run_results:
+        out.append(section("RUN TIME", len(shown)))
     for name, result in run_results.items():
-        out.append(row("Run time, `%s`: %s" % (name, ABOUT.get(name, "")),
+        out.append(row("`%s` <sub>%s</sub>" % (name, SHORT.get(name, ABOUT.get(name, ""))),
                        {key: result["seconds"].get(key) for key in keys}, seconds, pending))
     out.append("")
     for note in results.get("left_out", []):

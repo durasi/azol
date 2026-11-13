@@ -72,18 +72,21 @@ Tools: azol 0.1.0; rustc 1.99.1 (58cf8f9c3 2026-10-13); Apple clang version 21.0
 
 Lower is better everywhere. In every row the best value is bold, and nothing else in the table is.
 
-|  | azoL | azoL `-O` | Rust `-O` | C `-O2` | Go | JavaScript (Node.js) |
+|  | <img src="assets/compare/azol.svg" alt="azoL" height="28"><br><sub>default</sub> | <img src="assets/compare/azol.svg" alt="azoL" height="28"><br><sub><code>-O</code></sub> | <img src="assets/third-party/rust-logo-blk.svg#gh-light-mode-only" alt="Rust" height="28"><img src="assets/compare/rust.svg#gh-dark-mode-only" alt="Rust" height="28"><br><sub>Rust&nbsp;<code>-O</code></sub> | <img src="assets/compare/c.svg" alt="C" height="28"><br><sub><code>-O2</code></sub> | <img src="assets/compare/go.svg" alt="Go" height="28"><br><sub>go&nbsp;build</sub> | <img src="assets/third-party/js.png" alt="JavaScript" height="28"><br><sub>Node.js</sub> |
 |:---|---:|---:|---:|---:|---:|---:|
-| Build time, the same 44,004-line program | **0.024 s** | 0.45 s | 9.51 s | 127.04 s | 0.67 s | nothing to build |
-| Executable size, `fib40` | **33 KB** | **33 KB** | 460 KB | **33 KB** | 2373 KB | needs Node.js |
-| Run time, `fib40`: function calls (recursive `fib(40)`) | 0.29 s | **0.15 s** | **0.15 s** | **0.15 s** | 0.23 s | 0.52 s |
-| Run time, `loops`: nested loops and arithmetic | 0.017 s | **0.016 s** | 0.018 s | 0.018 s | 0.018 s | 0.054 s |
-| Run time, `sort`: quicksort of 2 million numbers | 0.14 s | **0.11 s** | **0.11 s** | **0.11 s** | **0.11 s** | 0.27 s |
-| Run time, `sieve`: prime sieve up to 20 million | 0.16 s | 0.15 s | 0.045 s | 0.041 s | **0.036 s** | 0.30 s |
-| Run time, `particles`: list of structs updated in place | 0.096 s | 0.073 s | **0.039 s** | 0.050 s | 0.051 s | 0.17 s |
-| Run time, `tree`: building and walking trees | 0.094 s | 0.085 s | **0.054 s** | 0.058 s | 0.065 s | 0.42 s |
-| Run time, `append`: building long strings | 0.026 s | 0.025 s | 0.021 s | **0.019 s** | 0.027 s | 0.12 s |
-| Run time, `words`: splitting and joining text | 0.034 s | 0.030 s | 0.025 s | 0.026 s | **0.018 s** | 0.10 s |
+| <sub>BUILD TIME</sub> | | | | | | |
+| The same 44,004-line program | **0.024&nbsp;s** | 0.45&nbsp;s | 9.51&nbsp;s | 127.04&nbsp;s | 0.67&nbsp;s | no&nbsp;build |
+| <sub>EXECUTABLE SIZE</sub> | | | | | | |
+| `fib40` | **33&nbsp;KB** | **33&nbsp;KB** | 460&nbsp;KB | **33&nbsp;KB** | 2373&nbsp;KB | needs&nbsp;Node.js |
+| <sub>RUN TIME</sub> | | | | | | |
+| `fib40` <sub>recursive calls</sub> | 0.29&nbsp;s | **0.15&nbsp;s** | **0.15&nbsp;s** | **0.15&nbsp;s** | 0.23&nbsp;s | 0.52&nbsp;s |
+| `loops` <sub>nested loops</sub> | 0.017&nbsp;s | **0.016&nbsp;s** | 0.018&nbsp;s | 0.018&nbsp;s | 0.018&nbsp;s | 0.054&nbsp;s |
+| `sort` <sub>quicksort, 2 million numbers</sub> | 0.14&nbsp;s | **0.11&nbsp;s** | **0.11&nbsp;s** | **0.11&nbsp;s** | **0.11&nbsp;s** | 0.27&nbsp;s |
+| `sieve` <sub>primes up to 20 million</sub> | 0.16&nbsp;s | 0.15&nbsp;s | 0.045&nbsp;s | 0.041&nbsp;s | **0.036&nbsp;s** | 0.30&nbsp;s |
+| `particles` <sub>structs updated in place</sub> | 0.096&nbsp;s | 0.073&nbsp;s | **0.039&nbsp;s** | 0.050&nbsp;s | 0.051&nbsp;s | 0.17&nbsp;s |
+| `tree` <sub>building and walking trees</sub> | 0.094&nbsp;s | 0.085&nbsp;s | **0.054&nbsp;s** | 0.058&nbsp;s | 0.065&nbsp;s | 0.42&nbsp;s |
+| `append` <sub>building long strings</sub> | 0.026&nbsp;s | 0.025&nbsp;s | 0.021&nbsp;s | **0.019&nbsp;s** | 0.027&nbsp;s | 0.12&nbsp;s |
+| `words` <sub>splitting and joining text</sub> | 0.034&nbsp;s | 0.030&nbsp;s | 0.025&nbsp;s | 0.026&nbsp;s | **0.018&nbsp;s** | 0.10&nbsp;s |
 
 The generated program is 44,004 lines in azoL, 45,006 lines in Rust, 49,035 lines in C, 44,008 lines in Go, 38,002 lines in JavaScript.
 
@@ -108,7 +111,7 @@ Run: `azol build -O` is ahead of Rust `-O` in 1 of 8 (level in 2), of C `-O2` in
 
 In each row, bold marks the languages that are ahead on that row, where that can be said plainly. Rows without bold are trade-offs.
 
-| | <img src="assets/compare/azol.svg" alt="azoL" height="30"> | <img src="assets/third-party/rust-logo-blk.svg#gh-light-mode-only" alt="" height="30"><img src="assets/compare/rust.svg#gh-dark-mode-only" alt="" height="30"> <strong>Rust</strong> | <img src="assets/compare/c.svg" alt="C" height="30"> | <img src="assets/compare/go.svg" alt="Go" height="30"> | <img src="assets/third-party/js.png" alt="" height="30"> <strong>JavaScript</strong> |
+| | <img src="assets/compare/azol.svg" alt="azoL" height="30"> | <img src="assets/third-party/rust-logo-blk.svg#gh-light-mode-only" alt="Rust" height="30"><img src="assets/compare/rust.svg#gh-dark-mode-only" alt="Rust" height="30"><br><sub>Rust</sub> | <img src="assets/compare/c.svg" alt="C" height="30"> | <img src="assets/compare/go.svg" alt="Go" height="30"> | <img src="assets/third-party/js.png" alt="JavaScript" height="30"><br><sub>JavaScript</sub> |
 |:---|:---|:---|:---|:---|:---|
 | <sub>SAFETY</sub> | | | | | |
 | Memory safety without a garbage collector | **Yes, checked when compiling** | **Yes, checked when compiling; `unsafe` opts out** | No | Safe, with a garbage collector | Safe, with a garbage collector |
