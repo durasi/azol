@@ -144,7 +144,7 @@ TURKISH = {
     "%(ratio)s times faster than %(name)s (%(took)s)": "%(name)s (%(took)s) karşısında %(ratio)s kat hızlı",
     "%(ratio)s times slower than %(name)s (%(took)s)": "%(name)s (%(took)s) karşısında %(ratio)s kat yavaş",
     "`rustc -O`": "`rustc -O`",
-    "an unoptimized `rustc` build": "iyileştirmesiz `rustc` derlemesi",
+    "an unoptimized `rustc` build": "optimizasyonsuz `rustc` derlemesi",
     "`rustc`'s type check alone (`--emit=metadata`)": "yalnızca `rustc` tür denetimi (`--emit=metadata`)",
     "`cc -O2`": "`cc -O2`",
     "`go build`": "`go build`",

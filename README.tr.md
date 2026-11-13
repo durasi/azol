@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="README.md"><img src="assets/lang/en-off.svg" alt="English" height="28"></a>
+  <a href="https://github.com/durasi/azol#readme"><img src="assets/lang/en-off.svg" alt="English" height="28"></a>
   <a href="README.tr.md"><img src="assets/lang/tr-on.svg" alt="Türkçe" height="28"></a>
 </p>
 
@@ -11,7 +11,7 @@
 <p align="center"><em>The rust remover.</em><br><sub>Pas sökücü.</sub></p>
 
 <p align="center">
-  <strong>Çöp toplayıcısı ve ömür açıklamaları (lifetime annotation) olmayan, bellek güvenli bir sistem dili;<br>
+  <strong>Garbage collector'ı ve lifetime annotation'ları olmayan, bellek güvenli bir sistem dili;<br>
   derleyicisi 44.000 satırı 25 milisaniyede çalıştırılabilir dosyaya çevirir.</strong>
 </p>
 
@@ -26,7 +26,7 @@
 
 ---
 
-azoL, Rust ile yazacağınız türden programlar içindir: çöp toplayıcı yok, sarkan işaretçi yok, çift serbest bırakma yok, serbest bırakılmadan kalan bellek yok. Buraya başvurular yerine değerlerle varır, bu yüzden açıklama yazılacak bir şey kalmaz; derleyicisi de kaynağınızı okuyup çalışmaya hazır dosyayı tek başına yazar: LLVM yok, assembler yok, bağlayıcı yok, `codesign` yok, bağımlılık yok.
+azoL, Rust ile yazacağınız türden programlar içindir: garbage collector yok, dangling pointer yok, double free yok, memory leak yok. Buraya başvurular yerine değerlerle varır, bu yüzden açıklama yazılacak bir şey kalmaz; derleyicisi de kaynağınızı okuyup çalışmaya hazır dosyayı tek başına yazar: LLVM yok, assembler yok, linker yok, `codesign` yok, bağımlılık yok.
 
 Genç ve küçük bir dildir. Üzerine bir şey planlamadan önce [nelerin olmadığını](#azolda-olmayanlar) okuyun.
 
@@ -97,7 +97,7 @@ Her yerde düşük olan daha iyidir. Her satırda en iyi değer kalın yazılmı
 
 Üretilen programın uzunluğu: 44,004 satır (azoL), 45,006 satır (Rust), 49,035 satır (C), 44,008 satır (Go), 38,002 satır (JavaScript).
 
-Derleme: azoL'un varsayılan derlemesi `rustc -O` (9.46 s) karşısında 380 kat hızlı, iyileştirmesiz `rustc` derlemesi (1.48 s) karşısında 60 kat hızlı, yalnızca `rustc` tür denetimi (`--emit=metadata`) (0.78 s) karşısında 31 kat hızlı, `cc -O2` (131.60 s) karşısında 5300 kat hızlı, `go build` (0.81 s) karşısında 33 kat hızlı.
+Derleme: azoL'un varsayılan derlemesi `rustc -O` (9.46 s) karşısında 380 kat hızlı, optimizasyonsuz `rustc` derlemesi (1.48 s) karşısında 60 kat hızlı, yalnızca `rustc` tür denetimi (`--emit=metadata`) (0.78 s) karşısında 31 kat hızlı, `cc -O2` (131.60 s) karşısında 5300 kat hızlı, `go build` (0.81 s) karşısında 33 kat hızlı.
 
 Node.js için derlenecek bir şey yoktur; JavaScript sürümünün sözdizimini denetlemek (`node --check`) 0.027 s sürer.
 
@@ -108,7 +108,7 @@ Node.js için derlenecek bir şey yoktur; JavaScript sürümünün sözdizimini 
 
 **Bunları adil okumak için.**
 
-- azoL'un iki sütunu var. İlki varsayılan derlemesidir: tek ve hızlı bir geçiş. İkincisi `azol build -O`, yani iyileştiricidir: yeni, deneysel ve derlemesi daha yavaş. İkisi de her indeksi ve her bölmeyi denetler.
+- azoL'un iki sütunu var. İlki varsayılan derlemesidir: tek ve hızlı bir geçiş. İkincisi `azol build -O`, yani optimizer'dır: yeni, deneysel ve derlemesi daha yavaş. İkisi de her indeksi ve her bölmeyi denetler.
 - Rust ve Go da indeksleri denetler; C hiçbir şeyi denetlemez. Go ve JavaScript çöp toplar; azoL, Rust ve C belleği belirli noktalarda serbest bırakır.
 - Derleme süresi programı üretilmiştir ve kendini tekrar eder ([`bench/gen.py`](bench/gen.py)), üstelik tek dosyadır. Bu, diğerlerinden daha az iş yapan azoL'un lehinedir (trait yok, küçük bir kütüphane var) ve projeleri yan yana derlenen çok sayıda dosyaya bölünen C'nin aleyhinedir. Go'nun derleme önbelleği standart kütüphanesi için korunur, program için devre dışı bırakılır.
 - Çalışma süreleri bütün bir sürecin süresidir, yani başlangıcı da içerir; bu, Node.js için onlarca milisaniyedir.
@@ -116,43 +116,43 @@ Node.js için derlenecek bir şey yoktur; JavaScript sürümünün sözdizimini 
 
 ## azoL, Rust, C, Go ve JavaScript
 
-Her satırda, o satırda önde olan diller kalın yazılmıştır; bu yalnızca açıkça söylenebildiği yerde yapılmıştır. Kalın olmayan satırlar ödünleşimdir.
+Her satırda, o satırda önde olan diller kalın yazılmıştır; bu yalnızca açıkça söylenebildiği yerde yapılmıştır. Kalın olmayan satırlar trade-off'tur.
 
 | | <img src="assets/compare/azol.svg" alt="azoL" height="30"> | <img src="assets/third-party/rust-logo-blk.svg#gh-light-mode-only" alt="Rust" height="30"><img src="assets/compare/rust.svg#gh-dark-mode-only" alt="Rust" height="30"><br><sub>Rust</sub> | <img src="assets/compare/c.svg" alt="C" height="30"> | <img src="assets/compare/go.svg" alt="Go" height="30"> | <img src="assets/third-party/js.png" alt="JavaScript" height="30"><br><sub>JavaScript</sub> |
 |:---|:---|:---|:---|:---|:---|
 | <sub>GÜVENLİK</sub> | | | | | |
-| Çöp toplayıcı olmadan bellek güvenliği | **Var, derleme sırasında denetlenir** | **Var, derleme sırasında denetlenir; `unsafe` devre dışı bırakır** | Yok | Güvenli, çöp toplayıcıyla | Güvenli, çöp toplayıcıyla |
-| Ömür açıklamaları | Hiçbir zaman | Derleyicinin çıkaramadığı yerlerde | Yok | Yok | Yok |
+| Garbage collector olmadan bellek güvenliği | **Var, derleme sırasında denetlenir** | **Var, derleme sırasında denetlenir; `unsafe` devre dışı bırakır** | Yok | Güvenli, garbage collector ile | Güvenli, garbage collector ile |
+| Lifetime annotation'lar | Hiçbir zaman | Derleyicinin çıkaramadığı yerlerde | Yok | Yok | Yok |
 | Kodunuzdaki başvurular | Yok. Yalnızca değerler; bir fonksiyonun argümanını değiştirebilmesi için çağrı `mut` der | `&T`, `&mut T`, akıllı işaretçiler | İşaretçiler | İşaretçiler | Her nesne paylaşılan bir başvurudur |
-| Veri yarışları | Henüz iş parçacığı yok | **Derleme sırasında engellenir** | Olabilir | Olabilir; testler için bir yarış algılayıcı var | Varsayılan olarak paylaşılan bellek yok |
+| Data race'ler | Henüz thread yok | **Derleme sırasında engellenir** | Olabilir | Olabilir; testler için bir yarış algılayıcı var | Varsayılan olarak paylaşılan bellek yok |
 | Null | **Yok. `Option[T]`** | **Güvenli kodda yok. `Option<T>`** | `NULL` | `nil` | `null` ve `undefined` |
 | Hatalar | `Result[T, E]`, `?`, eksiksiz `match` | `Result<T, E>`, `?`, eksiksiz `match`, panikler | Dönüş kodları | Hata değerleri, `panic` | İstisnalar |
 | <sub>DİL</sub> | | | | | |
 | Türler | Statik, fonksiyon içinde çıkarımlı | Statik, fonksiyon içinde çıkarımlı | Statik | Statik, fonksiyon içinde çıkarımlı | Dinamik |
 | Generic'ler | Fonksiyonlar, struct'lar ve enum'lar. Henüz sınır (bound) yok | **Trait'ler ve sınırlarla** | Yok; makrolar | **Kısıtlarla** | Gerekmez |
-| Sayılar | Yalnızca `i64`. Kayan nokta yok | **Her boyutta tamsayı, kayan nokta** | **Her boyutta tamsayı, kayan nokta** | **Her boyutta tamsayı, kayan nokta** | 64 bit kayan nokta, `BigInt` |
+| Sayılar | Yalnızca `i64`. Floating point yok | **Her boyutta tamsayı, floating point** | **Her boyutta tamsayı, floating point** | **Her boyutta tamsayı, floating point** | 64 bit floating point, `BigInt` |
 | Closure'lar | Yok | **Var** | Yok; fonksiyon işaretçileri | **Var** | **Var** |
-| İş parçacıkları | Yok | **Var** | Var, kütüphane aracılığıyla | **Var: goroutine'ler ve kanallar** | Worker'lar ve bir olay döngüsü |
+| Thread'ler | Yok | **Var** | Var, kütüphane aracılığıyla | **Var: goroutine'ler ve kanallar** | Worker'lar ve bir olay döngüsü |
 | Paketler | Yok. Birkaç dosya, tek ad alanı | **Cargo, crates.io** | Standart bir tane yok | **Go modülleri** | **npm** |
 | <sub>DERLEME VE DAĞITIM</sub> | | | | | |
 | Kaynaktan çalışmaya | Önceden derlenir | Önceden derlenir | Önceden derlenir | Önceden derlenir | Çalışırken derlenir |
 | Ne dağıtırsınız | Tek çalıştırılabilir dosya | Tek çalıştırılabilir dosya | Tek çalıştırılabilir dosya | Tek çalıştırılabilir dosya | Kaynak; kullanıcıda bir çalışma zamanı gerekir |
-| Başka bir sistem için derleme | **Yerleşik: `--target`** | Kurulacak bir hedef ve onun için bir bağlayıcı | Bir çapraz derleyici | **Yerleşik: `GOOS`, `GOARCH`** | Geçerli değil |
+| Başka bir sistem için derleme | **Yerleşik: `--target`** | Kurulacak bir hedef ve onun için bir linker | Bir cross compiler | **Yerleşik: `GOOS`, `GOARCH`** | Geçerli değil |
 | Hedefler | Apple Silicon macOS, x86-64 Linux, ARM64 Linux | Onlarca | **Neredeyse her işlemci** | Onlarca | Bir motorun çalıştığı her yer |
 | <sub>ARAÇLAR</sub> | | | | | |
 | Araçlar ve yapay zekâ ajanları için hatalar | `check --json`: kod, tam aralık, çiğnenen kural ve onarım mekanikse yapılacak düzenleme | `--error-format=json`, önerilen düzenlemeler ne kadar güvenli olduklarına göre işaretlenir | Metin, düzeltme ipuçlarıyla | Metin | Derleyici yok; hatalar kod çalışırken ortaya çıkar |
-| Biçimlendirici | **`azol fmt`, tek düzen** | **`rustfmt`, araç zinciriyle gelir** | Ayrı araçlar | **`gofmt`, tek düzen** | Ayrı araçlar |
+| Formatter | **`azol fmt`, tek düzen** | **`rustfmt`, araç zinciriyle gelir** | Ayrı araçlar | **`gofmt`, tek düzen** | Ayrı araçlar |
 | <sub>PROJE</sub> | | | | | |
 | Yazıldığı dil | azoL: derleyici kendini derler | Rust | Derleyiciler C ve C++ ile yazılır | Go | Motorlar C++ ile yazılır |
 | Olgunluk | Deneysel. Ona bel bağlamayın | **2015'ten beri kararlı** | **1989'dan beri bir standart** | **2012'den beri kararlı** | **1995'ten beri kullanımda** |
 
-Rust, C, Go ve JavaScript'in her biri, bugün azoL'un yapabildiğinden çok daha fazlasını yapabilir. azoL'un sunduğu şudur: derleme sırasında denetlenen, çöp toplayıcısı ve ömür açıklamaları olmayan bellek güvenliği, milisaniyelerle ölçülen bir derleme ve bütün başvurusu tek belge olan bir dil.
+Rust, C, Go ve JavaScript'in her biri, bugün azoL'un yapabildiğinden çok daha fazlasını yapabilir. azoL'un sunduğu şudur: derleme sırasında denetlenen, garbage collector'ı ve lifetime annotation'ları olmayan bellek güvenliği, milisaniyelerle ölçülen bir derleme ve bütün başvurusu tek belge olan bir dil.
 
 <sub>Rust logosu Rust Foundation'a, JS logosu topluluğuna aittir; yalnızca sütunları etiketlerler. C ve Go adlarıyla etiketlenmiştir. azoL bunların hiçbiriyle bağlantılı değildir ve hiçbiri tarafından onaylanmamıştır. Kaynaklar ve koşullar: [assets/third-party](assets/third-party/README.md).</sub>
 
 ## Hızlı başlangıç
 
-Bir kabuktan başka hiçbir şey gerekmez: Rust yok, C derleyicisi yok, bağlayıcı yok, paket yöneticisi yok. Apple Silicon Mac'te ve x86-64 Linux'ta çalışır; ARM64 Linux aynı biçimde derlenir ama yalnızca bir öykünücüde çalıştırılmıştır.
+Bir kabuktan başka hiçbir şey gerekmez: Rust yok, C derleyicisi yok, linker yok, paket yöneticisi yok. Apple Silicon Mac'te ve x86-64 Linux'ta çalışır; ARM64 Linux aynı biçimde derlenir ama yalnızca bir emülatörde çalıştırılmıştır.
 
 ```sh
 git clone https://github.com/durasi/azol
@@ -261,11 +261,11 @@ dog: never
 
 ### azoL'da olmayanlar
 
-Kayan noktalı sayılar, `i64` dışındaki tamsayı türleri, closure'lar, trait'ler, kendi türleriniz üzerinde metotlar, iş parçacıkları, modüller ya da bir paket yöneticisi. Tamsayı taşması başa sarar. [Başvuru belgesi bunların hepsini](docs/language.md#19-what-azol-does-not-have), her birinin yerine ne yazılacağıyla birlikte listeler.
+Floating point sayılar, `i64` dışındaki tamsayı türleri, closure'lar, trait'ler, kendi türleriniz üzerinde metotlar, thread'ler, modüller ya da bir paket yöneticisi. Tamsayı taşması başa sarar. [Başvuru belgesi bunların hepsini](docs/language.md#19-what-azol-does-not-have), her birinin yerine ne yazılacağıyla birlikte listeler.
 
 ## Güvenlik nasıl çalışır
 
-Değerler değer semantiğine sahiptir: bir struct'ı, bir metni ya da bir listeyi atamak size bağımsız bir kopya verir ve bir fonksiyon bir argümanı ancak çağıran `mut` yazdığında değiştirebilir. Zihinsel modelin tamamı budur.
+Değerler value semantics'e sahiptir: bir struct'ı, bir metni ya da bir listeyi atamak size bağımsız bir kopya verir ve bir fonksiyon bir argümanı ancak çağıran `mut` yazdığında değiştirebilir. Zihinsel modelin tamamı budur.
 
 Altta, büyük değerler hız için başvuruyla geçirilir ve derleyici bunu asla fark edemeyeceğinizi garanti eder. Bir başvuru tam olarak özel bir kopya gibi davranır, çünkü başka bir şey ona hâlâ başvururken hiçbir şey değiştirilemez. Bunu dört kural sağlar; her biri tek seferde tek bir fonksiyonun içinde denetlenir, denetimi hızlı tutan da budur:
 
@@ -284,7 +284,7 @@ error[E0408]: cannot change `xs` while a loop is going through it
   |         ^
 ```
 
-Bellek sahiplikle yönetilir. Her arabelleğin tam olarak bir sahibi vardır: bir değişken ya da bir geçici değer. Geçici değer saklandığında arabelleğini devreder; bir değişken yeniden saklandığında çoğaltılır, ama bu onun son kullanımıysa o da arabelleğini devreder; her arabellek de sahibi kapsam dışına çıktığında serbest bırakılır. Kopyalar programın anlamında vardır, makinede olmak zorunda değildir: `text = text + more`, `text`'e yerinde ekleme yapar. Bu her derinlikte çalışır: her biri bir düğüm listesine sahip düğümlerden oluşan bir ağaç, elle hiçbir şey yazılmadan doğru kopyalanır ve doğru serbest bırakılır.
+Bellek ownership ile yönetilir. Her arabelleğin tam olarak bir sahibi vardır: bir değişken ya da bir geçici değer. Geçici değer saklandığında arabelleğini devreder; bir değişken yeniden saklandığında çoğaltılır, ama bu onun son kullanımıysa o da arabelleğini devreder; her arabellek de sahibi kapsam dışına çıktığında serbest bırakılır. Kopyalar programın anlamında vardır, makinede olmak zorunda değildir: `text = text + more`, `text`'e yerinde ekleme yapar. Bu her derinlikte çalışır: her biri bir düğüm listesine sahip düğümlerden oluşan bir ağaç, elle hiçbir şey yazılmadan doğru kopyalanır ve doğru serbest bırakılır.
 
 Aralık dışı indeksler ve dilimler, boş bir listede `pop`, sıfıra bölme ve hiç bitmeyen özyineleme, programı `azol: stack overflow` gibi bir iletiyle durdurur. Okumamaları ya da yazmamaları gereken belleği asla okumaz ve yazmazlar.
 
@@ -330,7 +330,7 @@ Bir `fix`, yalnızca tam olarak o düzenlemeyi uygulamak hatayı gideriyorsa ver
 |---|---|
 | `azol build <files...> [-o out]` | Çalıştırılabilir dosyaya derler. Birkaç dosya tek program oluşturur |
 | `azol build --target <target> ...` | Başka bir sistem için derler |
-| `azol build -O ...` | İyileştiriciden geçirerek derler: daha hızlı program, daha yavaş derleme. Deneysel |
+| `azol build -O ...` | Optimizer'dan geçirerek derler: daha hızlı program, daha yavaş derleme. Deneysel |
 | `azol check <files...>` | Her bağımsız hatayı bildirir ve hiçbir şey yazmaz. Araçlar için `--json` |
 | `azol explain [code]` | Bir hata kodunu açıklar ya da hepsini listeler |
 | `azol fmt <files...>` | Dosyaları kanonik düzende yeniden yazar. `--check` yalnızca onları listeler, `-` standart girdiyi biçimlendirir |
@@ -342,9 +342,9 @@ VS Code için sözdizimi renklendirmesi [`editors/vscode`](editors/) içindedir.
 
 | Hedef | Çıktı | Sınandığı yer |
 |---|---|---|
-| `aarch64-macos` | Apple Silicon için imzalı bir Mach-O çalıştırılabilir dosyası | Bir Mac'te ve denetleyen bir yığın belleği (heap) olan öykünülmüş bir işlemcide |
+| `aarch64-macos` | Apple Silicon için imzalı bir Mach-O çalıştırılabilir dosyası | Bir Mac'te ve denetleyen bir yığın belleği (heap) olan emüle edilmiş bir işlemcide |
 | `x86_64-linux` | libc'siz, statik bir ELF çalıştırılabilir dosyası | Yerel olarak ve valgrind altında |
-| `aarch64-linux` | libc'siz, statik bir ELF çalıştırılabilir dosyası | Şimdilik yalnızca öykünülmüş bir işlemcide, hiç gerçek donanımda değil |
+| `aarch64-linux` | libc'siz, statik bir ELF çalıştırılabilir dosyası | Şimdilik yalnızca emüle edilmiş bir işlemcide, hiç gerçek donanımda değil |
 
 Varsayılan hedef, derleyicinin çalıştığı makinedir ve her hedef bunların herhangi birinden derlenebilir.
 
@@ -352,23 +352,23 @@ Varsayılan hedef, derleyicinin çalıştığı makinedir ve her hedef bunların
 
 Beş aşama; her biri bir öncekinin çıktısı üzerinde yalın bir geçiştir:
 
-1. **Sözcük çözümleyici (lexer).** Baytlardan token'lara.
-2. **Ayrıştırıcı (parser).** Token'lardan, düğüm başına bellek ayırmayan düz bir sözdizimi ağacına. Hiç geri dönmez.
-3. **Denetleyici.** Adlar, türler, sahiplik ve dışlayıcılık kuralları; tek seferde tek fonksiyon.
+1. **Lexer.** Baytlardan token'lara.
+2. **Parser.** Token'lardan, düğüm başına bellek ayırmayan düz bir sözdizimi ağacına. Hiç geri dönmez.
+3. **Denetleyici.** Adlar, türler, ownership ve dışlayıcılık kuralları; tek seferde tek fonksiyon.
 4. **Kod üretici.** Sözdizimi ağacından tek geçişte doğrudan makine koduna: ARM64 ya da x86-64.
-5. **Bağlayıcı.** macOS için Mach-O dosyasını düzenler, sistem kütüphanesi içe aktarımlarını bağlar ve macOS'un gerektirdiği kod imzasını hesaplar. Linux için, sistemden çekirdek dışında hiçbir şey istemeyen statik bir ELF dosyası yazar.
+5. **Linker.** macOS için Mach-O dosyasını düzenler, sistem kütüphanesi içe aktarımlarını bağlar ve macOS'un gerektirdiği kod imzasını hesaplar. Linux için, sistemden çekirdek dışında hiçbir şey istemeyen statik bir ELF dosyası yazar.
 
 Derleyicinin hiçbir bağımlılığı yoktur, SHA-256 dahil. Yazdırma, dosyalar, liste büyütme ve metin birleştirme için küçük bir çalışma zamanı, makine kodu olarak içine gömülüdür: macOS'ta elle yazılmış assembly; Linux'ta, C kütüphanesi olmadan yazılmış, kendi bellek ayırıcısı olan ve çekirdekle doğrudan konuşan C.
 
-**Nasıl sınanıyor.** `sh test.sh` her test programını derleyip çalıştırır ve yazdırdıklarını karşılaştırır, birkaç bin hatalı programı her birinin alması gereken tam rapora göre denetler, üç hedefin hepsi için her çalıştırılabilir dosyanın baytlarını sabitler ve derleyiciye kendini derletip aynı testleri yeniden geçirtir. Bunun ötesinde, her test programı denetleyen bir yığın belleği olan öykünülmüş bir ARM64 işlemcide çalıştırılır; bu bellek sızdırılan, iki kez serbest bırakılan, serbest bırakıldıktan sonra kullanılan ya da tek bir bayt taşırılan her arabelleği bildirir. x86-64 çıktısı Linux'ta yerel olarak ve denetleyen bir ayırıcıya bağlanarak valgrind altında çalıştırılır. Bir [fuzzer](tests/fuzz/) rastgele programlar yazar, her birinin ne yazdırması gerektiğini kendi yorumlayıcısıyla bulur ve bunu derlenmiş programın iki işlemcide yazdırdıklarıyla karşılaştırır.
+**Nasıl sınanıyor.** `sh test.sh` her test programını derleyip çalıştırır ve yazdırdıklarını karşılaştırır, birkaç bin hatalı programı her birinin alması gereken tam rapora göre denetler, üç hedefin hepsi için her çalıştırılabilir dosyanın baytlarını sabitler ve derleyiciye kendini derletip aynı testleri yeniden geçirtir. Bunun ötesinde, her test programı denetleyen bir yığın belleği olan emüle edilmiş bir ARM64 işlemcide çalıştırılır; bu bellek sızdırılan, iki kez serbest bırakılan, serbest bırakıldıktan sonra kullanılan ya da tek bir bayt taşırılan her arabelleği bildirir. x86-64 çıktısı Linux'ta yerel olarak ve denetleyen bir ayırıcıya bağlanarak valgrind altında çalıştırılır. Bir [fuzzer](tests/fuzz/) rastgele programlar yazar, her birinin ne yazdırması gerektiğini kendi yorumlayıcısıyla bulur ve bunu derlenmiş programın iki işlemcide yazdırdıklarıyla karşılaştırır.
 
-## Kendi kendini derleme
+## Self-hosting
 
-Derleyici azoL ile yazılmıştır: [`compiler/`](compiler/) içinde sözcük çözümleyici, ayrıştırıcı, denetleyici, ARM64 ve x86-64 kod üreticileri, üç bağlayıcı, tanılama iletileri, biçimlendirici ve komut satırı için yaklaşık 20.000 satır; buna ek olarak standart kütüphanenin azoL ile yazılmış bölümü [`lib/prelude.azl`](lib/prelude.azl). Kendini derler.
+Derleyici azoL ile yazılmıştır: [`compiler/`](compiler/) içinde lexer, parser, denetleyici, ARM64 ve x86-64 kod üreticileri, üç linker, tanılama iletileri, formatter ve komut satırı için yaklaşık 20.000 satır; buna ek olarak standart kütüphanenin azoL ile yazılmış bölümü [`lib/prelude.azl`](lib/prelude.azl). Kendini derler.
 
 - **Nereden başlar.** Bir derleyici kendini sıfırdan derleyemez. [`bootstrap/`](bootstrap/), her hedef için hazır bir derleyici tutar; her biri yaklaşık 0,7 MB'tır ve bu aynı kaynaklardan derlenmiştir. [`bootstrap/README.md`](bootstrap/README.md) bunların özet değerlerini ve yeniden nasıl üretileceklerini verir.
 - **Aynı derleyici olduğunun kanıtı.** Tohum derleyiciyle derlendiğinde kaynaklar bir derleyici üretir; o derleyici aynı kaynaklardan bir tane daha üretir; ikisi bayt bayt aynı dosyadır ve tohuma eşittir. `build.sh` bunu her derlemede denetler.
-- **Bunun görüldüğü yerler.** x86-64 Linux'ta yerel olarak. macOS'ta bir Apple Silicon Mac'te, kaynakların daha eski bir durumuyla (o zaman 611.936 bayt). ARM64 Linux için yalnızca öykünülmüş bir işlemcide, hiç gerçek donanımda değil.
+- **Bunun görüldüğü yerler.** x86-64 Linux'ta yerel olarak. macOS'ta bir Apple Silicon Mac'te, kaynakların daha eski bir durumuyla (o zaman 611.936 bayt). ARM64 Linux için yalnızca emüle edilmiş bir işlemcide, hiç gerçek donanımda değil.
 - **Nereden geldi.** İlk derleyici Rust ile yazılmıştı. azoL ile yazılanın her parçası, ancak çıktısı Rust ile yazılanınkine bayt bayt eşit olduğunda kabul edildi; bu, deponun programları ve bilerek bozulmuş binlerce program üzerinde sınandı: token'lar, sözdizimi ağaçları, denetleyicinin tabloları, hata raporları ve üç hedefin hepsi için bütün çalıştırılabilir dosyalar. Bunu yapan betikler, [`compiler/check_*.py`](compiler/), artık değiştirilmiş bir derleyiciyi bir öncekiyle karşılaştırır.
 - **Bugünkü maliyeti.** azoL ile yazılmış derleyici, aynı derleme için Rust ile yazılmış olanın yaklaşık iki katı komut çalıştırır (132.000 satırlık kıyaslama programında, x86-64 Linux'ta sayıldığında, x86-64 Linux için 2,0 kat, macOS için 1,9 kat). Yukarıdaki derleme süresi sayıları azoL ile yazılmış derleyiciyle ölçüldü.
 
@@ -376,7 +376,7 @@ Derleyici azoL ile yazılmıştır: [`compiler/`](compiler/) içinde sözcük ç
 
 Yapılmamış olanlar, planlanan sırayla. Biten işler burada listelenmez; yukarıdaki bölümlerde ve geçmiştedir.
 
-**Hız: `azol build -O`, iyileştirilmiş Rust kadar hızlı** ([tasarım](docs/design/optimizer.md), [bulgular](docs/design/optimizer-findings.md))
+**Hız: `azol build -O`, optimize edilmiş Rust kadar hızlı** ([tasarım](docs/design/optimizer.md), [bulgular](docs/design/optimizer-findings.md))
 
 1. `azol build -O` vardır ve deneyseldir. Yapılacak olan: derleyicinin kendisinin onunla derlenmesi (yeni tohumlar), böylece varsayılan derleme hızını geri kazanır.
 2. `rustc -O`'dan hâlâ uzak olan programlar: struct listeleri, kütüphane sıralaması, map'ler, metin oluşturma.
@@ -387,10 +387,10 @@ Yapılmamış olanlar, planlanan sırayla. Biten işler burada listelenmez; yuka
 
 **Dil**
 
-7. Kayan noktalı sayılar: `f64` ([tasarım](docs/design/floats.md)).
+7. Floating point sayılar: `f64` ([tasarım](docs/design/floats.md)).
 8. Metotlar ve trait'ler: kendi türleriniz üzerinde metotlar, her tür için `==`, sıralama ve özetleme (hash), sınırlı generic'ler, `Map[K, V]` ve `Set[T]` ([tasarım](docs/design/traits.md)).
 9. Fonksiyon değerleri ve closure'lar ile bunları alan kütüphane fonksiyonları ([tasarım](docs/design/closures.md)).
-10. Veri yarışı olmadan iş parçacıkları ve kanallar ([tasarım](docs/design/threads.md)).
+10. Data race olmadan thread'ler ve kanallar ([tasarım](docs/design/threads.md)).
 11. Paketler: modüller, `import`, merkezî sunucu olmadan bağımlılıklar, `test` blokları ([tasarım](docs/design/packages.md)).
 
 **Yapay zekâ ajanları ve eski sistemlerin yerini almak için**

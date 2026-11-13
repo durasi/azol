@@ -30,6 +30,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 FILES = {"en": "README.md", "tr": "README.tr.md"}
+# From the Turkish page, "English" goes to the repository's front page, which shows README.md.
+HOME = "https://github.com/durasi/azol#readme"
 TABS = {"en": ("assets/lang/en-on.svg", "assets/lang/tr-off.svg"), "tr": ("assets/lang/en-off.svg", "assets/lang/tr-on.svg")}
 START, END = "<!-- bench:start -->", "<!-- bench:end -->"
 NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
@@ -78,6 +80,8 @@ def parse(text):
         elif counts is not None and re.match(r"^\d+\. ", line):
             counts[2] += 1
         for target in re.findall(r"\]\(([^)\s]+)\)", line) + re.findall(r'href="([^"]+)"', line):
+            if target == HOME:
+                target = "README.md"
             (doc["anchors"] if target.startswith("#") else doc["links"]).append(target)
         doc["images"].extend(re.findall(r'src="([^"]+)"', line))
     if fence is not None:
@@ -104,7 +108,8 @@ def check():
     for lang, name in FILES.items():
         top = texts[lang].split("\n\n", 1)[0]
         on_off = TABS[lang]
-        if 'href="README.md"' not in top or 'href="README.tr.md"' not in top or any(src not in top for src in on_off):
+        english = 'href="README.md"' if lang == "en" else 'href="%s"' % HOME
+        if english not in top or 'href="README.tr.md"' not in top or any(src not in top for src in on_off):
             problems.append("%s must begin with the language switch: links to README.md and README.tr.md with %s and %s"
                             % (name, on_off[0], on_off[1]))
         if "—" in texts[lang]:
