@@ -4,6 +4,8 @@ A briefing for a language model that has to write azoL that compiles the
 first time. It is short on purpose. The full reference is
 [language.md](language.md). Every program here is compiled and run by
 `docs/check_docs.py`. azoL looks like Rust, Go and Swift. It is none of them.
+`azol guide` prints this page from the compiler; `azol guide --list` names
+the parts of the reference it prints one at a time.
 
 ## 1. Rules that differ from the languages you know
 
@@ -540,11 +542,22 @@ Lines and columns start at 1; `end_column` is not part of the span. A
 `fix`, present when the repair is mechanical, says: replace that span of
 `file` with `replacement`.
 
+`azol fix file.azl` applies every `fix` there is, checks again, and goes
+on until no error with a `fix` is left; it prints each edit and the errors
+that remain, and writes the file in the layout of `azol fmt`. A file in
+which an error without a `fix` remains is not written unless `--partial`
+is given. `azol fix --check` changes nothing and lists what it would do.
+
+A form of another language (`let mut`, `Vec<T>`, `&x`, `x.clone()`,
+`println!`, `len(xs)`, `elif`, `null`, `;`) gets an error of its own, E0120
+to E0133 for forms and E0220 to E0224 for names. It names the form, says
+the azoL one, and usually carries the `fix`.
+
 Messages to recognize:
 
 | Message starts with | Usual cause | Fix |
 |---|---|---|
-| `unexpected character` | `;`, `~`, `#`, `@` or another symbol azoL does not have | Remove it. |
+| `unexpected character` | A symbol azoL does not have | Remove it. |
 | `` `?` on ... needs a function that returns ... `` | `?` in `main`, or with another error type | `match`, or change the function's result type. |
 | `expected end of line but found` | Two statements on one line, or `Enum::Variant` | Split the line; bare variant. |
 | `a struct literal here needs parentheses` | `if p == Point { ... } {` | `if p == (Point { ... }) {`. |
@@ -553,7 +566,7 @@ Messages to recognize:
 | `a branch that gives a value is one expression` | Statements in a branch of a value `if` or `match` | The statement form, assigning to a `var` inside. |
 | `expected `fn`, `struct`, `enum` or `const`` | Something else at the top level: `import`, `var`, `let`, a statement | Move it into a function or delete it. |
 | `unknown type` | A type azoL does not have | Rule 5. |
-| ``expected `=` but found `<` `` | `List<T>` | `List[T]`. |
+| ``... is not an azoL type``, ``... is not an azoL function``, ``azoL has no ...`` | A form or a name of another language | What the message says; `azol fix` when there is a `fix`. |
 | `unknown function`, `has no method` | A library function that does not exist | Section 2; write the loop. |
 | `only functions can be called` | Type arguments at a call, `f[T](x)` | Rule 7. |
 | `cannot change ...: declare it with `var`` | Assignment or `push` on a `let` | Make it `var`. |

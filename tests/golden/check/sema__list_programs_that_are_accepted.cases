@@ -32,9 +32,9 @@ print(last)
 checked 24 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 7669b8795c8d221f4230348e00eafa0c941c8cf40591868bf84ddc793a7c7150
-x86_64-linux 208c321576292ddf8c6728cfb9a3d9b46df0541cb5230040e6f30aae6c0dd4cd
-aarch64-linux c6d01ce709604311c56c4c9fca5fcfc9bc9dcb75d39b32ad0e884d22056724c5
+aarch64-macos 27214ac728ba989d8f59af897261b62b99ee122bfa651ac7b0639bb7f74aa301
+x86_64-linux 624f9d03a8afd0c2d915c0820dd7a711c5c7ac9f7abcae5962dfe3a65ef28329
+aarch64-linux 50c1f3fec5c54b010ed1c4c0aed84e6ff083c7b999a1a542049b98fa50747c73
 ==== 2
 ---- file a.azl (no newline at end)
 struct Point {
@@ -68,9 +68,9 @@ print(total(xs) + total([]) + total(make()))
 checked 24 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos efa41d2b25dcdb1c64c774b74eac05396a9fe36360722f8f490d56833f683b00
-x86_64-linux 19a8a96abd1448273ec01fbf88300c31918934c3a3135224806cd1f02f81d70c
-aarch64-linux 2a1a3a95bd7ebf95d703a6ae682c0bd374d8169972cc5745d6e3bb5f9e3cb82f
+aarch64-macos 8422a0d5419726b4d974d579370b1340a4b61b86bfec8f737b3b2983b4bb145a
+x86_64-linux edeee3c2298c865e9ce3a11bd32c2655a987435c2e5056343a2d79d1b570a76a
+aarch64-linux 1b7aab6eac16b25bffe7aceb14d85c502f383e54655849ad5cb2d8516f61a54e
 ==== 3
 ---- file a.azl (no newline at end)
 struct Point {
@@ -104,9 +104,9 @@ print(i + p.y)
 checked 24 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 26c95c5417a6eaf330d7e671a63c91065c33b98e2fc60c4856b508da098485e8
-x86_64-linux 1d1e46db6c900080bf6ae0dca77ea819202384c08263a9d7870761257f2b7430
-aarch64-linux 7af0da0065dbc505b18061ac5265a82ace68fe16ad34caab5379b4da03de0ed8
+aarch64-macos 5548a4ec3fcfee7a89af3ab15b74c1a85ed8e9aa7efa6149d60cdde077970439
+x86_64-linux c28e30c025eced31f1de0b4d8eef166f354ad1918a6546b5ae0fa43ff10898bf
+aarch64-linux 271f938b42ae6d14648504565d535e8f8e2cf0a8209b67212cc827bc1d310435
 ==== 4
 ---- file a.azl (no newline at end)
 struct Point {
@@ -142,9 +142,9 @@ b.items.push(x)
 checked 26 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 3210601cfb26e9b605fdd657d3e4cedb55f42f5998c6ec0250b5742616229308
-x86_64-linux 5d62267946881bce0680f4a14dfd7a60c85712f4ce34fe4f6eefb577d690e542
-aarch64-linux 896c56ff639e852ff48720138c19e4a1b2dc581c9a6c7b76761d1b75b32af602
+aarch64-macos 457566773cb9eebd4c87dc94e532fde2d836b62a2212619c9d57b18139cd3a26
+x86_64-linux b03dcbd14c59d1633d9f0e71702fdf1e7525392f0ec8cc8c41a28b6baf304eef
+aarch64-linux 88f81da18ddf361e2075f03b233d8d59e459316d231d8e8de926628903f4575b
 ==== 5
 ---- file a.azl (no newline at end)
 struct Point {
@@ -181,9 +181,9 @@ print(f)
 checked 27 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos dd85b0500c32f8e070a8356d92873bb82e1bb9be494bd0bb96532dc13724ce54
-x86_64-linux 96eb746d5ef1208b83fa3ac4e2f33ea67f9d5e2d9c5961245a80dbcfe75da6e0
-aarch64-linux b48641d0f19434b78665ab8f29721bb2362d496d17ed69c1f4cc6b38e89a87d8
+aarch64-macos b6f1f3db8c9eca73417c8bac9554fd95c28c6fefa39ef62c8856056e1cc2919e
+x86_64-linux f552f09c3081a08ef919e34fc58b2383ec0f860191ad8037c028c621ba7ab91a
+aarch64-linux 9236be3508ed3d8e3988f44d48645440e6388cc6eed833cab3ffa8e80ed7d3c0
 ==== 6
 ---- file a.azl (no newline at end)
 struct Point {
@@ -216,6 +216,6 @@ xs.push(xs.pop())
 checked 23 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 9a0479ed11d537021082b63c323ee349e66cb46437815e573d81ea51a74e3b8b
-x86_64-linux 4db51f8d547aa85a6567ce7747e01c6a9bdb857f3b21610dac88c149c71d632e
-aarch64-linux 835235ff84c402ad2b97033cd646521be4570bc5953130d3a0fab4385cd3d85f
+aarch64-macos fe1ca36b3ab5786af1cef77bd5d1bb46dda06729f0170ab3f3288fc8af04e649
+x86_64-linux f596608f4108c4ca574af0dff82830f9220fed23c8c98cfdace9330f23f0595c
+aarch64-linux d455c131b3408dee03e34b3660dff19b21b634b6af940ce170379f4d0c194307

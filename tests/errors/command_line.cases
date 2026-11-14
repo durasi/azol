@@ -74,6 +74,13 @@ Usage:
     azol build --json ...            standard output, with exact positions, the
                                      rule that was broken and, when the repair is
                                      mechanical, the edit that makes it
+    azol fix <files...>              Apply every edit the checker offers, check again,
+                                     and repeat until none is left; `--check` only
+                                     lists them, `--json` reports each one
+    azol guide                       Print the briefing for someone, or a model, who
+                                     has not seen azoL: the rules and everything built in
+    azol guide <topic>               Print one part of the reference; `--list` names
+                                     the topics, `--json` gives them with their sizes
     azol explain                     List the error codes with their rules
     azol explain <code>              Explain one error code, as in `azol explain E0401`
     azol fmt <files...>              Rewrite source files in the canonical layout
@@ -108,6 +115,13 @@ Usage:
     azol build --json ...            standard output, with exact positions, the
                                      rule that was broken and, when the repair is
                                      mechanical, the edit that makes it
+    azol fix <files...>              Apply every edit the checker offers, check again,
+                                     and repeat until none is left; `--check` only
+                                     lists them, `--json` reports each one
+    azol guide                       Print the briefing for someone, or a model, who
+                                     has not seen azoL: the rules and everything built in
+    azol guide <topic>               Print one part of the reference; `--list` names
+                                     the topics, `--json` gives them with their sizes
     azol explain                     List the error codes with their rules
     azol explain <code>              Explain one error code, as in `azol explain E0401`
     azol fmt <files...>              Rewrite source files in the canonical layout
@@ -142,6 +156,13 @@ Usage:
     azol build --json ...            standard output, with exact positions, the
                                      rule that was broken and, when the repair is
                                      mechanical, the edit that makes it
+    azol fix <files...>              Apply every edit the checker offers, check again,
+                                     and repeat until none is left; `--check` only
+                                     lists them, `--json` reports each one
+    azol guide                       Print the briefing for someone, or a model, who
+                                     has not seen azoL: the rules and everything built in
+    azol guide <topic>               Print one part of the reference; `--list` names
+                                     the topics, `--json` gives them with their sizes
     azol explain                     List the error codes with their rules
     azol explain <code>              Explain one error code, as in `azol explain E0401`
     azol fmt <files...>              Rewrite source files in the canonical layout
@@ -180,6 +201,13 @@ Usage:
     azol build --json ...            standard output, with exact positions, the
                                      rule that was broken and, when the repair is
                                      mechanical, the edit that makes it
+    azol fix <files...>              Apply every edit the checker offers, check again,
+                                     and repeat until none is left; `--check` only
+                                     lists them, `--json` reports each one
+    azol guide                       Print the briefing for someone, or a model, who
+                                     has not seen azoL: the rules and everything built in
+    azol guide <topic>               Print one part of the reference; `--list` names
+                                     the topics, `--json` gives them with their sizes
     azol explain                     List the error codes with their rules
     azol explain <code>              Explain one error code, as in `azol explain E0401`
     azol fmt <files...>              Rewrite source files in the canonical layout
@@ -218,6 +246,13 @@ Usage:
     azol build --json ...            standard output, with exact positions, the
                                      rule that was broken and, when the repair is
                                      mechanical, the edit that makes it
+    azol fix <files...>              Apply every edit the checker offers, check again,
+                                     and repeat until none is left; `--check` only
+                                     lists them, `--json` reports each one
+    azol guide                       Print the briefing for someone, or a model, who
+                                     has not seen azoL: the rules and everything built in
+    azol guide <topic>               Print one part of the reference; `--list` names
+                                     the topics, `--json` gives them with their sizes
     azol explain                     List the error codes with their rules
     azol explain <code>              Explain one error code, as in `azol explain E0401`
     azol fmt <files...>              Rewrite source files in the canonical layout
@@ -256,6 +291,13 @@ Usage:
     azol build --json ...            standard output, with exact positions, the
                                      rule that was broken and, when the repair is
                                      mechanical, the edit that makes it
+    azol fix <files...>              Apply every edit the checker offers, check again,
+                                     and repeat until none is left; `--check` only
+                                     lists them, `--json` reports each one
+    azol guide                       Print the briefing for someone, or a model, who
+                                     has not seen azoL: the rules and everything built in
+    azol guide <topic>               Print one part of the reference; `--list` names
+                                     the topics, `--json` gives them with their sizes
     azol explain                     List the error codes with their rules
     azol explain <code>              Explain one error code, as in `azol explain E0401`
     azol fmt <files...>              Rewrite source files in the canonical layout
@@ -295,6 +337,13 @@ Usage:
     azol build --json ...            standard output, with exact positions, the
                                      rule that was broken and, when the repair is
                                      mechanical, the edit that makes it
+    azol fix <files...>              Apply every edit the checker offers, check again,
+                                     and repeat until none is left; `--check` only
+                                     lists them, `--json` reports each one
+    azol guide                       Print the briefing for someone, or a model, who
+                                     has not seen azoL: the rules and everything built in
+    azol guide <topic>               Print one part of the reference; `--list` names
+                                     the topics, `--json` gives them with their sizes
     azol explain                     List the error codes with their rules
     azol explain <code>              Explain one error code, as in `azol explain E0401`
     azol fmt <files...>              Rewrite source files in the canonical layout
@@ -330,6 +379,13 @@ Usage:
     azol build --json ...            standard output, with exact positions, the
                                      rule that was broken and, when the repair is
                                      mechanical, the edit that makes it
+    azol fix <files...>              Apply every edit the checker offers, check again,
+                                     and repeat until none is left; `--check` only
+                                     lists them, `--json` reports each one
+    azol guide                       Print the briefing for someone, or a model, who
+                                     has not seen azoL: the rules and everything built in
+    azol guide <topic>               Print one part of the reference; `--list` names
+                                     the topics, `--json` gives them with their sizes
     azol explain                     List the error codes with their rules
     azol explain <code>              Explain one error code, as in `azol explain E0401`
     azol fmt <files...>              Rewrite source files in the canonical layout
@@ -364,6 +420,13 @@ Usage:
     azol build --json ...            standard output, with exact positions, the
                                      rule that was broken and, when the repair is
                                      mechanical, the edit that makes it
+    azol fix <files...>              Apply every edit the checker offers, check again,
+                                     and repeat until none is left; `--check` only
+                                     lists them, `--json` reports each one
+    azol guide                       Print the briefing for someone, or a model, who
+                                     has not seen azoL: the rules and everything built in
+    azol guide <topic>               Print one part of the reference; `--list` names
+                                     the topics, `--json` gives them with their sizes
     azol explain                     List the error codes with their rules
     azol explain <code>              Explain one error code, as in `azol explain E0401`
     azol fmt <files...>              Rewrite source files in the canonical layout
@@ -398,6 +461,13 @@ Usage:
     azol build --json ...            standard output, with exact positions, the
                                      rule that was broken and, when the repair is
                                      mechanical, the edit that makes it
+    azol fix <files...>              Apply every edit the checker offers, check again,
+                                     and repeat until none is left; `--check` only
+                                     lists them, `--json` reports each one
+    azol guide                       Print the briefing for someone, or a model, who
+                                     has not seen azoL: the rules and everything built in
+    azol guide <topic>               Print one part of the reference; `--list` names
+                                     the topics, `--json` gives them with their sizes
     azol explain                     List the error codes with their rules
     azol explain <code>              Explain one error code, as in `azol explain E0401`
     azol fmt <files...>              Rewrite source files in the canonical layout
@@ -432,6 +502,13 @@ Usage:
     azol build --json ...            standard output, with exact positions, the
                                      rule that was broken and, when the repair is
                                      mechanical, the edit that makes it
+    azol fix <files...>              Apply every edit the checker offers, check again,
+                                     and repeat until none is left; `--check` only
+                                     lists them, `--json` reports each one
+    azol guide                       Print the briefing for someone, or a model, who
+                                     has not seen azoL: the rules and everything built in
+    azol guide <topic>               Print one part of the reference; `--list` names
+                                     the topics, `--json` gives them with their sizes
     azol explain                     List the error codes with their rules
     azol explain <code>              Explain one error code, as in `azol explain E0401`
     azol fmt <files...>              Rewrite source files in the canonical layout
@@ -470,6 +547,13 @@ Usage:
     azol build --json ...            standard output, with exact positions, the
                                      rule that was broken and, when the repair is
                                      mechanical, the edit that makes it
+    azol fix <files...>              Apply every edit the checker offers, check again,
+                                     and repeat until none is left; `--check` only
+                                     lists them, `--json` reports each one
+    azol guide                       Print the briefing for someone, or a model, who
+                                     has not seen azoL: the rules and everything built in
+    azol guide <topic>               Print one part of the reference; `--list` names
+                                     the topics, `--json` gives them with their sizes
     azol explain                     List the error codes with their rules
     azol explain <code>              Explain one error code, as in `azol explain E0401`
     azol fmt <files...>              Rewrite source files in the canonical layout

@@ -74,6 +74,7 @@ fn a_code_text_macos(g: AGen, data: str, ident: str) -> str {
         match reloc {
             Import(at, import) => text = text + "i " + str(at) + " " + str(import) + "\n"
             Data(at, offset, register) => text = text + "d " + str(at) + " " + str(offset) + " " + str(register) + "\n"
+            Memory(at, register) => text = text + "m " + str(at) + " " + str(register) + "\n"
         }
     }
     return text + "end\n"
@@ -158,7 +159,7 @@ fn a_build_linux(g: mut AGen, data: str, library: str) -> str {
     // that the stack holds no code. The memory has nothing in the file;
     // its offset only has to agree with its address within a page.
     a_program_header(mut text, pt_load(), pf_r() | pf_x(), ALR_BASE, file_size, file_size, page)
-    a_program_header(mut text, pt_load(), pf_r() | pf_w(), ALR_MEMORY, 0, ALR_MEMORY_SIZE, page)
+    a_program_header(mut text, pt_load(), pf_r() | pf_w(), ALR_MEMORY, 0, ALR_MEMORY_TOTAL, page)
     a_program_header(mut text, pt_gnu_stack(), pf_r() | pf_w(), 0, 0, 0, 16)
     pad_to(mut text, ALR_TEXT_OFFSET, 0)
     text = text + library
@@ -182,6 +183,12 @@ fn a_build_linux(g: mut AGen, data: str, library: str) -> str {
             Data(at, offset, register) => {
                 let pc = ALR_BASE + code_at + at * 4
                 let target = ALR_BASE + data_at + offset
+                g.words[at] = adrp(register, pc, target)
+                g.words[at + 1] = 0x91000000 | (target & 0xFFF) << 10 | register << 5 | register // add reg, reg, #lo12
+            }
+            Memory(at, register) => {
+                let pc = ALR_BASE + code_at + at * 4
+                let target = ALR_RUNTIME_MEMORY
                 g.words[at] = adrp(register, pc, target)
                 g.words[at + 1] = 0x91000000 | (target & 0xFFF) << 10 | register << 5 | register // add reg, reg, #lo12
             }

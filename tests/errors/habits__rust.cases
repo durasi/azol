@@ -1,0 +1,802 @@
+# Habits from Rust (docs/design/agents.md 1.5, compiler/habits.azl): each is answered with an
+# error that names the habit and says the azoL form, and with the edit when it is mechanical.
+==== E0121: `let mut x = 1`
+---- file a.azl
+fn main() {
+    let mut x = 1
+    x = 2
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0121 2:9
+---- apply-fix
+---- after-has a.azl
+    var x = 1
+---- run check --json a.azl
+---- exit 0
+==== E0122: `fn first<T>(xs: List<T>) -> i64 {`
+---- file a.azl
+fn first<T>(xs: List<T>) -> i64 {
+    return 1
+}
+fn main() {
+    print(first([1]))
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0122 1:9
+---- apply-fix
+---- after-has a.azl
+fn first[T](xs: List<T>) -> i64 {
+---- run check --json a.azl
+---- exit 1
+---- reports E0122 1:21
+==== E0122: `let xs: List<i64> = []`
+---- file a.azl
+fn main() {
+    let xs: List<i64> = []
+    print(xs.len())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0122 2:17
+---- apply-fix
+---- after-has a.azl
+    let xs: List[i64] = []
+---- run check --json a.azl
+---- exit 0
+==== E0122: `let xs: Vec<i64> = []`
+---- file a.azl
+fn main() {
+    let xs: Vec<i64> = []
+    print(xs.len())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0122 2:16
+---- apply-fix
+---- after-has a.azl
+    let xs: Vec[i64] = []
+---- run check --json a.azl
+---- exit 1
+---- reports E0220 2:13
+==== E0124: `let xs = vec![1, 2]`
+---- file a.azl
+fn main() {
+    let xs = vec![1, 2]
+    print(xs.len())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0124 2:17
+---- apply-fix
+---- after-has a.azl
+    let xs = [1, 2]
+---- run check --json a.azl
+---- exit 0
+==== E0220: `fn f(s: String) {`
+---- file a.azl
+fn f(s: String) {
+    print(s)
+}
+fn main() {
+    f("a")
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0220 1:9
+---- apply-fix
+---- after-has a.azl
+fn f(s: str) {
+---- run check --json a.azl
+---- exit 0
+==== E0123: `fn f(s: &str) {`
+---- file a.azl
+fn f(s: &str) {
+    print(s)
+}
+fn main() {
+    f("a")
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0123 1:9
+---- apply-fix
+---- after-has a.azl
+fn f(s: str) {
+---- run check --json a.azl
+---- exit 0
+==== E0123: `f(&x)`
+---- file a.azl
+fn f(x: i64) {
+    print(x)
+}
+fn main() {
+    let x = 1
+    f(&x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0123 6:7
+---- apply-fix
+---- after-has a.azl
+    f(x)
+---- run check --json a.azl
+---- exit 0
+==== E0123: `f(&mut xs)`
+---- file a.azl
+fn f(xs: mut List[i64]) {
+    xs.push(1)
+}
+fn main() {
+    var xs = [1]
+    f(&mut xs)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0123 6:7
+---- apply-fix
+---- after-has a.azl
+    f(mut xs)
+---- run check --json a.azl
+---- exit 0
+==== E0123: `fn f(xs: &mut List[i64]) {`
+---- file a.azl
+fn f(xs: &mut List[i64]) {
+    xs.push(1)
+}
+fn main() {
+    var xs = [1]
+    f(mut xs)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0123 1:10
+---- apply-fix
+---- after-has a.azl
+fn f(xs: mut List[i64]) {
+---- run check --json a.azl
+---- exit 0
+==== E0223: `let ys = xs.clone()`
+---- file a.azl
+fn main() {
+    let xs = [1]
+    let ys = xs.clone()
+    print(ys.len())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:17
+---- apply-fix
+---- after-has a.azl
+    let ys = xs
+---- run check --json a.azl
+---- exit 0
+==== E0223: `print(n.to_string())`
+---- file a.azl
+fn main() {
+    let n = 1
+    print(n.to_string())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:13
+---- apply-fix
+---- after-has a.azl
+    print(str(n))
+---- run check --json a.azl
+---- exit 0
+==== E0125: `let s = String::from("a")`
+---- file a.azl
+fn main() {
+    let s = String::from("a")
+    print(s)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0125 2:19
+---- apply-fix
+---- after-has a.azl
+    let s = "a"
+---- run check --json a.azl
+---- exit 0
+==== E0125: `let s = Shape::Circle(2)`
+---- file a.azl
+enum Shape {
+    Circle(i64)
+    Dot
+}
+fn main() {
+    let s = Shape::Circle(2)
+    match s {
+        Circle(r) => print(r)
+        Dot => print(0)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0125 6:18
+---- apply-fix
+---- after-has a.azl
+    let s = Circle(2)
+---- run check --json a.azl
+---- exit 0
+==== E0126: `impl Point {`
+---- file a.azl
+struct Point {
+    x: i64
+}
+impl Point {
+    fn get(self) -> i64 {
+        return self.x
+    }
+}
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0126 4:1
+---- no-fix
+==== E0124: `println!("{}", x)`
+---- file a.azl
+fn main() {
+    let x = 1
+    println!("{}", x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0124 3:12
+---- apply-fix
+---- after-has a.azl
+    print(x)
+---- run check --json a.azl
+---- exit 0
+==== E0124: `let s = format!("{}", x)`
+---- file a.azl
+fn main() {
+    let x = 1
+    let s = format!("{}", x)
+    print(s)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0124 3:19
+---- apply-fix
+---- after-has a.azl
+    let s = str(x)
+---- run check --json a.azl
+---- exit 0
+==== E0220: `let x: i32 = 1`
+---- file a.azl
+fn main() {
+    let x: i32 = 1
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0220 2:12
+---- apply-fix
+---- after-has a.azl
+    let x: i64 = 1
+---- run check --json a.azl
+---- exit 0
+==== E0220: `let n: usize = 1`
+---- file a.azl
+fn main() {
+    let n: usize = 1
+    print(n)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0220 2:12
+---- apply-fix
+---- after-has a.azl
+    let n: i64 = 1
+---- run check --json a.azl
+---- exit 0
+==== E0122: `fn f(o: Option<i64>) {`
+---- file a.azl
+fn f(o: Option<i64>) {
+}
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0122 1:15
+---- apply-fix
+---- after-has a.azl
+fn f(o: Option[i64]) {
+---- run check --json a.azl
+---- exit 0
+==== E0133: `1 | 2 => print(1)`
+---- file a.azl
+fn main() {
+    let n = 1
+    match n {
+        1 | 2 => print(1)
+        _ => print(0)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0133 4:11
+---- apply-fix
+---- run check --json a.azl
+---- exit 0
+==== E0133: `x if x > 0 => print(1)`
+---- file a.azl
+fn main() {
+    let n = 1
+    match n {
+        x if x > 0 => print(1)
+        _ => print(0)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0133 4:11
+---- no-fix
+==== E0126: `pub fn f() {`
+---- file a.azl
+pub fn f() {
+}
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0126 1:1
+---- apply-fix
+---- after-has a.azl
+fn f() {
+---- run check --json a.azl
+---- exit 0
+==== E0126: `use std::fs`
+---- file a.azl
+use std::fs
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0126 1:1
+---- apply-fix
+---- after-has a.azl
+fn main() {
+---- run check --json a.azl
+---- exit 0
+==== E0131: `let f = |x| x + 1`
+---- file a.azl
+fn main() {
+    let f = |x| x + 1
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0131 2:13
+---- no-fix
+==== E0223: `print(xs.iter().sum())`
+---- file a.azl
+fn main() {
+    let xs = [1]
+    print(xs.iter().sum())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:14
+---- apply-fix
+---- after-has a.azl
+    print(xs.sum())
+---- run check --json a.azl
+---- exit 0
+==== E0223: `s.push_str("b")`
+---- file a.azl
+fn main() {
+    var s = "a"
+    s.push_str("b")
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:7
+---- apply-fix
+---- after-has a.azl
+    s += "b"
+---- run check --json a.azl
+---- exit 0
+==== E0128: `let y = x as i64`
+---- file a.azl
+fn main() {
+    let x = 1
+    let y = x as i64
+    print(y)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0128 3:15
+---- apply-fix
+---- after-has a.azl
+    let y = x
+---- run check --json a.azl
+---- exit 0
+==== E0129: `#[derive(Debug)]`
+---- file a.azl
+#[derive(Debug)]
+struct P {
+    x: i64
+}
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0129 1:1
+---- apply-fix
+---- after-has a.azl
+struct P {
+---- run check --json a.azl
+---- exit 0
+==== E0132: `let x = try f()`
+---- file a.azl
+fn f() -> Option[i64] {
+    return Some(1)
+}
+fn g() -> Option[i64] {
+    let x = try f()
+    return Some(x)
+}
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0132 5:17
+---- apply-fix
+---- after-has a.azl
+    let x = f()?
+---- run check --json a.azl
+---- exit 0
+==== E0124: `panic!("x")`
+---- file a.azl
+fn main() {
+    panic!("x")
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0124 2:10
+---- no-fix
+==== E0127: `break`
+---- file a.azl
+fn main() {
+    loop {
+        break
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 3:9
+---- apply-fix
+---- after-has a.azl
+    while true {
+---- run check --json a.azl
+---- exit 0
+==== E0121: `static X: i64 = 1`
+---- file a.azl
+static X: i64 = 1
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0121 1:1
+---- apply-fix
+---- after-has a.azl
+const X: i64 = 1
+---- run check --json a.azl
+---- exit 0
+==== E0220: `fn f() -> () {`
+---- file a.azl
+fn f() -> () {
+}
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0220 1:11
+---- apply-fix
+---- after-has a.azl
+fn f() {
+---- run check --json a.azl
+---- exit 0
+==== E0122: `let m: HashMap<String, i64> = new_map()`
+---- file a.azl
+fn main() {
+    let m: HashMap<String, i64> = new_map()
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0122 2:19
+---- apply-fix
+---- after-has a.azl
+    let m: HashMap[String, i64] = new_map()
+---- run check --json a.azl
+---- exit 1
+---- reports E0220 2:12
+==== E0122: `fn f[T: Ord](x: T) {`
+---- file a.azl
+fn f[T: Ord](x: T) {
+}
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0122 1:7
+---- apply-fix
+---- after-has a.azl
+fn f[T](x: T) {
+---- run check --json a.azl
+---- exit 0
+==== E0122: `let n = "1".parse::<i64>()`
+---- file a.azl
+fn main() {
+    let n = "1".parse::<i64>()
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0122 2:22
+---- apply-fix
+---- run check --json a.azl
+---- exit 1
+==== E0122: `fn f<'a>(s: &'a str) {`
+---- file a.azl
+fn f<'a>(s: &'a str) {
+}
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0122 1:6
+---- no-fix
+==== E0122: `next: Box<Node>`
+---- file a.azl
+struct Node {
+    next: Box<Node>
+}
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0122 2:14
+---- apply-fix
+---- after-has a.azl
+    next: Box[Node]
+---- run check --json a.azl
+---- exit 1
+---- reports E0220 2:11
+==== E0124: `println!("a {} b {}", x, x)`
+---- file a.azl
+fn main() {
+    let x = 1
+    println!("a {} b {}", x, x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0124 3:12
+---- apply-fix
+---- after-has a.azl
+    print("a {x} b {x}")
+---- run check --json a.azl
+---- exit 0
+==== E0127: `for (i, x) in xs.iter().enumerate() {`
+---- file a.azl
+fn main() {
+    let xs = [1, 2]
+    for (i, x) in xs.iter().enumerate() {
+        print(i + x)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 3:9
+---- apply-fix
+---- after-has a.azl
+    for i, x in xs.iter().enumerate() {
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:20
+==== E0223: `print(s.to_uppercase())`
+---- file a.azl
+fn main() {
+    let s = "a b"
+    print(s.to_uppercase())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:13
+---- apply-fix
+---- after-has a.azl
+    print(s.to_upper())
+---- run check --json a.azl
+---- exit 0
+==== E0125: `let xs: List[i64] = Vec::new()`
+---- file a.azl
+fn main() {
+    let xs: List[i64] = Vec::new()
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0125 2:28
+---- apply-fix
+---- after-has a.azl
+    let xs: List[i64] = []
+---- run check --json a.azl
+---- exit 0
+==== E0125: `let args = std::env::args()`
+---- file a.azl
+fn main() {
+    let args = std::env::args()
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0125 2:19
+---- no-fix
+==== E0223: `let t = s.to_owned()`
+---- file a.azl
+fn main() {
+    let s = "a"
+    let t = s.to_owned()
+    let u = s.as_str()
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:15
+---- apply-fix
+---- after-has a.azl
+    let t = s
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 4:15
+==== E0128: `let n = xs.len() as usize`
+---- file a.azl
+fn main() {
+    let xs = [1]
+    let n = xs.len() as usize
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0128 3:22
+---- apply-fix
+---- after-has a.azl
+    let n = xs.len()
+---- run check --json a.azl
+---- exit 0
+==== E0125: `std::process::exit(1)`
+---- file a.azl
+fn main() {
+    exit(0)
+    std::process::exit(1)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0125 3:8
+---- no-fix
+==== E0127: `for (i, x) in xs.iter().enumerate() {`
+---- file a.azl
+fn main() {
+    let xs = [1, 2]
+    for (i, x) in xs.iter().enumerate() {
+        print(i)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 3:9
+---- apply-fix
+---- after-has a.azl
+    for i, x in xs.iter().enumerate() {
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:20
+==== E0123: `for x in &xs {`
+---- file a.azl
+fn main() {
+    let xs = [1, 2]
+    for x in &xs {
+        print(x)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0123 3:14
+---- apply-fix
+---- after-has a.azl
+    for x in xs {
+---- run check --json a.azl
+---- exit 0
+==== E0223: `match s.as_str() {`
+---- file a.azl
+fn main() {
+    let s = "a"
+    match s.as_str() {
+        "a" => print(1)
+        _ => print(0)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:13
+---- apply-fix
+---- after-has a.azl
+    match s {
+---- run check --json a.azl
+---- exit 0
+==== E0223: `let s = "a" + 1.to_string()`
+---- file a.azl
+fn main() {
+    let s = "a" + 1.to_string()
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 2:21
+---- apply-fix
+---- after-has a.azl
+    let s = "a" + str(1)
+---- run check --json a.azl
+---- exit 0
+==== E0130: `fn add(mut xs: List[i64])`
+---- file a.azl
+fn add(mut xs: List[i64], n: i64) {
+    xs.push(n)
+}
+fn main() {
+    var xs: List[i64] = []
+    add(mut xs, 1)
+    print(xs.len())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0130 1:8
+---- apply-fix
+---- after-has a.azl
+fn add(xs: mut List[i64], n: i64) {
+---- run check --json a.azl
+---- exit 0
+==== E0125: `List::new()`
+---- file a.azl
+fn main() {
+    var xs: List[i64] = List::new()
+    xs.push(1)
+    print(xs.len())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0125 2:29
+---- apply-fix
+---- after-has a.azl
+    var xs: List[i64] = []
+---- run check --json a.azl
+---- exit 0
+==== E0125: `Map::new()`
+---- file a.azl
+fn main() {
+    var m: Map[i64] = Map::new()
+    m.set("a", 1)
+    print(m.len())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0125 2:26
+---- apply-fix
+---- after-has a.azl
+    var m: Map[i64] = new_map()
+---- run check --json a.azl
+---- exit 0
+==== E0223: `n.to_str()` on a number
+---- file a.azl
+fn main() {
+    let n = 5
+    let s = n.to_str()
+    print(s)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:15
+---- apply-fix
+---- after-has a.azl
+    let s = str(n)
+---- run check --json a.azl
+---- exit 0

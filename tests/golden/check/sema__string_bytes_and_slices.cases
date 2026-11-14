@@ -14,6 +14,6 @@ let u = (s + t)[1] + s.slice(1, 2).len()
 checked 6 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 8b0b66e4ce8024313f9438270ddbc708ed6602636bd0c5e3c166df1e84bcf639
-x86_64-linux 90a28935746268042b4d647be51aec174d9ae4586e698166a5fb74b1e3d0f557
-aarch64-linux 6b911a727a0c5c3779f421031b497b3283d3836cde099cf618db784452c05f67
+aarch64-macos 81e8af11f6809ccfbefb036c9ec59477bcbb0152ed1edf533036cc9f24e37613
+x86_64-linux f2b8338c7e83392be7808bf3afed7fbbfe8209ac8cbb0f5ece9a0ae493b7fdb5
+aarch64-linux bb0eb6f28db0ca91ea4453889fc0cc01327e9e4e924c7ead25c43773aaa44897

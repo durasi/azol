@@ -21,6 +21,6 @@ l.from = l.to
 checked 13 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 89d36ba24d8a4f06d35b9f5c03b2e8487f5d6ad222afb3c9f08e1dec4256a3b7
-x86_64-linux d954f88f684b27bb68c56e33c0ffce9aecea6214b1decbd2ee9791297d5a9d1b
-aarch64-linux f065ab4e76929df81fcec8f867f5d186a8d8a7299fc2e9bfe64af30f118bc952
+aarch64-macos bf15b9046d54f44f8c361deaad28aa70b817a4ae12343aec17f8ed8323042e57
+x86_64-linux ee0a2c90a18df98806533c5628edd02716a5d43e46efafa7e672d441e5705b60
+aarch64-linux 9b98726a105924886299675d5ad48b3ce290724427cca6595824cc6684451188

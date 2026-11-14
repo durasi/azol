@@ -49,16 +49,16 @@ print(a.size())
 ---- exit 1
 ---- stdout (empty)
 ---- stderr
-error[E0207]: `str` has no method `size`
+error[E0223]: `.size` is called `.len` in azoL
  --> a.azl:3:9
   |
 3 | print(a.size())
   |         ^
----- asserted 3:9 `str` has no method `size`
+---- asserted 3:9 `.size` is called `.len` in azoL
 ---- run check --json a.azl
 ---- exit 1
 ---- stdout
-{"severity":"error","code":"E0207","message":"`str` has no method `size`","file":"a.azl","line":3,"column":9,"end_line":3,"end_column":13,"source":"print(a.size())","rule":"A method call needs a method that exists for the type of the value before the dot."}
+{"severity":"error","code":"E0223","message":"`.size` is called `.len` in azoL","file":"a.azl","line":3,"column":9,"end_line":3,"end_column":13,"source":"print(a.size())","rule":"Values have the methods listed by `azol guide library` and no others; a function of the program is called as `name(value)`, not `value.name()`.","help":"`azol guide library` lists every method by type.","fix":{"file":"a.azl","line":3,"column":9,"end_line":3,"end_column":13,"replacement":"len"}}
 {"summary":{"errors":1,"files":1}}
 ==== 4
 ---- file a.azl (no newline at end)

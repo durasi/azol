@@ -11,7 +11,9 @@ fn main() {
 ---- run check --json a.azl
 ---- exit 1
 ---- reports E1414 3:8
----- no-fix
+---- apply-fix
+---- run check --json a.azl
+---- exit 0
 ==== `while let` is a loop with a test
 ---- file a.azl
 fn main() {
@@ -147,7 +149,9 @@ fn main() {
 ---- run check --json a.azl
 ---- exit 1
 ---- reports E1409 3:19
----- no-fix
+---- apply-fix
+---- run check --json a.azl
+---- exit 0
 ==== a brace that needs no backslash
 ---- file a.azl
 fn main() {

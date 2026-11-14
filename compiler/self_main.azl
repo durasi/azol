@@ -760,6 +760,8 @@ fn main() -> i64 {
         return run_parse(path, time_only)
     }
     if command == "fmt" { return run_fmt(arguments, 2) }
+    if command == "fix" { return run_fix(arguments, 2) }
+    if command == "guide" { return run_guide(arguments, 2) }
     if command == "sema-dump" {
         // For comparing checkers; not part of the usage text.
         if count < 2 { return usage() }

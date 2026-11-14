@@ -13,9 +13,9 @@ let c = - 9223372036854775808
 checked 5 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 6fc2ae37a8b16b072f6bfa9611bc5f72495a6c4f5a2f280f383029379a80d180
-x86_64-linux 3a30c0aceb0ee0de1c8374683da780851d4b041cd1c99175034295baeb668df3
-aarch64-linux 67b3bb91d204ec625c0e020f1d027d73da06a7a7ee018966cd741901be2303c9
+aarch64-macos b8847ea0b0bb284e4facb2fc304cb648537ddddf6f3b8bdc660cb022b494eed4
+x86_64-linux 0028fc5ce3cde0a10fdc7d9c2865e95affb3a00023553db1ca391501c58479b8
+aarch64-linux 117419aba3e0aaa382bb96a30e624b0c99e1a9e72a03a4706911c9114cc2e5b1
 ==== 2
 ---- file a.azl (no newline at end)
 const LOW = -9223372036854775808
@@ -29,6 +29,6 @@ fn main() {
 checked 4 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 49870ce299859eed0a9c8fdb4282247e7ccce8a1233027724eb77db201390e60
-x86_64-linux 73387f9bf8ce4fbf9335db78e1c93b723071d1235c92ef538e9d55b460e45122
-aarch64-linux 192a6a8427cdfb8e28d05412ff50b03566c4f1c82aa9418a23cd041f3aed0b56
+aarch64-macos 6bac6cdab0604376cbdbb1c77c8d9e7a658b0c77897f155db843607863b93851
+x86_64-linux 7b29f9d499703ecab69eed7dfeacd669173dd005c44cd7dc281577424108077d
+aarch64-linux e26ea298ff41b89100cec16aa95e2a9856b64d4d3b93d1316fb1a3b1c115164f

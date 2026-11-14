@@ -95,7 +95,9 @@ fn main() {
 ---- run check --json a.azl
 ---- exit 1
 ---- reports E1405 2:14
----- no-fix
+---- apply-fix
+---- run check --json a.azl
+---- exit 0
 ==== `.step_by(k)` is `step k`
 ---- file a.azl
 fn main() {
@@ -143,7 +145,9 @@ fn main() {
 ---- run check --json a.azl
 ---- exit 1
 ---- reports E1402 4:20
----- no-fix
+---- apply-fix
+---- run check --json a.azl
+---- exit 0
 ==== the ends of a range are numbers
 ---- file a.azl
 fn main() {

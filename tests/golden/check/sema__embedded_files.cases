@@ -16,9 +16,9 @@ two\nlines \xff\x00
 checked 6 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos f78484063bc40211b419b660cdbc7564a63454f377f3753cd3d2de1ebe80fe46
-x86_64-linux b679615cb9a98785ff05f704be735a9142165949879544a8a24bb737e228842f
-aarch64-linux 005d912c03b19387eac9fcbc80e660bb122714d58ba39d76c6d3d04ff016a148
+aarch64-macos 4a458b80df18a70c6f47ea1c13ce40e16866dd78225c3684509cc50e22b14c54
+x86_64-linux f2174d5d41d2631907e41f71322ef183b98a0be2d35cf73d5faa0ec6f23effb5
+aarch64-linux d81a054fbf1a9a881eb3509ceaeb66561d8c945f91379b379c756eb8820cd8b2
 ==== 2
 ---- file sub/a.azl (no newline at end)
 const NOTE = embed("note.txt")
@@ -37,6 +37,6 @@ one folder up
 checked 5 lines in 1 file: no errors
 ---- run build-all sub/a.azl
 ---- executables
-aarch64-macos 071d88135691e7779a87f879a0e7b4a3308c98df0b8241d03b43289c049a3086
-x86_64-linux ce0532424bb3bcb5753f743b76ec61ab41e688cddd6a55ad59b55af10a2a85eb
-aarch64-linux c90f638aad66759e6a6d91377d2dc0cf949826ff243b68daf9cc061fe943235e
+aarch64-macos 2a801e26985cc81d7ec098d49726d07fd415b8712715ce79cb6f0392efe42b79
+x86_64-linux 65062f4d15aac0cae15b7907d40984efc30882e6a66a71525ec412b0e25e4e72
+aarch64-linux 91dbc156eb5feba62458117677d11f0d3956d7266a9c9e0a96f88ab177968da8

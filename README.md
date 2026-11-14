@@ -75,7 +75,7 @@ One table, one machine, one run of [`bench/compare.py`](bench/compare.py), which
 Measured on Apple M5, Darwin 27.2.0 (arm64). Best of 5 runs.
 Tools: azol 0.1.0; rustc 1.99.1 (58cf8f9c3 2026-10-13); Apple clang version 21.0.0 (clang-2100.4.1.1); go version go1.27.1 darwin/arm64; node v22.17.0.
 
-Lower is better everywhere. In every row the best value is bold, and nothing else in the table is.
+Lower is better everywhere. In every row the best value is bold, and nothing else in the table is. Cells that say *to be measured* have not been run on this machine yet, and a row has no bold until all of it is measured.
 
 |  | <img src="assets/compare/azol.svg" alt="azoL" height="28"><br><sub>default</sub> | <img src="assets/compare/azol.svg" alt="azoL" height="28"><br><sub><code>-O</code></sub> | <img src="assets/third-party/rust-logo-blk.svg#gh-light-mode-only" alt="Rust" height="28"><img src="assets/compare/rust.svg#gh-dark-mode-only" alt="Rust" height="28"><br><sub>Rust&nbsp;<code>-O</code></sub> | <img src="assets/compare/c.svg" alt="C" height="28"><br><sub><code>-O2</code></sub> | <img src="assets/compare/go.svg" alt="Go" height="28"><br><sub>go&nbsp;build</sub> | <img src="assets/third-party/js.png" alt="JavaScript" height="28"><br><sub>Node.js</sub> |
 |:---|---:|---:|---:|---:|---:|---:|
@@ -92,6 +92,12 @@ Lower is better everywhere. In every row the best value is bold, and nothing els
 | `tree` <sub>building and walking trees</sub> | 0.091&nbsp;s | 0.082&nbsp;s | **0.053&nbsp;s** | 0.054&nbsp;s | 0.064&nbsp;s | 0.36&nbsp;s |
 | `append` <sub>building long strings</sub> | 0.023&nbsp;s | 0.023&nbsp;s | 0.020&nbsp;s | **0.018&nbsp;s** | 0.026&nbsp;s | 0.11&nbsp;s |
 | `words` <sub>splitting and joining text</sub> | 0.035&nbsp;s | 0.030&nbsp;s | 0.026&nbsp;s | 0.026&nbsp;s | **0.019&nbsp;s** | 0.10&nbsp;s |
+| <sub>FOR AI AGENTS</sub> | | | | | | |
+| Check without building <sub>the same 44,004-line program</sub> | to&nbsp;be&nbsp;measured | as&nbsp;default | to&nbsp;be&nbsp;measured | to&nbsp;be&nbsp;measured | to&nbsp;be&nbsp;measured | to&nbsp;be&nbsp;measured |
+| Lines of code <sub>the 8 programs</sub> | 231 | as&nbsp;default | 258 | 401 | 253 | **220** |
+| Characters <sub>the 8 programs</sub> | 3,759 | as&nbsp;default | 4,717 | 8,380 | 4,238 | **3,616** |
+| Tokens, roughly <sub>the 8 programs</sub> | **1,376** | as&nbsp;default | 1,778 | 2,966 | 1,429 | 1,397 |
+| A wrong type passed <sub>what the checker reports</sub> | to&nbsp;be&nbsp;measured | as&nbsp;default | to&nbsp;be&nbsp;measured | to&nbsp;be&nbsp;measured | to&nbsp;be&nbsp;measured | to&nbsp;be&nbsp;measured |
 
 The generated program is 44,004 lines in azoL, 45,006 lines in Rust, 49,035 lines in C, 44,008 lines in Go, 38,002 lines in JavaScript.
 
@@ -102,6 +108,12 @@ Node.js has nothing to build; checking the syntax of the JavaScript version (`no
 Run: azoL's default build is ahead of Rust `-O` in 1 of 8, of C `-O2` in 1 of 8, of Go in 2 of 8, of Node.js in 8 of 8.
 
 Run: `azol build -O` is ahead of Rust `-O` in 1 of 8 (level in 2), of C `-O2` in 1 of 8 (level in 1), of Go in 3 of 8 (level in 1), of Node.js in 8 of 8.
+
+Check: the commands are `azol check`, `rustc --emit=metadata`, `cc -fsyntax-only`, `go vet`, `node --check`.
+
+Source: the 8 benchmark programs together, without comments, blank lines and indentation. Tokens are counted by one rule for every language (a name, a number or a text is one token; so is each bracket, comma or semicolon, and each run of operator characters); that approximates what a model reads and writes and is not any model's tokenizer.
+
+Mistake: the same in each language ([`bench/agents/`](bench/agents/)): the text `"40"` passed where a number is expected. *JSON* means the tool gives the message and the place as data when asked; *span*, the start and the end of the place; *fix*, an edit a tool can apply; *text, position*, a line to read with a line and a column in it.
 <!-- bench:end -->
 
 **Reading these fairly.**
@@ -110,6 +122,8 @@ Run: `azol build -O` is ahead of Rust `-O` in 1 of 8 (level in 2), of C `-O2` in
 - Rust and Go check indexes too; C checks nothing. Go and JavaScript collect garbage; azoL, Rust and C free memory at fixed points.
 - The build-time program is generated and repetitive ([`bench/gen.py`](bench/gen.py)), and it is one file. That flatters azoL, which does less work than the others (no traits, a small library), and is hard on C, whose projects are split into many files compiled side by side. Go's build cache is kept for its standard library and bypassed for the program.
 - Run times are whole processes, so they include start-up, which is tens of milliseconds for Node.js.
+- The rows for AI agents measure what a script can: how long a check takes, how much there is to write, and in what form a checker reports one mistake. The check commands do not do the same work: `azol check`, `rustc --emit=metadata`, `cc -fsyntax-only` and `go vet` check types, `go vet` runs further analyses as well, and `node --check` reads the syntax only. A shorter source is not a better one by itself; the counts say how much a model has to produce, not how easy it is to get right.
+- Whether an agent gets a program right at the first build was measured separately and only for two languages: fresh agents that had the documentation and no other help built 33 of 34 azoL programs correctly at the first try, and 32 of 32 Rust programs. That shows a model can write azoL from its documentation about as reliably as it writes a language it was trained on; it is two languages, small programs and one model, so it is not in the table.
 - These are eight small programs, not a benchmark suite. The gate azoL holds itself to is larger: 28 programs against `rustc -O` ([`bench/suite/`](bench/suite/), see the roadmap).
 
 ## azoL, Rust, C, Go and JavaScript
@@ -295,6 +309,8 @@ No model has seen azoL, so everything an agent needs is in the repository and in
 - One run reports every independent error: the first one of each function, or the first syntax error of each file. An error that might only be a result of an earlier one is left for the next run, so nothing reported is noise.
 - Every kind of error has a stable code, and `azol explain E0408` states the rule behind it with a wrong and a right example. All codes are listed in [docs/errors.md](docs/errors.md).
 - `--json` (for `check` and `build`) prints one JSON object per error on standard output and a summary on the last line: the exact start and end of the offending text, the source line, the rule that was broken, and, when the repair is mechanical, the edit that makes it.
+- `azol guide` prints that briefing from the compiler itself, and `azol guide <topic>` one part of the reference, so the right version is always at hand.
+- A form of another language (`let mut`, `Vec<T>`, `&x`, `println!`, `len(xs)`, `elif`, `null`, a `;`) is answered by name, with the azoL form and usually the edit. `azol fix` makes every such edit and checks again until none is left: a first draft written from habit is one command away from compiling.
 - `azol fmt` gives every file the one canonical layout, so an agent never spends effort on spacing and diffs stay small.
 
 For this program
@@ -331,6 +347,8 @@ A `fix` is only given when applying exactly that edit resolves the error; the te
 | `azol build -O ...` | Compile through the optimiser: a faster program, a slower build. Experimental |
 | `azol check <files...>` | Report every independent error and write nothing. `--json` for tools |
 | `azol explain [code]` | Explain an error code, or list them all |
+| `azol fix <files...>` | Apply every edit the checker offers, check again, repeat. `--check` only lists them, `--json` reports each one |
+| `azol guide [topic]` | Print the briefing for someone new to azoL, or one part of the reference. `--list` names the topics |
 | `azol fmt <files...>` | Rewrite files in the canonical layout. `--check` only lists them, `-` formats standard input |
 | `azol parse <file>`, `azol lex <file>` | Print the syntax tree or the tokens |
 
@@ -379,7 +397,7 @@ What is not done, in the order planned. Finished work is not listed here; it is 
 1. `azol build -O` exists and is experimental. Still to do: the compiler itself built with it (new seeds), so that the default build gets its speed back.
 2. The programs still far from `rustc -O`: lists of structs, the library sort, maps, building text.
 3. The remaining passes: unrolling, copy elision, string building, vectorising.
-4. Packed structs and small enums in lists (lists of `bool` are packed), a faster allocator, an internal calling convention.
+4. Packed structs and small enums in lists (lists of `bool` are packed), views for the pieces of a split text, an internal calling convention.
 5. `-O` compile speed.
 6. The gate that defines the claim: the 28 programs of [`bench/suite/`](bench/suite/) at a geometric mean of 1.00 or better against `rustc -O`, none worse than 1.10, on Apple M5 and on x86-64. Today: 1.48 in time on the Apple M5 (the default build: 2.12), with 9 of the 28 inside 1.10.
 
@@ -393,7 +411,7 @@ What is not done, in the order planned. Finished work is not listed here; it is 
 
 **For AI agents and for replacing old systems**
 
-12. `azol guide`, a named error with a fix for every habit from another language, `azol fix` ([design](docs/design/agents.md)).
+12. More for agents: `azol example`, `azol new` with its `AGENTS.md`, every error of a function in one run, a schema for the JSON ([design](docs/design/agents.md)).
 13. Calling C, more integer types, standard input, processes, directories, dates, JSON, CSV, stack traces with source lines ([design](docs/design/legacy.md)).
 
 **Before the first release**

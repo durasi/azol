@@ -202,16 +202,16 @@ fn main() {
 ---- exit 1
 ---- stdout (empty)
 ---- stderr
-error[E0302]: `+` needs `str` but this is `i64`
+error[E0224]: `+` joins two texts and does not turn a number into one; write `str(n)`, or put the value in the text: `"n = {n}"`
  --> a.azl:1:17
   |
 1 | const A = "a" + 1
   |                 ^
----- asserted 1:17 `+` needs `str` but this is `i64`
+---- asserted 1:17 `+` joins two texts and does not turn a number into one; write `str(n)`, or put the value in the text: `"n = {n}"`
 ---- run check --json a.azl
 ---- exit 1
 ---- stdout
-{"severity":"error","code":"E0302","message":"`+` needs `str` but this is `i64`","file":"a.azl","line":1,"column":17,"end_line":1,"end_column":18,"source":"const A = \"a\" + 1","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"severity":"error","code":"E0224","message":"`+` joins two texts and does not turn a number into one; write `str(n)`, or put the value in the text: `\"n = {n}\"`","file":"a.azl","line":1,"column":17,"end_line":1,"end_column":18,"source":"const A = \"a\" + 1","rule":"A number does not become text by itself: `+` joins two texts, and `print` takes one value. A value goes into a text as `\"n = {n}\"`, or becomes one with `str(n)`.","fix":{"file":"a.azl","line":1,"column":17,"end_line":1,"end_column":18,"replacement":"str(1)"}}
 {"summary":{"errors":1,"files":1}}
 ==== 11
 ---- file a.azl (no newline at end)

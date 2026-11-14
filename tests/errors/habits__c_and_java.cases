@@ -1,0 +1,412 @@
+# Habits from C, C++ and Java (docs/design/agents.md 1.5, compiler/habits.azl): each is answered with an
+# error that names the habit and says the azoL form, and with the edit when it is mechanical.
+==== E0120: `let x = 1;`
+---- file a.azl
+fn main() {
+    let x = 1;
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0120 2:14
+---- apply-fix
+---- after-has a.azl
+    let x = 1
+---- run check --json a.azl
+---- exit 0
+==== E0123: `*p = 3`
+---- file a.azl
+fn main() {
+    var p = 1
+    *p = 3
+    print(p)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0123 3:5
+---- apply-fix
+---- after-has a.azl
+    p = 3
+---- run check --json a.azl
+---- exit 0
+==== E0221: `printf("%d\n", 1)`
+---- file a.azl
+fn main() {
+    printf("%d\n", 1)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0221 2:5
+---- apply-fix
+---- run check --json a.azl
+---- exit 0
+==== E0127: `for (i = 0; i < 3; i++) {`
+---- file a.azl
+fn main() {
+    for (i = 0; i < 3; i++) {
+        print(i)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 2:15
+---- apply-fix
+---- run check --json a.azl
+---- exit 0
+==== E0220: `let b: boolean = true`
+---- file a.azl
+fn main() {
+    let b: boolean = true
+    print(b)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0220 2:12
+---- apply-fix
+---- after-has a.azl
+    let b: bool = true
+---- run check --json a.azl
+---- exit 0
+==== E0127: `switch n {`
+---- file a.azl
+fn main() {
+    let n = 1
+    switch n {
+        case 1:
+            print(1)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 3:12
+---- no-fix
+==== E0127: `if (x > 0) print(x)`
+---- file a.azl
+fn main() {
+    let x = 1
+    if (x > 0) print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 3:16
+---- apply-fix
+---- run check --json a.azl
+---- exit 0
+==== E0130: `fn f(i64 x) {`
+---- file a.azl
+fn f(i64 x) {
+}
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0130 1:10
+---- apply-fix
+---- after-has a.azl
+fn f(x: i64) {
+---- run check --json a.azl
+---- exit 0
+==== E0223: `print(s.charAt(0))`
+---- file a.azl
+fn main() {
+    let s = "a"
+    print(s.charAt(0))
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:13
+---- apply-fix
+---- after-has a.azl
+    print(s[0])
+---- run check --json a.azl
+---- exit 0
+==== E0130: `let p = new P(1)`
+---- file a.azl
+struct P {
+    x: i64
+}
+fn main() {
+    let p = new P(1)
+    print(p.x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0130 5:17
+---- apply-fix
+---- run check --json a.azl
+---- exit 0
+==== E0126: `class P {`
+---- file a.azl
+class P {
+    x: i64
+}
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0126 1:1
+---- no-fix
+==== E0220: `let c: char = 'a'`
+---- file a.azl
+fn main() {
+    let c: char = 'a'
+    print(c)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0220 2:12
+---- apply-fix
+---- after-has a.azl
+    let c: i64 = 'a'
+---- run check --json a.azl
+---- exit 0
+==== E0129: `/* note */`
+---- file a.azl
+fn main() {
+    /* note */
+    print(1)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0129 2:5
+---- apply-fix
+---- after-has a.azl
+    // note
+---- run check --json a.azl
+---- exit 0
+==== E0128: `if a === 1 {`
+---- file a.azl
+fn main() {
+    let a = 1
+    if a === 1 {
+        print(1)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0128 3:12
+---- apply-fix
+---- after-has a.azl
+    if a == 1 {
+---- run check --json a.azl
+---- exit 0
+==== E0220: `fn f() -> void {`
+---- file a.azl
+fn f() -> void {
+}
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0220 1:11
+---- apply-fix
+---- after-has a.azl
+fn f() {
+---- run check --json a.azl
+---- exit 0
+==== E0128: `print(~x)`
+---- file a.azl
+fn main() {
+    let x = 1
+    print(~x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0128 3:11
+---- apply-fix
+---- run check --json a.azl
+---- exit 0
+==== E0132: `print(1)`
+---- file a.azl
+fn main() {
+    try {
+        print(1)
+    } catch (e) {
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0132 3:14
+---- no-fix
+==== E0132: `throw 1`
+---- file a.azl
+fn main() {
+    throw 1
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0132 2:11
+---- no-fix
+==== E0223: `print(x.toString())`
+---- file a.azl
+fn main() {
+    let x = 1
+    print(x.toString())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:13
+---- apply-fix
+---- after-has a.azl
+    print(str(x))
+---- run check --json a.azl
+---- exit 0
+==== E0223: `print(s.length())`
+---- file a.azl
+fn main() {
+    let s = "a"
+    print(s.length())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:13
+---- apply-fix
+---- after-has a.azl
+    print(s.len())
+---- run check --json a.azl
+---- exit 0
+==== E0223: `print(xs.size())`
+---- file a.azl
+fn main() {
+    let xs = [1]
+    print(xs.size())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:14
+---- apply-fix
+---- after-has a.azl
+    print(xs.len())
+---- run check --json a.azl
+---- exit 0
+==== E0220: `fn main() -> void {`
+---- file a.azl
+fn main() -> void {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0220 1:14
+---- apply-fix
+---- after-has a.azl
+fn main() {
+---- run check --json a.azl
+---- exit 0
+==== E0120: `return 0;`
+---- file a.azl
+fn main() {
+    return 0;
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0120 2:13
+---- apply-fix
+---- after-has a.azl
+    return 0
+---- run check --json a.azl
+---- exit 1
+---- reports E0304 2:12
+==== E0223: `print(s.startsWith("a"))`
+---- file a.azl
+fn main() {
+    let s = "a"
+    print(s.contains("a"))
+    print(s.startsWith("a"))
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 4:13
+---- apply-fix
+---- after-has a.azl
+    print(s.starts_with("a"))
+---- run check --json a.azl
+---- exit 0
+==== E0223: `print(xs.indexOf(1))`
+---- file a.azl
+fn main() {
+    let xs = [1, 2]
+    print(xs.contains(1))
+    print(xs.indexOf(1))
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 4:14
+---- apply-fix
+---- after-has a.azl
+    print(xs.index_of(1))
+---- run check --json a.azl
+---- exit 1
+---- reports E0308 4:11
+==== E0223: `if xs.isEmpty() {`
+---- file a.azl
+fn main() {
+    let xs = [1]
+    if xs.is_empty() {
+    }
+    if xs.isEmpty() {
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 5:11
+---- apply-fix
+---- after-has a.azl
+    if xs.is_empty() {
+---- run check --json a.azl
+---- exit 0
+==== E0120: `break;`
+---- file a.azl
+fn main() {
+    let done = false
+    while !done {
+        break;
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0120 4:14
+---- apply-fix
+---- after-has a.azl
+        break
+---- run check --json a.azl
+---- exit 0
+==== E0130: `P { x = 1 }`
+---- file a.azl
+struct P {
+    x: i64
+    y: i64
+}
+fn main() {
+    let p = P { x = 1, y: 2 }
+    print(p.x + p.y)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0130 6:19
+---- apply-fix
+---- after-has a.azl
+    let p = P { x: 1, y: 2 }
+---- run check --json a.azl
+---- exit 0
+==== E0127: `do { } while test`
+---- file a.azl
+fn main() {
+    var i = 0
+    do {
+        i += 1
+    } while i < 3
+    print(i)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 4:11
+---- no-fix
+==== E0223: `ys.get(0)` on a list
+---- file a.azl
+fn main() {
+    let ys = [1, 2, 3]
+    print(ys.get(0))
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:14
+---- no-fix

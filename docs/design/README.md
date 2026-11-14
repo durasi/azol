@@ -13,6 +13,7 @@ five implementations do not collide.
 | [closures.md](closures.md) | function types, function literals with captures by value, `map`/`filter`/... | E1101–E1125 |
 | [threads.md](threads.md) | `run_all`, `parallel_map`, `spawn`/`join` with `Thread[T]`, `Channel[T]`, `cores` | E1201–E1230 |
 | [packages.md](packages.md) | `azol.toml`, `import`, `pub`, `deps/`, `azol new/add/test/...`, `test` blocks, `assert`, `run` | E1301–E1345 |
+| [agents.md](agents.md) | `azol guide`, `azol fix`, an error of its own for each habit of another language (done: see "What exists" in that file) | E0120–E0133, E0220–E0224 |
 
 ## Decided by the user (12 November 2026)
 

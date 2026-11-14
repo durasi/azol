@@ -24,9 +24,9 @@ let u: Stack[Pair[i64, str]] = t
 checked 16 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 68c568b3f5ed679e871431b63061c594b36c9496420d43fe1ab43f9c99fc44fa
-x86_64-linux ef54568b773a41b433f4b453168c6055dafc3a3b5eaccb73435490e936cd04aa
-aarch64-linux 0712b8479234c554dfbdac83fe172a77b66545b2198570eb1849cd1c0df46b8d
+aarch64-macos aa59640aa078ab17b28f4aa64e1f6572a227bdb4192702d72e3dbfdc2bd863ee
+x86_64-linux 4f05ddc3437c2ca9fdfe3c36304e1ce2a0bc6528f5cccb33b207552f426747ef
+aarch64-linux 8340d1b62d0840ab6a1d0fdbe56f03ef20b88605f3e760d0c82b6e13d7e0121f
 ==== 2
 ---- file a.azl (no newline at end)
 struct Pair[A, B] {
@@ -48,6 +48,6 @@ let c = Pair { first: 2, second: "z" }
 checked 12 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 375ec115ff671b6959e9b70ba8c25cd051162e9a08665a3b3ff8c914a391a838
-x86_64-linux c4b79e8f679d440596e3a22b0ea960468496b1b109df43747b6ecf0efd08a703
-aarch64-linux eb8a241dbd6df542437dc2b0e4d4fa176b4eaaf6590b9dd3e5e752855bd9ac8d
+aarch64-macos e95a4bf6b86ffe98ce47ef3449ee95c23919c78ce001d1ecac7b25e3490d12fd
+x86_64-linux 93c634d88176b339edce7045944d504ccc214294b80a749c9c8b8edc7f0e5599
+aarch64-linux 912d87ccd1f3791d4df99a7929ffe9e2f442f1bb01aacd725a0b0eccb82af60b

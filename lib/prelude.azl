@@ -88,6 +88,19 @@ fn str_split(s: str, separator: str) -> List[str] {
     var i = 0
     var first = 0
     if n > 0 { first = separator[0] }
+    if n == 1 {
+        // One byte to look for, the usual case: nothing else to compare.
+        let end = s.len()
+        while i < end {
+            if s[i] == first {
+                parts.push(s.slice(start, i))
+                start = i + 1
+            }
+            i = i + 1
+        }
+        parts.push(s.slice(start, end))
+        return parts
+    }
     while n > 0 && i + n <= s.len() {
         // Most places do not even start like the separator.
         if s[i] != first {

@@ -94,8 +94,11 @@ def generate_arm64():
     data_size = len(data.encode("latin-1").decode("unicode_escape").encode("latin-1"))
     ids = re.findall(r"^pub const ([A-Z0-9_]+): u32 = (\d+);$", text, re.M)
     relocs = []
-    for kind, a, b, c in re.findall(r"RuntimeReloc::(Import|Data) \{ at: (\d+), (?:import|data): (\d+)(?:, reg: (\d+))? \}", text):
-        relocs += [0 if kind == "Import" else 1, int(a), int(b), int(c or 0)]
+    for kind, a, b, c in re.findall(r"RuntimeReloc::(Import|Data|Memory) \{ at: (\d+), (?:import: |data: |reg: )(\d+)(?:, reg: (\d+))? \}", text):
+        if kind == "Memory":
+            relocs += [2, int(a), 0, int(b)]
+        else:
+            relocs += [0 if kind == "Import" else 1, int(a), int(b), int(c or 0)]
     count = int(re.search(r"RUNTIME_RELOCS: \[RuntimeReloc; (\d+)\]", text).group(1))
     if len(relocs) != 4 * count:
         sys.exit("gen_runtime_azl.py: RUNTIME_RELOCS was not read completely")
@@ -154,7 +157,8 @@ def generate_arm64():
         "// What the linker completes in the runtime, four numbers each: 0 and",
         "// the instruction, the import and nothing for a call of an imported",
         "// function; 1 and the instruction, the text item and the register for",
-        "// the address of a text item.",
+        "// the address of a text item; 2 and the instruction, nothing and the",
+        "// register for the address of the runtime's writable memory.",
         "fn art_relocs() -> List[i64] {",
     ]
     lines += number_rows(relocs, 16, "    return [")
@@ -179,6 +183,10 @@ def generate_arm64():
         "// Address and size of the library's writable memory.",
         "const ALR_MEMORY = %d" % number("MEMORY", "u64"),
         "const ALR_MEMORY_SIZE = %d" % number("MEMORY_SIZE", "u64"),
+        "// The runtime's own writable memory follows the library's there:",
+        "// where it starts, and the size of the two together.",
+        "const ALR_RUNTIME_MEMORY = %d" % (number("MEMORY", "u64") + (number("MEMORY_SIZE", "u64") + 15) // 16 * 16),
+        "const ALR_MEMORY_TOTAL = %d" % ((number("MEMORY_SIZE", "u64") + 15) // 16 * 16 + dict((name, int(value)) for name, value in ids)["MEMORY_SIZE"]),
         "",
         "// Offset in the library of each imported function, in the order of",
         "// `art_imports`.",

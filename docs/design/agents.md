@@ -18,6 +18,80 @@ built N of 40 tasks on the first try and solved all 40 within K compiler
 rounds; the same model on the same tasks in Rust: N', K'."* Section 6 defines
 it. Until that run exists, no public text may say "100%".
 
+## What exists (13 November 2026)
+
+The first part of this plan is built; the rest of the file is the design as
+it was written, and where the two differ this section is the one that
+describes the compiler.
+
+- **`azol guide`** (R1): prints `docs/for-agents.md`, which is embedded in
+  the compiler when it is built. `azol guide <topic>` prints one `##`
+  section of `docs/language.md`; the topics are the nineteen sections of
+  that file (`lexical`, `literals`, `types`, `declarations`, `statements`,
+  `expressions`, `calls`, `methods`, `builtins`, `library`, `values`,
+  `ownership`, `exclusivity`, `runtime-stops`, `files`, `cli`, `targets`,
+  `limits`, `missing`), not the finer list of 1.1, because the reference is
+  divided that way and a topic that is not a section could drift from it.
+  `--list` and `--json` as designed. The test suite fails when the briefing
+  passes 32,000 bytes, when a topic passes 16,000, or when what the command
+  prints is not the file byte for byte, and when `AGENTS.md` or the briefing
+  names an `azol` command that the usage text does not have.
+- **`azol fix`** (R6): as in section 2, with three choices. It works on the
+  texts in memory and writes at the end, so a file is either repaired or
+  untouched: one in which an error without a fix remains is not written
+  unless `--partial` is given. The limit is 40 rounds, not 8: every round
+  makes every edit that does not overlap another, and a file full of habits
+  needs about four, so the limit is only a guard against an edit that keeps
+  uncovering new work. A written file is laid out by `azol fmt`.
+- **The foreign-habit rule** (R4, 1.5): `compiler/habits.azl`. It is asked
+  in one place, where a mistake becomes a report (`diagnose`), with what the
+  lexer, the parser or the checker said and the place it is about; it reads
+  the source text around the place and answers with the habit's own message
+  and, when the repair is the same every time, the edit. Nothing in the
+  lexer, the parser or the checker changed, so the path of a program
+  without mistakes is what it was. The codes are by family, as planned:
+  E0120 statement ends, E0121 declarations, E0122 `< >` and lifetimes,
+  E0123 references and pointers, E0124 macros, E0125 `::` and paths, E0126
+  declaration words, E0127 blocks and loops, E0128 operators, E0129
+  comments and texts, E0130 the spelling of types, parameters and struct
+  values, E0131 function values, E0132 exceptions and the like, E0133
+  `match` arms; E0220 type names, E0221 function names, E0222 value names,
+  E0223 method and field names, E0224 text and numbers.
+- **Counted against the table of 1.5** (137 rows, each tried again with
+  today's compiler, 14 November 2026): 119 rows are answered by one of
+  these codes or by a code of the short forms (E14xx) that names the habit.
+  11 rows are accepted or have since become azoL (`+=`, ranges, `"{x}"`,
+  field shorthand, `if` as a value, and the six that were always
+  accepted). 6 rows already had a message that states the rule (E0111,
+  E0303, E0311, E0413, E0601, E0804). 1 row is still answered generically:
+  `f64` (row 42, which floats.md makes a type). **98 of the 137 rows carry
+  an edit, 72%**, against the 70% that R4 asks for. The 23 named rows
+  without one are those whose repair needs a decision: `null` and `nil`,
+  `impl`, `class`, `trait`, closures and `.map(...)`, `switch`, a guard in
+  a `match` arm, tuples, `unwrap` and `x!`, a map literal, `defer`,
+  `throw`, two names declared at once, a text over two lines, default
+  arguments, `Box`.
+  Beyond the table, about sixty more names and forms are recognised
+  (`fmt.Println`, `xs.size()`, `s.toUpperCase()`, `max(a, b)`, `Vec::new()`,
+  `pub` fields, `for (i, x) in xs.iter().enumerate()`, `not (x)`, `'text'`).
+- **Edits that read more than the place** (`compiler/habits_more.azl`):
+  `for (i = 0; i < n; i++)` to `for i in 0..n`; `range(a, b, step)`; a
+  block that Python closes by its depth, with its `else:`; `if (x) f()`
+  without braces; `if let` without `else` to a `match`; `c ? a : b` as the
+  whole right side; `1 | 2 => f()` to an arm each; `printf("%d\n", n)` and
+  `print(a, b)` to one text; `xs[a..b]` to `.slice`; `m[k] = v` to
+  `m.set`; `HashMap[str, V]`; `new P(1, 2)` with the fields of `P`;
+  `panic("why")` and `assert(test)`; `while 1`; `const` in a function;
+  `~x`; `"\x41"` and `"\u{e9}"`; `'a` between brackets; a text between
+  backquotes. Each is made only for the one plain shape it knows, and its
+  cases (`tests/errors/habits__edits_that_read_more.cases`) build the
+  repaired program and run it, so an edit is known to keep what the
+  program does; shapes it must leave alone have cases of their own.
+- **Not built:** `azol new`, `llms.txt`, `azol example`, `explain-line`,
+  `explain --json`, the schema file and `"schema"` in `check --json`,
+  several errors per function, `help:` and `fix:` lines in the text form
+  of an error, `azol test`. They stay as designed below.
+
 ## Open questions for the user
 
 Three here, four in [legacy.md](legacy.md). Each has a recommendation; work

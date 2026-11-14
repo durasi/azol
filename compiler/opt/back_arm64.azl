@@ -83,7 +83,7 @@ fn bka_link_linux(words: mut List[i64], relocs: List[Reloc], entry: i64, data: s
     put16(mut text, 0)
     put16(mut text, 0)
     bka_program_header(mut text, pt_load(), pf_r() | pf_x(), ALR_BASE, file_size, file_size, page)
-    bka_program_header(mut text, pt_load(), pf_r() | pf_w(), ALR_MEMORY, 0, ALR_MEMORY_SIZE, page)
+    bka_program_header(mut text, pt_load(), pf_r() | pf_w(), ALR_MEMORY, 0, ALR_MEMORY_TOTAL, page)
     bka_program_header(mut text, pt_gnu_stack(), pf_r() | pf_w(), 0, 0, 0, 16)
     pad_to(mut text, ALR_TEXT_OFFSET, 0)
     text = text + library
@@ -102,6 +102,12 @@ fn bka_link_linux(words: mut List[i64], relocs: List[Reloc], entry: i64, data: s
             Data(at, offset, register) => {
                 let pc = ALR_BASE + code_at + at * 4
                 let target = ALR_BASE + data_at + offset
+                words[at] = adrp(register, pc, target)
+                words[at + 1] = ax_addsub_imm(0, 0, register, register, target & 0xFFF, 0)
+            }
+            Memory(at, register) => {
+                let pc = ALR_BASE + code_at + at * 4
+                let target = ALR_RUNTIME_MEMORY
                 words[at] = adrp(register, pc, target)
                 words[at + 1] = ax_addsub_imm(0, 0, register, register, target & 0xFFF, 0)
             }
@@ -268,6 +274,7 @@ fn bka_build(m: IrModule, entry: i64, options: BkOptions, macos: bool, out_path:
             match reloc {
                 Import(where, import) => links.push(Import(start + where, import))
                 Data(where, offset, register) => links.push(Data(start + where, offset, register))
+                Memory(where, register) => links.push(Memory(start + where, register))
             }
         }
         let t4 = clock()
@@ -287,6 +294,8 @@ fn bka_build(m: IrModule, entry: i64, options: BkOptions, macos: bool, out_path:
     while r < relocs.len() {
         if relocs[r] == 0 {
             links.push(Import(runtime_start + relocs[r + 1], relocs[r + 2]))
+        } else if relocs[r] == 2 {
+            links.push(Memory(runtime_start + relocs[r + 1], relocs[r + 3]))
         } else {
             links.push(Data(runtime_start + relocs[r + 1], offsets[relocs[r + 2]], relocs[r + 3]))
         }

@@ -1,0 +1,359 @@
+# Habits from Python (docs/design/agents.md 1.5, compiler/habits.azl): each is answered with an
+# error that names the habit and says the azoL form, and with the edit when it is mechanical.
+==== E0224: `print("x", 1)`
+---- file a.azl
+fn main() {
+    print("x", 1)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0224 2:5
+---- apply-fix
+---- run check --json a.azl
+---- exit 0
+==== E0127: `} elif x > 0 {`
+---- file a.azl
+fn main() {
+    let x = 1
+    if x > 1 {
+        print(1)
+    } elif x > 0 {
+        print(2)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 5:7
+---- apply-fix
+---- after-has a.azl
+    } else if x > 0 {
+---- run check --json a.azl
+---- exit 0
+==== E0127: `if x > 0:`
+---- file a.azl
+fn main() {
+    let x = 1
+    if x > 0:
+        print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 3:13
+---- apply-fix
+---- run check --json a.azl
+---- exit 0
+==== E0128: `if a and b {`
+---- file a.azl
+fn main() {
+    let a = true
+    let b = false
+    if a and b {
+        print(1)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0128 4:10
+---- apply-fix
+---- after-has a.azl
+    if a && b {
+---- run check --json a.azl
+---- exit 0
+==== E0128: `if not a {`
+---- file a.azl
+fn main() {
+    let a = true
+    if not a {
+        print(1)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0128 3:12
+---- apply-fix
+---- after-has a.azl
+    if !a {
+---- run check --json a.azl
+---- exit 0
+==== E0222: `let a = True`
+---- file a.azl
+fn main() {
+    let a = True
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0222 2:13
+---- apply-fix
+---- after-has a.azl
+    let a = true
+---- run check --json a.azl
+---- exit 0
+==== E0126: `def f():`
+---- file a.azl
+def f():
+    return 1
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0126 1:1
+---- apply-fix
+---- after-has a.azl
+fn f():
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 1:7
+==== E0131: `let f = lambda x: x + 1`
+---- file a.azl
+fn main() {
+    let f = lambda x: x + 1
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0131 2:20
+---- no-fix
+==== E0221: `print(len(xs))`
+---- file a.azl
+fn main() {
+    let xs = [1]
+    print(len(xs))
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0221 3:11
+---- apply-fix
+---- after-has a.azl
+    print(xs.len())
+---- run check --json a.azl
+---- exit 0
+==== E0130: `print(s[0:2])`
+---- file a.azl
+fn main() {
+    let s = "abc"
+    print(s[0:2])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0130 3:14
+---- apply-fix
+---- after-has a.azl
+    print(s.slice(0, 2))
+---- run check --json a.azl
+---- exit 0
+==== E0129: `print('hello')`
+---- file a.azl
+fn main() {
+    print('hello')
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0129 2:11
+---- apply-fix
+---- after-has a.azl
+    print("hello")
+---- run check --json a.azl
+---- exit 0
+==== E0129: `# note`
+---- file a.azl
+fn main() {
+    # note
+    print(1)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0129 2:5
+---- apply-fix
+---- after-has a.azl
+    // note
+---- run check --json a.azl
+---- exit 0
+==== E0223: `m["k"] = 1`
+---- file a.azl
+fn main() {
+    var m: Map[i64] = new_map()
+    m["k"] = 1
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:5
+---- apply-fix
+---- run check --json a.azl
+---- exit 0
+==== E0129: `let m = {"a": 1}`
+---- file a.azl
+fn main() {
+    let m = {"a": 1}
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0129 2:13
+---- no-fix
+==== E0128: `print(x ** 2)`
+---- file a.azl
+fn main() {
+    let x = 2
+    print(x ** 2)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0128 3:14
+---- apply-fix
+---- after-has a.azl
+    print(x.pow(2))
+---- run check --json a.azl
+---- exit 0
+==== E0128: `if not (a) {`
+---- file a.azl
+fn main() {
+    let a = true
+    if not (a) {
+        print(1)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0128 3:8
+---- apply-fix
+---- after-has a.azl
+    if !(a) {
+---- run check --json a.azl
+---- exit 0
+==== E0128: `if a or b {`
+---- file a.azl
+fn main() {
+    let a = true
+    let b = true
+    if a or b {
+        print(1)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0128 4:10
+---- apply-fix
+---- after-has a.azl
+    if a || b {
+---- run check --json a.azl
+---- exit 0
+==== E0222: `let x = False`
+---- file a.azl
+fn main() {
+    let x = False
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0222 2:13
+---- apply-fix
+---- after-has a.azl
+    let x = false
+---- run check --json a.azl
+---- exit 0
+==== E0127: `for x in xs:`
+---- file a.azl
+fn main() {
+    let xs = [1]
+    for x in xs:
+        print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 3:16
+---- apply-fix
+---- run check --json a.azl
+---- exit 0
+==== E0221: `let n = int("1")`
+---- file a.azl
+fn main() {
+    let n = int("1")
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0221 2:13
+---- no-fix
+==== E0223: `xs.sort()`
+---- file a.azl
+fn main() {
+    let xs = [3, 1]
+    xs.sort()
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:8
+---- apply-fix
+---- after-has a.azl
+    xs = xs.sorted()
+---- run check --json a.azl
+---- exit 1
+---- reports E0401 3:5
+==== E0223: `print(p.strip())`
+---- file a.azl
+fn main() {
+    let s = "a,b"
+    for p in s.split(",") {
+        print(p.trim())
+        print(p.strip())
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 5:17
+---- apply-fix
+---- after-has a.azl
+        print(p.trim())
+---- run check --json a.azl
+---- exit 0
+==== E0221: `let y = max(1, 2)`
+---- file a.azl
+fn main() {
+    let y = max(1, 2)
+    let z = abs(-1)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0221 2:13
+---- apply-fix
+---- after-has a.azl
+    let y = 1.max(2)
+---- run check --json a.azl
+---- exit 1
+---- reports E0221 3:13
+==== E0221: `for i, x in enumerate(xs) {`
+---- file a.azl
+fn main() {
+    let xs = [1, 2]
+    for i, x in enumerate(xs) {
+        print(i)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0221 3:17
+---- no-fix
+==== E0130: `twice(n = 3)`
+---- file a.azl
+fn twice(n: i64) -> i64 {
+    return n * 2
+}
+fn main() {
+    print(twice(n = 3))
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0130 5:19
+---- apply-fix
+---- after-has a.azl
+    print(twice(3))
+---- run check --json a.azl
+---- exit 0
+==== E0223: `for c in s` over a text
+---- file a.azl
+fn main() {
+    let s = "abc"
+    for c in s {
+        print(c)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:14
+---- no-fix

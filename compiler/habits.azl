@@ -1,0 +1,1427 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Habits from other languages (docs/design/agents.md, 1.5).
+//
+// A program written by someone, or by a model, that knows Rust, Go, C,
+// Python, JavaScript, Java, Swift or Kotlin and has not seen azoL holds
+// the forms of those languages. The parser and the checker answer them
+// with what they found: "expected `(` but found `<`", "unknown type
+// `String`". This file is asked, with that answer and the place it is
+// about, whether the place holds such a form; if it does, the answer
+// becomes one that names the habit and says the azoL form, with the
+// edit when the edit is the same every time.
+//
+// Everything here is on the path of an error, reads the source text
+// around the place and nothing else, and changes no program that
+// compiles.
+
+struct Habit {
+    // Empty when the place holds no known habit.
+    message: str
+    fix: Fix
+}
+
+fn hb_none() -> Habit {
+    return Habit { message: "", fix: no_fix() }
+}
+
+fn hb_say(message: str) -> Habit {
+    return Habit { message: message, fix: no_fix() }
+}
+
+fn hb_edit(message: str, start: i64, end: i64, text: str) -> Habit {
+    return Habit { message: message, fix: Fix { kind: FIX_REPLACE, start: start, end: end, text: text } }
+}
+
+// ---- reading the text around a place -----------------------------------
+
+fn hb_byte(src: str, at: i64, lo: i64, hi: i64) -> i64 {
+    if at < lo || at >= hi { return 0 }
+    return src[at]
+}
+
+// The end of the name that starts at `at`.
+fn hb_name_end(src: str, at: i64, hi: i64) -> i64 {
+    var end = at
+    while end < hi && is_name_byte(src[end]) {
+        end = end + 1
+    }
+    return end
+}
+
+fn hb_name(src: str, at: i64, hi: i64) -> str {
+    return src.slice(at, hb_name_end(src, at, hi))
+}
+
+// The place of the last byte before `at` that is no space or tab, or
+// `lo - 1`.
+fn hb_before(src: str, at: i64, lo: i64) -> i64 {
+    var k = at - 1
+    while k >= lo && (src[k] == ' ' || src[k] == '\t') {
+        k = k - 1
+    }
+    return k
+}
+
+// The first byte from `at` on that is no space or tab.
+fn hb_after(src: str, at: i64, hi: i64) -> i64 {
+    var k = at
+    while k < hi && (src[k] == ' ' || src[k] == '\t') {
+        k = k + 1
+    }
+    return k
+}
+
+// Where the name that ends right before `end` starts; `end` itself when
+// no name ends there.
+fn hb_name_start(src: str, end: i64, lo: i64) -> i64 {
+    var start = end
+    while start > lo && is_name_byte(src[start - 1]) {
+        start = start - 1
+    }
+    return start
+}
+
+// The word before the place, skipping spaces: its start, or -1.
+fn hb_prev_word(src: str, at: i64, lo: i64) -> i64 {
+    let last = hb_before(src, at, lo)
+    if last < lo || !is_name_byte(src[last]) { return -1 }
+    return hb_name_start(src, last + 1, lo)
+}
+
+fn hb_line_start(src: str, at: i64, lo: i64) -> i64 {
+    var k = at
+    while k > lo && src[k - 1] != '\n' {
+        k = k - 1
+    }
+    return k
+}
+
+fn hb_line_end(src: str, at: i64, hi: i64) -> i64 {
+    var k = at
+    while k < hi && src[k] != '\n' {
+        k = k + 1
+    }
+    return k
+}
+
+// The first word of the line `at` is on.
+fn hb_first_word(src: str, at: i64, lo: i64, hi: i64) -> str {
+    let start = hb_after(src, hb_line_start(src, at, lo), hi)
+    return hb_name(src, start, hi)
+}
+
+// Whether only spaces, and perhaps a `//` comment, follow `at` on its line.
+fn hb_line_is_over(src: str, at: i64, hi: i64) -> bool {
+    let k = hb_after(src, at, hi)
+    if k >= hi || src[k] == '\n' || src[k] == '\r' { return true }
+    return src[k] == '/' && k + 1 < hi && src[k + 1] == '/'
+}
+
+// The bracket that closes the one at `open`, on the same line, or -1.
+// Texts between double quotes are passed over.
+fn hb_close(src: str, open: i64, hi: i64) -> i64 {
+    var depth = 0
+    var k = open
+    while k < hi && src[k] != '\n' {
+        let b = src[k]
+        if b == '"' {
+            k = k + 1
+            while k < hi && src[k] != '"' && src[k] != '\n' {
+                if src[k] == '\\' { k = k + 1 }
+                k = k + 1
+            }
+        } else if b == '(' || b == '[' || b == '{' {
+            depth = depth + 1
+        } else if b == ')' || b == ']' || b == '}' {
+            depth = depth - 1
+            if depth == 0 { return k }
+        }
+        k = k + 1
+    }
+    return -1
+}
+
+// The `}` that closes the `{` at `open`, on whatever line it is, or -1.
+// Texts between double quotes and comments are passed over.
+fn hb_block_end(src: str, open: i64, hi: i64) -> i64 {
+    var depth = 0
+    var k = open
+    while k < hi {
+        let b = src[k]
+        if b == '"' {
+            k = k + 1
+            while k < hi && src[k] != '"' && src[k] != '\n' {
+                if src[k] == '\\' { k = k + 1 }
+                k = k + 1
+            }
+        } else if b == '/' && k + 1 < hi && src[k + 1] == '/' {
+            while k < hi && src[k] != '\n' {
+                k = k + 1
+            }
+        } else if b == '{' {
+            depth = depth + 1
+        } else if b == '}' {
+            depth = depth - 1
+            if depth == 0 { return k }
+        }
+        k = k + 1
+    }
+    return -1
+}
+
+// The `>` that closes the `<` at `open`, on the same line, when what is
+// between them reads as types: names, commas, spaces, brackets and
+// further `< >`. -1 otherwise.
+fn hb_close_angle(src: str, open: i64, hi: i64) -> i64 {
+    var depth = 0
+    var k = open
+    while k < hi && src[k] != '\n' {
+        let b = src[k]
+        if b == '<' {
+            depth = depth + 1
+        } else if b == '>' {
+            depth = depth - 1
+            if depth == 0 { return k }
+        } else if !(is_name_byte(b) || b == ',' || b == ' ' || b == '[' || b == ']' || b == '&' || b == '\'') {
+            return -1
+        }
+        k = k + 1
+    }
+    return -1
+}
+
+// A comma that is in no bracket and no text, in `text`; -1 when there is
+// none or more than one.
+fn hb_one_comma(text: str) -> i64 {
+    var depth = 0
+    var found = -1
+    var k = 0
+    while k < text.len() {
+        let b = text[k]
+        if b == '"' {
+            k = k + 1
+            while k < text.len() && text[k] != '"' {
+                if text[k] == '\\' { k = k + 1 }
+                k = k + 1
+            }
+        } else if b == '(' || b == '[' || b == '{' {
+            depth = depth + 1
+        } else if b == ')' || b == ']' || b == '}' {
+            depth = depth - 1
+        } else if b == ',' && depth == 0 {
+            if found >= 0 { return -1 }
+            found = k
+        }
+        k = k + 1
+    }
+    return found
+}
+
+// Whether `text` is one name, one number, or names joined by dots.
+fn hb_is_simple(text: str) -> bool {
+    if text.len() == 0 { return false }
+    var k = 0
+    while k < text.len() {
+        if !(is_name_byte(text[k]) || text[k] == '.') { return false }
+        k = k + 1
+    }
+    return text[0] != '.' && text[text.len() - 1] != '.'
+}
+
+// Where the simple operand that ends right before `end` starts; `end`
+// when what stands there is not simple (it ends in a bracket or a text).
+fn hb_operand_start(src: str, end: i64, lo: i64) -> i64 {
+    var start = end
+    while start > lo && (is_name_byte(src[start - 1]) || src[start - 1] == '.') {
+        start = start - 1
+    }
+    if start > lo && (src[start - 1] == ')' || src[start - 1] == ']' || src[start - 1] == '"') {
+        return end
+    }
+    return start
+}
+
+// The text between the first two backquotes after `from` in a message.
+fn hb_quoted(message: str, from: i64) -> str {
+    var k = from
+    while k < message.len() && message[k] != '`' {
+        k = k + 1
+    }
+    var end = k + 1
+    while end < message.len() && message[end] != '`' {
+        end = end + 1
+    }
+    if end >= message.len() { return "" }
+    return message.slice(k + 1, end)
+}
+
+fn hb_trimmed(text: str) -> str {
+    return text.trim()
+}
+
+fn hb_upper(b: i64) -> bool {
+    return b >= 'A' && b <= 'Z'
+}
+
+fn hb_in(word: str, words: str) -> bool {
+    for one in words.split(" ") {
+        if one == word { return true }
+    }
+    return false
+}
+
+// The text of `"a \{} b \{}", x, y` with its values in place: `"a \{x} b
+// \{y}"`. Empty when it is not a text followed by as many simple values
+// as it has `\{}`.
+fn hb_filled(inner: str) -> str {
+    if inner.len() < 2 || inner[0] != '"' { return "" }
+    var close = 1
+    while close < inner.len() && inner[close] != '"' {
+        if inner[close] == '\\' { close = close + 1 }
+        close = close + 1
+    }
+    if close >= inner.len() { return "" }
+    var values: List[str] = []
+    var rest = hb_trimmed(inner.slice(close + 1, inner.len()))
+    while rest.len() > 0 {
+        if rest[0] != ',' { return "" }
+        rest = hb_trimmed(rest.slice(1, rest.len()))
+        var end = 0
+        while end < rest.len() && (is_name_byte(rest[end]) || rest[end] == '.') {
+            end = end + 1
+        }
+        if end == 0 { return "" }
+        values.push(rest.slice(0, end))
+        rest = hb_trimmed(rest.slice(end, rest.len()))
+    }
+    var out = ""
+    var used = 0
+    var k = 0
+    while k <= close {
+        if inner[k] == '{' && k + 1 < close && inner[k + 1] == '}' {
+            if used >= values.len() { return "" }
+            out = out + "\{" + values[used] + "}"
+            used = used + 1
+            k = k + 2
+        } else {
+            if inner[k] == '{' && k + 1 < close && inner[k + 1] == ':' { return "" }
+            out.push(inner[k])
+            k = k + 1
+        }
+    }
+    if used != values.len() || used == 0 { return "" }
+    // `"\{x}"` alone is the value itself.
+    if values.len() == 1 && out == "\"\{" + values[0] + "}\"" { return values[0] }
+    return out
+}
+
+// ---- names --------------------------------------------------------------
+
+const HB_INTS = "int long short i8 i16 i32 i128 u8 u16 u32 u64 u128 usize isize uint uint8 uint16 uint32 uint64 int8 int16 int32 int64 Int Int64 Int32 Integer Long number byte size_t"
+const HB_TEXTS = "string String Str Text"
+const HB_BOOLS = "boolean Boolean Bool"
+const HB_LISTS = "Vec Array ArrayList list vector Vector Slice array LinkedList VecDeque"
+const HB_MAPS = "HashMap BTreeMap Dict dict map Dictionary Hashtable TreeMap"
+const HB_BOXES = "Box Rc Arc RefCell Cell Cow Weak"
+
+// A type name of another language.
+fn hb_type(name: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let end = at + name.len()
+    if hb_in(name, HB_INTS) {
+        return hb_edit("`" + name + "` is not an azoL type; the integer type is `i64`", at, end, "i64")
+    }
+    if hb_in(name, HB_TEXTS) {
+        return hb_edit("`" + name + "` is not an azoL type; text is `str`", at, end, "str")
+    }
+    if hb_in(name, HB_BOOLS) {
+        return hb_edit("`" + name + "` is not an azoL type; the type of `true` and `false` is `bool`", at, end, "bool")
+    }
+    if name == "char" || name == "Char" || name == "rune" || name == "Character" {
+        return hb_edit("`" + name + "` is not an azoL type; a byte such as `'a'` is an `i64`, and a one-byte text is `chr(97)`", at, end, "i64")
+    }
+    if hb_in(name, HB_LISTS) {
+        return hb_edit("`" + name + "` is not an azoL type; the list that grows is `List[T]`", at, end, "List")
+    }
+    if hb_in(name, HB_MAPS) {
+        return hb_say("`" + name + "` is not an azoL type; the map is `Map[V]`, from text keys to values of type `V`")
+    }
+    if hb_in(name, HB_BOXES) {
+        return hb_say("`" + name + "` is not an azoL type; a value owns its parts, and a type that holds itself does so through `List[T]`")
+    }
+    if name == "void" || name == "Void" || name == "Unit" || name == "None" || name == "never" {
+        // `-> void`: the whole result part goes.
+        let arrow = hb_before(src, at, lo)
+        if arrow > lo && src[arrow] == '>' && src[arrow - 1] == '-' {
+            let from = hb_before(src, arrow - 1, lo) + 1
+            return hb_edit("`" + name + "` is not an azoL type; a function that gives nothing back has no `->` part", from, end, "")
+        }
+        return hb_say("`" + name + "` is not an azoL type; a function that gives nothing back has no `->` part")
+    }
+    if name == "any" || name == "Any" || name == "Object" || name == "object" || name == "interface" || name == "dyn" {
+        return hb_say("`" + name + "` is not an azoL type; every value has one type that is known when compiling, and `enum` holds the cases")
+    }
+    return hb_none()
+}
+
+// A function of another language, called as `name(...)` at `at`.
+fn hb_function(name: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let end = at + name.len()
+    if hb_in(name, "println puts echo writeln print_ln Println printLine say") {
+        return hb_edit("`" + name + "` is not an azoL function; `print` writes a value and ends the line", at, end, "print")
+    }
+    if name == "not" {
+        return hb_edit("`not` is written `!` in azoL", at, hb_after(src, end, hi), "!")
+    }
+    if hb_in(name, "eprintln eputs warn") {
+        return hb_edit("`" + name + "` is not an azoL function; `eprint` writes a text to standard error and ends the line", at, end, "eprint")
+    }
+    if hb_in(name, "printf sprintf fprintf format Printf Sprintf") {
+        return hb_say("`" + name + "` is not an azoL function and there are no format texts; a value goes into a text as `\"total: \{sum}\"`")
+    }
+    let open = end
+    var close = -1
+    if hb_byte(src, open, lo, hi) == '(' { close = hb_close(src, open, hi) }
+    var inner = ""
+    if close > open { inner = hb_trimmed(src.slice(open + 1, close)) }
+    if hb_in(name, "len length size count strlen sizeof") {
+        let say = "`" + name + "(x)` is not azoL; the length of a list, a text or a map is the method `x.len()`"
+        if hb_is_simple(inner) { return hb_edit(say, at, close + 1, inner + ".len()") }
+        return hb_say(say)
+    }
+    if hb_in(name, "string String toString to_string str_of itoa") {
+        return hb_edit("`" + name + "` is not an azoL function; a number or a bool becomes text with `str(x)`", at, end, "str")
+    }
+    if hb_in(name, "int Int parseInt parse_int atoi Number to_int Integer") {
+        let say = "`" + name + "` is not an azoL function; a text becomes a number with the method `text.to_i64()`, which gives an `Option[i64]`"
+        if hb_is_simple(inner) { return hb_edit(say, at, close + 1, inner + ".to_i64()") }
+        return hb_say(say)
+    }
+    if name == "max" || name == "min" || name == "pow" {
+        let say = "`" + name + "(a, b)` is not azoL; it is a method of the number: `a." + name + "(b)`"
+        let comma = hb_one_comma(inner)
+        if comma > 0 {
+            let first = hb_trimmed(inner.slice(0, comma))
+            let second = hb_trimmed(inner.slice(comma + 1, inner.len()))
+            if hb_is_simple(first) && second.len() > 0 {
+                return hb_edit(say, at, close + 1, first + "." + name + "(" + second + ")")
+            }
+        }
+        return hb_say(say)
+    }
+    if name == "abs" {
+        let say = "`abs(n)` is not azoL; it is a method of the number: `n.abs()`"
+        if hb_is_simple(inner) { return hb_edit(say, at, close + 1, inner + ".abs()") }
+        return hb_say(say)
+    }
+    if name == "append" {
+        let say = "`append(xs, x)` is not azoL; a list grows with the method `xs.push(x)`"
+        let comma = hb_one_comma(inner)
+        if comma > 0 {
+            let first = hb_trimmed(inner.slice(0, comma))
+            let second = hb_trimmed(inner.slice(comma + 1, inner.len()))
+            if hb_is_simple(first) && second.len() > 0 {
+                return hb_edit(say, at, close + 1, first + ".push(" + second + ")")
+            }
+        }
+        return hb_say(say)
+    }
+    if name == "panic" || name == "die" || name == "abort" || name == "fatal" || name == "unreachable" || name == "todo" {
+        return hb_say("`" + name + "` is not an azoL function; give back a `Result`, or write `eprint(message)` and then `exit(1)`")
+    }
+    if name == "assert" || name == "assert_eq" || name == "assertEquals" || name == "expect" {
+        return hb_say("`" + name + "` is not an azoL function yet; test with `if` and stop with `eprint(message)` and `exit(1)`")
+    }
+    if name == "enumerate" {
+        return hb_say("`enumerate` is not an azoL function; a loop with a counter is `for i, x in xs`")
+    }
+    if name == "free" || name == "malloc" || name == "calloc" || name == "delete" || name == "drop" || name == "dealloc" {
+        return hb_say("`" + name + "` is not an azoL function; memory is taken and given back by the compiler, at the last use of each value")
+    }
+    if name == "input" || name == "readline" || name == "readLine" || name == "scanf" || name == "gets" {
+        return hb_say("`" + name + "` is not an azoL function; there is no standard input yet, a program reads `args()` and files")
+    }
+    if name == "open" || name == "fopen" {
+        return hb_say("`" + name + "` is not an azoL function; a whole file is read with `read_file(path)` and written with `write_file(path, text)`")
+    }
+    if name == "new_list" || name == "list" || name == "List" || name == "Vec" {
+        return hb_say("`" + name + "` is not an azoL function; an empty list is `[]`, with the type on the variable: `var xs: List[i64] = []`")
+    }
+    return hb_none()
+}
+
+// A name of another language used as a value.
+fn hb_value(name: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let end = at + name.len()
+    if hb_in(name, "null nil NULL undefined nullptr Nil Null") {
+        return hb_say("azoL has no `" + name + "`; a value that may be absent is an `Option[T]`, and absent is `None`")
+    }
+    if name == "True" || name == "TRUE" || name == "YES" {
+        return hb_edit("`" + name + "` is written `true` in azoL", at, end, "true")
+    }
+    if name == "False" || name == "FALSE" || name == "NO" {
+        return hb_edit("`" + name + "` is written `false` in azoL", at, end, "false")
+    }
+    // `console.log(x)`, `fmt.Println(x)`, `System.out.println(x)`.
+    var path_end = end
+    while path_end < hi && (is_name_byte(src[path_end]) || src[path_end] == '.') {
+        path_end = path_end + 1
+    }
+    let path = src.slice(at, path_end)
+    if hb_in(path, "console.log console.info console.debug fmt.Println fmt.Print System.out.println System.out.print io.println") {
+        return hb_edit("`" + path + "` is not azoL; `print` writes a value and ends the line", at, path_end, "print")
+    }
+    if hb_in(path, "console.error console.warn System.err.println fmt.Fprintln") {
+        return hb_edit("`" + path + "` is not azoL; `eprint` writes a text to standard error and ends the line", at, path_end, "eprint")
+    }
+    if name == "fmt" || name == "console" || name == "System" || name == "std" || name == "os" || name == "sys" || name == "io" || name == "process" {
+        return hb_say("azoL has no `" + name + "` and no modules; what is built in is a short list of functions and methods: `azol guide library`")
+    }
+    if name == "Math" || name == "math" {
+        return hb_say("azoL has no `" + name + "`; numbers have methods: `a.max(b)`, `a.min(b)`, `n.abs()`, `n.pow(k)`")
+    }
+    if name == "this" || name == "self" {
+        return hb_say("azoL has no `" + name + "` of its own; a function takes the value it works on as a named parameter")
+    }
+    if name == "pass" { return hb_say("azoL has no `pass`; a block that does nothing is `\{}`") }
+    if hb_in(name, HB_LISTS) || name == "List" {
+        return hb_say("`" + name + "` is a type, not a value; an empty list is `[]`, with the type on the variable: `var xs: List[i64] = []`")
+    }
+    if hb_in(name, HB_TEXTS) || name == "str" {
+        return hb_say("`" + name + "` is a type, not a value; an empty text is `\"\"`")
+    }
+    if hb_in(name, HB_MAPS) || name == "Map" {
+        return hb_say("`" + name + "` is a type, not a value; an empty map is `new_map()`, with the type on the variable: `var m: Map[i64] = new_map()`")
+    }
+    return hb_none()
+}
+
+// What a method of another language is called in azoL, or "".
+fn hb_method_name(name: str, on_text: bool, on_list: bool, on_map: bool) -> str {
+    if hb_in(name, "length size count") { return "len" }
+    if hb_in(name, "isEmpty empty") { return "is_empty" }
+    if hb_in(name, "includes has_item") && !on_map { return "contains" }
+    if on_text {
+        if hb_in(name, "startsWith hasPrefix startswith has_prefix") { return "starts_with" }
+        if hb_in(name, "endsWith hasSuffix endswith has_suffix") { return "ends_with" }
+        if hb_in(name, "toUpperCase to_uppercase upper uppercased toUpper to_ascii_uppercase") {
+            return "to_upper"
+        }
+        if hb_in(name, "toLowerCase to_lowercase lower lowercased toLower to_ascii_lowercase") {
+            return "to_lower"
+        }
+        if hb_in(name, "strip trim_whitespace trimmed trimSpace") { return "trim" }
+        if hb_in(name, "indexOf index") { return "find" }
+        if hb_in(name, "lastIndexOf rfind rindex") { return "last_index_of" }
+        if hb_in(name, "substring substr sub") { return "slice" }
+        if hb_in(name, "replaceAll replace_all") { return "replace" }
+        if hb_in(name, "parse parseInt to_int toInt atoi to_i") { return "to_i64" }
+        if hb_in(name, "splitlines split_lines") { return "lines" }
+    }
+    if on_list {
+        if hb_in(name, "append add push_back addLast") { return "push" }
+        if hb_in(name, "indexOf index position") { return "index_of" }
+        if hb_in(name, "pop_back removeLast") { return "pop" }
+        if hb_in(name, "removeAt remove_index") { return "remove_at" }
+        if hb_in(name, "concat addAll append_all") { return "extend" }
+        if hb_in(name, "toSorted sort_copy") { return "sorted" }
+        if hb_in(name, "toReversed rev") { return "reversed" }
+    }
+    if on_map {
+        if hb_in(name, "put insert store") { return "set" }
+        if hb_in(name, "containsKey contains_key has_key contains includes") { return "has" }
+        if hb_in(name, "delete erase") { return "remove" }
+        if hb_in(name, "getOrDefault get_or_default") { return "get_or" }
+    }
+    return ""
+}
+
+// A method of another language: `receiver.name(...)`, with `at` on the name.
+fn hb_method(kind: str, name: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let end = at + name.len()
+    let dot = at - 1
+    if hb_byte(src, dot, lo, hi) != '.' { return hb_none() }
+    var close = -1
+    if hb_byte(src, end, lo, hi) == '(' { close = hb_close(src, end, hi) }
+    var inner = ""
+    if close > end { inner = hb_trimmed(src.slice(end + 1, close)) }
+    let empty_call = close == end + 1
+    let on_text = kind == "str"
+    let on_list = kind.starts_with("List[")
+    let on_map = kind.starts_with("Map[")
+    let on_number = kind == "i64" || kind == "bool"
+    if hb_in(name, "clone copy to_owned to_vec dup cloned copied deepcopy") {
+        let say = "`." + name + "()` is not needed: in azoL a value is copied when it is given a second name, and moved when the first is not used again"
+        if empty_call { return hb_edit(say, dot, close + 1, "") }
+        return hb_say(say)
+    }
+    if hb_in(name, "as_str as_ref borrow into as_bytes to_str as_slice as_mut to_string_lossy") && !on_number {
+        let say = "`." + name + "()` is not needed: azoL has one text type and one list type, and no references"
+        if empty_call { return hb_edit(say, dot, close + 1, "") }
+        return hb_say(say)
+    }
+    if hb_in(name, "to_string toString String description") || name == "to_str" && on_number {
+        if on_text {
+            let say = "`." + name + "()` is not needed: this is already a `str`"
+            if empty_call { return hb_edit(say, dot, close + 1, "") }
+            return hb_say(say)
+        }
+        let say = "`." + name + "()` is not azoL; a number or a bool becomes text with `str(x)`, or goes into a text as `\"\{x}\"`"
+        let start = hb_operand_start(src, dot, lo)
+        if empty_call && start < dot {
+            return hb_edit(say, start, close + 1, "str(" + src.slice(start, dot) + ")")
+        }
+        return hb_say(say)
+    }
+    if hb_in(name, "iter into_iter iter_mut stream values_iter") && !on_map {
+        let say = "`." + name + "()` is not azoL: there are no iterators; a list is looped over as it is and has its methods directly, such as `xs.sum()`"
+        if empty_call { return hb_edit(say, dot, close + 1, "") }
+        return hb_say(say)
+    }
+    if name == "enumerate" && on_list {
+        let say = "`.enumerate()` is not needed: a loop with a counter is `for i, x in xs`"
+        if empty_call { return hb_edit(say, dot, close + 1, "") }
+        return hb_say(say)
+    }
+    if hb_in(name, "collect to_list toList to_array toArray") && on_list {
+        let say = "`." + name + "()` is not needed: this is already a `List`"
+        if empty_call { return hb_edit(say, dot, close + 1, "") }
+        return hb_say(say)
+    }
+    if hb_in(name, "map filter fold reduce for_each forEach any all find_map flat_map flatMap sort_by sortBy sort_by_key filter_map take_while skip_while") && !on_text {
+        return hb_say("`." + name + "(...)` takes a function, and azoL has no function values yet; write the loop")
+    }
+    if name == "sort" && on_list {
+        let say = "`.sort()` is not azoL; `xs.sorted()` gives the sorted list, so sorting in place is `xs = xs.sorted()`"
+        let start = hb_operand_start(src, dot, lo)
+        if empty_call && start < dot && hb_before(src, start, lo) < hb_line_start(src, at, lo) && hb_line_is_over(src, close + 1, hi) {
+            let target = src.slice(start, dot)
+            return hb_edit(say, start, close + 1, target + " = " + target + ".sorted()")
+        }
+        return hb_say(say)
+    }
+    if on_text && hb_in(name, "push_str append concat add") {
+        let say = "`." + name + "(...)` is not azoL; a text grows with `+=`: `s += more`"
+        let start = hb_operand_start(src, dot, lo)
+        if close > end && start < dot && hb_before(src, start, lo) < hb_line_start(src, at, lo) && hb_line_is_over(src, close + 1, hi) {
+            return hb_edit(say, dot, close + 1, " += " + inner)
+        }
+        return hb_say(say)
+    }
+    if on_list && (name == "get" || name == "at" || name == "elementAt" || name == "nth") {
+        let say = "`." + name + "(i)` is not azoL; an item of a list is `xs[i]`, which stops the program when `i` is outside the list"
+        if close > end && inner.len() > 0 && name != "get" && name != "nth" {
+            return hb_edit(say, dot, close + 1, "[" + inner + "]")
+        }
+        return hb_say(say + "; `xs.first()` and `xs.last()` give an `Option`")
+    }
+    if on_text && hb_in(name, "charAt char_at at charCodeAt byte_at") {
+        let say = "`." + name + "(i)` is not azoL; the byte at a place of a text is `s[i]`, an `i64`"
+        if close > end && inner.len() > 0 { return hb_edit(say, dot, close + 1, "[" + inner + "]") }
+        return hb_say(say)
+    }
+    if on_text && hb_in(name, "format") {
+        return hb_say("`.format(...)` is not azoL; a value goes into a text where it belongs: `\"total: \{sum}\"`")
+    }
+    if hb_in(name, "unshift push_front prepend") && on_list {
+        let say = "`." + name + "(x)` is not azoL; an item goes in front with `xs.insert(0, x)`"
+        if close > end && inner.len() > 0 {
+            return hb_edit(say, at, close + 1, "insert(0, " + inner + ")")
+        }
+        return hb_say(say)
+    }
+    if hb_in(name, "shift pop_front") && on_list {
+        return hb_say("`." + name + "()` is not azoL; the first item is `xs.first()` and it is taken out with `xs.remove_at(0)`")
+    }
+    if hb_in(name, "is_null isNull is_nil") {
+        return hb_say("`." + name + "()` is not azoL: there is no null; an `Option` is asked with `.is_none()` or read with `match`")
+    }
+    let to = hb_method_name(name, on_text, on_list, on_map)
+    if to.len() > 0 && to != name {
+        return hb_edit("`." + name + "` is called `." + to + "` in azoL", at, end, to)
+    }
+    return hb_none()
+}
+
+// A field of another language: `xs.length`, with `at` on the name.
+fn hb_field(at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let name = hb_name(src, at, hi)
+    let end = at + name.len()
+    if hb_byte(src, at - 1, lo, hi) != '.' { return hb_none() }
+    if hb_in(name, "length size count len Length Count") && hb_byte(src, end, lo, hi) != '(' {
+        return hb_edit("`." + name + "` is not a field in azoL; the length is the method `.len()`", at, end, "len()")
+    }
+    return hb_none()
+}
+
+// ---- forms --------------------------------------------------------------
+
+// A character the lexer does not know.
+fn hb_character(at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let b = hb_byte(src, at, lo, hi)
+    if b == ';' {
+        let first = hb_first_word(src, at, lo, hi)
+        if first == "for" {
+            return hb_say("azoL has no `for (start; test; step)`; a loop over numbers is `for i in 0..n`, and any other loop is `while`")
+        }
+        let say = "`;` does not end a statement in azoL; the end of the line does"
+        if hb_line_is_over(src, at + 1, hi) { return hb_edit(say, at, at + 1, "") }
+        return hb_say(say + ", and each statement has a line of its own")
+    }
+    if b == '#' {
+        let next = hb_byte(src, at + 1, lo, hi)
+        let line_start = hb_line_start(src, at, lo)
+        var line_end = hb_line_end(src, at, hi)
+        if next == '[' || next == '!' {
+            if line_end < hi { line_end = line_end + 1 }
+            if hb_before(src, at, lo) < line_start {
+                return hb_edit("azoL has no attributes such as `#[...]`; nothing has to be derived or switched on", line_start, line_end, "")
+            }
+            return hb_say("azoL has no attributes such as `#[...]`; nothing has to be derived or switched on")
+        }
+        let word = hb_name(src, at + 1, hi)
+        if word == "include" || word == "define" || word == "import" || word == "pragma" || word == "ifdef" || word == "ifndef" || word == "endif" {
+            return hb_say("azoL has no `#" + word + "`; a program is the files named to `azol build`, and a fixed value is a `const`")
+        }
+        return hb_edit("a comment starts with `//` in azoL, not with `#`", at, at + 1, "//")
+    }
+    if b == '~' { return hb_say("azoL has no `~`; every bit of `x` turned over is `x ^ -1`") }
+    if b == '`' {
+        return hb_say("a text is written between double quotes in azoL, and a value goes into it as `\"total: \{sum}\"`")
+    }
+    if b == '@' { return hb_say("azoL has no `@` forms: no decorators, no annotations") }
+    if b == '$' {
+        return hb_say("a name has no `$` in azoL; in a text a value is written `\{value}`")
+    }
+    if b == '\\' {
+        return hb_say("a line does not continue with `\\` in azoL; it continues when it ends in an operator, a comma or an open bracket")
+    }
+    return hb_none()
+}
+
+// `'hello'`, a lifetime, or a character of more than one byte.
+fn hb_quote(at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    if hb_byte(src, at, lo, hi) != '\'' { return hb_none() }
+    let before = hb_byte(src, at - 1, lo, hi)
+    if before == '<' || before == '&' {
+        return hb_say("azoL has no lifetimes such as `'a`: there are no references, so nothing outlives anything")
+    }
+    var end = at + 1
+    while end < hi && src[end] != '\'' && src[end] != '\n' {
+        if src[end] == '"' || src[end] == '\\' || src[end] == '{' { return hb_none() }
+        end = end + 1
+    }
+    if end >= hi || src[end] != '\'' || end - at < 3 { return hb_none() }
+    return hb_edit("a text is written between double quotes in azoL; single quotes hold one byte, as in `'a'`", at, end + 1, "\"" + src.slice(at + 1, end) + "\"")
+}
+
+// What the parser found where it expected something else, as the
+// message says it: the text between the backquotes, or a word such as
+// "name".
+fn hb_found(message: str) -> str {
+    var k = 0
+    var mark = -1
+    while k + 10 <= message.len() {
+        if message.slice(k, k + 10) == "but found " { mark = k + 10 }
+        k = k + 1
+    }
+    if mark < 0 { return "" }
+    if mark < message.len() && message[mark] == '`' { return hb_quoted(message, mark) }
+    return message.slice(mark, message.len())
+}
+
+// A declaration word of another language at the start of a line outside
+// every function.
+fn hb_declaration(word: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let end = at + word.len()
+    if word == "def" || word == "func" || word == "function" || word == "fun" || word == "proc" || word == "sub" {
+        return hb_edit("a function is declared with `fn` in azoL, not with `" + word + "`", at, end, "fn")
+    }
+    if hb_in(word, "pub public private protected export internal") {
+        var stop = hb_after(src, end, hi)
+        if hb_byte(src, stop, lo, hi) == '(' {
+            let close = hb_close(src, stop, hi)
+            if close > 0 { stop = hb_after(src, close + 1, hi) }
+        }
+        return hb_edit("azoL has no `" + word + "`; every declaration is seen by the whole program", at, stop, "")
+    }
+    if hb_in(word, "use import from package include require using module mod namespace extern") {
+        var line_end = hb_line_end(src, at, hi)
+        if line_end < hi { line_end = line_end + 1 }
+        let say = "azoL has no `" + word + "`; a program is the files named to `azol build`, and what is built in needs no import"
+        if word == "mod" || word == "namespace" || word == "module" || word == "extern" || word == "package" {
+            return hb_say(say)
+        }
+        return hb_edit(say, hb_line_start(src, at, lo), line_end, "")
+    }
+    if word == "impl" || word == "extension" {
+        return hb_say("azoL has no `" + word + "` and no methods of your own yet; write `fn area(p: Point) -> i64` outside the struct and call it `area(p)`")
+    }
+    if word == "trait" || word == "interface" || word == "protocol" || word == "abstract" {
+        return hb_say("azoL has no `" + word + "` yet; write a function for each type, or one `enum` with a `match` over its cases")
+    }
+    if word == "class" || word == "record" || word == "data" || word == "object" {
+        return hb_say("azoL has no `" + word + "`; the data is a `struct` and what is done with it is functions that take it")
+    }
+    if word == "type" || word == "typedef" || word == "alias" {
+        return hb_say("azoL has no `" + word + "`; a new type is a `struct` or an `enum`")
+    }
+    if word == "static" || word == "let" || word == "var" || word == "val" || word == "final" || word == "global" {
+        return hb_edit("outside functions a named value is a constant: `const NAME = value`, not `" + word + "`", at, end, "const")
+    }
+    if word == "void" || word == "int" || word == "public" {
+        return hb_say("a function is written `fn name(parameter: Type) -> Result`, with `fn` first and the result after `->`")
+    }
+    if word == "if" || word == "while" || word == "for" || word == "print" || word == "return" || word == "match" {
+        return hb_none()
+    }
+    return hb_none()
+}
+
+// What stands at and around the place of a mistake of form.
+struct Seen {
+    // What the parser says it found.
+    found: str
+    // The byte at the place, the one after it, the place of the last
+    // byte before it that is no space, and that byte.
+    b: i64
+    next: i64
+    last: i64
+    before: i64
+    // The word before the place and where it starts (-1: none).
+    prev_at: i64
+    prev: str
+    // The word at the place.
+    word: str
+    line_start: i64
+    // The first word of the line and where it starts.
+    first_at: i64
+    first: str
+}
+
+fn hb_look(message: str, at: i64, src: str, lo: i64, hi: i64) -> Seen {
+    let last = hb_before(src, at, lo)
+    let prev_at = hb_prev_word(src, at, lo)
+    var prev = ""
+    if prev_at >= 0 { prev = hb_name(src, prev_at, hi) }
+    let line_start = hb_line_start(src, at, lo)
+    let first_at = hb_after(src, line_start, hi)
+    return Seen {
+        found: hb_found(message),
+        b: hb_byte(src, at, lo, hi),
+        next: hb_byte(src, at + 1, lo, hi),
+        last: last,
+        before: hb_byte(src, last, lo, hi),
+        prev_at: prev_at,
+        prev: prev,
+        word: hb_name(src, at, hi),
+        line_start: line_start,
+        first_at: first_at,
+        first: hb_name(src, first_at, hi),
+    }
+}
+
+fn hb_syntax_1(seen: Seen, message: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let found = seen.found
+    let b = seen.b
+    let next = seen.next
+    let last = seen.last
+    let before = seen.before
+    let prev_at = seen.prev_at
+    let prev = seen.prev
+    let word = seen.word
+    let line_start = seen.line_start
+    let first_at = seen.first_at
+    let first = seen.first
+    // Outside functions.
+    if message.starts_with("expected `fn`, `struct`, `enum` or `const`") && word.len() > 0 {
+        return hb_declaration(word, at, src, lo, hi)
+    }
+
+    // `loop {` and `try {` read as the start of a struct value, so the
+    // mistake is reported inside the block; look at the lines above.
+    if message.starts_with("expected a field name") || message.starts_with("expected `:`") || message.starts_with("expected a new line") {
+        var line = line_start
+        var back = 0
+        while back < 40 && line > lo {
+            line = hb_line_start(src, line - 1, lo)
+            let head_at = hb_after(src, line, hi)
+            let head = hb_name(src, head_at, hi)
+            let rest = hb_after(src, head_at + head.len(), hi)
+            if hb_byte(src, rest, lo, hi) == '{' && hb_line_is_over(src, rest + 1, hi) {
+                if head == "loop" {
+                    return hb_edit("azoL has no `loop`; a loop without an end is `while true`", head_at, head_at + 4, "while true")
+                }
+                if head == "try" {
+                    return hb_say("azoL has no `try` block and no exceptions; a function that can fail gives back a `Result`, and `f()?` passes its error on")
+                }
+                if head == "do" {
+                    let end = hb_block_end(src, rest, hi)
+                    if end >= 0 && hb_name(src, hb_after(src, end + 1, hi), hi) == "while" {
+                        return hb_say("azoL has no `do ... while`; write `while true \{ ... }` and leave with `if !test \{ break }` at the end")
+                    }
+                }
+                if head == "do" || head == "unsafe" || head == "begin" {
+                    return hb_say("azoL has no `" + head + "` block; statements are written where they run, and a group of them is the body of `if`, `while`, `for`, `match` or a function")
+                }
+            }
+            back = back + 1
+        }
+    }
+    if message.starts_with("expected `:`") && hb_in(prev, "pub public private protected") && word.len() > 0 {
+        return hb_edit("azoL has no `" + prev + "`; every field is seen by the whole program", prev_at, at, "")
+    }
+    if message.starts_with("expected a loop variable name") && b == '(' {
+        let close = hb_close(src, at, hi)
+        let say = "a loop with a counter is written `for i, x in xs` in azoL, without parentheses"
+        if close > at { return hb_edit(say, at, close + 1, src.slice(at + 1, close)) }
+        return hb_say(say)
+    }
+    if message.starts_with("expected `]`") && found == ":" {
+        var open = at
+        var depth = 0
+        while open > line_start && !(src[open] == '[' && depth == 0) {
+            if src[open] == ']' { depth = depth + 1 }
+            if src[open] == '[' { depth = depth - 1 }
+            open = open - 1
+        }
+        let close = hb_close(src, open, hi)
+        let say = "a part of a text or a list is `x.slice(from, to)` in azoL; there is no `x[from:to]`"
+        if src[open] == '[' && close > at {
+            let from = hb_trimmed(src.slice(open + 1, at))
+            let to = hb_trimmed(src.slice(at + 1, close))
+            if from.len() > 0 && to.len() > 0 && hb_one_comma(from + ":" + to + ",") > 0 && first != "fn" {
+                return hb_edit(say, open, close + 1, ".slice(" + from + ", " + to + ")")
+            }
+        }
+        if first != "fn" { return hb_say(say) }
+    }
+
+    if message.starts_with("expected a parameter name") && found == "mut" {
+        let name_at = hb_after(src, at + 3, hi)
+        let name_end = hb_name_end(src, name_at, hi)
+        let colon = hb_after(src, name_end, hi)
+        let say = "a parameter the function changes is written `name: mut Type` in azoL, with `mut` before the type"
+        if name_end > name_at && hb_byte(src, colon, lo, hi) == ':' {
+            return hb_edit(say, at, hb_after(src, colon + 1, hi), src.slice(name_at, name_end) + ": mut ")
+        }
+        return hb_say(say)
+    }
+    if message.starts_with("expected `:`") && found == "=" && prev.len() > 0 && first != "fn" {
+        return hb_edit("a field is given its value after a colon in azoL: `" + prev + ": value`", last + 1, hb_after(src, at + 1, hi), ": ")
+    }
+    if message.starts_with("expected `)`") && found == "=" && first != "fn" && prev_at >= 0 {
+        let opener = hb_byte(src, hb_before(src, prev_at, lo), lo, hi)
+        if opener == '(' || opener == ',' {
+            return hb_edit("arguments have no names in azoL; they are given in the order of the parameters", prev_at, hb_after(src, at + 1, hi), "")
+        }
+    }
+    if word == "while" && before == '}' && message.starts_with("expected end of line") {
+        return hb_say("azoL has no `do ... while`; write `while true \{ ... }` and leave with `if !test \{ break }` at the end")
+    }
+
+    // `let mut x`, `val x`.
+    if found == "mut" && prev == "let" {
+        return hb_edit("`let mut` is Rust; in azoL a variable that changes is declared with `var`", prev_at, at + 3, "var")
+    }
+    if (prev == "val" || prev == "final" || prev == "auto") && prev_at == first_at && word.len() > 0 {
+        return hb_edit("`" + prev + "` is not azoL; a name for a value is declared with `let`, and one that changes with `var`", prev_at, prev_at + prev.len(), "let")
+    }
+
+    // `< >` for type parameters and arguments.
+    if b == '<' && last >= lo && (is_name_byte(before) || before == ':') {
+        if next == '\'' {
+            return hb_say("azoL has no lifetimes such as `'a`: there are no references, so nothing outlives anything")
+        }
+        let close = hb_close_angle(src, at, hi)
+        if close > at + 1 && before != ':' {
+            var inner = ""
+            var k = at + 1
+            while k < close {
+                if src[k] == '<' {
+                    inner.push('[')
+                } else if src[k] == '>' {
+                    inner.push(']')
+                } else {
+                    inner.push(src[k])
+                }
+                k = k + 1
+            }
+            return hb_edit("type parameters and type arguments are written between `[ ]` in azoL, not `< >`", at, close + 1, "[" + inner + "]")
+        }
+    }
+
+    // `::`
+    if b == ':' && next == ':' {
+        let owner_at = hb_name_start(src, at, lo)
+        let owner = src.slice(owner_at, at)
+        let member = hb_name(src, at + 2, hi)
+        let member_end = at + 2 + member.len()
+        if hb_byte(src, at + 2, lo, hi) == '<' {
+            return hb_say("type arguments are never written at a call in azoL; the type comes from the variable: `let n: Option[i64] = text.to_i64()`")
+        }
+        let call = owner + "::" + member
+        if hb_byte(src, member_end, lo, hi) == '(' {
+            let close = hb_close(src, member_end, hi)
+            if close == member_end + 1 {
+                if call == "String::new" {
+                    return hb_edit("`String::new()` is Rust; an empty text is `\"\"`", owner_at, close + 1, "\"\"")
+                }
+                if call == "Vec::new" {
+                    return hb_edit("`Vec::new()` is Rust; an empty list is `[]`", owner_at, close + 1, "[]")
+                }
+                if call == "List::new" || call == "Array::new" {
+                    return hb_edit("`" + call + "()` is not azoL; an empty list is `[]`", owner_at, close + 1, "[]")
+                }
+                if call == "Map::new" {
+                    return hb_edit("`Map::new()` is not azoL; an empty map is `new_map()`", owner_at, close + 1, "new_map()")
+                }
+                if call == "HashMap::new" || call == "BTreeMap::new" {
+                    return hb_edit("`" + call + "()` is Rust; an empty map is `new_map()`", owner_at, close + 1, "new_map()")
+                }
+            }
+            if call == "String::from" && close > member_end {
+                return hb_edit("`String::from(...)` is Rust; a text between quotes is already a `str` of its own", owner_at, close + 1, hb_trimmed(src.slice(member_end + 1, close)))
+            }
+        }
+        if owner.len() > 0 && hb_upper(owner[0]) && member.len() > 0 && hb_upper(member[0]) {
+            return hb_edit("an enum's variant is written bare in azoL, without the enum's name: `" + member + "`, not `" + call + "`", owner_at, at + 2, "")
+        }
+        return hb_say("azoL has no `::` and no paths; functions and types have one name each, known to the whole program")
+    }
+
+    // `x := 1`
+    if b == ':' && next == '=' {
+        let name_at = hb_name_start(src, last + 1, lo)
+        if name_at == first_at && name_at <= last {
+            return hb_edit("`:=` is not azoL; a name is declared with `let`, or `var` when it changes", name_at, at + 2, "let " + src.slice(name_at, last + 1) + " =")
+        }
+        return hb_say("`:=` is not azoL; a name is declared with `let`, or `var` when it changes")
+    }
+    if found == "," && hb_first_word(src, at, lo, hi).len() > 0 && src.slice(at, hb_line_end(src, at, hi)).contains(":=") {
+        return hb_say("azoL declares one name on a line; a function that can fail gives back one `Result`, not a value and an error")
+    }
+
+    // Macros and `!`.
+    if b == '!' && last == at - 1 && is_name_byte(before) && next != '=' {
+        let name_at = hb_name_start(src, at, lo)
+        let name = src.slice(name_at, at)
+        if next == '(' || next == '[' || next == '{' {
+            let close = hb_close(src, at + 1, hi)
+            var one_text = false
+            if close > 0 {
+                let inner = hb_trimmed(src.slice(at + 2, close))
+                one_text = inner.len() > 1 && inner[0] == '"' && hb_one_comma(inner + ",") == inner.len() && !inner.contains("\{}") && !inner.contains("\{:")
+            }
+            if name == "vec" {
+                return hb_edit("azoL has no macros; a list is written `[1, 2, 3]`, without `vec!`", name_at, at + 1, "")
+            }
+            if name == "println" || name == "print" || name == "eprintln" || name == "eprint" || name == "dbg" {
+                var to = "print"
+                if name.starts_with("e") { to = "eprint" }
+                let say = "azoL has no macros; `" + to + "` takes one value, and values go into a text as `\"total: \{sum}\"`"
+                if one_text && name != "print" && name != "dbg" {
+                    return hb_edit(say, name_at, at + 1, to)
+                }
+                if close > 0 && name != "print" && name != "dbg" {
+                    let filled = hb_filled(hb_trimmed(src.slice(at + 2, close)))
+                    if filled.len() > 0 {
+                        return hb_edit(say, name_at, close + 1, to + "(" + filled + ")")
+                    }
+                }
+                return hb_say(say)
+            }
+            if name == "format" {
+                let say = "azoL has no macros and needs no `format!`; a text holds its values: `\"total: \{sum}\"`"
+                if one_text { return hb_edit(say, name_at, at + 1, "") }
+                if close > 0 {
+                    let filled = hb_filled(hb_trimmed(src.slice(at + 2, close)))
+                    if filled.len() > 0 && filled[0] == '"' {
+                        return hb_edit(say, name_at, close + 1, filled)
+                    }
+                    if filled.len() > 0 {
+                        return hb_edit(say, name_at, close + 1, "str(" + filled + ")")
+                    }
+                }
+                return hb_say(say)
+            }
+            if name == "panic" || name == "unreachable" || name == "todo" || name == "unimplemented" {
+                return hb_say("azoL has no macros and no `" + name + "!`; give back a `Result`, or write `eprint(message)` and then `exit(1)`")
+            }
+            if name == "assert" || name == "assert_eq" || name == "assert_ne" || name == "debug_assert" {
+                return hb_say("azoL has no macros and no `" + name + "!` yet; test with `if` and stop with `eprint(message)` and `exit(1)`")
+            }
+            return hb_say("azoL has no macros; `" + name + "!` has to be written out")
+        }
+        return hb_say("azoL has no `!` after a value; an `Option` is read with `match`, `?`, `.or(default)` or `.expect(\"why it is there\")`")
+    }
+    return hb_none()
+}
+
+fn hb_syntax_2(seen: Seen, message: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let found = seen.found
+    let b = seen.b
+    let next = seen.next
+    let last = seen.last
+    let before = seen.before
+    let prev_at = seen.prev_at
+    let prev = seen.prev
+    let word = seen.word
+    let line_start = seen.line_start
+    let first_at = seen.first_at
+    let first = seen.first
+    // References and pointers.
+    if b == '&' && next != '&' {
+        var stop = at + 1
+        if hb_byte(src, stop, lo, hi) == '\'' {
+            stop = hb_after(src, hb_name_end(src, stop + 1, hi), hi)
+        }
+        if hb_name(src, stop, hi) == "mut" {
+            return hb_edit("`&mut` is Rust; in azoL what a function may change is marked `mut`, in the parameter and again at the call", at, stop + 3, "mut")
+        }
+        return hb_edit("azoL has no references; a value is passed and named as itself, and a parameter is read-only unless it says `mut`", at, stop, "")
+    }
+    if b == '*' && last < line_start && message.starts_with("expected an expression") {
+        return hb_edit("azoL has no pointers, so there is nothing to follow with `*`; assign to the variable itself", at, at + 1, "")
+    }
+    if b == '*' && before == '*' && last == at - 1 {
+        let say = "azoL has no `**`; a power is the method `x.pow(n)`"
+        let left_end = hb_before(src, last, lo) + 1
+        let left_at = hb_operand_start(src, left_end, lo)
+        let right_at = hb_after(src, at + 1, hi)
+        let right_end = hb_name_end(src, right_at, hi)
+        let after = hb_byte(src, right_end, lo, hi)
+        if left_at < left_end && right_end > right_at && after != '.' && after != '(' && after != '[' {
+            return hb_edit(say, left_at, right_end, src.slice(left_at, left_end) + ".pow(" + src.slice(right_at, right_end) + ")")
+        }
+        return hb_say(say)
+    }
+
+    // Operators.
+    if b == '=' && before == '=' && last == at - 1 && last > lo && (src[last - 1] == '=' || src[last - 1] == '!') {
+        return hb_edit("azoL has no `===` and no `!==`; values are compared with `==` and `!=`", at, at + 1, "")
+    }
+    if b == '>' && before == '<' && last == at - 1 {
+        return hb_edit("azoL has no `<>`; not equal is `!=`", last, at + 1, "!=")
+    }
+    if word == "and" || word == "or" {
+        var to = "&&"
+        if word == "or" { to = "||" }
+        return hb_edit("`" + word + "` is written `" + to + "` in azoL", at, at + word.len(), to)
+    }
+    if prev == "not" && (found == "a name" || word.len() > 0 || b == '(') {
+        return hb_edit("`not` is written `!` in azoL", prev_at, at, "!")
+    }
+    if word == "is" || word == "in" && first != "for" {
+        return hb_say("azoL has no `" + word + "` operator; compare with `==`, and ask a list or a text with `.contains(x)`")
+    }
+
+    // Conditions and loops of other languages.
+    if word == "elif" || word == "elsif" || word == "elseif" {
+        return hb_edit("`" + word + "` is written `else if` in azoL", at, at + word.len(), "else if")
+    }
+    if b == ':' && hb_line_is_over(src, at + 1, hi) && hb_in(first, "if while for else fn def match") {
+        return hb_say("a block is between `\{` and `}` in azoL; `:` and the depth of the lines do not make one")
+    }
+    if prev == "switch" || first == "case" || first == "default" {
+        return hb_say("azoL has no `switch`; write `match value \{ 1 => ... _ => ... }`, where `_` takes every other value")
+    }
+    if word == "then" || word == "do" || word == "begin" {
+        return hb_say("a block is between `\{` and `}` in azoL, with no `" + word + "` before it")
+    }
+    if message.starts_with("expected `\{`") && (first == "if" || first == "while") && before == ')' {
+        return hb_say("the body of `" + first + "` is a block in azoL, even for one statement: `" + first + " x > 0 \{ ... }`")
+    }
+    if prev == "loop" && prev_at == first_at {
+        return hb_edit("azoL has no `loop`; a loop without an end is `while true`", prev_at, prev_at + 4, "while true")
+    }
+    if prev == "unless" || prev == "until" {
+        return hb_say("azoL has no `" + prev + "`; write `if` or `while` with `!` before the test")
+    }
+    return hb_none()
+}
+
+fn hb_syntax_3(seen: Seen, message: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let found = seen.found
+    let b = seen.b
+    let next = seen.next
+    let last = seen.last
+    let before = seen.before
+    let prev_at = seen.prev_at
+    let prev = seen.prev
+    let word = seen.word
+    let line_start = seen.line_start
+    let first_at = seen.first_at
+    let first = seen.first
+    // Types written another way.
+    if b == '[' && next == ']' && message.starts_with("expected a type") {
+        let item_at = at + 2
+        let item_end = hb_name_end(src, item_at, hi)
+        if item_end > item_at {
+            return hb_edit("a list type is written `List[T]` in azoL, not `[]T`", at, item_end, "List[" + src.slice(item_at, item_end) + "]")
+        }
+        return hb_say("a list type is written `List[T]` in azoL, not `[]T`")
+    }
+    if b == ']' && before == '[' && last == at - 1 && last > lo && is_name_byte(src[last - 1]) {
+        let item_at = hb_name_start(src, last, lo)
+        return hb_edit("a list type is written `List[T]` in azoL, not `T[]`", item_at, at + 1, "List[" + src.slice(item_at, last) + "]")
+    }
+    if b == '[' && message.starts_with("expected a type") {
+        let close = hb_close(src, at, hi)
+        if close > at + 1 {
+            return hb_edit("a list type is written `List[T]` in azoL, not `[T]`", at, close + 1, "List[" + src.slice(at + 1, close) + "]")
+        }
+    }
+    if b == '?' && last == at - 1 && is_name_byte(before) && (message.starts_with("expected `=`") || message.starts_with("expected `)`") || message.starts_with("expected `\{`") || message.starts_with("expected a new line")) {
+        let item_at = hb_name_start(src, at, lo)
+        return hb_edit("a value that may be absent has the type `Option[T]` in azoL, not `T?`", item_at, at + 1, "Option[" + src.slice(item_at, at) + "]")
+    }
+    if word == "as" && found == "a name" {
+        let type_at = hb_after(src, at + 2, hi)
+        let type_end = hb_name_end(src, type_at, hi)
+        let say = "azoL has no casts with `as`; there is one number type, `i64`, and `str(x)` makes a text"
+        if type_end > type_at && hb_in(src.slice(type_at, type_end), HB_INTS + " i64") {
+            return hb_edit(say, last + 1, type_end, "")
+        }
+        return hb_say(say)
+    }
+
+    // The head of a function.
+    if message.starts_with("expected `\{`") && before == ')' && first == "fn" {
+        if b == ':' {
+            return hb_edit("the result type of a function follows `->` in azoL, not `:`", last + 1, hb_after(src, at + 1, hi), " -> ")
+        }
+        if word.len() > 0 {
+            return hb_edit("the result type of a function follows `->` in azoL: `fn f() -> " + word + "`", at, at, "-> ")
+        }
+    }
+    if message.starts_with("expected `:`") && found == "a name" && first == "fn" && prev.len() > 0 && (before == 0 || is_name_byte(before)) {
+        let opener = hb_byte(src, hb_before(src, prev_at, lo), lo, hi)
+        if (opener == '(' || opener == ',') && (hb_upper(prev[0]) || hb_in(prev, HB_INTS + " i64 bool str " + HB_TEXTS + " " + HB_BOOLS + " char float double f64")) {
+            return hb_edit("a parameter is written `name: Type` in azoL, the name first", prev_at, at + word.len(), word + ": " + prev)
+        }
+    }
+    if message.starts_with("expected `)`") && found == "=" && first == "fn" {
+        return hb_say("a parameter has no default value in azoL; every call gives every argument")
+    }
+    if message.starts_with("expected `]`") && found == ":" && first == "fn" {
+        var stop = at
+        while stop < hi && src[stop] != ']' && src[stop] != ',' && src[stop] != '\n' {
+            stop = stop + 1
+        }
+        return hb_edit("a type parameter has no bound in azoL yet; the function is checked for each type it is used with", last + 1, stop, "")
+    }
+    if message.starts_with("expected `=`") && found == "a name" && (first == "let" || first == "var") && prev_at > first_at {
+        return hb_edit("the type of a variable follows a colon in azoL: `" + first + " " + prev + ": " + word + " = ...`", prev_at + prev.len(), at, ": ")
+    }
+
+    // Values written another way.
+    if message.starts_with("expected `)`") && found == ":" && prev_at >= 0 {
+        let opener_at = hb_before(src, prev_at, lo)
+        let opener = hb_byte(src, opener_at, lo, hi)
+        if opener == '(' || opener == ',' {
+            // The call these arguments belong to.
+            var open = opener_at
+            var depth = 0
+            while open > line_start && !(src[open] == '(' && depth == 0) {
+                if src[open] == ')' { depth = depth + 1 }
+                if src[open] == '(' { depth = depth - 1 }
+                open = open - 1
+            }
+            let callee_at = hb_name_start(src, open, lo)
+            if src[open] == '(' && callee_at < open && hb_upper(src[callee_at]) {
+                let close = hb_close(src, open, hi)
+                if close > open {
+                    return hb_edit("a struct value is written with braces in azoL: `" + src.slice(callee_at, open) + " \{ " + prev + ": ... }`", open, close + 1, " \{ " + src.slice(open + 1, close) + " }")
+                }
+            }
+            return hb_edit("arguments have no names in azoL; they are given in the order of the parameters", prev_at, hb_after(src, at + 1, hi), "")
+        }
+    }
+    if prev == "new" && word.len() > 0 {
+        return hb_say("azoL has no `new`; a struct value is written `" + word + " \{ field: value }`, and nothing has to be freed")
+    }
+    if b == '{' && message.starts_with("expected an expression") {
+        return hb_say("azoL has no map or object literal; write `var m: Map[i64] = new_map()` and then `m.set(key, value)`")
+    }
+    if found == "a string" && last == at - 1 && is_name_byte(before) {
+        return hb_say("azoL has no prefixed texts such as `r\"...\"` or `b\"...\"`; a text is `\"...\"` with `\\\\` for a backslash")
+    }
+    return hb_none()
+}
+
+fn hb_syntax_4(seen: Seen, message: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let found = seen.found
+    let b = seen.b
+    let next = seen.next
+    let last = seen.last
+    let before = seen.before
+    let prev_at = seen.prev_at
+    let prev = seen.prev
+    let word = seen.word
+    let line_start = seen.line_start
+    let first_at = seen.first_at
+    let first = seen.first
+    // Function values.
+    if b == '|' && message.starts_with("expected an expression") {
+        return hb_say("azoL has no function values yet, so no `|x| ...`; write a named function, or the loop")
+    }
+    if found == "=>" && message.starts_with("expected end of line") {
+        return hb_say("azoL has no function values yet, so no `(x) => ...`; write a named function, or the loop")
+    }
+    if prev == "lambda" || word == "lambda" {
+        return hb_say("azoL has no function values yet, so no `lambda`; write a named function, or the loop")
+    }
+
+    // Arms of a `match`.
+    if message.starts_with("expected `=>`") && found == "|" {
+        return hb_say("an arm of `match` has one pattern in azoL; write an arm for each value, or `_` for the rest")
+    }
+    if message.starts_with("expected `=>`") && found == "if" {
+        return hb_say("an arm of `match` has no `if` after its pattern in azoL; test inside the arm")
+    }
+
+    // Statements of other languages.
+    if prev == "try" && prev_at == first_at || first == "try" && b == '{' {
+        return hb_say("azoL has no `try` block and no exceptions; a function that can fail gives back a `Result`, and `f()?` passes its error on")
+    }
+    if prev == "try" && word.len() > 0 {
+        let end = hb_line_end(src, at, hi)
+        let say = "`try f()` is written `f()?` in azoL: the `?` follows the call"
+        if src[end - 1] == ')' { return hb_edit(say, prev_at, end, src.slice(at, end) + "?") }
+        return hb_say(say)
+    }
+    if prev == "throw" || prev == "raise" || first == "catch" || first == "except" || first == "finally" || prev == "catch" {
+        return hb_say("azoL has no exceptions; a function that can fail gives back `Err(why)` in a `Result`, and the caller reads it with `match` or `?`")
+    }
+    if prev == "defer" {
+        return hb_say("azoL has no `defer`; memory is given back by the compiler, and anything else is called before each `return`")
+    }
+    if prev == "go" || prev == "await" || prev == "async" || prev == "spawn" || prev == "yield" {
+        return hb_say("azoL has no `" + prev + "`; a program runs on one thread, from the top of `main` to its end")
+    }
+    if prev == "goto" {
+        return hb_say("azoL has no `goto`; loops end with `break` and go on with `continue`")
+    }
+    if prev == "del" || prev == "delete" || prev == "free" {
+        return hb_say("azoL has no `" + prev + "`; memory is given back by the compiler, at the last use of each value")
+    }
+    if prev == "global" || prev == "nonlocal" || prev == "static" {
+        return hb_say("azoL has no `" + prev + "` variables; a function reads its parameters and constants, and changes what it is given as `mut`")
+    }
+
+    // Comments.
+    if b == '/' && next == '*' {
+        let end = hb_line_end(src, at, hi)
+        let say = "a comment starts with `//` and ends with its line in azoL; there is no `/* ... */`"
+        let text = src.slice(at, end)
+        if text.len() >= 4 && text.ends_with("*/") && !text.slice(2, text.len() - 2).contains("*/") {
+            return hb_edit(say, at, end, "// " + hb_trimmed(text.slice(2, text.len() - 2)))
+        }
+        return hb_say(say)
+    }
+    return hb_none()
+}
+
+// The parser expected one thing and found another at `at`.
+fn hb_syntax(message: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let seen = hb_look(message, at, src, lo, hi)
+    let one = hb_syntax_1(seen, message, at, src, lo, hi)
+    if one.message.len() > 0 { return one }
+    let two = hb_syntax_2(seen, message, at, src, lo, hi)
+    if two.message.len() > 0 { return two }
+    let three = hb_syntax_3(seen, message, at, src, lo, hi)
+    if three.message.len() > 0 { return three }
+    return hb_syntax_4(seen, message, at, src, lo, hi)
+}
+
+// ---- the question -------------------------------------------------------
+
+// `message` is what the lexer, the parser or the checker said about the
+// place `at` of `src`, in the file that goes from `lo` to `hi`.
+fn habit_known(message: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    if at < lo || at > hi { return hb_none() }
+    if message == "unexpected character" { return hb_character(at, src, lo, hi) }
+    if message.starts_with("a character literal holds one") { return hb_quote(at, src, lo, hi) }
+    if message.starts_with("expected ") && message.contains(" but found ") {
+        return hb_syntax(message, at, src, lo, hi)
+    }
+    if message.starts_with("unknown type `") {
+        return hb_type(hb_quoted(message, 0), at, src, lo, hi)
+    }
+    if message.starts_with("unknown function `") {
+        return hb_function(hb_quoted(message, 0), at, src, lo, hi)
+    }
+    if message.starts_with("unknown variable `") {
+        return hb_value(hb_quoted(message, 0), at, src, lo, hi)
+    }
+    if message.starts_with("`") && message.contains("` has no method `") {
+        let kind = hb_quoted(message, 0)
+        let name = hb_name(src, at, hi)
+        let known = hb_method(kind, name, at, src, lo, hi)
+        if known.message.len() > 0 { return known }
+        // A function of the program called as if it were a method.
+        if src.contains("fn " + name + "(") || src.contains("fn " + name + "[") {
+            let end = at + name.len()
+            let say = "`" + name + "` is a function, not a method; it is called `" + name + "(value)`"
+            let start = hb_operand_start(src, at - 1, lo)
+            if hb_byte(src, at - 1, lo, hi) == '.' && start < at - 1 && hb_byte(src, end, lo, hi) == '(' {
+                let close = hb_close(src, end, hi)
+                if close > end {
+                    let inner = hb_trimmed(src.slice(end + 1, close))
+                    var arguments = src.slice(start, at - 1)
+                    if inner.len() > 0 { arguments = arguments + ", " + inner }
+                    return hb_edit(say, start, close + 1, name + "(" + arguments + ")")
+                }
+            }
+            return hb_say(say)
+        }
+        return hb_none()
+    }
+    if message.starts_with("`") && message.ends_with("` is an enum; create a value with one of its variants") {
+        let name = hb_name(src, at, hi)
+        let dot = at + name.len()
+        if hb_byte(src, dot, lo, hi) == '.' && hb_upper(hb_byte(src, dot + 1, lo, hi)) {
+            let member = hb_name(src, dot + 1, hi)
+            return hb_edit("an enum's variant is written bare in azoL, without the enum's name: `" + member + "`, not `" + name + "." + member + "`", at, dot + 1, "")
+        }
+        return hb_none()
+    }
+    if message.starts_with("`") && message.contains("` has no field") {
+        return hb_field(at, src, lo, hi)
+    }
+    if message.starts_with("azoL has no tuples") && hb_byte(src, at, lo, hi) == '(' && hb_byte(src, at + 1, lo, hi) == ')' {
+        let arrow = hb_before(src, at, lo)
+        if arrow > lo && src[arrow] == '>' && src[arrow - 1] == '-' {
+            return hb_edit("`()` is not an azoL type; a function that gives nothing back has no `->` part", hb_before(src, arrow - 1, lo) + 1, at + 2, "")
+        }
+    }
+    if message == "only functions can be called" {
+        let end = hb_name_end(src, at, hi)
+        if end > at && hb_byte(src, end, lo, hi) == '[' {
+            let close = hb_close(src, end, hi)
+            if close > end && hb_byte(src, close + 1, lo, hi) == '(' && (src.contains("fn " + src.slice(at, end) + "[") || src.contains("fn " + src.slice(at, end) + "(")) {
+                return hb_edit("type arguments are never written at a call in azoL; the type comes from the variable: `let x: T = f(...)`", end, close + 1, "")
+            }
+        }
+    }
+    if message == "`+` needs `str` but this is `i64`" || message == "`+` needs `str` but this is `bool`" {
+        let end = hb_name_end(src, at, hi)
+        let after = hb_byte(src, end, lo, hi)
+        let say = "`+` joins two texts and does not turn a number into one; write `str(n)`, or put the value in the text: `\"n = \{n}\"`"
+        if end > at && after != '.' && after != '(' && after != '[' {
+            return hb_edit(say, at, end, "str(" + src.slice(at, end) + ")")
+        }
+        return hb_say(say)
+    }
+    if message.starts_with("`print` takes 1 argument but ") {
+        return hb_say("`print` takes one value; put several into one text: `print(\"x = \{x}, y = \{y}\")`")
+    }
+    if message == "`for` needs a list to go through but this is `str`" {
+        return hb_say("a text is not gone through as it is; `for b in s.bytes()` gives its bytes as numbers, and `for c in s.chars()` its characters as texts")
+    }
+    if message.starts_with("only a list or a string can be indexed but this is `Map[") {
+        return hb_say("a `Map` is not indexed with `[ ]`; read it with `m.get(key)`, an `Option`, and write it with `m.set(key, value)`")
+    }
+    return hb_none()
+}

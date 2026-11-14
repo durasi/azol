@@ -14,6 +14,6 @@ if (s + "b").is_utf8() && !chr(200).is_utf8() {
 checked 6 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 2738d6a6ffa825bdae6182a62d5508cef1dfca39fc15ebf5f88f76e762536065
-x86_64-linux d0237108669cda36acd86dbff16c4eccfdeb58e69bda7fe28fea1e975b129249
-aarch64-linux 366906d031b0fc36ff15f0072793ffef849f643e41ed9d360ed263ff90cd464d
+aarch64-macos 8bfb3d241c0367b475c80a695241e49f79954fb83a6801e12388ee5eb0329c53
+x86_64-linux c32c64442d171764a1fc07a2052c79c906556a39f27c5ab24f763d2baaca841e
+aarch64-linux 3513aae0bd02ea302d85a9b119969f8d935b5c8c352632ce4d112c91319fd5f8

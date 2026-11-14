@@ -56,6 +56,8 @@ start with `#` are comments.
                                      last `--json` run to the files
     ---- after a.azl                 what a file must hold after the last run
     ---- after-has a.azl             text that the file must contain
+    ---- prints a.azl                builds the file as it stands now for this
+                                     machine, runs it, and compares what it prints
     ---- exists NAME / missing NAME  a file the last run must (not) have written
     ---- note some words             a remark, not a check
     ---- run build-all a.azl         builds for all three targets
@@ -223,7 +225,7 @@ def in_parallel(suite, jobs_list, work):
 
 # ---- case files ---------------------------------------------------------
 
-WITH_TEXT = ("file", "stdin", "stdout", "stderr", "after", "after-has", "executables")
+WITH_TEXT = ("file", "stdin", "stdout", "stderr", "after", "after-has", "executables", "prints")
 
 
 def escape(data):
@@ -393,7 +395,7 @@ def run_case(suite, section, path, case):
                 code, out, err = suite.run(args, cwd=folder, stdin=stdin)
                 stdin = None
                 section.check(code >= 0, label + ": `azol %s` ends by itself" % item.arg, "ended by signal %d\n%s" % (-code, text_of(err)))
-                found = check_json(section, label, folder, code, out) if "--json" in args and code in (0, 1) else []
+                found = check_json(section, label, folder, code, out) if "--json" in args and args[0] in ("check", "build") and code in (0, 1) else []
                 last = (args, code, out, without_times(err), found)
         elif last is None:
             section.fail(label + ": `%s` comes before any run" % kind)
@@ -453,6 +455,14 @@ def run_case(suite, section, path, case):
             name, target = item.arg, os.path.join(folder, item.arg)
             got = read(target) if os.path.isfile(target) else b""
             section.check(item.data in got, label + ": %s holds the required text after `%s`" % (name, " ".join(last[0])), "wanted: %r\n      in:     %r" % (text_of(item.data), text_of(got)))
+        elif kind == "prints":
+            # The program as the files stand now, built for this machine and run.
+            exe = os.path.join(folder, "program-run")
+            code, _, err = suite.run(["build", item.arg, "-o", "program-run"], cwd=folder)
+            if section.check(code == 0 and os.path.isfile(exe), label + ": %s builds" % item.arg, text_of(err)[:300]):
+                ended, out, err = run_program(exe)
+                section.check(out == item.data, label + ": what %s prints when it runs" % item.arg, difference(item.data, out))
+                os.remove(exe)
         elif kind == "exists":
             section.check(os.path.isfile(os.path.join(folder, item.arg)), label + ": %s was written" % item.arg)
         elif kind == "missing":
@@ -867,6 +877,79 @@ def damaged_inputs():
     return damaged
 
 
+def fix_and_guide(suite, section):
+    """`azol fix` on every case that has a fix, and `azol guide` against the
+    documents it is made from."""
+    count = clean = 0
+    for name in sorted(os.listdir(os.path.join(ROOT, "tests", "errors"))):
+        if not name.endswith(".cases"):
+            continue
+        path = os.path.join(ROOT, "tests", "errors", name)
+        for case in read_cases(path)[1]:
+            kinds = [item.kind for item in case.items]
+            if "apply-fix" not in kinds:
+                continue
+            label = "%s [%s]: `azol fix`" % (os.path.relpath(path, ROOT), case.title)
+            folder = suite.folder("fix")
+            sources = []
+            for item in case.items:
+                if item.kind == "run":
+                    break
+                if item.kind == "file":
+                    write(os.path.join(folder, item.arg), item.data)
+                    if item.arg.endswith(".azl"):
+                        sources.append(item.arg)
+            runs = [shlex.split(item.arg) for item in case.items if item.kind == "run"]
+            named = [arg for arg in runs[0] if arg.endswith(".azl")] if runs else []
+            sources = named or sources
+            # What the case itself ends with says whether the fixes are the whole repair.
+            ends_clean = [item.arg.strip() for item in case.items if item.kind == "exit"][-1:] == ["0"] and kinds.index("apply-fix") < len(kinds) - 1
+            before = {one: read(os.path.join(folder, one)) for one in sources}
+            code, out, err = suite.run(["fix", "--check"] + sources, cwd=folder)
+            section.check(code == 1 and b"would fix " in out + err or b"not written: " in out + err, label + " --check finds the edit", text_of(out + err)[:300])
+            section.check(all(read(os.path.join(folder, one)) == data for one, data in before.items()), label + " --check changes no file")
+            code, out, err = suite.run(["fix", "--partial"] + sources, cwd=folder)
+            section.check(code in (0, 1) and b"fixed " in out, label + " applies the edit", "exit %d\n%s" % (code, text_of(out + err)[:300]))
+            again, out2, err2 = suite.run(["fix", "--check"] + sources, cwd=folder)
+            section.check(b"would fix " not in out2 and again == code, label + " leaves nothing it could still do", text_of(out2 + err2)[:300])
+            checked, _, err3 = suite.run(["check"] + sources, cwd=folder)
+            section.check(checked == code, label + " and `check` agree on the result", text_of(err3)[:300])
+            if ends_clean:
+                clean += 1
+                section.check(code == 0, label + " is the whole repair", text_of(out + err)[:300])
+                listed, out4, _ = suite.run(["fmt", "--check"] + sources, cwd=folder)
+                section.check(listed == 0, label + " writes the layout of `azol fmt`", text_of(out4))
+            count += 1
+    section.check(count >= 100 and clean >= 60, "`azol fix` is tried on every case with a fix", "%d cases, %d of them whole repairs" % (count, clean))
+
+    briefing = read(os.path.join(ROOT, "docs", "for-agents.md"))
+    reference = read(os.path.join(ROOT, "docs", "language.md"))
+    code, out, _ = suite.run(["guide"])
+    section.check(code == 0 and out == briefing, "`azol guide` prints docs/for-agents.md", difference(briefing, out))
+    section.check(len(briefing) <= 32000, "the briefing is at most 32,000 bytes (8,000 tokens)", "%d bytes" % len(briefing))
+    code, out, _ = suite.run(["guide", "--json"])
+    topics = json.loads(out)["topics"] if code == 0 else []
+    section.check(len(topics) == 20 and topics[0]["name"] == "briefing", "`azol guide --json` lists the briefing and 19 topics", text_of(out)[:300])
+    heads = [b"\n## %d. " % number for number in range(1, 20)]
+    for at, topic in enumerate(topics[1:]):
+        start = reference.index(heads[at]) + 1
+        end = reference.index(heads[at + 1]) + 1 if at + 1 < len(heads) else len(reference)
+        code, out, _ = suite.run(["guide", topic["name"]])
+        section.check(code == 0 and out.rstrip(b"\n") == reference[start:end].rstrip(b"\n"), "`azol guide %s` prints its part of docs/language.md" % topic["name"], difference(reference[start:end], out))
+        section.check(topic["bytes"] <= 16000, "the topic `%s` is at most 16,000 bytes (4,000 tokens)" % topic["name"], "%d bytes" % topic["bytes"])
+    code, out, err = suite.run(["guide", "no-such-topic"])
+    section.check(code == 2 and out == b"" and b"declarations" in err, "an unknown topic lists the topics and ends with 2", text_of(err)[:200])
+    code, out, _ = suite.run(["guide", "--list"])
+    section.check(code == 0 and len(out.split(b"\n")) == 21, "`azol guide --list` has a line for each", text_of(out))
+    # The pages that send a reader to these commands name commands that exist.
+    usage = suite.run([])[2]
+    for page in ("AGENTS.md", os.path.join("docs", "for-agents.md")):
+        text = text_of(read(os.path.join(ROOT, page)))
+        section.check("azol guide" in text and "azol fix" in text, "%s names `azol guide` and `azol fix`" % page)
+        for command in sorted(set(re.findall(r"`azol ([a-z]+)", text))):
+            section.check(("azol " + command).encode() in usage, "%s: `azol %s` is a command" % (page, command))
+
+
 def section_errors(suite):
     section = Section("errors")
     count = run_case_files(suite, section, ["errors", os.path.join("golden", "lex"), os.path.join("golden", "parse"), os.path.join("golden", "check")])
@@ -938,6 +1021,7 @@ def section_errors(suite):
     section.check(code == 0 and "A list cannot be changed while a `for` loop is going through it." in text and "Wrong:" in text and "Right:" in text, "`explain E0408` gives the rule and both examples", text[:300])
     code, out, err = suite.run(["explain", "E9999"])
     section.check((code, out) == (1, b"") and b"there is no error code 'E9999'" in err, "`explain` of an unknown code is an error", text_of(err))
+    fix_and_guide(suite, section)
     reference = os.path.join(ROOT, "docs", "errors.md")
     if os.path.isfile(reference):
         code, out, _ = suite.run(["explain", "--markdown"])

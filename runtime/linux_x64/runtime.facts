@@ -50,9 +50,9 @@ pub const BASE: u64 = 0x400000;
 pub const TEXT_OFFSET: u64 = 0x100;
 /// The runtime's code and constant data. The program's code goes right
 /// after it, starting with a jump to the program's `main`.
-pub const TEXT: &[u8; 9248] = include_bytes!("../runtime/linux_x64/runtime.bin");
+pub const TEXT: &[u8; 9744] = include_bytes!("../runtime/linux_x64/runtime.bin");
 /// Offset in `TEXT` of each routine, indexed by its id.
-pub const ENTRIES: [u32; ENTRY_COUNT] = [800, 1040, 1312, 1632, 1712, 1728, 384, 720, 1744, 2336, 2512, 2592, 2912, 2976, 3264, 1440, 1568, 3328, 3552, 4048, 4352, 5664, 3616, 6016, 6208, 6352, 6560, 6640];
+pub const ENTRIES: [u32; ENTRY_COUNT] = [528, 768, 1040, 1360, 1440, 1456, 384, 464, 1472, 2336, 2608, 2672, 3072, 3136, 3520, 1168, 1296, 3584, 3632, 4192, 4544, 5984, 3696, 6304, 6464, 6576, 6752, 6832];
 /// Offset in `TEXT` of the code the system starts the process at.
 pub const START: u32 = 7;
 /// Address and size of the runtime's writable memory, which must start

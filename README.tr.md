@@ -77,7 +77,7 @@ Tek tablo, tek makine, [`bench/compare.py`](bench/compare.py) betiğinin tek ça
 Apple M5, Darwin 27.2.0 (arm64) üzerinde ölçüldü. 5 çalıştırmanın en iyisi.
 Araçlar: azol 0.1.0; rustc 1.99.1 (58cf8f9c3 2026-10-13); Apple clang version 21.0.0 (clang-2100.4.1.1); go version go1.27.1 darwin/arm64; node v22.17.0.
 
-Her yerde düşük olan daha iyidir. Her satırda en iyi değer kalın yazılmıştır; tabloda başka hiçbir şey kalın değildir.
+Her yerde düşük olan daha iyidir. Her satırda en iyi değer kalın yazılmıştır; tabloda başka hiçbir şey kalın değildir. *ölçülecek* yazan hücreler bu makinede henüz çalıştırılmadı; bir satırın tamamı ölçülene kadar o satırda kalın yoktur.
 
 |  | <img src="assets/compare/azol.svg" alt="azoL" height="28"><br><sub>varsayılan</sub> | <img src="assets/compare/azol.svg" alt="azoL" height="28"><br><sub><code>-O</code></sub> | <img src="assets/third-party/rust-logo-blk.svg#gh-light-mode-only" alt="Rust" height="28"><img src="assets/compare/rust.svg#gh-dark-mode-only" alt="Rust" height="28"><br><sub>Rust&nbsp;<code>-O</code></sub> | <img src="assets/compare/c.svg" alt="C" height="28"><br><sub><code>-O2</code></sub> | <img src="assets/compare/go.svg" alt="Go" height="28"><br><sub>go&nbsp;build</sub> | <img src="assets/third-party/js.png" alt="JavaScript" height="28"><br><sub>Node.js</sub> |
 |:---|---:|---:|---:|---:|---:|---:|
@@ -94,6 +94,12 @@ Her yerde düşük olan daha iyidir. Her satırda en iyi değer kalın yazılmı
 | `tree` <sub>ağaç kurma ve dolaşma</sub> | 0.091&nbsp;s | 0.082&nbsp;s | **0.053&nbsp;s** | 0.054&nbsp;s | 0.064&nbsp;s | 0.36&nbsp;s |
 | `append` <sub>uzun metinler oluşturma</sub> | 0.023&nbsp;s | 0.023&nbsp;s | 0.020&nbsp;s | **0.018&nbsp;s** | 0.026&nbsp;s | 0.11&nbsp;s |
 | `words` <sub>metni bölme ve birleştirme</sub> | 0.035&nbsp;s | 0.030&nbsp;s | 0.026&nbsp;s | 0.026&nbsp;s | **0.019&nbsp;s** | 0.10&nbsp;s |
+| <sub>AI AJANLARI İÇİN</sub> | | | | | | |
+| Derlemeden denetleme <sub>aynı 44,004 satırlık program</sub> | ölçülecek | varsayılanla&nbsp;aynı | ölçülecek | ölçülecek | ölçülecek | ölçülecek |
+| Kod satırı <sub>8 program</sub> | 231 | varsayılanla&nbsp;aynı | 258 | 401 | 253 | **220** |
+| Karakter <sub>8 program</sub> | 3,759 | varsayılanla&nbsp;aynı | 4,717 | 8,380 | 4,238 | **3,616** |
+| Token, yaklaşık <sub>8 program</sub> | **1,376** | varsayılanla&nbsp;aynı | 1,778 | 2,966 | 1,429 | 1,397 |
+| Yanlış türde argüman <sub>denetleyicinin bildirdiği</sub> | ölçülecek | varsayılanla&nbsp;aynı | ölçülecek | ölçülecek | ölçülecek | ölçülecek |
 
 Üretilen programın uzunluğu: 44,004 satır (azoL), 45,006 satır (Rust), 49,035 satır (C), 44,008 satır (Go), 38,002 satır (JavaScript).
 
@@ -104,6 +110,12 @@ Node.js için derlenecek bir şey yoktur; JavaScript sürümünün sözdizimini 
 Çalışma: azoL'un varsayılan derlemesinin önde olduğu program sayısı: Rust `-O` karşısında 8 programdan 1, C `-O2` karşısında 8 programdan 1, Go karşısında 8 programdan 2, Node.js karşısında 8 programdan 8.
 
 Çalışma: `azol build -O` derlemesinin önde olduğu program sayısı: Rust `-O` karşısında 8 programdan 1 (2 programda eşit), C `-O2` karşısında 8 programdan 1 (1 programda eşit), Go karşısında 8 programdan 3 (1 programda eşit), Node.js karşısında 8 programdan 8.
+
+Denetleme: komutlar şunlardır: `azol check`, `rustc --emit=metadata`, `cc -fsyntax-only`, `go vet`, `node --check`.
+
+Kaynak: 8 kıyaslama programının toplamı; yorumlar, boş satırlar ve girintiler sayılmaz. Token'lar her dil için tek bir kuralla sayılır (bir ad, bir sayı ya da bir metin tek token'dır; her parantez, virgül ya da noktalı virgül ve her operatör karakteri dizisi de öyle); bu, bir modelin okuyup yazdığına yaklaşık bir ölçüdür, herhangi bir modelin tokenizer'ı değildir.
+
+Hata: her dilde aynı ([`bench/agents/`](bench/agents/)): sayı beklenen yere `"40"` metni verilir. *JSON*, aracın istendiğinde iletiyi ve yeri veri olarak verdiği anlamına gelir; *span*, yerin başı ve sonu; *fix*, bir aracın uygulayabileceği bir düzenleme; *metin, konum*, içinde satır ve sütun geçen, okunacak bir satır.
 <!-- bench:end -->
 
 **Bunları adil okumak için.**
@@ -112,6 +124,8 @@ Node.js için derlenecek bir şey yoktur; JavaScript sürümünün sözdizimini 
 - Rust ve Go da indeksleri denetler; C hiçbir şeyi denetlemez. Go ve JavaScript çöp toplar; azoL, Rust ve C belleği belirli noktalarda serbest bırakır.
 - Derleme süresi programı üretilmiştir ve kendini tekrar eder ([`bench/gen.py`](bench/gen.py)), üstelik tek dosyadır. Bu, diğerlerinden daha az iş yapan azoL'un lehinedir (trait yok, küçük bir kütüphane var) ve projeleri yan yana derlenen çok sayıda dosyaya bölünen C'nin aleyhinedir. Go'nun derleme önbelleği standart kütüphanesi için korunur, program için devre dışı bırakılır.
 - Çalışma süreleri bütün bir sürecin süresidir, yani başlangıcı da içerir; bu, Node.js için onlarca milisaniyedir.
+- AI ajanları için olan satırlar, bir betiğin ölçebildiğini ölçer: bir denetimin ne kadar sürdüğünü, ne kadar kaynak yazmak gerektiğini ve bir denetleyicinin tek bir hatayı hangi biçimde bildirdiğini. Denetleme komutları aynı işi yapmaz: `azol check`, `rustc --emit=metadata`, `cc -fsyntax-only` ve `go vet` türleri denetler, `go vet` ayrıca başka çözümlemeler de çalıştırır, `node --check` ise yalnızca sözdizimini okur. Daha kısa bir kaynak tek başına daha iyi bir kaynak değildir; sayılar bir modelin ne kadar üretmesi gerektiğini söyler, doğru yazmanın ne kadar kolay olduğunu değil.
+- Bir ajanın bir programı ilk derlemede doğru yazıp yazmadığı ayrıca ve yalnızca iki dil için ölçüldü: elinde belgelerden başka yardım olmayan, sıfırdan başlayan ajanlar 34 azoL programından 33'ünü, 32 Rust programından 32'sini ilk denemede doğru derledi. Bu, bir modelin azoL'u belgelerinden, üzerinde eğitildiği bir dil kadar güvenilir biçimde yazabildiğini gösterir; iki dil, küçük programlar ve tek bir model söz konusu olduğu için tabloda yer almaz.
 - Bunlar sekiz küçük programdır, bir kıyaslama paketi değildir. azoL'un kendine koyduğu ölçüt daha büyüktür: `rustc -O` karşısında 28 program ([`bench/suite/`](bench/suite/), yol haritasına bakın).
 
 ## azoL, Rust, C, Go ve JavaScript
@@ -297,6 +311,8 @@ Hiçbir model azoL'u görmedi; bu yüzden bir ajanın gerek duyduğu her şey de
 - Tek çalıştırma her bağımsız hatayı bildirir: her fonksiyonun ilk hatası ya da her dosyanın ilk sözdizimi hatası. Yalnızca daha önceki bir hatanın sonucu olabilecek bir hata sonraki çalıştırmaya bırakılır; böylece bildirilen hiçbir şey gürültü değildir.
 - Her hata türünün kararlı bir kodu vardır ve `azol explain E0408`, arkasındaki kuralı bir yanlış ve bir doğru örnekle açıklar. Bütün kodlar [docs/errors.md](docs/errors.md) belgesinde listelenmiştir.
 - `--json` (`check` ve `build` için), standart çıktıya hata başına bir JSON nesnesi ve son satıra bir özet yazar: sorunlu metnin tam başlangıcı ve bitişi, kaynak satırı, çiğnenen kural ve onarım mekanikse onu yapan düzenleme.
+- `azol guide` o kısa bilgilendirmeyi derleyicinin kendisinden yazdırır, `azol guide <topic>` ise başvurunun bir bölümünü; böylece doğru sürüm her zaman el altındadır.
+- Başka bir dilin biçimi (`let mut`, `Vec<T>`, `&x`, `println!`, `len(xs)`, `elif`, `null`, bir `;`) adıyla yanıtlanır: azoL'daki biçimi ve çoğu zaman düzeltmesi birlikte verilir. `azol fix` bu düzeltmelerin hepsini uygular ve hiçbiri kalmayana kadar yeniden denetler: alışkanlıkla yazılmış ilk taslak, derlenmeye tek komut uzaklıktadır.
 - `azol fmt` her dosyaya tek kanonik düzeni verir; böylece bir ajan boşluklarla hiç uğraşmaz ve farklar küçük kalır.
 
 Şu program için
@@ -333,6 +349,8 @@ Bir `fix`, yalnızca tam olarak o düzenlemeyi uygulamak hatayı gideriyorsa ver
 | `azol build -O ...` | Optimizer'dan geçirerek derler: daha hızlı program, daha yavaş derleme. Deneysel |
 | `azol check <files...>` | Her bağımsız hatayı bildirir ve hiçbir şey yazmaz. Araçlar için `--json` |
 | `azol explain [code]` | Bir hata kodunu açıklar ya da hepsini listeler |
+| `azol fix <files...>` | Denetleyicinin önerdiği her düzeltmeyi uygular, yeniden denetler, yineler. `--check` yalnızca onları listeler, `--json` her birini bildirir |
+| `azol guide [topic]` | azoL'a yeni başlayan biri için kısa bilgilendirmeyi ya da başvurunun bir bölümünü yazdırır. `--list` konuları adlandırır |
 | `azol fmt <files...>` | Dosyaları kanonik düzende yeniden yazar. `--check` yalnızca onları listeler, `-` standart girdiyi biçimlendirir |
 | `azol parse <file>`, `azol lex <file>` | Sözdizimi ağacını ya da token'ları yazdırır |
 
@@ -381,7 +399,7 @@ Yapılmamış olanlar, planlanan sırayla. Biten işler burada listelenmez; yuka
 1. `azol build -O` vardır ve deneyseldir. Yapılacak olan: derleyicinin kendisinin onunla derlenmesi (yeni tohumlar), böylece varsayılan derleme hızını geri kazanır.
 2. `rustc -O`'dan hâlâ uzak olan programlar: struct listeleri, kütüphane sıralaması, map'ler, metin oluşturma.
 3. Kalan geçişler: döngü açma, kopya eleme, metin oluşturma, vektörleştirme.
-4. Listelerde sıkıştırılmış struct'lar ve küçük enum'lar (`bool` listeleri sıkıştırılmıştır), daha hızlı bir bellek ayırıcı, iç çağrı kuralı.
+4. Listelerde sıkıştırılmış struct'lar ve küçük enum'lar (`bool` listeleri sıkıştırılmıştır), bölünen metnin parçaları için view'lar, iç çağrı kuralı.
 5. `-O` derleme hızı.
 6. İddiayı tanımlayan ölçüt: [`bench/suite/`](bench/suite/) içindeki 28 programın `rustc -O` karşısında geometrik ortalaması 1.00 ya da daha iyi, hiçbiri 1.10'dan kötü değil, Apple M5'te ve x86-64'te. Bugün: Apple M5'te süre olarak 1.48 (varsayılan derleme: 2.12), 28 programın 9'u 1.10 sınırının içinde.
 
@@ -395,7 +413,7 @@ Yapılmamış olanlar, planlanan sırayla. Biten işler burada listelenmez; yuka
 
 **Yapay zekâ ajanları ve eski sistemlerin yerini almak için**
 
-12. `azol guide`, başka bir dilden gelen her alışkanlık için düzeltmesiyle birlikte adlandırılmış bir hata, `azol fix` ([tasarım](docs/design/agents.md)).
+12. Ajanlar için daha fazlası: `azol example`, kendi `AGENTS.md` dosyasıyla `azol new`, bir fonksiyonun bütün hatalarının tek seferde bildirilmesi, JSON için bir şema ([tasarım](docs/design/agents.md)).
 13. C çağırma, daha fazla tamsayı türü, standart girdi, süreçler, dizinler, tarihler, JSON, CSV, kaynak satırlarıyla yığın izleri ([tasarım](docs/design/legacy.md)).
 
 **İlk sürümden önce**

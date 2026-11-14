@@ -23,9 +23,9 @@ fn main() {
 checked 15 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos bd583f600c4b7551bd9bd503bbf5cc8dff04bfbb307c3b9319cd824860ede5b7
-x86_64-linux 08d6afd785de8dbcf752ef368c307db83915c5eb8b03c39382e22f56299f96b2
-aarch64-linux 0250bdb4f42b25ad083bc0d81c13542277fe88b180f42bd3bcc4a245272a70d6
+aarch64-macos 2642d2c6e5b76ccc637087bec9c520ba45804ef4a9d1ed40ae9e6484d43992fe
+x86_64-linux a1891d855a5b91a83d41b9129ac823bb9f82beca3bee61e696f870bdca573c2b
+aarch64-linux c9ec4f0bd3501b21f508a66b0db7356a8e986b10cb117eb73b4aed56e92b8f65
 ==== 2
 ---- file a.azl (no newline at end)
 struct Point {
@@ -50,6 +50,6 @@ shift(mut p, 3)
 checked 15 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 32a9603e58ecc6197091841b33d494240bb2ac55611cf0afbd38c5fc8eebe484
-x86_64-linux 6ac3bf2515faa46cca59d8502e7ece3f48b697a5afbd74b56f798d3315f2c8a3
-aarch64-linux e32bed8bd0f123c671f8deb2c8b660a69514905b0150c023f5a9dfe7ae41c696
+aarch64-macos fd299eccfc0772cf2e58513b3959c9fe8e04616efa24f679eaed615aa9fa2bc3
+x86_64-linux f7eedca50d8561daed82f538734757f81db241fb1e1c046f3b7ad052f80308b4
+aarch64-linux 2e5302271c49df1a2c1205db802530d681e2c0ed227595cd6edc5042bbbd42de

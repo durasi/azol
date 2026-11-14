@@ -15,5 +15,5 @@ error[E0106]: expected `fn`, `struct`, `enum` or `const` but found `let`
 ---- run check --json a.azl
 ---- exit 1
 ---- stdout
-{"severity":"error","code":"E0106","message":"expected `fn`, `struct`, `enum` or `const` but found `let`","file":"a.azl","line":1,"column":1,"end_line":1,"end_column":4,"source":"let a = 1","rule":"The program must follow the grammar; here something else was required."}
+{"severity":"error","code":"E0121","message":"outside functions a named value is a constant: `const NAME = value`, not `let`","file":"a.azl","line":1,"column":1,"end_line":1,"end_column":4,"source":"let a = 1","rule":"A name is declared with `let`, a variable that changes with `var`, a constant outside functions with `const`; a type, when written, follows a colon.","fix":{"file":"a.azl","line":1,"column":1,"end_line":1,"end_column":4,"replacement":"const"}}
 {"summary":{"errors":1,"files":1}}

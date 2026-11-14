@@ -413,8 +413,15 @@ of the workers.
 
 ### 6.2 The allocator
 
-macOS: `malloc`/`realloc`/`free` of the system are thread-safe. Nothing
-changes.
+macOS, when this was written: `malloc`/`realloc`/`free` of the system,
+which are thread-safe, so nothing changed there. Since then the ARM64
+runtime (`runtime/runtime.s`, macOS and Linux) has an allocator of its
+own, of the same design as the Linux one below and with the same need:
+its free lists and its chunk are one set for the whole program, and two
+threads may not be inside it at once. What is said below for Linux holds
+for it too: one set of lists per thread, found from the stack pointer,
+and the system's allocator, which stays thread-safe, as the supplier of
+chunks and of large blocks.
 
 Linux (the runtime's own allocator, `runtime/linux_common/memory.h`):
 

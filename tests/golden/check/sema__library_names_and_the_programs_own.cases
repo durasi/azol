@@ -14,9 +14,9 @@ let n: i64 = new_map()
 checked 6 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos ab376c289c0c350a55c05929ea3dce8847882d40840a95f69fd5f826a7650f7c
-x86_64-linux 376253482aae51a74b4f66d8837e471e715062b4ebf7c966c877e4e3be85619e
-aarch64-linux 5f3ff8c0428b712de35889b0e85b221bac7e42a4994c0f4b008c18c6f3606446
+aarch64-macos d9c1d2a1dd1bb2c51c9658963791c4de77df2c65e7a05a742daf9e668013fa74
+x86_64-linux f5018cc2a2dc819cec3392bdc6e960d75cfd9309087265c6c1f552bf2c93e664
+aarch64-linux 5c691f5f226414351a108bea54e457ecf0bede72ec013dae95e80cbe187cc036
 ==== 2
 ---- file a.azl
 fn new_map[T](x: T) -> T {
@@ -32,6 +32,6 @@ let n: i64 = new_map(1)
 checked 6 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 96965b2da25326b4e4f2d1d8e1664319ab1ee881175b476d078a87dd77fc6333
-x86_64-linux 224f84935f37519491c50e42a2742105b57656e316d7f177c12ba63a65f63d39
-aarch64-linux 5019aa7e51ca9ff9901aa58116dbb9a355c213b9afe50f04df6599d54da5b18f
+aarch64-macos 7537d0b94fabab2efd490d9903140fa570b1a0330d1ec21e92ed0540b8018bac
+x86_64-linux c8eb5eea5b1afe735ca0927c61758267ac33c55f8060b00c6c7b0f4cb3bb8699
+aarch64-linux cce11cd5c9259cbc6b5a177c31ccf87901a5e7f9f7a5d2a742ebf42aca9c058d

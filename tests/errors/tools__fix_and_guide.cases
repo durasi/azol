@@ -1,0 +1,234 @@
+# `azol fix` and `azol guide` (docs/design/agents.md, docs/language.md 16.6 and 16.7).
+==== `fix` repairs a program written from the habits of three languages
+---- file a.azl
+use std::fs;
+
+pub fn total(xs: &Vec<i64>) -> i32 {
+    let mut sum = 0;
+    for x in xs.iter() {
+        sum += x;
+    }
+    return sum;
+}
+
+fn main() {
+    let xs: Vec<i64> = vec![1, 2, 3];
+    let n = total(&xs);
+    println!("total {}", n);
+    if n > 3 and not (n == 7) {
+        console.log("n = " + n);
+    } elif n === 2 {
+        print(len(xs));
+    }
+    let s: String = String::from("abc");
+    print(s.length());
+    print(xs.clone().size());
+}
+---- run fix a.azl
+---- exit 0
+---- stdout
+fixed a.azl:1:12 E0120 `;` does not end a statement in azoL; the end of the line does
+fixed a.azl:4:20 E0120 `;` does not end a statement in azoL; the end of the line does
+fixed a.azl:6:17 E0120 `;` does not end a statement in azoL; the end of the line does
+fixed a.azl:8:15 E0120 `;` does not end a statement in azoL; the end of the line does
+fixed a.azl:12:37 E0120 `;` does not end a statement in azoL; the end of the line does
+fixed a.azl:13:23 E0120 `;` does not end a statement in azoL; the end of the line does
+fixed a.azl:14:28 E0120 `;` does not end a statement in azoL; the end of the line does
+fixed a.azl:16:32 E0120 `;` does not end a statement in azoL; the end of the line does
+fixed a.azl:18:23 E0120 `;` does not end a statement in azoL; the end of the line does
+fixed a.azl:20:40 E0120 `;` does not end a statement in azoL; the end of the line does
+fixed a.azl:21:22 E0120 `;` does not end a statement in azoL; the end of the line does
+fixed a.azl:22:29 E0120 `;` does not end a statement in azoL; the end of the line does
+fixed a.azl:1:1 E0126 azoL has no `use`; a program is the files named to `azol build`, and what is built in needs no import
+fixed a.azl:2:1 E0126 azoL has no `pub`; every declaration is seen by the whole program
+fixed a.azl:2:14 E0123 azoL has no references; a value is passed and named as itself, and a parameter is read-only unless it says `mut`
+fixed a.azl:2:17 E0122 type parameters and type arguments are written between `[ ]` in azoL, not `< >`
+fixed a.azl:3:5 E0121 `let mut` is Rust; in azoL a variable that changes is declared with `var`
+fixed a.azl:11:16 E0122 type parameters and type arguments are written between `[ ]` in azoL, not `< >`
+fixed a.azl:11:24 E0124 azoL has no macros; a list is written `[1, 2, 3]`, without `vec!`
+fixed a.azl:12:19 E0123 azoL has no references; a value is passed and named as itself, and a parameter is read-only unless it says `mut`
+fixed a.azl:13:5 E0124 azoL has no macros; `print` takes one value, and values go into a text as `"total: {sum}"`
+fixed a.azl:14:14 E0128 `and` is written `&&` in azoL
+fixed a.azl:16:7 E0127 `elif` is written `else if` in azoL
+fixed a.azl:16:19 E0128 azoL has no `===` and no `!==`; values are compared with `==` and `!=`
+fixed a.azl:19:21 E0125 `String::from(...)` is Rust; a text between quotes is already a `str` of its own
+fixed a.azl:2:14 E0220 `Vec` is not an azoL type; the list that grows is `List[T]`
+fixed a.azl:2:28 E0220 `i32` is not an azoL type; the integer type is `i64`
+fixed a.azl:11:13 E0220 `Vec` is not an azoL type; the list that grows is `List[T]`
+fixed a.azl:4:16 E0223 `.iter()` is not azoL: there are no iterators; a list is looped over as it is and has its methods directly, such as `xs.sum()`
+fixed a.azl:14:17 E0128 `not` is written `!` in azoL
+fixed a.azl:15:9 E0221 `console.log` is not azoL; `print` writes a value and ends the line
+fixed a.azl:15:24 E0224 `+` joins two texts and does not turn a number into one; write `str(n)`, or put the value in the text: `"n = {n}"`
+fixed a.azl:17:15 E0221 `len(x)` is not azoL; the length of a list, a text or a map is the method `x.len()`
+fixed a.azl:19:12 E0220 `String` is not an azoL type; text is `str`
+fixed a.azl:20:13 E0223 `.length` is called `.len` in azoL
+fixed a.azl:21:13 E0223 `.clone()` is not needed: in azoL a value is copied when it is given a second name, and moved when the first is not used again
+fixed a.azl:21:14 E0223 `.size` is called `.len` in azoL
+---- stderr
+37 fixed, 0 left
+---- after a.azl
+fn total(xs: List[i64]) -> i64 {
+    var sum = 0
+    for x in xs {
+        sum += x
+    }
+    return sum
+}
+
+fn main() {
+    let xs: List[i64] = [1, 2, 3]
+    let n = total(xs)
+    print("total {n}")
+    if n > 3 && !(n == 7) {
+        print("n = " + str(n))
+    } else if n == 2 {
+        print(xs.len())
+    }
+    let s: str = "abc"
+    print(s.len())
+    print(xs.len())
+}
+---- run build a.azl -o a
+---- exit 0
+---- run fix a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+0 fixed, 0 left
+==== `fix --check` writes nothing and ends with 1 when there is work
+---- file a.azl
+fn main() {
+    let mut n = 1;
+    n += 1
+    print(n)
+}
+---- run fix --check a.azl
+---- exit 1
+---- stdout
+would fix a.azl:2:18 E0120 `;` does not end a statement in azoL; the end of the line does
+would fix a.azl:2:5 E0121 `let mut` is Rust; in azoL a variable that changes is declared with `var`
+---- stderr
+2 to fix, 0 left
+---- after a.azl
+fn main() {
+    let mut n = 1;
+    n += 1
+    print(n)
+}
+==== a file with a mistake that has no edit is not written
+---- file a.azl
+fn main() {
+    let mut n = 1;
+    let m = null
+    print(n)
+}
+---- run fix a.azl
+---- exit 1
+---- stdout
+not written: a.azl:2:18 E0120 `;` does not end a statement in azoL; the end of the line does
+not written: a.azl:2:5 E0121 `let mut` is Rust; in azoL a variable that changes is declared with `var`
+---- stderr
+error[E0222]: azoL has no `null`; a value that may be absent is an `Option[T]`, and absent is `None`
+ --> a.azl:3:13
+  |
+3 |     let m = null
+  |             ^
+0 fixed, 2 not written, 1 left; 1 file not written because a mistake in it has no edit (`--partial` writes what could be done)
+---- after a.azl
+fn main() {
+    let mut n = 1;
+    let m = null
+    print(n)
+}
+---- run fix --partial a.azl
+---- exit 1
+---- stdout
+fixed a.azl:2:18 E0120 `;` does not end a statement in azoL; the end of the line does
+fixed a.azl:2:5 E0121 `let mut` is Rust; in azoL a variable that changes is declared with `var`
+---- after a.azl
+fn main() {
+    var n = 1
+    let m = null
+    print(n)
+}
+==== `fix --json` reports each edit, what is left, and a summary
+---- file a.azl
+fn main() {
+    let mut n = 1;
+    let m = null
+    print(n)
+}
+---- run fix --json --check a.azl
+---- exit 1
+---- stdout
+{"fixed":{"code":"E0120","message":"`;` does not end a statement in azoL; the end of the line does","file":"a.azl","line":2,"column":18,"end_line":2,"end_column":19,"replacement":""}}
+{"fixed":{"code":"E0121","message":"`let mut` is Rust; in azoL a variable that changes is declared with `var`","file":"a.azl","line":2,"column":5,"end_line":2,"end_column":12,"replacement":"var"}}
+{"severity":"error","code":"E0222","message":"azoL has no `null`; a value that may be absent is an `Option[T]`, and absent is `None`","file":"a.azl","line":3,"column":13,"end_line":3,"end_column":17,"source":"    let m = null","rule":"There is no null: absence is `None` of an `Option[T]`. The truth values are `true` and `false`. There are no modules such as `Math`, `std` or `console`, and no `this`."}
+{"summary":{"fixed":2,"errors":1,"files":1,"written":0,"held":1,"fixable":0}}
+==== `fix` takes the files of one program together
+---- file a.azl
+fn main() {
+    print(twice(2));
+}
+---- file b.azl
+pub fn twice(n: int) -> int {
+    return n * 2;
+}
+---- run fix a.azl b.azl
+---- exit 0
+---- stdout
+fixed a.azl:2:20 E0120 `;` does not end a statement in azoL; the end of the line does
+fixed b.azl:2:17 E0120 `;` does not end a statement in azoL; the end of the line does
+fixed b.azl:1:1 E0126 azoL has no `pub`; every declaration is seen by the whole program
+fixed b.azl:1:13 E0220 `int` is not an azoL type; the integer type is `i64`
+fixed b.azl:1:21 E0220 `int` is not an azoL type; the integer type is `i64`
+---- after a.azl
+fn main() {
+    print(twice(2))
+}
+---- after b.azl
+fn twice(n: i64) -> i64 {
+    return n * 2
+}
+==== `fix` without files, and with an option it does not know
+---- run fix
+---- exit 2
+---- run fix --all a.azl
+---- exit 2
+==== a program without mistakes is left alone, even when it is not formatted
+---- file a.azl
+fn main(){print( 1 )}
+---- run fix a.azl
+---- exit 0
+---- stdout (empty)
+---- stderr
+0 fixed, 0 left
+---- after a.azl
+fn main(){print( 1 )}
+==== `guide --list`
+---- run guide --list
+---- exit 0
+---- stdout
+briefing          everything in one page: `azol guide` without a topic
+lexical           Lexical rules
+literals          Literals
+types             Types
+declarations      Declarations
+statements        Statements
+expressions       Expressions
+calls             Calls and `mut` arguments
+methods           Methods
+builtins          Built-in functions
+library           Library methods
+values            Value semantics
+ownership         Ownership
+exclusivity       The four exclusivity rules
+runtime-stops     What stops a program at run time
+files             Programs in several files
+cli               The command line
+targets           Targets
+limits            Limits
+missing           What azoL does not have
+==== `guide` with two topics
+---- run guide types lists
+---- exit 2

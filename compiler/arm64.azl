@@ -338,14 +338,17 @@ fn a_generate(g: mut AGen, c: Checker, p: Parser) {
     for word in art_words() {
         g.words.push(word)
     }
-    // Four numbers for each: 0 for an import or 1 for data, where, and
-    // which import, or which text item and the register.
+    // Four numbers for each: 0 for an import, 1 for data or 2 for the
+    // runtime's memory, where, and which import, or which text item and
+    // the register.
     let relocs = art_relocs()
     let offsets = art_data_offsets()
     var r = 0
     while r < relocs.len() {
         if relocs[r] == 0 {
             g.relocs.push(Import(runtime_start + relocs[r + 1], relocs[r + 2]))
+        } else if relocs[r] == 2 {
+            g.relocs.push(Memory(runtime_start + relocs[r + 1], relocs[r + 3]))
         } else {
             g.relocs.push(Data(runtime_start + relocs[r + 1], offsets[relocs[r + 2]], relocs[r + 3]))
         }

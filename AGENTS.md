@@ -10,7 +10,9 @@ programs correctly on their first build.
 ## The loop to use
 
 ```text
+azol guide                       the briefing below, from the compiler itself; `azol guide --list` names the topics
 azol check --json <files...>     errors as JSON: code, line, column, rule, help, fix
+azol fix <files...>              applies every `fix` the checker offers and checks again, until none is left
 azol explain E0410               the rule behind an error code, with a wrong and a right example
 azol fmt <files...>              the one canonical layout; never format by hand
 azol build <files...> -o <out>   source to executable in milliseconds; no other tool is needed
@@ -19,6 +21,13 @@ azol build -O <files...> -o <out>  the same program through the optimiser: faste
 
 `check` reports the first error of every function at once. When an error
 carries a `fix`, apply it exactly: it is the edit that removes the error.
+`azol fix` does that for you, for every file at once.
+
+A form of another language is answered by name: `let mut`, `Vec<T>`, `&x`,
+`println!`, `len(xs)`, `x.to_string()`, `elif`, `null`, a `;` at the end of
+a line. The error says what azoL writes instead, and most of them carry the
+edit, so a first draft written from habit is one `azol fix` away from
+compiling. `docs/for-agents.md` is what `azol guide` prints.
 
 ## The ten things models get wrong first
 

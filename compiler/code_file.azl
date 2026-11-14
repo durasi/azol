@@ -55,6 +55,9 @@ enum Reloc {
     // Two instructions at this index put the address of the data at this
     // offset in this register.
     Data(i64, i64, i64)
+    // Two instructions at this index put the address of the runtime's
+    // writable memory in this register.
+    Memory(i64, i64)
 }
 
 // A 4-byte field in x86-64 code and what it refers to: a routine id or
@@ -221,6 +224,8 @@ fn read_code_file(text: str) -> CodeFile {
             } else if kind == "d" {
                 let offset = read_number(mut reader)
                 relocs.push(Data(at, offset, read_number(mut reader)))
+            } else if kind == "m" {
+                relocs.push(Memory(at, read_number(mut reader)))
             } else {
                 bad_code_file(reader, "unknown relocation `" + kind + "`")
             }

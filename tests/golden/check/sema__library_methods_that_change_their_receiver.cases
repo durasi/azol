@@ -16,9 +16,9 @@ let n = xs.remove_at(0)
 checked 8 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos a8289c02130959d3e4ffd3b86df4902d011244c0374be5a6012d776edaee6b18
-x86_64-linux 83435b823fcdccd67fde6dbb58668f6b775d9cabc44ae23ff4e8867fd8cef470
-aarch64-linux ea3815b20c00652cbc18f1f9df917ddd53db15b9faecb8b154af2a1b4c18cfe9
+aarch64-macos 3629c92484fcb156ece84f5d9cb7345e23e7be96abd0f32ac711ea37c6ed2f35
+x86_64-linux 91d372d2445cd8e3becb4fb804153a2a1d1a399c2b4779a8e456ca10ed8bdc58
+aarch64-linux f939b630314e2c3e909f9749fc516eb227fd6df442d7ee5231a1db47886d9f0f
 ==== 2
 ---- file a.azl
 
@@ -35,9 +35,9 @@ let n = m.len()
 checked 7 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos f69bb7ab36a8bbfb6936993beb9ff1ab8a73e59df7b938d4fd9159239356cafe
-x86_64-linux 904ca59edd0be0c1da6b1022214e664c6388d9ef9bd6f786765f50ec4ec43064
-aarch64-linux eb0741ce0b60f06353e0c1b8f34ecbe693c356039671697f12ac9c8f4a06d500
+aarch64-macos 6e70ebdf5c825d311ae9b9d79c7ded3cfd53e29dba741e8584eccaed47836b05
+x86_64-linux 3d7a4e6a147bc3fba69ca3283f40284206dc2ad57b534003cfe5fd7c772f004b
+aarch64-linux 921030f2046c0dbdd7c678d8286c91c520e328ec9eae690057cdea34be5e6620
 ==== 3
 ---- file a.azl
 fn f(xs: mut List[i64]) {
@@ -54,9 +54,9 @@ f(mut xs)
 checked 7 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos a44543f5e3864d6043fc09f1e26d71b586d4251227d3a7b75651be854d308e14
-x86_64-linux 00e2fadc482a5b399689ef31fbd32b2386503c21d60b66c1c2f6994a76d5c0fa
-aarch64-linux 63ece2915499d8e464fdc52205204e53ffcac8df2116f04ce8a2d872c002da04
+aarch64-macos 7f68454d9bd742d7172e632438fa9652db6ab36425e7c25d8f25db247e7bad66
+x86_64-linux f08307df8633de106f17ad83f95d6ad11ebb25cc63d97017b666dc81aa267080
+aarch64-linux 8efa5a94b1247c67aaaf36433710fd19e9ac51c181c92a71b1ab5c0cccdd5c1c
 ==== 4
 ---- file a.azl
 
@@ -73,6 +73,6 @@ let d = [1].is_empty()
 checked 7 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos fdf7c3bc4b2740432d230a0aca87947aab668067e12c2f519c174830ab549545
-x86_64-linux 4432d17e47a511aaacbe08d6d99eace82a4efc3e7caa32feb0038fbb90567ea0
-aarch64-linux fa9f37761483110248ec03267b51726bf5723e82dcfa3fb73b5df43abc8f31b7
+aarch64-macos 1c8b8f0901ffa75b211fc5663743a45ad4b065b083cc7f0f0a94d497a57b1f18
+x86_64-linux c28a78077fcfd0c2b004aec0d7756f8dd7b161f81bd121eb79d0a4d894615604
+aarch64-linux 99452aad12d98dbb2d4c09024b637a54c75ddbced66b42b9f3711bd28f14534a

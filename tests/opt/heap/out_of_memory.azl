@@ -1,0 +1,12 @@
+// A text that doubles until the system has no more memory to give. The
+// program must then stop with the runtime's message and exit code 1,
+// not go on with a block it did not get.
+fn main() {
+    var s = "0123456789abcdef"
+    var rounds = 0
+    while rounds < 60 {
+        s = s + s
+        rounds = rounds + 1
+    }
+    print(s.len())
+}

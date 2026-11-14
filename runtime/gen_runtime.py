@@ -60,6 +60,8 @@ for i, (word, ins) in enumerate(zip(words, disasm)):
         imm = (word >> 5) & 0xFFFF
         if imm == 0x800:
             assert i == symbols["_rt_start_main"]
+        elif imm >= 0x3000:
+            relocs.append("    RuntimeReloc::Memory { at: %d, reg: %d }," % (i, imm - 0x3000))
         elif imm >= 0x2000:
             relocs.append("    RuntimeReloc::Data { at: %d, data: %d, reg: %d }," % (i, (imm - 0x2000) // 32, (imm - 0x2000) % 32))
         elif imm >= 0x1000:
@@ -102,7 +104,20 @@ pub enum RuntimeReloc {
     Import { at: u32, import: u32 },
     /// Two words: put the address of a runtime text item in `reg`.
     Data { at: u32, data: u32, reg: u32 },
+    /// Two words: put the address of the runtime's writable memory in `reg`.
+    Memory { at: u32, reg: u32 },
 }
+
+/// The allocator: where its code starts and ends in `RUNTIME`, in words,
+/// and its three routines, which keep the rules of `malloc`, `free` and
+/// `realloc`. The checking emulators watch them.
+pub const HEAP_BEGIN: u32 = %d;
+pub const HEAP_END: u32 = %d;
+pub const HEAP_ALLOC: u32 = %d;
+pub const HEAP_FREE: u32 = %d;
+pub const HEAP_RESIZE: u32 = %d;
+/// Bytes of writable memory the runtime needs, which must start out as zeros.
+pub const MEMORY_SIZE: u32 = 128;
 
 pub const RUNTIME_RELOCS: [RuntimeReloc; %d] = [
 %s
@@ -116,6 +131,7 @@ pub const RUNTIME: [u32; %d] = [
     escaped, len(offsets), ", ".join(map(str, offsets)),
     "\n".join("pub const %s: u32 = %d;" % (name.upper(), symbols["_rt_" + name]) for name in ENTRIES),
     symbols["_rt_start"], symbols["_rt_start_main"],
+    symbols["_rt_heap_begin"], symbols["_rt_heap_end"], symbols["_rt_heap_alloc"], symbols["_rt_heap_free"], symbols["_rt_heap_resize"],
     len(relocs), "\n".join(relocs), len(words), "\n".join(lines),
 )
 facts = os.path.join(HERE, "runtime.facts")

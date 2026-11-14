@@ -57,11 +57,11 @@ fn lc_build_version() -> i64 {
 
 // Number of load commands and their total size in bytes.
 fn macho_command_count() -> i64 {
-    return 12
+    return 13
 }
 
 fn macho_commands_size() -> i64 {
-    return 72 + 232 + 152 + 72 + 48 + 24 + 80 + 32 + 24 + 24 + 56 + 16
+    return 72 + 232 + 152 + 152 + 72 + 48 + 24 + 80 + 32 + 24 + 24 + 56 + 16
 }
 
 // The segment the import slots live in, counted from zero.
@@ -203,7 +203,9 @@ fn put_uleb(out: mut str, number: i64) {
 // The file has three mapped parts: `__TEXT` (headers, code, read-only
 // data), `__DATA_CONST` (one pointer per imported function, filled in by
 // the system loader) and `__LINKEDIT` (the loader's instructions for
-// those pointers, the symbol table and the signature).
+// those pointers, the symbol table and the signature). Between the last
+// two in memory, and nowhere in the file, is `__DATA`: one page of zeros
+// the program may write, of which the runtime uses the first bytes.
 fn build_macho(code: CodeFile) -> str {
     let page = macho_page()
     let base = text_vmaddr()
@@ -217,7 +219,9 @@ fn build_macho(code: CodeFile) -> str {
     let got_off = text_size
     let got_addr = base + got_off
     let got_size = import_count * 8
+    let memory_addr = got_addr + page
     let linkedit_off = got_off + page
+    let linkedit_addr = memory_addr + page
 
     // Loader instructions: bind each import slot to its symbol in libSystem.
     var bind = ""
@@ -276,7 +280,12 @@ fn build_macho(code: CodeFile) -> str {
     put32(mut out, 0x10) // read-only after loading
     put_section(mut out, "__got", "__DATA_CONST", got_addr, got_size, got_off, 3, 0x6) // non-lazy symbol pointers
 
-    put_segment(mut out, "__LINKEDIT", base + linkedit_off, align_up(linkedit_size, page), linkedit_off, linkedit_size, 1, 0)
+    // Memory that starts out as zeros takes no room in the file.
+    put_segment(mut out, "__DATA", memory_addr, page, linkedit_off, 0, 3, 1)
+    put32(mut out, 0)
+    put_section(mut out, "__bss", "__DATA", memory_addr, ART_MEMORY_SIZE, 0, 3, 0x1) // filled with zeros
+
+    put_segment(mut out, "__LINKEDIT", linkedit_addr, align_up(linkedit_size, page), linkedit_off, linkedit_size, 1, 0)
     put32(mut out, 0)
 
     put32(mut out, lc_dyld_info_only())
@@ -369,6 +378,12 @@ fn build_macho(code: CodeFile) -> str {
                 let field = code_off + at * 4
                 patch32(mut out, field, adrp(register, pc, target))
                 patch32(mut out, field + 4, 0x91000000 | ((target & 0xFFF) << 10) | (register << 5) | register) // add reg, reg, #lo12
+            }
+            Memory(at, register) => {
+                let pc = base + code_off + at * 4
+                let field = code_off + at * 4
+                patch32(mut out, field, adrp(register, pc, memory_addr))
+                patch32(mut out, field + 4, 0x91000000 | ((memory_addr & 0xFFF) << 10) | (register << 5) | register) // add reg, reg, #lo12
             }
         }
     }

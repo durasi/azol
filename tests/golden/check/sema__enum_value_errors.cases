@@ -18,9 +18,9 @@ fn main() {
 checked 10 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos dc8b13c9fc3c920be3ac8ce35e9b0304340df50ff8b16972210056d1868f0dd8
-x86_64-linux 2d7015e1d6790e0c31ff8673c06feab9bd488c0253f8b8a771c2e07873abf844
-aarch64-linux e5df0d8fc98b30062f77150f6639327c2d1c5726bf4b9efbfa0d92a584a5ffc5
+aarch64-macos 0b800ded47eabe390861b3d80fb966f2c022190e1492e07c4fae8de0bca8de7d
+x86_64-linux 81814981d559d430d64f307c1fcccbfdedc607d804c0c112bf3ce5a7f5d5fbb5
+aarch64-linux 671a52c9392daf0abed45ba8a79068958968959bab521b00a2538a8879a08f01
 ==== 2
 ---- file a.azl (no newline at end)
 struct S {
@@ -44,6 +44,6 @@ fn main() {
 checked 14 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos c15f51201f704165ba13ed434d639d1f8a0b2cdfc50297879dfe7255a7816ed3
-x86_64-linux 836fbe976c94747a4e3a9b02ea1b842a81b6966b013ee02ef5bb3e166328d783
-aarch64-linux 66ac246be4c367f4f9e835d66fd500a340f9eacd8aeac74dbd33b5afaf705ef3
+aarch64-macos 18176c007d3ab31085af6a868c99b18b0fa2af02c47d002634499b2f3e683145
+x86_64-linux 02de1884d03562a86fd77fca00cfff9e64a7243131173c000e412d6eae845ac9
+aarch64-linux 550d85a6199193c5a6acabf24d5c3cf1df1ffdfcd1223c3a5107c4f96b71fe66

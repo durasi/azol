@@ -20,9 +20,9 @@ let s = grow(mut xs) + xs[0]
 checked 12 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 4981f9a2331fba2273ee3d80ee814491b72c8ec782e705fcf2ca2f2f7054c70b
-x86_64-linux 05b5fb71eade03e08f0e5cc00e7a2a97c17383b0f0584dae31ee424edfc1ecfb
-aarch64-linux 74397693baf5e823baa6475518b07da6adb798d345c2e2a7c6c7c04cb21c02e3
+aarch64-macos fba49b60ff73188cec36d6b52337cf71c154c4beb06f23d80e6bf78a622dbf55
+x86_64-linux a4f2de4461df1fcd0264f4ccb45e74c83c05b708f375e7c3a1d67d1a1e2b513d
+aarch64-linux e06878305fb54458c171341e0061740f15d64de5c9089434676ec80aef816692
 ==== 2
 ---- file a.azl (no newline at end)
 fn grow(xs: mut List[str]) -> str {
@@ -44,6 +44,6 @@ let t = s + s + set(mut s)
 checked 12 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 8cf6dd3f7a34e548c187b1ae66cfc9e92c95c9a73455dea92e239f1c56c19347
-x86_64-linux d4cea0356c7cbd5bd1fdabe33f73ac9b9b40549a3622acfd473cd87c00da9edc
-aarch64-linux 39a5050e64c7de423e0493f1870228a1df5d398ab89f3e6b0f548aa0a2f44876
+aarch64-macos a69f7bbf383fb88e660b8a6f0be5c55f2df689854c693f48273b1ebfee170b45
+x86_64-linux 1ab580ace9e7667739cb39ebb970d8e068a818b68bb56a6abecc167b6a796f3a
+aarch64-linux 88963eb6c8658fd27c714582afdeb60bfc99bb9a98ae8372e203fbec8518d989

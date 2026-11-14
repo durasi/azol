@@ -58,6 +58,9 @@ def emulator_repo():
             shutil.copy(facts, os.path.join(folder, 'src', 'runtime_linux_arm64.rs'))
             os.makedirs(os.path.join(folder, 'runtime', 'linux_arm64'))
             shutil.copy(facts, os.path.join(folder, 'runtime', 'linux_arm64', 'runtime.facts'))
+            # The emulator also asks the macOS runtime's facts where an
+            # allocator of the runtime's own is.
+            shutil.copy(os.path.join(REPO, 'runtime', 'runtime.facts'), os.path.join(folder, 'runtime', 'runtime.facts'))
             _EMULATOR_REPO.append(folder)
     return _EMULATOR_REPO[0]
 
@@ -3389,6 +3392,8 @@ def load_linux_emulator():
 
 def load_emulator():
     """The checking emulator for arm64 builds, when this machine has it."""
+    # The emulators read the runtime's facts of the repository under test.
+    os.environ.setdefault('AZOL_REPO', REPO)
     global EMU
     where = os.environ.get('AZOL_EMU_DIR', '/home/claude/ref')
     if os.path.exists(os.path.join(where, 'emu.py')):

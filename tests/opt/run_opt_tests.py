@@ -919,6 +919,11 @@ def main():
     # `azol-opt build` from source to executable for ARM64: tests/opt/run_driver_tests.py.
     import run_driver_tests
     run_driver_tests.run(azol, folder, problems)
+    # The ARM64 allocator at the end of memory: tests/opt/run_heap_tests.py.
+    heap = subprocess.run([sys.executable, os.path.join(HERE, "run_heap_tests.py"), "--azol", azol], capture_output=True, text=True)
+    print(heap.stdout, end="")
+    if heap.returncode != 0:
+        problems.append("the allocator's test at the end of memory failed (run tests/opt/run_heap_tests.py)")
     for problem in problems:
         print("FAIL " + problem)
     if problems:

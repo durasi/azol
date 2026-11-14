@@ -16,6 +16,10 @@ elf.azl
 bytes.azl
 diag.azl
 diag_table.azl
+habits.azl
+habits_more.azl
+habits_table.azl
+tools_cmd.azl
 embedded.azl
 format.azl
 arm64.azl

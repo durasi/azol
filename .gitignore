@@ -9,5 +9,6 @@
 !/bench/*.go
 __pycache__/
 !/bench/suite/
+!/bench/agents/
 /azol
 azol-opt

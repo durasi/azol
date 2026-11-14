@@ -456,12 +456,22 @@ fn diagnose(problems: List[SemaError], files: List[SourceFile], src: str, ast: A
         if end > file_end { end = file_end }
         let from = line_column(text, start - file_start)
         let to = line_column(text, end - file_start)
-        let kind = diag_classify(table, problem.message)
+        // A form of another language gets an answer of its own (`habits.azl`).
+        var message = problem.message
+        var repair = problem.fix
+        if repair.kind == FIX_NONE {
+            let habit = habit_of(message, start, src, file_start, file_end)
+            if habit.message.len() > 0 {
+                message = habit.message
+                repair = habit.fix
+            }
+        }
+        let kind = diag_classify(table, message)
         var entry = diag_unclassified()
         if kind >= 0 { entry = table[kind] }
         var found = Diagnostic {
             code: entry.code,
-            message: problem.message,
+            message: message,
             file: index,
             at: start - file_start,
             line: from.line,
@@ -478,8 +488,7 @@ fn diagnose(problems: List[SemaError], files: List[SourceFile], src: str, ast: A
             fix_end_column: 0,
             replacement: "",
         }
-        var repair = problem.fix
-        if repair.kind == FIX_NONE { repair = syntax_fix(problem.message, start, src, file_end) }
+        if repair.kind == FIX_NONE { repair = syntax_fix(message, start, src, file_end) }
         if repair.kind != FIX_NONE {
             let edit = replacement_of(repair, tokens, src)
             if edit.kind == FIX_REPLACE && edit.start >= file_start && edit.end <= file_end && edit.start <= edit.end {

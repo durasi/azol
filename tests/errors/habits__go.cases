@@ -1,0 +1,201 @@
+# Habits from Go (docs/design/agents.md 1.5, compiler/habits.azl): each is answered with an
+# error that names the habit and says the azoL form, and with the edit when it is mechanical.
+==== E0221: `println(1)`
+---- file a.azl
+fn main() {
+    println(1)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0221 2:5
+---- apply-fix
+---- after-has a.azl
+    print(1)
+---- run check --json a.azl
+---- exit 0
+==== E0222: `let x = nil`
+---- file a.azl
+fn main() {
+    let x = nil
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0222 2:13
+---- no-fix
+==== E0121: `x := 1`
+---- file a.azl
+fn main() {
+    x := 1
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0121 2:7
+---- apply-fix
+---- after-has a.azl
+    let x = 1
+---- run check --json a.azl
+---- exit 0
+==== E0121: `var x int = 1`
+---- file a.azl
+fn main() {
+    var x int = 1
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0121 2:11
+---- apply-fix
+---- after-has a.azl
+    var x: int = 1
+---- run check --json a.azl
+---- exit 1
+---- reports E0220 2:12
+==== E0220: `let x: int = 1`
+---- file a.azl
+fn main() {
+    let x: int = 1
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0220 2:12
+---- apply-fix
+---- after-has a.azl
+    let x: i64 = 1
+---- run check --json a.azl
+---- exit 0
+==== E0130: `let xs: []i64 = [1]`
+---- file a.azl
+fn main() {
+    let xs: []i64 = [1]
+    print(xs.len())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0130 2:13
+---- apply-fix
+---- after-has a.azl
+    let xs: List[i64] = [1]
+---- run check --json a.azl
+---- exit 0
+==== E0126: `func f() {`
+---- file a.azl
+func f() {
+}
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0126 1:1
+---- apply-fix
+---- after-has a.azl
+fn f() {
+---- run check --json a.azl
+---- exit 0
+==== E0126: `import "fmt"`
+---- file a.azl
+import "fmt"
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0126 1:1
+---- apply-fix
+---- after-has a.azl
+fn main() {
+---- run check --json a.azl
+---- exit 0
+==== E0130: `fn f() i64 {`
+---- file a.azl
+fn f() i64 {
+    return 1
+}
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0130 1:8
+---- apply-fix
+---- after-has a.azl
+fn f() -> i64 {
+---- run check --json a.azl
+---- exit 0
+==== E0223: `xs.append(1)`
+---- file a.azl
+fn main() {
+    var xs = [1]
+    xs.append(1)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:8
+---- apply-fix
+---- after-has a.azl
+    xs.push(1)
+---- run check --json a.azl
+---- exit 0
+==== E0221: `panic("x")`
+---- file a.azl
+fn main() {
+    panic("x")
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0221 2:5
+---- apply-fix
+---- run check --json a.azl
+---- exit 0
+==== E0132: `defer f()`
+---- file a.azl
+fn f() {
+}
+fn main() {
+    defer f()
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0132 4:11
+---- no-fix
+==== E0121: `x, err := f()`
+---- file a.azl
+fn main() {
+    x, err := f()
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0121 2:6
+---- no-fix
+==== E0129: `let s = r"a"`
+---- file a.azl
+fn main() {
+    let s = r"a"
+    print(s)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0129 2:14
+---- no-fix
+==== E0221: `let s = str(1) + string(2)`
+---- file a.azl
+fn main() {
+    let s = str(1) + string(2)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0221 2:22
+---- apply-fix
+---- after-has a.azl
+    let s = str(1) + str(2)
+---- run check --json a.azl
+---- exit 0
+==== E0121: `var x, err = f()`
+---- file a.azl
+fn main() {
+    var x, err = 1, 2
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0121 2:10
+---- no-fix

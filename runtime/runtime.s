@@ -4,6 +4,8 @@
 // src/runtime.rs. Two markers are rewritten by the compiler's linker:
 //   brk #(0x1000 + import); nop; nop        call an imported function
 //   brk #(0x2000 + 32 * data + reg); nop    load the address of runtime text
+//   brk #(0x3000 + reg); nop                load the address of the runtime's
+//                                           writable memory (see `memory` below)
 // Imports: 0 write, 1 exit, 2 malloc, 3 realloc, 4 free, 5 memcpy, 6 memcmp,
 //          7 open, 8 read, 9 close, 10 __error, 11 strerror, 12 strlen,
 //          13 _NSGetArgc, 14 _NSGetArgv, 15 chmod, 16 sigaltstack,
@@ -21,6 +23,7 @@
 .globl _rt_eprint_str, _rt_exit, _rt_str_slice, _rt_chr, _rt_args, _rt_read_file, _rt_write_file
 .globl _rt_str_append, _rt_set_executable, _rt_start, _rt_start_main
 .globl _rt_remove_file, _rt_rename_file, _rt_clock, _rt_str_is_utf8
+.globl _rt_heap_begin, _rt_heap_alloc, _rt_heap_free, _rt_heap_resize, _rt_heap_end
 
 // x0 = number. Prints it and a newline.
 _rt_print_i64:
@@ -152,26 +155,208 @@ _rt_panic:
     nop
     brk #1
 
-// x0 = size in bytes, not zero. Returns a new block; never returns null.
+// ---- memory ---------------------------------------------------------------
+//
+// The allocator, the same design as runtime/linux_common/memory.h. Every
+// block has a 16-byte header in front of it whose first word is the
+// block's class. Blocks up to 64 KB, header included, come in sizes that
+// are powers of two from 32 bytes up (class 0 is 32 bytes, class 11 is
+// 64 KB), are cut from 1 MB chunks asked of the system, and go on a list
+// for their class when freed, to be handed out again: the first word of a
+// free block is the next free block of its class. Larger blocks are the
+// system's own, one each, with class 0xFFFF.
+//
+// What the allocator remembers is 14 words in the runtime's writable
+// memory, which starts out as zeros: the 12 lists, then where the unused
+// part of the newest chunk starts, then how many bytes it has.
+// `brk #(0x3000 + reg); nop` is the marker for the address of that
+// memory. A chunk is never given back.
+//
+// The three routines keep the rules of an ordinary function: they may
+// change x0 to x17 and nothing else. They are not safe to call from two
+// threads at once.
+_rt_heap_begin:
+
+// x0 = size in bytes. Returns a new block; never returns null.
 _rt_alloc:
-    stp x29, x30, [sp, #-16]!
+_rt_heap_alloc:
+    cmp x0, #1
+    csinc x0, x0, xzr, ge
+    add x9, x0, #15
+    lsr x10, x9, #16
+    cbnz x10, 93f
+    clz x10, x9
+    mov w11, #64
+    sub x10, x11, x10
+    brk #0x300c
+    nop
+    sub x13, x10, #5
+    ldr x0, [x12, x13, lsl #3]
+    cbz x0, 91f
+    ldr x14, [x0]
+    str x14, [x12, x13, lsl #3]
+    ret
+91:
+    // Nothing free of this class: cut the block from the chunk.
+    mov x14, #1
+    lsl x14, x14, x10
+    ldr x15, [x12, #104]
+    cmp x15, x14
+    b.lo 92f
+    ldr x0, [x12, #96]
+    add x16, x0, x14
+    str x16, [x12, #96]
+    sub x15, x15, x14
+    str x15, [x12, #104]
+    str x13, [x0], #16
+    ret
+92:
+    // The chunk has less than this left: a new chunk. What the old one
+    // had left stays unused.
+    stp x29, x30, [sp, #-32]!
     mov x29, sp
+    stp x19, x20, [sp, #16]
+    mov x19, x13
+    mov x20, x14
+    mov x0, #0x100000
     brk #0x1002
     nop
     nop
     cbz x0, _rt_out_of_memory
+    brk #0x300c
+    nop
+    add x9, x0, x20
+    str x9, [x12, #96]
+    mov x9, #0x100000
+    sub x9, x9, x20
+    str x9, [x12, #104]
+    str x19, [x0], #16
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #32
+    ret
+93:
+    // A large block: the system's, with our header in front.
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    add x0, x0, #16
+    brk #0x1002
+    nop
+    nop
+    cbz x0, _rt_out_of_memory
+    mov x9, #0xFFFF
+    str x9, [x0], #16
     ldp x29, x30, [sp], #16
     ret
 
 // x0 = a block from _rt_alloc, or null.
 _rt_free:
+_rt_heap_free:
+    cbz x0, 95f
+    ldur x9, [x0, #-16]
+    cmp x9, #12
+    b.hs 94f
+    brk #0x300c
+    nop
+    ldr x10, [x12, x9, lsl #3]
+    str x10, [x0]
+    str x0, [x12, x9, lsl #3]
+    ret
+94:
     stp x29, x30, [sp, #-16]!
     mov x29, sp
+    sub x0, x0, #16
     brk #0x1004
     nop
     nop
     ldp x29, x30, [sp], #16
+95:
     ret
+
+// x0 = a block or null, x1 = size in bytes. Returns a block of at least
+// that size that starts with what the old one held; the old one is no
+// longer valid. A size the block already has room for changes nothing.
+// Never returns null.
+_rt_heap_resize:
+    cbnz x0, 96f
+    mov x0, x1
+    b _rt_heap_alloc
+96:
+    ldur x9, [x0, #-16]
+    cmp x9, #12
+    b.hs 99f
+    add x10, x9, #5
+    mov x11, #1
+    lsl x11, x11, x10
+    sub x12, x11, #16
+    cmp x1, x12
+    b.gt 97f
+    ret
+97:
+    // It has to grow. The block that was cut last from the chunk grows
+    // where it is while the chunk has room, with nothing copied.
+    brk #0x300d
+    nop
+    ldr x14, [x13, #96]
+    sub x15, x0, #16
+    add x15, x15, x11
+    cmp x15, x14
+    b.ne 98f
+    add x15, x1, #15
+    lsr x16, x15, #16
+    cbnz x16, 98f
+    clz x15, x15
+    mov w16, #64
+    sub x15, x16, x15
+    mov x16, #1
+    lsl x16, x16, x15
+    sub x16, x16, x11
+    ldr x17, [x13, #104]
+    cmp x17, x16
+    b.lo 98f
+    sub x17, x17, x16
+    str x17, [x13, #104]
+    add x14, x14, x16
+    str x14, [x13, #96]
+    sub x15, x15, #5
+    stur x15, [x0, #-16]
+    ret
+98:
+    // A new block, the old content copied into it, the old block freed.
+    stp x29, x30, [sp, #-48]!
+    mov x29, sp
+    stp x19, x20, [sp, #16]
+    str x21, [sp, #32]
+    mov x19, x0
+    mov x20, x12
+    mov x0, x1
+    bl _rt_heap_alloc
+    mov x21, x0
+    mov x1, x19
+    mov x2, x20
+    brk #0x1005
+    nop
+    nop
+    mov x0, x19
+    bl _rt_heap_free
+    mov x0, x21
+    ldr x21, [sp, #32]
+    ldp x19, x20, [sp, #16]
+    ldp x29, x30, [sp], #48
+    ret
+99:
+    // A large block is the system's to move.
+    stp x29, x30, [sp, #-16]!
+    mov x29, sp
+    sub x0, x0, #16
+    add x1, x1, #16
+    brk #0x1003
+    nop
+    nop
+    cbz x0, _rt_out_of_memory
+    add x0, x0, #16
+    ldp x29, x30, [sp], #16
+    ret
+_rt_heap_end:
 
 // x0 = address of a list (pointer, length, capacity), x1 = address of the
 // new element, x2 = element size in bytes. The element must not live in
@@ -195,9 +380,7 @@ _rt_list_push:
     str x10, [x19, #16]
     ldr x0, [x19]
     mul x1, x10, x21
-    brk #0x1003
-    nop
-    nop
+    bl _rt_heap_resize
     cbz x0, _rt_out_of_memory
     str x0, [x19]
 4:
@@ -235,9 +418,7 @@ _rt_list_clone:
     ldr x21, [x19]
     cbz x20, 5f
     mov x0, x20
-    brk #0x1002
-    nop
-    nop
+    bl _rt_heap_alloc
     cbz x0, _rt_out_of_memory
     str x0, [x19]
     mov x1, x21
@@ -283,9 +464,7 @@ _rt_str_concat:
     str xzr, [x21]
     cbz x22, 9f
     mov x0, x22
-    brk #0x1002
-    nop
-    nop
+    bl _rt_heap_alloc
     cbz x0, _rt_out_of_memory
     str x0, [x21]
     ldr x1, [x19]
@@ -355,9 +534,7 @@ _rt_str_from_i64:
     add x20, sp, #80
     sub x20, x20, x9
     mov x0, x20
-    brk #0x1002
-    nop
-    nop
+    bl _rt_heap_alloc
     cbz x0, _rt_out_of_memory
     str x0, [x21]
     str x20, [x21, #8]
@@ -413,9 +590,7 @@ _rt_str_slice:
     str x21, [x19, #16]
     cbz x21, 14f
     mov x0, x21
-    brk #0x1002
-    nop
-    nop
+    bl _rt_heap_alloc
     cbz x0, _rt_out_of_memory
     str x0, [x19]
     mov x1, x20
@@ -468,9 +643,7 @@ _rt_args:
     b.le 16f
     mov x9, #24
     mul x0, x20, x9
-    brk #0x1002
-    nop
-    nop
+    bl _rt_heap_alloc
     cbz x0, _rt_out_of_memory
     str x0, [x19]
     mov x22, #0
@@ -503,9 +676,7 @@ _rt_c_path:
     mov x19, x0
     ldr x0, [x19, #8]
     add x0, x0, #1
-    brk #0x1002
-    nop
-    nop
+    bl _rt_heap_alloc
     cbz x0, _rt_out_of_memory
     mov x20, x0
     ldr x2, [x19, #8]
@@ -548,9 +719,7 @@ _rt_os_error:
     str x21, [x19, #16]
     cbz x21, 18f
     mov x0, x21
-    brk #0x1002
-    nop
-    nop
+    bl _rt_heap_alloc
     cbz x0, _rt_out_of_memory
     str x0, [x19]
     mov x1, x20
@@ -605,9 +774,7 @@ _rt_read_file:
     csel x24, x9, x24, lo
     mov x0, x22
     mov x1, x24
-    brk #0x1003
-    nop
-    nop
+    bl _rt_heap_resize
     cbz x0, _rt_out_of_memory
     mov x22, x0
 21:
@@ -650,9 +817,7 @@ _rt_read_file:
     // Give back the part of the buffer that was not needed.
     mov x0, x22
     mov x1, x23
-    brk #0x1003
-    nop
-    nop
+    bl _rt_heap_resize
     cbz x0, _rt_out_of_memory
     str x0, [x19]
     str x23, [x19, #8]
@@ -778,9 +943,7 @@ _rt_str_append:
     cbz x10, 31f
     ldr x0, [x19]
     mov x1, x24
-    brk #0x1003
-    nop
-    nop
+    bl _rt_heap_resize
     cbz x0, _rt_out_of_memory
     str x0, [x19]
     // The old buffer is gone. If the text to add was in it, it is now
@@ -791,9 +954,7 @@ _rt_str_append:
 31:
     // The string does not own its bytes: copy them into a new buffer.
     mov x0, x24
-    brk #0x1002
-    nop
-    nop
+    bl _rt_heap_alloc
     cbz x0, _rt_out_of_memory
     ldr x1, [x19]
     str x0, [x19]

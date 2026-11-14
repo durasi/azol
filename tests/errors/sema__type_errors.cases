@@ -18,7 +18,7 @@ error[E0303]: a condition must be `bool` but this is `i64`
 ---- run check --json a.azl
 ---- exit 1
 ---- stdout
-{"severity":"error","code":"E0303","message":"a condition must be `bool` but this is `i64`","file":"a.azl","line":2,"column":4,"end_line":2,"end_column":5,"source":"if 1 {","rule":"The condition of `if` and `while` is a `bool`; numbers are not conditions."}
+{"severity":"error","code":"E0303","message":"a condition must be `bool` but this is `i64`","file":"a.azl","line":2,"column":4,"end_line":2,"end_column":5,"source":"if 1 {","rule":"The condition of `if` and `while` is a `bool`; numbers are not conditions.","fix":{"file":"a.azl","line":2,"column":4,"end_line":2,"end_column":5,"replacement":"true"}}
 {"summary":{"errors":1,"files":1}}
 ==== 2
 ---- file a.azl (no newline at end)
@@ -157,16 +157,16 @@ let a = "x" + 1
 ---- exit 1
 ---- stdout (empty)
 ---- stderr
-error[E0302]: `+` needs `str` but this is `i64`
+error[E0224]: `+` joins two texts and does not turn a number into one; write `str(n)`, or put the value in the text: `"n = {n}"`
  --> a.azl:2:15
   |
 2 | let a = "x" + 1
   |               ^
----- asserted 2:15 `+` needs `str` but this is `i64`
+---- asserted 2:15 `+` joins two texts and does not turn a number into one; write `str(n)`, or put the value in the text: `"n = {n}"`
 ---- run check --json a.azl
 ---- exit 1
 ---- stdout
-{"severity":"error","code":"E0302","message":"`+` needs `str` but this is `i64`","file":"a.azl","line":2,"column":15,"end_line":2,"end_column":16,"source":"let a = \"x\" + 1","rule":"An operator, an argument, a field and a list element each need a value of one exact type; nothing is converted silently."}
+{"severity":"error","code":"E0224","message":"`+` joins two texts and does not turn a number into one; write `str(n)`, or put the value in the text: `\"n = {n}\"`","file":"a.azl","line":2,"column":15,"end_line":2,"end_column":16,"source":"let a = \"x\" + 1","rule":"A number does not become text by itself: `+` joins two texts, and `print` takes one value. A value goes into a text as `\"n = {n}\"`, or becomes one with `str(n)`.","fix":{"file":"a.azl","line":2,"column":15,"end_line":2,"end_column":16,"replacement":"str(1)"}}
 {"summary":{"errors":1,"files":1}}
 ==== 9
 ---- file a.azl (no newline at end)

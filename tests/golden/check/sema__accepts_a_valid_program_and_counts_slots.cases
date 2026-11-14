@@ -15,6 +15,6 @@ fn main() -> i64 {
 checked 7 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos a4d07ab9a79bc9ec56e18e7c126ab38378ddf17666e99849ecfb50d9b7dea54a
-x86_64-linux 4b041e7b8dedc3ad05bdd8670e8f6fc39d1c4bafc0b6f55662da55ffd3fb363c
-aarch64-linux 731d8b78efe161bb706632d1a2ce0b527ffeab874318670239b5c2d88964cf8f
+aarch64-macos ab863151ba1b0d36aa4957acfdb8fe4519ab71892795320056103f0f49fec953
+x86_64-linux 4e1358fc9e5c47057a87803953151029eb707ed1d2e0ce07ae0a673500bfbfd4
+aarch64-linux af6152fa24b13ff7c71210802592fe54729d25bbeb003b6e9f67540f6e804bb0

@@ -169,14 +169,14 @@ xs.sort()
 ---- exit 1
 ---- stdout (empty)
 ---- stderr
-error[E0207]: `List[i64]` has no method `sort`
+error[E0223]: `.sort()` is not azoL; `xs.sorted()` gives the sorted list, so sorting in place is `xs = xs.sorted()`
  --> a.azl:3:4
   |
 3 | xs.sort()
   |    ^
----- asserted 3:4 `List[i64]` has no method `sort`
+---- asserted 3:4 `.sort()` is not azoL; `xs.sorted()` gives the sorted list, so sorting in place is `xs = xs.sorted()`
 ---- run check --json a.azl
 ---- exit 1
 ---- stdout
-{"severity":"error","code":"E0207","message":"`List[i64]` has no method `sort`","file":"a.azl","line":3,"column":4,"end_line":3,"end_column":8,"source":"xs.sort()","rule":"A method call needs a method that exists for the type of the value before the dot."}
+{"severity":"error","code":"E0223","message":"`.sort()` is not azoL; `xs.sorted()` gives the sorted list, so sorting in place is `xs = xs.sorted()`","file":"a.azl","line":3,"column":4,"end_line":3,"end_column":8,"source":"xs.sort()","rule":"Values have the methods listed by `azol guide library` and no others; a function of the program is called as `name(value)`, not `value.name()`.","help":"`azol guide library` lists every method by type.","fix":{"file":"a.azl","line":3,"column":1,"end_line":3,"end_column":10,"replacement":"xs = xs.sorted()"}}
 {"summary":{"errors":1,"files":1}}

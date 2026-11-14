@@ -54,12 +54,11 @@ static u8 *map(u64 bytes) {
     return (u8 *)result;
 }
 
+// The class of a block of `total` bytes, header included: the smallest
+// power of two that holds it. `total` is at least 17.
 static u64 class_of(u64 total) {
-    u64 class = 0;
-    while (((u64)1 << (class + SMALLEST_SHIFT)) < total) {
-        class++;
-    }
-    return class;
+    u64 shift = 64 - (u64)__builtin_clzll(total - 1);
+    return shift < SMALLEST_SHIFT ? 0 : shift - SMALLEST_SHIFT;
 }
 
 // How many bytes the caller may use in `block`.
@@ -71,51 +70,66 @@ static u64 room(const u8 *block) {
     return ((u64)1 << (header->class + SMALLEST_SHIFT)) - HEADER;
 }
 
-static u8 *allocate(i64 bytes) {
-    if (bytes <= 0) {
-        bytes = 1;
-    }
+// The two ways that are not the short one: a block of its own from the
+// system, or the next piece of the chunk. Kept out of line so that the
+// short way, which every caller gets a copy of, stays a few instructions.
+static __attribute__((noinline)) u8 *allocate_large(i64 bytes) {
     if ((u64)bytes > ((u64)1 << 62)) {
         out_of_memory();
     }
     u64 total = (u64)bytes + HEADER;
-    if (total > ((u64)1 << LARGEST_SHIFT)) {
-        u64 mapped = (total + PAGE - 1) & ~(u64)(PAGE - 1);
-        Block *header = (Block *)map(mapped);
-        header->class = LARGE;
-        header->mapped = mapped;
-        return (u8 *)header + HEADER;
+    u64 mapped = (total + PAGE - 1) & ~(u64)(PAGE - 1);
+    Block *header = (Block *)map(mapped);
+    header->class = LARGE;
+    header->mapped = mapped;
+    return (u8 *)header + HEADER;
+}
+
+static __attribute__((noinline)) u8 *allocate_from_chunk(u64 class) {
+    u64 size = (u64)1 << (class + SMALLEST_SHIFT);
+    if (memory()->chunk_left < size) {
+        // What is left of the old chunk is smaller than this block
+        // and stays unused; chunks are never given back.
+        memory()->chunk = map(CHUNK);
+        memory()->chunk_left = CHUNK;
     }
-    u64 class = class_of(total);
-    Block *header;
-    if (memory()->free[class]) {
-        Free *first = memory()->free[class];
-        memory()->free[class] = first->next;
-        header = (Block *)((u8 *)first - HEADER);
-    } else {
-        u64 size = (u64)1 << (class + SMALLEST_SHIFT);
-        if (memory()->chunk_left < size) {
-            // What is left of the old chunk is smaller than this block
-            // and stays unused; chunks are never given back.
-            memory()->chunk = map(CHUNK);
-            memory()->chunk_left = CHUNK;
-        }
-        header = (Block *)memory()->chunk;
-        memory()->chunk += size;
-        memory()->chunk_left -= size;
-    }
+    Block *header = (Block *)memory()->chunk;
+    memory()->chunk += size;
+    memory()->chunk_left -= size;
     header->class = class;
     header->mapped = 0;
     return (u8 *)header + HEADER;
 }
 
-static void release(u8 *block) {
+// A block on a free list keeps its header, so handing it out again is
+// taking it off the list.
+static inline __attribute__((always_inline)) u8 *allocate(i64 bytes) {
+    if (bytes <= 0) {
+        bytes = 1;
+    }
+    if ((u64)bytes > ((u64)1 << LARGEST_SHIFT) - HEADER) {
+        return allocate_large(bytes);
+    }
+    u64 class = class_of((u64)bytes + HEADER);
+    Free *first = memory()->free[class];
+    if (first) {
+        memory()->free[class] = first->next;
+        return (u8 *)first;
+    }
+    return allocate_from_chunk(class);
+}
+
+static __attribute__((noinline)) void release_large(Block *header) {
+    syscall3(SYS_munmap, (i64)header, (i64)header->mapped, 0);
+}
+
+static inline __attribute__((always_inline)) void release(u8 *block) {
     if (!block) {
         return;
     }
     Block *header = (Block *)(block - HEADER);
     if (header->class == LARGE) {
-        syscall3(SYS_munmap, (i64)header, (i64)header->mapped, 0);
+        release_large(header);
         return;
     }
     Free *freed = (Free *)block;
@@ -125,7 +139,7 @@ static void release(u8 *block) {
 
 // Returns a block of at least `bytes` bytes that starts with what `block`
 // held. `block` may be null. The old block is no longer valid afterwards.
-static u8 *resize(u8 *block, i64 bytes) {
+static __attribute__((noinline)) u8 *resize(u8 *block, i64 bytes) {
     if (!block) {
         return allocate(bytes);
     }
@@ -145,6 +159,20 @@ static u8 *resize(u8 *block, i64 bytes) {
         header = (Block *)result;
         header->mapped = mapped;
         return (u8 *)header + HEADER;
+    }
+    // The block that was cut last from the chunk grows where it is while
+    // the chunk has room, with nothing copied.
+    u64 size = (u64)1 << (header->class + SMALLEST_SHIFT);
+    u64 total = (u64)bytes + HEADER;
+    if ((u8 *)header + size == memory()->chunk && total <= ((u64)1 << LARGEST_SHIFT)) {
+        u64 class = class_of(total);
+        u64 extra = ((u64)1 << (class + SMALLEST_SHIFT)) - size;
+        if (memory()->chunk_left >= extra) {
+            memory()->chunk += extra;
+            memory()->chunk_left -= extra;
+            header->class = class;
+            return block;
+        }
     }
     u8 *bigger = allocate(bytes);
     copy(bigger, block, (i64)old);

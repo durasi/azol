@@ -1,0 +1,199 @@
+// expect-exit: 0
+// expect-line: steps 700 blocks 41 bytes 8935 sum 165914911
+// expect-line: small 300 kept 150 again 300 sum 34595
+// expect-line: grown 3 lengths 70000 9000 40 last 83
+// expect-line: lists 600 195 19
+//
+// The allocator under a mix of what programs do to it: blocks of every
+// class taken and given back in no order, texts that grow in place and
+// texts that have to move, blocks too large for a class, lists growing
+// next to one another. Every byte that was written is read back.
+
+// A text of `len` bytes, each `mark + its position`, kept in a byte.
+fn made(len: i64, mark: i64) -> str {
+    var s = ""
+    var i = 0
+    while i < len {
+        s.push((mark + i) & 255)
+        i = i + 1
+    }
+    return s
+}
+
+// Whether `s` still is what `made(s.len(), mark)` gave.
+fn intact(s: str, mark: i64) -> bool {
+    var i = 0
+    while i < s.len() {
+        if s[i] != (mark + i) & 255 { return false }
+        i = i + 1
+    }
+    return true
+}
+
+fn mixed() {
+    var blocks: List[str] = []
+    var marks: List[i64] = []
+    var i = 0
+    while i < 41 {
+        blocks.push("")
+        marks.push(0)
+        i = i + 1
+    }
+    var seed = 7
+    var sum = 0
+    var step = 0
+    var bad = 0
+    while step < 700 {
+        seed = seed * 48271 % 2147483647
+        let at = seed % 41
+        if !intact(blocks[at], marks[at]) { bad = bad + 1 }
+        sum = (sum + blocks[at].len() * (step + 1)) % 1000000007
+        seed = seed * 48271 % 2147483647
+        let kind = seed % 100
+        var len = seed % 40
+        if kind >= 50 { len = seed % 300 }
+        if kind >= 90 { len = seed % 3000 }
+        if kind >= 99 { len = 64000 + seed % 3000 }
+        if kind < 10 { len = 0 }
+        marks[at] = step
+        blocks[at] = made(len, step)
+        step = step + 1
+    }
+    var bytes = 0
+    i = 0
+    while i < 41 {
+        if !intact(blocks[i], marks[i]) { bad = bad + 1 }
+        bytes = bytes + blocks[i].len()
+        i = i + 1
+    }
+    if bad > 0 { print("damaged blocks: " + str(bad)) }
+    print("steps " + str(step) + " blocks " + str(blocks.len()) + " bytes " + str(bytes) + " sum " + str(sum))
+}
+
+// Many small blocks, every second one given back, then as many again:
+// the freed ones are handed out a second time.
+fn small() {
+    var items: List[str] = []
+    var i = 0
+    while i < 300 {
+        items.push(made(10 + i % 23, i))
+        i = i + 1
+    }
+    let first = items.len()
+    var kept: List[str] = []
+    i = 0
+    while i < items.len() {
+        if i % 2 == 0 { kept.push(items[i]) }
+        i = i + 1
+    }
+    items = []
+    var again: List[str] = []
+    i = 0
+    while i < 300 {
+        again.push(made(10 + i % 23, i + 5))
+        i = i + 1
+    }
+    var sum = 0
+    var bad = 0
+    i = 0
+    while i < kept.len() {
+        if !intact(kept[i], i * 2) { bad = bad + 1 }
+        sum = sum + kept[i].len()
+        i = i + 1
+    }
+    i = 0
+    while i < again.len() {
+        if !intact(again[i], i + 5) { bad = bad + 1 }
+        sum = sum + again[i].len() * 5
+        i = i + 1
+    }
+    if bad > 0 { print("damaged small blocks: " + str(bad)) }
+    print("small " + str(first) + " kept " + str(kept.len()) + " again " + str(again.len()) + " sum " + str(sum))
+}
+
+// One text grows byte by byte past every class and into a block of its
+// own, with another block taken now and then so that it cannot always
+// grow where it is; a second grows alone, where it can.
+fn growing() {
+    var long = ""
+    var others: List[str] = []
+    var i = 0
+    while i < 70000 {
+        long.push(i & 255)
+        if i % 4099 == 0 { others.push(made(33, i)) }
+        i = i + 1
+    }
+    var alone = ""
+    i = 0
+    while i < 9000 {
+        alone.push((i * 7) & 255)
+        i = i + 1
+    }
+    var bad = 0
+    i = 0
+    while i < long.len() {
+        if long[i] != i & 255 { bad = bad + 1 }
+        i = i + 1
+    }
+    i = 0
+    while i < alone.len() {
+        if alone[i] != (i * 7) & 255 { bad = bad + 1 }
+        i = i + 1
+    }
+    var short = made(4000, 3)
+    short = short.slice(10, 50)
+    if !intact(short, 13) { bad = bad + 1 }
+    if bad > 0 { print("damaged bytes: " + str(bad)) }
+    print("grown " + str(3) + " lengths " + str(long.len()) + " " + str(alone.len()) + " " + str(short.len()) + " last " + str(others[others.len() - 1][32]))
+}
+
+// Lists of numbers and a list of lists growing side by side.
+fn lists() {
+    var a: List[i64] = []
+    var b: List[i64] = []
+    var nested: List[List[i64]] = []
+    var i = 0
+    while i < 600 {
+        a.push(i)
+        if i % 3 == 0 { b.push(i * 2) }
+        if i % 33 == 0 {
+            var row: List[i64] = []
+            var k = 0
+            while k <= i % 200 {
+                row.push(k + i)
+                k = k + 1
+            }
+            nested.push(row)
+        }
+        i = i + 1
+    }
+    var bad = 0
+    i = 0
+    while i < a.len() {
+        if a[i] != i { bad = bad + 1 }
+        i = i + 1
+    }
+    i = 0
+    while i < b.len() {
+        if b[i] != i * 6 { bad = bad + 1 }
+        i = i + 1
+    }
+    i = 0
+    while i < nested.len() {
+        var k = 0
+        while k < nested[i].len() {
+            if nested[i][k] != k + i * 33 { bad = bad + 1 }
+            k = k + 1
+        }
+        i = i + 1
+    }
+    if bad > 0 { print("damaged list items: " + str(bad)) }
+    print("lists " + str(a.len()) + " " + str(nested[nested.len() - 1].len()) + " " + str(nested.len()))
+}
+
+fn main() {
+    mixed()
+    small()
+    growing()
+    lists()
+}

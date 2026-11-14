@@ -227,7 +227,7 @@ fn main() {
 ```
 
 ```error
-unknown type `u8`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`
+`u8` is not an azoL type; the integer type is `i64`
 ```
 
 Nothing is converted silently. The conversions are the functions
@@ -882,7 +882,7 @@ fn main() {
 ```
 
 ```error
-`for` needs a list to go through but this is `str`
+a text is not gone through as it is; `for b in s.bytes()` gives its bytes as numbers, and `for c in s.chars()` its characters as texts
 ```
 
 ### 5.6 `match`
@@ -2609,6 +2609,10 @@ azol check <a.azl> <b.azl> ...     report the errors, write nothing
 azol check --json ...              the same as one JSON object per line
 azol explain                       list the error codes with their rules
 azol explain <code>                explain an error code such as E0401
+azol fix <files...>                apply every edit the checker offers, until none is left
+azol fix --check <files...>        change nothing; list the edits
+azol guide                         print the briefing for someone new to azoL
+azol guide <topic>                 print one part of this reference; `--list` names them
 azol fmt <files...>                rewrite files in the canonical layout
 azol fmt --check <files...>        only list the files that are not formatted
 azol fmt -                         format standard input to standard output
@@ -2801,6 +2805,61 @@ standard input and writes the result to standard output. A file that does
 not parse is left untouched; its syntax error is reported and the exit code
 is 1.
 
+### 16.6 `fix`
+
+`azol fix <files...>` checks the program, makes every edit the errors carry
+as their `fix`, checks again, and goes on until no error with a `fix` is
+left (or 40 rounds have passed). It prints one line for each edit and then
+the errors that remain, as `check` does. A file that was changed is written
+in the layout of `azol fmt`.
+
+```text
+fixed a.azl:4:20 E0120 `;` does not end a statement in azoL; the end of the line does
+fixed a.azl:3:5 E0121 `let mut` is Rust; in azoL a variable that changes is declared with `var`
+2 fixed, 0 left
+```
+
+A file in which an error without a `fix` remains is not written: its edits
+are listed as `not written:`, so that a half-repaired file never replaces
+the one that was there. `--partial` writes such files too. `--check`
+writes nothing and lists the edits as `would fix`. `--json` prints one
+object for each edit, `{"fixed":{"code","message","file","line","column",
+"end_line","end_column","replacement"}}`, with the place as it was in the
+round the edit was made in, then the remaining errors as `check --json`
+does, then `{"summary":{"fixed","errors","files","written","held","fixable"}}`.
+
+The exit code is 0 when the program has no errors left, and 1 otherwise;
+with `--check` it is also 1 when there is something to fix. An edit is
+only ever the one the compiler offers for an error, so a program that
+compiles is never changed.
+
+### 16.7 `guide`
+
+`azol guide` prints the briefing, `docs/for-agents.md`: the rules that
+differ from other languages, everything that is built in, the idioms, and
+how to read the errors. It is inside the compiler, so it is the briefing
+of that version. `azol guide <topic>` prints one section of this
+reference: `lexical`, `literals`, `types`, `declarations`, `statements`,
+`expressions`, `calls`, `methods`, `builtins`, `library`, `values`,
+`ownership`, `exclusivity`, `runtime-stops`, `files`, `cli`, `targets`,
+`limits`, `missing`. `azol guide --list` prints these names with their
+titles, and `azol guide --json` prints
+`{"schema":1,"version","topics":[{"name","title","bytes"}]}`. An unknown
+topic prints the list to standard error and exits with 2. The briefing is
+kept under 32,000 bytes and each topic under 16,000, so that either fits
+in the context of a model with room to spare.
+
+### 16.8 Forms of other languages
+
+A program that holds a form or a name of Rust, Go, C, Java, Python,
+JavaScript, TypeScript, Swift or Kotlin is answered with an error that
+names it and says what azoL writes instead: E0120 to E0133 for forms
+(`;`, `let mut`, `Vec<T>`, `&x`, `println!`, `Shape::Circle`, `def`,
+`elif`, `and`, `# comment`, `[]T`, `|x| x + 1`, `try`, `1 | 2 =>`) and
+E0220 to E0224 for names (`String`, `len(xs)`, `null`, `xs.append(x)`,
+`"n = " + n`). Most carry the edit, which `azol fix` makes. `azol explain`
+of each code lists the forms next to their azoL spelling.
+
 ## 17. Targets
 
 | Target | Output |
@@ -2874,7 +2933,7 @@ fn main() {
 ```
 
 ```error
-unexpected character
+azoL has no `~`; every bit of `x` turned over is `x ^ -1`
 ```
 
 ```azol-error
@@ -2909,7 +2968,7 @@ fn main() {
 ```
 
 ```error
-only functions can be called
+type arguments are never written at a call in azoL; the type comes from the variable: `let x: T = f(...)`
 ```
 
 ```azol-error
@@ -2931,5 +2990,5 @@ fn main() {
 ```
 
 ```error
-expected `fn`, `struct`, `enum` or `const` but found `var`
+outside functions a named value is a constant: `const NAME = value`, not `var`
 ```

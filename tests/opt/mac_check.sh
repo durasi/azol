@@ -166,7 +166,8 @@ if ! sh build_opt.sh -o "$work/azol-opt" > "$work/build.log" 2>&1; then
     failed=$((failed + 1))
 else
     for name in arithmetic bits control enums functions lists map matching strings structs \
-        text_methods try_operator numbers_edge index_fail div_zero stack_overflow; do
+        text_methods try_operator numbers_edge index_fail div_zero stack_overflow \
+        allocator_stress; do
         source=tests/programs/$name.azl
         if [ ! -f "$source" ]; then
             echo "  skip  $name (no $source in this tree)"

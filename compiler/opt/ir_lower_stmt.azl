@@ -173,10 +173,58 @@ fn lw_branch(lw: mut Lower, c: Checker, p: Parser, cond: i64, yes: i64, no: i64)
     lw_br(mut lw, value, yes, no)
 }
 
+// How many bytes of a literal `s = s + "..."` stores itself.
+const LW_INLINE_APPEND = 8
+
+// `s = s + "..."` with a short literal: its bytes are stored right here
+// when `s` owns a buffer with room for them, and the runtime is asked
+// only to make room. Text in the executable has capacity 0, so it never
+// has room. Gives false, with nothing done, for anything else.
+fn lw_append_literal(lw: mut Lower, c: Checker, p: Parser, target: i64, more: i64) -> bool {
+    if lw_kind(lw, c, more) != LW_STR { return false }
+    let index = c.expr_res[lw.sh_e + more]
+    let count = c.string_lens[index]
+    if count < 1 || count > LW_INLINE_APPEND { return false }
+    let dest = lw_address(mut lw, c, p, target)
+    let dest_at = lw_ptr(mut lw, dest)
+    let bytes = lw_buf_region(mut lw, dest.reg)
+    let len = lw_load(mut lw, IR_I64, dest, 8)
+    let cap = lw_load(mut lw, IR_I64, dest, 16)
+    let last = lw_const(mut lw, count - 1)
+    let end = lw_bin(mut lw, IR_ADD, len, last)
+    // unsigned, and a length never comes near the largest number
+    let has_room = lw_bin(mut lw, IR_ULT, end, cap)
+    let quick = lw_block(mut lw)
+    let grow = lw_block(mut lw)
+    let done = lw_block(mut lw)
+    lw_br(mut lw, has_room, quick, grow)
+    lw.b = quick
+    let buffer = lw_load(mut lw, IR_PTR, dest, 0)
+    var k = 0
+    while k < count {
+        let at = ir_gep(mut lw.f, lw.b, buffer, len, 1, k)
+        let byte = lw_const(mut lw, c.data[c.string_offsets[index] + k])
+        ir_store(mut lw.f, lw.b, IR_U8, at, 0, byte, bytes)
+        k = k + 1
+    }
+    let added = lw_const(mut lw, count)
+    let longer = lw_bin(mut lw, IR_ADD, len, added)
+    lw_store(mut lw, IR_I64, dest, 8, longer)
+    lw_jump(mut lw, done)
+    lw.b = grow
+    let text = lw_address(mut lw, c, p, more)
+    let text_at = lw_ptr(mut lw, text)
+    lw_rt(mut lw, IR_RT_STR_APPEND_BUF, dest_at, text_at, -1, -1)
+    lw_jump(mut lw, done)
+    lw.b = done
+    return true
+}
+
 fn lw_assign(lw: mut Lower, c: Checker, p: Parser, id: i64, target: i64, value: i64) {
     if c.stmt_flag[lw.sh_s + id] == APPEND {
         // `s = s + more`: the new text is added to `s` in place. It is
         // computed first; only then is `s` looked at.
+        if lw_append_literal(mut lw, c, p, target, lw.eb[value]) { return }
         let more = lw_address(mut lw, c, p, lw.eb[value])
         let more_at = lw_ptr(mut lw, more)
         let dest = lw_address(mut lw, c, p, target)

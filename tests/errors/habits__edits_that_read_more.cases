@@ -1,0 +1,879 @@
+# The edits of compiler/habits_more.azl (docs/design/agents.md 1.5): forms of other languages whose
+# repair needs more of the text than the place of the error. Each case that is repaired is built and
+# run after `azol fix`, so the edit is known to keep what the program does; the cases that end with
+# `no-fix` are shapes the edit must leave alone.
+==== E1405: `for i in range(3)`
+---- file a.azl
+fn main() {
+    var sum = 0
+    for i in range(3) {
+        sum = sum + i
+    }
+    print(sum)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1405 3:14
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    for i in 0..3 {
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+3
+==== E1405: `for i in range(2, 5)`
+---- file a.azl
+fn main() {
+    var sum = 0
+    for i in range(2, 5) {
+        sum = sum + i
+    }
+    print(sum)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1405 3:14
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    for i in 2..5 {
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+9
+==== E1405: `for i in range(0, 10, 3)`
+---- file a.azl
+fn main() {
+    var sum = 0
+    for i in range(0, 10, 3) {
+        sum = sum + i
+    }
+    print(sum)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1405 3:14
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    for i in 0..10 step 3 {
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+18
+==== E0127: `if (x > 0) print(x)`
+---- file a.azl
+fn main() {
+    let x = 4
+    if (x > 0) print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 3:16
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    if (x > 0) { print(x) }
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+4
+==== E0127: `while (n > 0) n = n - 1`
+---- file a.azl
+fn main() {
+    var n = 3
+    while (n > 0) n = n - 1
+    print(n)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 3:19
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    while (n > 0) {
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+0
+==== E0127: `if x > 0:` and a deeper line
+---- file a.azl
+fn main() {
+    let x = 4
+    if x > 0:
+        print(x)
+    print(0)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 3:13
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    if x > 0 { print(x) }
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+4
+0
+==== E0127: `if`, `else` by depth, two lines each
+---- file a.azl
+fn main() {
+    let x = 4
+    var y = 0
+    if x > 5:
+        y = 1
+        print(y)
+    else:
+        y = 2
+        print(y)
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 4:13
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    } else {
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+2
+4
+==== E0127: `while n > 0:` with a blank line inside
+---- file a.azl
+fn main() {
+    var n = 3
+    var sum = 0
+    while n > 0:
+        sum = sum + n
+
+        n = n - 1
+    print(sum)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 4:16
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    while n > 0 {
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+6
+==== E0127: `for (var i = 0; i < 3; i++)`
+---- file a.azl
+fn main() {
+    var sum = 0
+    for (var i = 0; i < 3; i++) {
+        sum = sum + i
+    }
+    print(sum)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 3:19
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    for i in 0..3 {
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+3
+==== E0127: `for (int i = 1; i <= 4; i += 1)`
+---- file a.azl
+fn main() {
+    var sum = 0
+    for (int i = 1; i <= 4; i += 1) {
+        sum = sum + i
+    }
+    print(sum)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 3:19
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    for i in 1..=4 {
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+10
+==== E0127: `for (let i = 0; i < 10; i += 5)`
+---- file a.azl
+fn main() {
+    var sum = 0
+    for (let i = 0; i < 10; i += 5) {
+        sum = sum + i
+    }
+    print(sum)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 3:19
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    for i in 0..10 step 5 {
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+5
+==== E0127: a `for ( ; ; )` that counts down gets no edit
+---- file a.azl
+fn main() {
+    var sum = 0
+    for (var i = 3; i > 0; i--) {
+        sum = sum + i
+    }
+    print(sum)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0127 3:19
+---- no-fix
+==== E1409: `let x = c ? 1 : 2`
+---- file a.azl
+fn main() {
+    let c = true
+    let x = c ? 1 : 2
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1409 3:15
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    let x = if c { 1 } else { 2 }
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+1
+==== E1409: `return n > 0 ? n : 0 - n`
+---- file a.azl
+fn size(n: i64) -> i64 {
+    return n > 0 ? n : 0 - n
+}
+fn main() {
+    print(size(0 - 7))
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1409 2:18
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    return if n > 0 { n } else { 0 - n }
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+7
+==== E1409: a `? :` inside a call gets no edit
+---- file a.azl
+fn main() {
+    let c = true
+    print(c ? 1 : 2)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1409 3:13
+---- no-fix
+==== E0133: `1 | 2 => print(1)`
+---- file a.azl
+fn main() {
+    let n = 2
+    match n {
+        1 | 2 => print(1)
+        _ => print(0)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0133 4:11
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+        2 => print(1)
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+1
+==== E0133: `1 | 2 => {` with a block gets no edit
+---- file a.azl
+fn main() {
+    let n = 2
+    match n {
+        1 | 2 => {
+            print(1)
+        }
+        _ => print(0)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0133 4:11
+---- no-fix
+==== E0221: `printf("%d\n", x)`
+---- file a.azl
+fn main() {
+    let x = 7
+    printf("%d\n", x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0221 3:5
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    print(x)
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+7
+==== E0221: `printf("%s is %ld, 100%%\n", name, n)`
+---- file a.azl
+fn main() {
+    let name = "n"
+    let n = 7
+    printf("%s is %ld, 100%%\n", name, n)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0221 4:5
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    print("{name} is {n}, 100%")
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+n is 7, 100%
+==== E0221: a `printf` that does not end its line gets no edit
+---- file a.azl
+fn main() {
+    let x = 7
+    printf("%d", x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0221 3:5
+---- no-fix
+==== E0224: `print("x", x)`
+---- file a.azl
+fn main() {
+    let x = 7
+    print("x", x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0224 3:5
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    print("x {x}")
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+x 7
+==== E0224: `print(a, b, "end")`
+---- file a.azl
+fn main() {
+    let a = 1
+    let b = 2
+    print(a, b, "end")
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0224 4:5
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    print("{a} {b} end")
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+1 2 end
+==== E0224: `print(x, f(x))` gets no edit
+---- file a.azl
+fn twice(n: i64) -> i64 {
+    return n * 2
+}
+fn main() {
+    let x = 7
+    print(x, twice(x))
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0224 6:5
+---- no-fix
+==== E0128: `~x`
+---- file a.azl
+fn main() {
+    let x = 5
+    print(~x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0128 3:11
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    print((x ^ -1))
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+-6
+==== E0223: `m["k"] = 1`
+---- file a.azl
+fn main() {
+    var m: Map[i64] = new_map()
+    m["k"] = 1
+    print(m.len())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:5
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    m.set("k", 1)
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+1
+==== E0223: reading `m["k"]` gets no edit
+---- file a.azl
+fn main() {
+    var m: Map[i64] = new_map()
+    m.set("k", 1)
+    print(m["k"])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 4:11
+---- no-fix
+==== E0220: `HashMap[str, i64]`
+---- file a.azl
+fn main() {
+    var m: HashMap[str, i64] = new_map()
+    m.set("k", 1)
+    print(m.len())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0220 2:12
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    var m: Map[i64] = new_map()
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+1
+==== E0220: `HashMap[i64, i64]` gets no edit
+---- file a.azl
+fn main() {
+    var m: HashMap[i64, i64] = new_map()
+    print(m.len())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0220 2:12
+---- no-fix
+==== E0221: `panic("bad")`
+---- file a.azl
+fn main() {
+    let x = 1
+    if x == 2 {
+        panic("bad")
+    }
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0221 4:9
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+        exit(1)
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+1
+==== E0221: `assert(x == 1)`
+---- file a.azl
+fn main() {
+    let x = 1
+    assert(x == 1)
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0221 3:5
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+        eprint("assertion failed: x == 1")
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+1
+==== E0221: `assert(x > 0, "x is positive")`
+---- file a.azl
+fn main() {
+    let x = 1
+    assert(x > 0, "x is positive")
+    print(x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0221 3:5
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+        eprint("x is positive")
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+1
+==== E0303: `while 1 {`
+---- file a.azl
+fn main() {
+    var n = 0
+    while 1 {
+        n = n + 1
+        if n == 3 { break }
+    }
+    print(n)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0303 3:11
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    while true {
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+3
+==== E0303: `while n {` gets no edit
+---- file a.azl
+fn main() {
+    var n = 3
+    while n {
+        n = n - 1
+    }
+    print(n)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0303 3:11
+---- no-fix
+==== E0111: `const` in a function
+---- file a.azl
+fn main() {
+    const LIMIT = 3
+    print(LIMIT)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0111 2:5
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    let LIMIT = 3
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+3
+==== E0129: `"\x41"`
+---- file a.azl
+fn main() {
+    let s = "\x41b"
+    print(s)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0129 2:14
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    let s = "Ab"
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+Ab
+==== E0129: `"\u{e9}"`
+---- file a.azl
+fn main() {
+    let s = "caf\u{e9}"
+    print(s.len())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0129 2:17
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    let s = "café"
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+5
+==== E0129: `"\u0041"`
+---- file a.azl
+fn main() {
+    let s = "\u0041"
+    print(s)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0129 2:14
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    let s = "A"
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+A
+==== E0129: `"\x7b"` is a brace
+---- file a.azl
+fn main() {
+    let s = "\x7b}"
+    print(s)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0129 2:14
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    let s = "\{}"
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+{}
+==== E0129: `"\x01"` gets no edit
+---- file a.azl
+fn main() {
+    let s = "\x01"
+    print(s.len())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0129 2:14
+---- no-fix
+==== E0129: a text over two lines
+---- file a.azl
+fn main() {
+    let s = "a
+    b"
+    print(s)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0129 2:13
+---- no-fix
+==== E0122: `fn f['a](s: str)`
+---- file a.azl
+fn same['a](s: str) -> str {
+    return s
+}
+fn main() {
+    print(same("a"))
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0122 1:9
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+fn same(s: str) -> str {
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+a
+==== E1402: `s[0..2]`
+---- file a.azl
+fn main() {
+    let s = "abc"
+    print(s[0..2])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1402 3:14
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    print(s.slice(0, 2))
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+ab
+==== E1402: `xs[1..]`
+---- file a.azl
+fn main() {
+    let xs = [1, 2, 3]
+    print(xs[1..].len())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1402 3:15
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    print(xs.slice(1, xs.len()).len())
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+2
+==== E1402: `s[0..=1]`
+---- file a.azl
+fn main() {
+    let s = "abc"
+    print(s[0..=1])
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1402 3:14
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    print(s.slice(0, 1 + 1))
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+ab
+==== E1414: `if let Some(x) = o {`
+---- file a.azl
+fn main() {
+    let o = Some(4)
+    if let Some(x) = o {
+        print(x)
+    }
+    print(0)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1414 3:8
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+        Some(x) => {
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+4
+0
+==== E1414: `if let` with an `else` gets no edit
+---- file a.azl
+fn main() {
+    let o = Some(4)
+    if let Some(x) = o {
+        print(x)
+    } else {
+        print(0)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E1414 3:8
+---- no-fix
+==== E0129: a text between backquotes
+---- file a.azl
+fn main() {
+    let n = 4
+    let s = `n is ${n}`
+    print(s)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0129 3:13
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    let s = "n is {n}"
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+n is 4
+==== E0130: `new P(1, 2)`
+---- file a.azl
+struct P {
+    x: i64
+    y: i64
+}
+fn main() {
+    let p = new P(1, 2)
+    print(p.x + p.y)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0130 6:17
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    let p = P { x: 1, y: 2 }
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+3
+==== E0130: `new P { x: 1 }`
+---- file a.azl
+struct P {
+    x: i64
+}
+fn main() {
+    let p = new P { x: 1 }
+    print(p.x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0130 5:17
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    let p = P { x: 1 }
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+1
+==== E0130: `new P(1)` with two fields gets no edit
+---- file a.azl
+struct P {
+    x: i64
+    y: i64
+}
+fn main() {
+    let p = new P(1)
+    print(p.x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0130 6:17
+---- no-fix
+==== E0122: `"1".parse::<i64>()`
+---- file a.azl
+fn main() {
+    let n = "12".parse::<i64>()
+    print(n.or(0))
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0122 2:23
+---- run fix a.azl
+---- exit 0
+---- after-has a.azl
+    let n = "12".to_i64()
+---- run check --json a.azl
+---- exit 0
+---- prints a.azl
+12

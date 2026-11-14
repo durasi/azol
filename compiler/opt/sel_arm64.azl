@@ -1065,7 +1065,9 @@ fn sa_callrt(f: IrFunc, s: mut Sa, mf: mut MFunc, ins: i64) {
     } else if routine == IR_RT_FREE {
         sa_runtime(f, mut s, mut mf, ins, SA_CALLRT, ART_FREE, false)
     } else if routine == IR_RT_REALLOC {
-        sa_runtime(f, mut s, mut mf, ins, SA_CALLIMP, SA_IMPORT_REALLOC, false)
+        // The runtime's own allocator moves its blocks; the system's
+        // `realloc` knows nothing of them.
+        sa_runtime(f, mut s, mut mf, ins, SA_CALLRT, ART_HEAP_RESIZE, false)
     } else if routine == IR_RT_MEMCPY {
         sa_call(f, mut s, mut mf, ins, s.memcpy_fn)
     } else if routine == IR_RT_PRINT_I64 {

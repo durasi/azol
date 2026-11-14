@@ -251,16 +251,16 @@ print(xs.size())
 ---- exit 1
 ---- stdout (empty)
 ---- stderr
-error[E0207]: `List[i64]` has no method `size`
+error[E0223]: `.size` is called `.len` in azoL
   --> a.azl:20:10
    |
 20 | print(xs.size())
    |          ^
----- asserted 20:10 `List[i64]` has no method `size`
+---- asserted 20:10 `.size` is called `.len` in azoL
 ---- run check --json a.azl
 ---- exit 1
 ---- stdout
-{"severity":"error","code":"E0207","message":"`List[i64]` has no method `size`","file":"a.azl","line":20,"column":10,"end_line":20,"end_column":14,"source":"print(xs.size())","rule":"A method call needs a method that exists for the type of the value before the dot."}
+{"severity":"error","code":"E0223","message":"`.size` is called `.len` in azoL","file":"a.azl","line":20,"column":10,"end_line":20,"end_column":14,"source":"print(xs.size())","rule":"Values have the methods listed by `azol guide library` and no others; a function of the program is called as `name(value)`, not `value.name()`.","help":"`azol guide library` lists every method by type.","fix":{"file":"a.azl","line":20,"column":10,"end_line":20,"end_column":14,"replacement":"len"}}
 {"summary":{"errors":1,"files":1}}
 ==== 8
 ---- file a.azl (no newline at end)
@@ -289,16 +289,16 @@ print(xs.len)
 ---- exit 1
 ---- stdout (empty)
 ---- stderr
-error[E0206]: `List[i64]` has no field `len`; its methods are `len()`, `push(...)` and `pop()`
+error[E0223]: `.len` is not a field in azoL; the length is the method `.len()`
   --> a.azl:20:10
    |
 20 | print(xs.len)
    |          ^
----- asserted 20:10 `List[i64]` has no field `len`; its methods are `len()`, `push(...)` and `pop()`
+---- asserted 20:10 `.len` is not a field in azoL; the length is the method `.len()`
 ---- run check --json a.azl
 ---- exit 1
 ---- stdout
-{"severity":"error","code":"E0206","message":"`List[i64]` has no field `len`; its methods are `len()`, `push(...)` and `pop()`","file":"a.azl","line":20,"column":10,"end_line":20,"end_column":13,"source":"print(xs.len)","rule":"Only structs have fields, and only the ones they declare."}
+{"severity":"error","code":"E0223","message":"`.len` is not a field in azoL; the length is the method `.len()`","file":"a.azl","line":20,"column":10,"end_line":20,"end_column":13,"source":"print(xs.len)","rule":"Values have the methods listed by `azol guide library` and no others; a function of the program is called as `name(value)`, not `value.name()`.","help":"`azol guide library` lists every method by type.","fix":{"file":"a.azl","line":20,"column":10,"end_line":20,"end_column":13,"replacement":"len()"}}
 {"summary":{"errors":1,"files":1}}
 ==== 9
 ---- file a.azl (no newline at end)

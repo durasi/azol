@@ -19,9 +19,9 @@ let l: List[str] = (s + s).lines()
 checked 11 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos ca273a029e543fea6ee1f9482bd1ebbd8ac60ffa920962caa1357d9f0acfa041
-x86_64-linux 6708cdb799722118701d85e64ec09f11fb3c9207404f374d68766f7f228c9922
-aarch64-linux ce3dff307624727f23dadda2db4587d9fa9b75a09622a8632315fbb7458b67d0
+aarch64-macos 601f4f7b570f96f1ae95634f2f209fa0045de6d64ce36e1df9253d21b146f13a
+x86_64-linux 28f5fb1f165e419189bcf279bd3c2254f3567964b42108a894a36934c181b29f
+aarch64-linux cca7ea8408878930f63ccc849e0fdb25a9ee99538675c3aead4186ee0e0629e8
 ==== 2
 ---- file a.azl
 
@@ -40,9 +40,9 @@ let e: List[List[i64]] = [xs].reversed()
 checked 9 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos e887cb65fbc900123d648e52319924d91a79e7b22f59c65a8da36a4f21e9e499
-x86_64-linux 9c8505eeff72bb45d667cba8e869d6ec5b1b1fc4190d00324e182e9a610d7e4e
-aarch64-linux ec160fc229d24d8d43f7187a6f8f9cdce92146f2e2a666e4c97bac320cb0060b
+aarch64-macos d0009934150af23b474fd4d0f42e4d0352957bff6018cdc3f2339ac609142878
+x86_64-linux 9f1b9e047bfd7095dc37170ab49842971c6184feb1e9a8543ef148dcab7b633e
+aarch64-linux 31e651220536d38ad94796b47b4744e2a8722e56dfce3bd14e9a378b86c7b18b
 ==== 3
 ---- file a.azl
 fn str_find(a: i64) -> i64 {
@@ -62,6 +62,6 @@ fn main() {
 checked 10 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos a613de7eda71d905b138ec178769dd6f7aaa7a41da9a093c9b8e0069c33b843c
-x86_64-linux 2fe782891797f4d0fe0d0e3d5e0686eea29a986d607243bf0a529e0004b59835
-aarch64-linux c422c875424884f027121df9bee1a8ab2a3fa09a4a13e616519760e9e2349ed0
+aarch64-macos 44b0a41c9f2cbbc9efd5362dad9f514ed9a910324beb44c67ca2dc478f4a3ab5
+x86_64-linux 348ecfc405af97be88b86ade37f2fb026978a4735b52ed810eccdbe5db38b4e7
+aarch64-linux 9c6ae54a91e5fc0b5f268c74920b1b36fc16b12e1c4d4eca5c1df1aba348ac4b

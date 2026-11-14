@@ -15,9 +15,9 @@ print(a.len())
 checked 7 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 8921522191e3acfb35eeb22de57f5f9014072e983beda271250c732b68ba7636
-x86_64-linux 02c1901a12ab18ee4840d71b322dbddcca6596397e693e5d48a68980d8d8c759
-aarch64-linux e2138f2b0756385159eaa9ac0da4d42a8779a320efc87b7a1ab0120905126165
+aarch64-macos 30a886d26448fa4d29502a20e7167451f6f11edbf6563f8b15852af8d435870c
+x86_64-linux d60aca3918be1c7ebbc74f54637324c4a1f4ccc3ecb0e78ecafeaec79edee6c6
+aarch64-linux 08676755b0ff7b88371900f3e82632997724a8015a6abb7f0c7a070d5620b403
 ==== 2
 ---- file a.azl (no newline at end)
 struct Point {
@@ -56,9 +56,9 @@ print(x + row.len())
 checked 29 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 5173eea1ac04ee7c67de46c4170a30d90478d6510c631a5c2011592b508b035d
-x86_64-linux 55c12af2440749c967c131365afdc95b40311206f561d9bcab28b781c5c1a7bb
-aarch64-linux 59c730c8c5d3a5d43cddc2044378a61d8109f515f3b80e0303f7c3712b8c8b6b
+aarch64-macos 09abb75fd6b820f79f9165b99f71dee0dbd567c7302b1b3674c2e2e69608c7ab
+x86_64-linux 6b43cf3925fd4825fc89012ca8aa44e799341c6e243e4d04fd314e169be5ce24
+aarch64-linux eaeffebd37cca199ecc9a8f0992a1d76b0c06a9564e3b4d1bc1c2b8ecd3fcf04
 ==== 3
 ---- file a.azl (no newline at end)
 struct Point {
@@ -94,9 +94,9 @@ names.push(b.name + "!")
 checked 26 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 48423a348e0e7bd02057c1205095caa917aa685e173e9af01cf07e5396e16a19
-x86_64-linux f8006bc4286020910566e8d08bc15a41f37bcb71c9f4a7e4724434279ce3f69d
-aarch64-linux c4acbe5b31832aa4613c4daf2ee560b44c72ee6260eca256bae1d93dfb1edcfe
+aarch64-macos 2e6239a0086abf49edebc267b9e03efaa575507334cd8db79ac12430f835d14f
+x86_64-linux 0da3badeff1c086df1ddb3c897ceb434f177251f15ac82c08c4176b92069c2f0
+aarch64-linux 54c6222fd42807fa52b8ce16ce298deb7ff0fec245c1fee9d97b1af9fbab618e
 ==== 4
 ---- file a.azl (no newline at end)
 struct Node {
@@ -122,6 +122,6 @@ fn main() {
 checked 16 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 3c5d8dd00da8276f84b17ee70cb62f308a5bc88af61ff8b82f39191a85a8e34f
-x86_64-linux 13286cc5358e62972c80bbba13715c75c5869ce6e53bc59f0430ab4653474762
-aarch64-linux 60f0fe43bdedd78dfb6767fdf3de12eded42572a9f467ef48e75ac70909bb8c8
+aarch64-macos be76403ea07d58c269ce4e83ae37bc853acedec4e8396c0b203f9dfdac2afe53
+x86_64-linux 37f8a1c4ee0e611069aa4701e4a8152a857286823d53b3601bd41bd43f9f8591
+aarch64-linux 9e8eb0fd50ee18ec71f6a132b36f87a289a6c24831db2fce9759cb81aad3e5ee

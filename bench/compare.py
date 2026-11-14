@@ -36,6 +36,16 @@ The rows
                number; a benchmark whose outputs differ is reported as
                broken and left out.
 
+  For AI agents
+               what an agent meets when it writes a language, as far as a
+               script can measure it: how long a check of the generated
+               program takes without building it (`azol check`,
+               `rustc --emit=metadata`, `cc -fsyntax-only`, `go vet`,
+               `node --check`); how much source the benchmarks take in each
+               language, counted by one rule for all of them; and what each
+               checker reports for the same mistake (bench/agents/), and in
+               what form.
+
 In every row the best value is bold, and nothing else is.
 
 What to keep in mind when reading the numbers
@@ -56,6 +66,7 @@ What to keep in mind when reading the numbers
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -158,6 +169,50 @@ TURKISH = {
     "Run: %s is ahead of %s.": "Çalışma: %s önde olduğu program sayısı: %s.",
     ", of ": ", ",
     "The %s column is left out: %s was not found on this machine.": "%s sütunu yok: %s bu makinede bulunamadı.",
+    "Lower is better everywhere. In every row the best value is bold, and nothing else in the table is. "
+    "Cells that say *to be measured* have not been run on this machine yet, and a row has no bold until all of it is measured.":
+        "Her yerde düşük olan daha iyidir. Her satırda en iyi değer kalın yazılmıştır; tabloda başka hiçbir şey kalın değildir. "
+        "*ölçülecek* yazan hücreler bu makinede henüz çalıştırılmadı; bir satırın tamamı ölçülene kadar o satırda kalın yoktur.",
+    "FOR AI AGENTS": "AI AJANLARI İÇİN",
+    "Check without building": "Derlemeden denetleme",
+    "the same %s-line program": "aynı %s satırlık program",
+    "Lines of code": "Kod satırı",
+    "Characters": "Karakter",
+    "Tokens, roughly": "Token, yaklaşık",
+    "the %d programs": "%d program",
+    "A wrong type passed": "Yanlış türde argüman",
+    "what the checker reports": "denetleyicinin bildirdiği",
+    "as default": "varsayılanla aynı",
+    "JSON": "JSON",
+    "span": "span",
+    "fix": "fix",
+    "text": "metin",
+    "position": "konum",
+    "not detected": "yakalanmadı",
+    "warning only": "yalnızca uyarı",
+    "Check: the commands are %s.": "Denetleme: komutlar şunlardır: %s.",
+    "Source: the %d benchmark programs together, without comments, blank lines and indentation. Tokens are counted by "
+    "one rule for every language (a name, a number or a text is one token; so is each bracket, comma or semicolon, "
+    "and each run of operator characters); that approximates what a model reads and writes and is not any model's tokenizer.":
+        "Kaynak: %d kıyaslama programının toplamı; yorumlar, boş satırlar ve girintiler sayılmaz. Token'lar her dil için "
+        "tek bir kuralla sayılır (bir ad, bir sayı ya da bir metin tek token'dır; her parantez, virgül ya da noktalı virgül "
+        "ve her operatör karakteri dizisi de öyle); bu, bir modelin okuyup yazdığına yaklaşık bir ölçüdür, herhangi bir modelin tokenizer'ı değildir.",
+    "Mistake: the same in each language ([`bench/agents/`](bench/agents/)): the text `\"40\"` passed where a number is "
+    "expected. *JSON* means the tool gives the message and the place as data when asked; *span*, the start and the end "
+    "of the place; *fix*, an edit a tool can apply; *text, position*, a line to read with a line and a column in it. "
+    "No tool offers a fix for this mistake.":
+        "Hata: her dilde aynı ([`bench/agents/`](bench/agents/)): sayı beklenen yere `\"40\"` metni verilir. *JSON*, aracın "
+        "istendiğinde iletiyi ve yeri veri olarak verdiği anlamına gelir; *span*, yerin başı ve sonu; *fix*, bir aracın "
+        "uygulayabileceği bir düzenleme; *metin, konum*, içinde satır ve sütun geçen, okunacak bir satır. "
+        "Bu hata için hiçbir araç fix sunmaz.",
+    "Mistake: the same in each language ([`bench/agents/`](bench/agents/)): the text `\"40\"` passed where a number is "
+    "expected. *JSON* means the tool gives the message and the place as data when asked; *span*, the start and the end "
+    "of the place; *fix*, an edit a tool can apply; *text, position*, a line to read with a line and a column in it.":
+        "Hata: her dilde aynı ([`bench/agents/`](bench/agents/)): sayı beklenen yere `\"40\"` metni verilir. *JSON*, aracın "
+        "istendiğinde iletiyi ve yeri veri olarak verdiği anlamına gelir; *span*, yerin başı ve sonu; *fix*, bir aracın "
+        "uygulayabileceği bir düzenleme; *metin, konum*, içinde satır ve sütun geçen, okunacak bir satır.",
+    "Node.js does not look at types before it runs: `node --check` accepts the file, and the program runs and prints a number.":
+        "Node.js çalıştırmadan önce türlere bakmaz: `node --check` dosyayı kabul eder, program da çalışıp bir sayı yazdırır.",
     "a C compiler (`clang`, `cc` or `gcc`)": "bir C derleyicisi (`clang`, `cc` ya da `gcc`)",
 }
 
@@ -416,6 +471,293 @@ def measure_build(runs, have, problems):
     return result
 
 
+# ---- for AI agents: the check, the size of the source, the diagnostics ------------
+
+CHECKS = {"azol": "`azol check`", "rust_opt": "`rustc --emit=metadata`", "c": "`cc -fsyntax-only`",
+          "go": "`go vet`", "node": "`node --check`"}
+BRACKETS = "()[]{},;"
+OPERATORS = "+-*/%=<>!&|^~?:.@#$\\"
+
+
+def source_counts(text):
+    """(lines, characters, tokens) of one source text, by one rule for every
+    language here. Comments (`//` to the end of the line, `/* */`) are left
+    out. A line counts if a token is on it; characters are those of each
+    such line without its indentation and the space at its end. A token is
+    a name, a number, a text in quotes (`"`, `'` or a backtick), one of
+    `()[]{},;`, or a run of operator characters."""
+    tokens, kept, line = 0, [], []
+    at, end = 0, len(text)
+
+    def close():
+        joined = "".join(line).strip()
+        if joined:
+            kept.append(joined)
+        del line[:]
+
+    while at < end:
+        ch = text[at]
+        if ch == "\n":
+            close()
+            at += 1
+        elif text.startswith("//", at):
+            while at < end and text[at] != "\n":
+                at += 1
+        elif text.startswith("/*", at):
+            stop = text.find("*/", at + 2)
+            at = end if stop < 0 else stop + 2
+        elif ch in "\"'`":
+            stop = at + 1
+            while stop < end and text[stop] != ch and (ch == "`" or text[stop] != "\n"):
+                stop += 2 if text[stop] == "\\" and ch != "`" else 1
+            if ch == "'" and (stop >= end or text[stop] != "'"):  # a lifetime or a lone quote, not a text
+                tokens += 1
+                line.append(ch)
+                at += 1
+                continue
+            stop = min(stop + 1, end)
+            tokens += 1
+            line.append(text[at:stop].replace("\n", " "))
+            at = stop
+        elif ch.isalnum() or ch == "_":
+            stop = at
+            while stop < end and (text[stop].isalnum() or text[stop] == "_"):
+                stop += 1
+            tokens += 1
+            line.append(text[at:stop])
+            at = stop
+        elif ch in BRACKETS:
+            tokens += 1
+            line.append(ch)
+            at += 1
+        elif ch in OPERATORS:
+            stop = at
+            while stop < end and text[stop] in OPERATORS and not text.startswith("//", stop) and not text.startswith("/*", stop):
+                stop += 1
+            tokens += 1
+            line.append(text[at:stop])
+            at = stop
+        else:
+            line.append(ch)
+            at += 1
+    close()
+    return len(kept), sum(len(one) for one in kept), tokens
+
+
+def measure_source(names):
+    """{"lines": {column: n}, "characters": ..., "tokens": ..., "programs": n} over the benchmarks."""
+    result = {"lines": {}, "characters": {}, "tokens": {}, "programs": len(names)}
+    for key, ext in SOURCES.items():
+        totals = [0, 0, 0]
+        for name in names:
+            with open(os.path.join(HERE, name + ext), encoding="utf-8") as source:
+                for index, value in enumerate(source_counts(source.read())):
+                    totals[index] += value
+        result["lines"][key], result["characters"][key], result["tokens"][key] = totals
+    return result
+
+
+def go_check_time(big_go, runs):
+    """`go vet` of the program, checked anew each time, as `go_build_time` builds it."""
+    folder = os.path.join(BUILD, "govet")
+    os.makedirs(folder, exist_ok=True)
+    with open(big_go, encoding="utf-8") as source:
+        text = source.read()
+    times = []
+    for index in range(runs):
+        path = os.path.join(folder, "big.go")
+        with open(path, "w", encoding="utf-8") as out:
+            out.write(text + "// check %d at %r\n" % (index, time.time()))
+        took, code, _, _ = run(["go", "vet", path])
+        if code != 0:
+            return None
+        times.append(took)
+    return min(times)
+
+
+def measure_checks(runs, have, build_result, problems):
+    """Seconds to check the generated program without building it."""
+    files = {ext: os.path.join(GENERATED, "big" + ext) for ext in (".azl", ".rs", ".c", ".go", ".js")}
+    slow = min(runs, 3)
+    times = {}
+    times["azol"], _ = best([AZOL, "check", files[".azl"]], runs)
+    if "rustc" in have:
+        times["rust_opt"] = (build_result or {}).get("seconds", {}).get("rust_check")
+    if "cc" in have:
+        times["c"], _ = best([have["cc"], "-fsyntax-only", files[".c"]], slow)
+    if "go" in have:
+        times["go"] = go_check_time(files[".go"], slow)
+    if "node" in have:
+        times["node"] = (build_result or {}).get("seconds", {}).get("node_check")
+    for key, value in times.items():
+        if value is None:
+            problems.append("the large program: the %s check failed" % key)
+    return times
+
+
+def json_values(text):
+    """Every JSON value found in `text`: the whole of it, or one to a line."""
+    found = []
+    try:
+        found.append(json.loads(text))
+    except ValueError:
+        for line in text.splitlines():
+            line = line.strip()
+            if line[:1] in "{[":
+                try:
+                    found.append(json.loads(line))
+                except ValueError:
+                    pass
+    return found
+
+
+def walk(value):
+    """Every dict inside a JSON value."""
+    if isinstance(value, dict):
+        yield value
+        for inner in value.values():
+            for one in walk(inner):
+                yield one
+    elif isinstance(value, list):
+        for inner in value:
+            for one in walk(inner):
+                yield one
+
+
+def diagnostic_of(key, have):
+    """What the checker of one language reports for bench/agents/wrong_type:
+    {"detected", "warning", "json", "span", "fix", "position"}, each true or
+    false, worked out from what the tool really prints here."""
+    path = os.path.join(HERE, "agents", "wrong_type" + SOURCES[key])
+    seen = {"detected": False, "warning": False, "json": False, "span": False, "fix": False, "position": False}
+
+    def text_form(output, code):
+        seen["detected"] = code != 0 or "warning" in output
+        seen["warning"] = code == 0 and seen["detected"]
+        seen["position"] = bool(re.search(r":\d+:\d+", output))
+
+    if key == "azol":
+        _, code, out, err = run([AZOL, "check", "--json", path])
+        for item in json_values(out + err):
+            if isinstance(item, dict) and item.get("severity") == "error":
+                seen.update(detected=True, json=True, span="end_column" in item, fix="fix" in item)
+        if not seen["json"]:
+            text_form(out + err, code)
+    elif key == "rust_opt":
+        _, code, out, err = run(["rustc", "--error-format=json", "--emit=metadata", "-o", os.path.join(BUILD, "wrong_type.rmeta"), path])
+        for item in json_values(out + err):
+            if isinstance(item, dict) and item.get("level") == "error" and item.get("spans"):
+                spans = item["spans"] + [span for child in item.get("children", []) for span in child.get("spans", [])]
+                seen.update(detected=True, json=True,
+                            span=any("column_end" in span for span in item["spans"]),
+                            fix=any(span.get("suggestion_applicability") == "MachineApplicable" for span in spans))
+        if not seen["json"]:
+            text_form(out + err, code)
+    elif key == "c":
+        for flags in (["-fdiagnostics-format=sarif", "-Wno-sarif-format-unstable"], ["-fdiagnostics-format=sarif-stderr"],
+                      ["-fdiagnostics-format=json"]):
+            _, code, out, err = run([have["cc"], "-fsyntax-only"] + flags + [path])
+            for item in json_values(out + err):
+                for one in walk(item):
+                    if "region" in one and ("message" in str(item)):   # SARIF
+                        seen.update(detected=True, json=True)
+                        seen["span"] = seen["span"] or "endColumn" in one["region"]
+                    if "fixes" in one or "fixits" in one:
+                        seen["fix"] = True
+                    if "caret" in one:                                  # gcc's own JSON
+                        seen.update(detected=True, json=True)
+                        seen["span"] = seen["span"] or "finish" in one
+            if seen["json"]:
+                seen["warning"] = code == 0
+                break
+        if not seen["json"]:
+            _, code, out, err = run([have["cc"], "-fsyntax-only", path])
+            text_form(out + err, code)
+    elif key == "go":
+        _, code, out, err = run(["go", "vet", "-json", path])
+        for item in json_values(out + err):
+            for one in walk(item):
+                if "posn" in one and "message" in one:
+                    seen.update(detected=True, json=True, span="end" in one, fix=bool(one.get("suggested_fixes")))
+        if not seen["json"]:
+            text_form(out + err, code)
+    elif key == "node":
+        _, code, out, err = run(["node", "--check", path])
+        text_form(out + err, code)
+    return seen
+
+
+def measure_agents(names, runs, have, build_result, problems):
+    print("the rows for AI agents ...", file=sys.stderr)
+    tool_of = {"azol": None, "rust_opt": "rustc", "c": "cc", "go": "go", "node": "node"}
+    return {
+        "check": measure_checks(runs, have, build_result, problems),
+        "source": measure_source(names),
+        "diagnostics": {key: diagnostic_of(key, have) for key, tool in tool_of.items() if tool is None or tool in have},
+    }
+
+
+def diagnostic_cell(seen, lang):
+    if seen is None:
+        return None
+    if not seen["detected"]:
+        return say(lang, "not detected")
+    if seen["json"]:
+        parts = ["JSON"] + [name for name in ("span", "fix") if seen[name]]
+    else:
+        parts = ["text"] + (["position"] if seen["position"] else [])
+    if seen["warning"]:
+        parts.append("warning only")
+    return ", ".join(say(lang, part) for part in parts)
+
+
+def words_row(label, cells, keys, pending, lang):
+    """A row of words: never bold."""
+    out = [label]
+    for key in keys:
+        cell = cells.get(key)
+        out.append(cell if cell is not None else say(lang, "to be measured" if pending else "n/a"))
+    return "| " + " | ".join([out[0]] + [cell.replace(" ", "&nbsp;") for cell in out[1:]]) + " |"
+
+
+def agent_rows(agents, keys, build_result, pending, lang):
+    out = [section(say(lang, "FOR AI AGENTS"), len(keys))]
+    same = {"azol_opt": "as default"}
+    lines = format(build_result["lines"], ",") if build_result else "?"
+    check = agents.get("check", {})
+    out.append(row("%s <sub>%s</sub>" % (say(lang, "Check without building"), say(lang, "the same %s-line program") % lines),
+                   {key: check.get(key) for key in keys}, seconds, pending, same, lang))
+    source = agents.get("source", {})
+    programs = say(lang, "the %d programs") % source.get("programs", 8)
+    for name, label in (("lines", "Lines of code"), ("characters", "Characters"), ("tokens", "Tokens, roughly")):
+        out.append(row("%s <sub>%s</sub>" % (say(lang, label), programs),
+                       {key: source.get(name, {}).get(key) for key in keys}, lambda value: format(value, ","), pending, same, lang))
+    seen = agents.get("diagnostics", {})
+    cells = {key: diagnostic_cell(seen.get(key), lang) for key in keys}
+    cells["azol_opt"] = say(lang, "as default")
+    out.append(words_row("%s <sub>%s</sub>" % (say(lang, "A wrong type passed"), say(lang, "what the checker reports")),
+                         cells, keys, pending, lang))
+    return out
+
+
+def agent_notes(agents, keys, lang):
+    out = [say(lang, "Check: the commands are %s.") % ", ".join(CHECKS[key] for key in keys if key in CHECKS)]
+    out.append(say(lang, "Source: the %d benchmark programs together, without comments, blank lines and indentation. Tokens are counted by "
+                         "one rule for every language (a name, a number or a text is one token; so is each bracket, comma or semicolon, "
+                         "and each run of operator characters); that approximates what a model reads and writes and is not any model's tokenizer.")
+               % agents.get("source", {}).get("programs", 8))
+    seen = agents.get("diagnostics", {})
+    mistake = ("Mistake: the same in each language ([`bench/agents/`](bench/agents/)): the text `\"40\"` passed where a number is "
+               "expected. *JSON* means the tool gives the message and the place as data when asked; *span*, the start and the end "
+               "of the place; *fix*, an edit a tool can apply; *text, position*, a line to read with a line and a column in it.")
+    if seen and not any(one["fix"] for one in seen.values()):
+        mistake += " No tool offers a fix for this mistake."
+    out.append(say(lang, mistake))
+    if "node" in seen and not seen["node"]["detected"]:
+        out.append(say(lang, "Node.js does not look at types before it runs: `node --check` accepts the file, and the program runs and prints a number."))
+    return out
+
+
 def measure_sizes():
     """Size of the executables of the smallest benchmark."""
     sizes = {}
@@ -448,7 +790,8 @@ def row(label, values, show, pending, never=(), lang="en"):
     {column: text} for cells that are words and are never bold."""
     never = dict(never)
     numbers = [value for key, value in values.items() if value is not None and key not in never]
-    winner = show(min(numbers)) if numbers and not pending else None
+    missing = any(value is None for key, value in values.items() if key not in never)
+    winner = show(min(numbers)) if numbers and not (pending and missing) else None
     out = [label]
     for key, value in values.items():
         if key in never:
@@ -528,8 +871,8 @@ def report(results, lang="en"):
     out.append(say(lang, "Tools: %s.") % "; ".join(str(info[tool]) for tool in ("azol", "rustc", "cc", "go", "node") if info.get(tool)))
     out.append("")
     if pending:
-        out.append(say(lang, "Lower is better everywhere. Cells that say *to be measured* have not been run on this machine yet, "
-                             "and nothing is bold until they have: bold will mean the best value of its row and nothing else."))
+        out.append(say(lang, "Lower is better everywhere. In every row the best value is bold, and nothing else in the table is. "
+                             "Cells that say *to be measured* have not been run on this machine yet, and a row has no bold until all of it is measured."))
     else:
         out.append(say(lang, "Lower is better everywhere. In every row the best value is bold, and nothing else in the table is."))
     out.append("")
@@ -550,11 +893,14 @@ def report(results, lang="en"):
         about = SHORT.get(name)
         out.append(row("`%s` <sub>%s</sub>" % (name, say(lang, about) if about else name),
                        {key: result["seconds"].get(key) for key in keys}, seconds, pending, (), lang))
+    agents = results.get("agents") or ({} if pending else None)
+    if agents is not None:
+        out.extend(agent_rows(agents, keys, build_result, pending, lang))
     out.append("")
     for tool in results.get("left_out_tools", []):
         out.append(left_out_note(lang, tool))
         out.append("")
-    for line in summary(run_results, build_result, keys, lang):
+    for line in summary(run_results, build_result, keys, lang) + (agent_notes(agents, keys, lang) if agents is not None else []):
         out.append(line)
         out.append("")
     return out
@@ -624,8 +970,9 @@ def main():
     run_results = measure_runs(names, runs, have, problems)
     build_result = None if only else measure_build(runs, have, problems)
     sizes = measure_sizes()
+    agents = None if only or not build_result else measure_agents(benchmarks(None), runs, have, build_result, problems)
     results = {"machine": info, "runs": runs, "run_time": run_results, "build_time": build_result,
-               "sizes": sizes, "left_out_tools": left_out, "problems": problems}
+               "sizes": sizes, "agents": agents, "left_out_tools": left_out, "problems": problems}
 
     lines = report(results)
     print()

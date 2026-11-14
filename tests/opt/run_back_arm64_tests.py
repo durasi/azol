@@ -98,7 +98,7 @@ def run_exe(target, exe, argv=None, limit=LIMIT):
     emu, emu_linux = emulators()
     try:
         if target == "aarch64-macos":
-            out, code, trap, balanced, err, heap = emu.run(exe, limit, argv or [exe])
+            out, code, trap, balanced, err, heap = emu.run(exe, limit, argv or [exe], ROOT)
         else:
             out, code, trap, balanced, err, heap = emu_linux.run(exe, limit, argv or [exe], ROOT)
     except Exception as problem:

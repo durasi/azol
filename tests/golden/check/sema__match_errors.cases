@@ -16,9 +16,9 @@ o = None
 checked 8 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos c0151d6ca6704c9bfc4e0d1f02ade5c695c586323ba23c59aa7a02f35f90a365
-x86_64-linux b551bd033ab814117a11bbce074a94fb2ae86855d97372e0886a2922c3692142
-aarch64-linux f841ea012c88e1f3754f7bba51298c1545f653e716184106ba563ed4308cccdd
+aarch64-macos e1318207ff6681115dde6d44ebb1eb2f2e816292f4569c9f8adc21fba9f140e2
+x86_64-linux 497c8402bc75f26763e17aefb248a726fb8206c6e7e33cfc0cfe1b9ca046cb7f
+aarch64-linux 8514579c49e73b00521c3b15d623d75b4b67b4eec026f827324b00324b9079b0
 ==== 2
 ---- file a.azl (no newline at end)
 fn id(o: Option[i64]) -> Option[i64] {
@@ -38,9 +38,9 @@ fn main() {
 checked 10 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos e176fa2de0384ad3bf6b2d1fc79ad4ce28375610152191c6dc9d9f998c0bc90d
-x86_64-linux 49f35bf6e3b6133b3099bd7cd0a57c5d4d126c47aeec2f2cd5e007d6d4357ba3
-aarch64-linux 06c230638204ac1d1e2dbf0d217a002087bd877ce89c953d573389107bf0fb77
+aarch64-macos c7a40cfc77f1ac8c2311c6980ed5a7b8cebb2acd83e4bd473528cc13bb0e1df7
+x86_64-linux f7077f2c8ecf65661c4e4b83117e4de7bd840f7610d8f794c160da092b797ac6
+aarch64-linux e9dec05c8e4302224d119255504e5972d3d500fbc1d03ac9e53e1fe4c8a9a214
 ==== 3
 ---- file a.azl (no newline at end)
 fn main() {
@@ -57,9 +57,9 @@ _ => {}
 checked 7 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos d0d7c70cfb765ae4a85cc3fa713af31ebac5a4c051b38e16d45c0044a0484abb
-x86_64-linux 5185548680bb6e8b6f948ad357252ecaaf230f57c9b1d55be25cc88c30de9068
-aarch64-linux 82ed5556dafc8bd5f338d1816ce1d1d25b618cc4c0bc728bf62026f9a1761d19
+aarch64-macos b48f001039c98127b435a397e0702ee71a397df084cb192f9f70450031ff58bb
+x86_64-linux f024ba7e202aac67ba438fdc198abacd20bc6750fe407f63c642c168c99654fd
+aarch64-linux 008d2075ae6c6087011f64c37c27f18be2f1f976f44474e06c543cc2c84c6219
 ==== 4
 ---- file a.azl (no newline at end)
 fn f(o: Option[i64]) -> i64 {
@@ -77,6 +77,6 @@ fn main() {
 checked 8 lines in 1 file: no errors
 ---- run build-all a.azl
 ---- executables
-aarch64-macos 88df4bb7347ef6b75aaf9bf0d058dd3d5e9d8512bd37179e456639cfa53cc159
-x86_64-linux 03b3132e7cf8ef4149514f35f750d47ced3f03e9ad4ea9c523b4db6e3ab34f24
-aarch64-linux 6e41433ab20c294d51334363d37f91cf816ef61692fa5a55b5f030099aba14ec
+aarch64-macos acd1a4ff33de5e0c63d78315c03cc3ede1c7b38a188b95a51b0915640d2eb0da
+x86_64-linux 28d1a047ed8b2e8a514de68f73d4a7d115f1b1384898ed39e9c2a856ce0dd538
+aarch64-linux 136962ef1bc5c0fb74bf04c33bb00516deab2dc0d44f18df23dd3856944d30c8

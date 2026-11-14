@@ -152,6 +152,354 @@ Messages:
 - a `_` in a number stands between two digits, as in `1_000`
 - a decimal number does not start with `0`; other bases are written `0x1F` and `0b1010`
 
+## E0120
+
+A statement ends with its line. There is no `;`, and each statement has a line of its own.
+
+What to do: Delete the `;`.
+
+From C, Rust, Java, JavaScript and Go.
+
+Wrong:
+
+    let x = 1;
+    return x;
+
+Right:
+
+    let x = 1
+    return x
+
+A long expression goes on to the next line when the line ends in an operator, a comma or an open bracket.
+
+Messages:
+
+- `;` does not end a statement in azoL; the end of the line does...
+- a line does not continue with `\` in azoL; it continues when it ends in an operator, a comma or an open bracket
+
+## E0121
+
+A name is declared with `let`, a variable that changes with `var`, a constant outside functions with `const`; a type, when written, follows a colon.
+
+From other languages:
+
+    let mut n = 0        is  var n = 0            (Rust)
+    n := 0               is  let n = 0            (Go)
+    var n int = 0        is  var n: i64 = 0       (Go)
+    val n = 0            is  let n = 0            (Kotlin)
+    static N: i64 = 0    is  const N = 0          (Rust, C)
+    x, err := f()        is  let r = f()  and then `match r` or `f()?`
+
+Messages:
+
+- one name is declared at a time in azoL, and a function gives back one value; a failure is the `Err` of a `Result`, read with `match` or `?`
+- `let mut` is Rust; in azoL a variable that changes is declared with `var`
+- `...` is not azoL; a name for a value is declared with `let`, and one that changes with `var`
+- `:=` is not azoL; a name is declared with `let`, or `var` when it changes
+- azoL declares one name on a line; a function that can fail gives back one `Result`, not a value and an error
+- the type of a variable follows a colon in azoL: `...`
+- outside functions a named value is a constant: `const NAME = value`, not `...`
+
+## E0122
+
+Type parameters and type arguments are written between square brackets: `List[i64]`, `fn first[T](xs: List[T])`. There are no lifetimes, no bounds, and no type arguments at a call.
+
+From Rust, TypeScript, Java, Swift and C++.
+
+Wrong:
+
+    fn first<T>(xs: List<T>) -> Option<T> {
+
+Right:
+
+    fn first[T](xs: List[T]) -> Option[T] {
+
+`azol fix` rewrites the brackets.
+
+Messages:
+
+- type parameters and type arguments are written between `[ ]` in azoL, not `< >`
+- azoL has no lifetimes such as `'a`: there are no references, so nothing outlives anything
+- type arguments are never written at a call in azoL; the type comes from the variable: `...`
+- a type parameter has no bound in azoL yet; the function is checked for each type it is used with
+
+## E0123
+
+There are no references and no pointers. A parameter is read-only; one the function changes is `name: mut Type`, and the call says `mut` again.
+
+From Rust, C, C++ and Go.
+
+Wrong:
+
+    fn add(xs: &mut List[i64], s: &str) {
+    add(&mut xs, &name)
+
+Right:
+
+    fn add(xs: mut List[i64], s: str) {
+    add(mut xs, name)
+
+Nothing is copied when a value is passed; see `azol guide ownership`.
+
+Messages:
+
+- `&mut` is Rust; in azoL what a function may change is marked `mut`, in the parameter and again at the call
+- azoL has no references; a value is passed and named as itself, and a parameter is read-only unless it says `mut`
+- azoL has no pointers, so there is nothing to follow with `*`; assign to the variable itself
+
+## E0124
+
+There are no macros and no `!` after a name. A list is `[1, 2]`, `print` takes one value, and a text holds its values as `"total: {sum}"`.
+
+From Rust (and `x!` from Swift and TypeScript):
+
+    vec![1, 2]              is  [1, 2]
+    println!("n = {}", n)   is  print("n = {n}")
+    format!("{a}-{b}")      is  "{a}-{b}"
+    panic!("bad")           is  eprint("bad") and then exit(1), or `return Err("bad")`
+    value!                  is  value.expect("why it is there")
+
+Messages:
+
+- azoL has no macros; ...
+- azoL has no macros and needs no `format!`; a text holds its values: `...`
+- azoL has no macros and no `...`; ...
+- azoL has no macros and no `...` yet; ...
+- azoL has no `!` after a value; an `Option` is read with `match`, `?`, `.or(default)` or `.expect("why it is there")`
+
+## E0125
+
+There is no `::` and there are no paths. An enum's variant is written bare, as `Circle(2)`; empty values are `""`, `[]` and `new_map()`.
+
+From Rust, C++, Swift and TypeScript:
+
+    Shape::Circle(2)   is  Circle(2)
+    Shape.Circle(2)    is  Circle(2)
+    String::from("a")  is  "a"
+    Vec::new()         is  []
+    std::fs::read(..)  is  read_file(path)
+
+Messages:
+
+- `String::new()` is Rust; an empty text is `""`
+- `...()` is not azoL; an empty list is `[]`
+- `Map::new()` is not azoL; an empty map is `new_map()`
+- `Vec::new()` is Rust; an empty list is `[]`
+- `...()` is Rust; an empty map is `new_map()`
+- `String::from(...)` is Rust; a text between quotes is already a `str` of its own
+- an enum's variant is written bare in azoL, without the enum's name: `...`, not `...`
+- azoL has no `::` and no paths; functions and types have one name each, known to the whole program
+
+## E0126
+
+A file holds `fn`, `struct`, `enum` and `const` declarations and nothing else: no imports, no visibility words, no classes, no `impl`, no traits.
+
+From other languages:
+
+    def f():  func f()  function f()   is  fn f() {
+    pub fn f()                         is  fn f()
+    use std::fs  import "fmt"          is  nothing: delete the line
+    class P { ... }                    is  struct P { ... } and functions that take a `P`
+    impl P { fn area(&self) }          is  fn area(p: P) -> i64, called `area(p)`
+
+Messages:
+
+- a function is declared with `fn` in azoL, not with `...`
+- azoL has no `...`; every declaration is seen by the whole program
+- azoL has no `...`; every field is seen by the whole program
+- azoL has no `...`; a program is the files named to `azol build`, and what is built in needs no import
+- azoL has no `...` and no methods of your own yet; write `fn area(p: Point) -> i64` outside the struct and call it `area(p)`
+- azoL has no `...` yet; write a function for each type, or one `enum` with a `match` over its cases
+- azoL has no `...`; the data is a `struct` and what is done with it is functions that take it
+- azoL has no `...`; a new type is a `struct` or an `enum`
+- a function is written `fn name(parameter: Type) -> Result`, with `fn` first and the result after `->`
+- azoL has no `#...`; a program is the files named to `azol build`, and a fixed value is a `const`
+
+## E0127
+
+Blocks are between braces. The loops are `while test`, `for x in list`, `for i, x in list` and `for i in a..b`; the choices are `if`/`else if`/`else` and `match`.
+
+From other languages:
+
+    for (i = 0; i < n; i++)   is  for i in 0..n {
+    loop {                    is  while true {
+    elif                      is  else if
+    if x > 0:                 is  if x > 0 {
+    if (x > 0) f(x)           is  if x > 0 { f(x) }
+    switch n { case 1: ... }  is  match n { 1 => ... _ => ... }
+    for (i, x) in xs.iter().enumerate()   is  for i, x in xs {
+
+Messages:
+
+- azoL has no `for (start; test; step)`; a loop over numbers is `for i in 0..n`, and any other loop is `while`
+- `...` is written `else if` in azoL
+- a block is between `{` and `}` in azoL; `:` and the depth of the lines do not make one
+- a block is between `{` and `}` in azoL, with no `...` before it
+- azoL has no `switch`; write `match value { 1 => ... _ => ... }`, where `_` takes every other value
+- the body of `...` is a block in azoL, even for one statement: `...`
+- azoL has no `loop`; a loop without an end is `while true`
+- azoL has no `...`; write `if` or `while` with `!` before the test
+- a loop with a counter is written `for i, x in xs` in azoL, without parentheses
+- azoL has no `...` block; statements are written where they run, and a group of them is the body of `if`, `while`, `for`, `match` or a function
+- azoL has no `goto`; loops end with `break` and go on with `continue`
+- azoL has no `do ... while`; write `while true { ... }` and leave with `if !test { break }` at the end
+
+## E0128
+
+The operators are `+ - * / %`, `== != < <= > >=`, `&& || !`, `& | ^ << >>` and the `op=` forms. There are no word operators, no `===`, no `**`, no `~`, no casts.
+
+From other languages:
+
+    a and b    is  a && b
+    a or b     is  a || b
+    not a      is  !a
+    a === b    is  a == b
+    a <> b     is  a != b
+    x ** 2     is  x.pow(2)
+    ~x         is  x ^ -1
+    x as i64   is  x
+
+Messages:
+
+- azoL has no `===` and no `!==`; values are compared with `==` and `!=`
+- azoL has no `<>`; not equal is `!=`
+- `and` is written `&&` in azoL
+- `or` is written `||` in azoL
+- `not` is written `!` in azoL
+- azoL has no `...` operator; compare with `==`, and ask a list or a text with `.contains(x)`
+- azoL has no `**`; a power is the method `x.pow(n)`
+- azoL has no `~`; every bit of `x` turned over is `x ^ -1`
+- azoL has no casts with `as`; there is one number type, `i64`, and `str(x)` makes a text
+
+## E0129
+
+A comment starts with `//`. A text is between double quotes, on one line, and holds values as `{value}`; `'a'` is one byte, a number. There are no attributes, decorators or map literals.
+
+From other languages:
+
+    # note            is  // note
+    /* note */        is  // note
+    #[derive(Debug)]  is  nothing: delete the line
+    'hello'           is  "hello"
+    `n = ${n}`        is  "n = {n}"
+    {"a": 1}          is  var m: Map[i64] = new_map() and then m.set("a", 1)
+
+Messages:
+
+- a comment starts with `//` in azoL, not with `#`
+- a comment starts with `//` and ends with its line in azoL; there is no `/* ... */`
+- azoL has no attributes such as `#[...]`; nothing has to be derived or switched on
+- a text is written between double quotes in azoL; single quotes hold one byte, as in `'a'`
+- a text is written between double quotes in azoL, and a value goes into it as `...`
+- azoL has no prefixed texts such as `r"..."` or `b"..."`; a text is `"..."` with `\\` for a backslash
+- azoL has no `@` forms: no decorators, no annotations
+- a name has no `$` in azoL; in a text a value is written `{value}`
+- azoL has no map or object literal; write `var m: Map[i64] = new_map()` and then `m.set(key, value)`
+- azoL has no escapes for a character by its number; write the character itself in the text, or join `chr(n)` for one byte
+- a text is on one line in azoL; write `\n` where a line ends inside it, or join the lines with `+`
+
+## E0130
+
+Types are written `List[T]`, `Option[T]`, `Map[V]`; a parameter is `name: Type`; a result type follows `->`; a struct value is `Point { x: 1, y: 2 }`; arguments are given in order, all of them.
+
+From other languages:
+
+    []i64  i64[]  [i64]     is  List[i64]
+    i64?                   is  Option[i64]
+    fn f(): i64  fn f() i64   is  fn f() -> i64
+    fn f(i64 x)            is  fn f(x: i64)
+    Point(x: 1, y: 2)      is  Point { x: 1, y: 2 }
+    f(count: 3)            is  f(3)
+    s[1:3]                 is  s.slice(1, 3)
+
+Messages:
+
+- a list type is written `List[T]` in azoL, not `...`
+- a value that may be absent has the type `Option[T]` in azoL, not `T?`
+- the result type of a function follows `->` in azoL...
+- a parameter is written `name: Type` in azoL, the name first
+- a parameter the function changes is written `name: mut Type` in azoL, with `mut` before the type
+- a field is given its value after a colon in azoL: `...`
+- a parameter has no default value in azoL; every call gives every argument
+- arguments have no names in azoL; they are given in the order of the parameters
+- a struct value is written with braces in azoL: `...`
+- azoL has no `new`; a struct value is written `...`, and nothing has to be freed
+- a part of a text or a list is `x.slice(from, to)` in azoL; there is no `x[from:to]`
+
+## E0131
+
+There are no function values yet: no closures, no lambdas, and no methods such as `map` or `filter` that take one.
+
+What to do: Write a named function and call it, or write the loop.
+
+From Rust, JavaScript, Python, Swift and Kotlin.
+
+Wrong:
+
+    let doubled = xs.map(|x| x * 2)
+
+Right:
+
+    var doubled: List[i64] = []
+    for x in xs {
+        doubled.push(x * 2)
+    }
+
+Messages:
+
+- azoL has no function values yet, so no `...`; write a named function, or the loop
+- `....(...)` takes a function, and azoL has no function values yet; write the loop
+
+## E0132
+
+There are no exceptions, no `defer`, no `async`, no manual freeing and no global variables. A function that can fail gives back a `Result[T, E]`; `f()?` passes the error on.
+
+From other languages:
+
+    try { f() } catch (e) { ... }   is  match f() { Ok(v) => ... Err(e) => ... }
+    throw new Error("bad")          is  return Err("bad")
+    try f()                         is  f()?
+    defer close(f)                  is  nothing: values are freed at their last use
+
+Messages:
+
+- azoL has no `try` block and no exceptions; a function that can fail gives back a `Result`, and `f()?` passes its error on
+- `try f()` is written `f()?` in azoL: the `?` follows the call
+- azoL has no exceptions; a function that can fail gives back `Err(why)` in a `Result`, and the caller reads it with `match` or `?`
+- azoL has no `defer`; memory is given back by the compiler, and anything else is called before each `return`
+- azoL has no `...`; a program runs on one thread, from the top of `main` to its end
+- azoL has no `...`; memory is given back by the compiler, at the last use of each value
+- azoL has no `...` variables; a function reads its parameters and constants, and changes what it is given as `mut`
+
+## E0133
+
+An arm of `match` is one pattern, `=>`, and a statement or a block. There are no alternatives with `|` and no guards.
+
+From Rust and Swift.
+
+Wrong:
+
+    match n {
+        1 | 2 => print("small")
+        x if x > 100 => print("big")
+        _ => print("other")
+    }
+
+Right:
+
+    match n {
+        1 => print("small")
+        2 => print("small")
+        _ => {
+            if n > 100 { print("big") } else { print("other") }
+        }
+    }
+
+Messages:
+
+- an arm of `match` has one pattern in azoL; write an arm for each value, or `_` for the rest
+- an arm of `match` has no `if` after its pattern in azoL; test inside the arm
+
 ## E0201
 
 A name must be declared before it is used: as a variable, a parameter, a constant or a variant.
@@ -282,6 +630,128 @@ An enum declares at least one variant.
 Messages:
 
 - enum `...` has no variants
+
+## E0220
+
+The types are `i64`, `bool`, `str`, `List[T]`, `Option[T]`, `Result[T, E]`, `Map[V]` and the structs and enums of the program.
+
+From other languages:
+
+    int  i32  usize  u8  long  number   is  i64
+    String  string                      is  str
+    boolean                             is  bool
+    char                                is  i64 (a byte) or str (one character)
+    Vec<T>  []T  Array<T>               is  List[T]
+    HashMap<String, V>  dict            is  Map[V]
+    void                                is  no `->` part at all
+    Box<T>                              is  T, or List[T] when a type holds itself
+
+Messages:
+
+- `...` is not an azoL type; ...
+
+## E0221
+
+The built-in functions are few: `print`, `eprint`, `str`, `chr`, `args`, `read_file`, `write_file`, `exit`, `clock` and a handful more. Everything else is a method of a value.
+
+What to do: `azol guide library` lists everything that is built in.
+
+From other languages:
+
+    println(x)  console.log(x)  fmt.Println(x)   is  print(x)
+    printf("%d\n", n)                            is  print("{n}")
+    len(xs)                                      is  xs.len()
+    int(text)  parseInt(text)                    is  text.to_i64()   (an Option[i64])
+    max(a, b)                                    is  a.max(b)
+    panic("bad")                                 is  eprint("bad") and then exit(1)
+
+Messages:
+
+- `...` is not an azoL function; ...
+- `...` is not an azoL function and there are no format texts; ...
+- `...` is not an azoL function yet; ...
+- `...(x)` is not azoL; the length of a list, a text or a map is the method `x.len()`
+- `...(a, b)` is not azoL; it is a method of the number: `...`
+- `abs(n)` is not azoL; it is a method of the number: `n.abs()`
+- `append(xs, x)` is not azoL; a list grows with the method `xs.push(x)`
+- `...` is not azoL; `print` writes a value and ends the line
+- `...` is not azoL; `eprint` writes a text to standard error and ends the line
+
+## E0222
+
+There is no null: absence is `None` of an `Option[T]`. The truth values are `true` and `false`. There are no modules such as `Math`, `std` or `console`, and no `this`.
+
+From other languages:
+
+    null  nil  None-as-any-type   is  None, in a variable of type Option[T]
+    True  False                   is  true  false
+    Math.max(a, b)                is  a.max(b)
+    this.x  self.x                is  p.x, with `p` a parameter
+    Vec::new()  List.new()        is  []
+
+Messages:
+
+- azoL has no `...`; a value that may be absent is an `Option[T]`, and absent is `None`
+- `...` is written `true` in azoL
+- `...` is written `false` in azoL
+- azoL has no `...` and no modules; what is built in is a short list of functions and methods: `azol guide library`
+- azoL has no `...`; numbers have methods: `a.max(b)`, `a.min(b)`, `n.abs()`, `n.pow(k)`
+- azoL has no `...` of its own; a function takes the value it works on as a named parameter
+- azoL has no `pass`; a block that does nothing is `...`
+- `...` is a type, not a value; ...
+
+## E0223
+
+Values have the methods listed by `azol guide library` and no others; a function of the program is called as `name(value)`, not `value.name()`.
+
+What to do: `azol guide library` lists every method by type.
+
+From other languages:
+
+    xs.clone()  s.to_owned()      is  xs  s: a second name copies
+    n.to_string()                 is  str(n), or "{n}" inside a text
+    xs.length  s.length()         is  xs.len()  s.len()
+    xs.append(x)  xs.add(x)       is  xs.push(x)
+    xs.iter().sum()               is  xs.sum()
+    s.push_str(more)              is  s += more
+    s.charAt(i)                   is  s[i]
+    "n = " + n                    is  "n = {n}"
+    m["k"] = 1                    is  m.set("k", 1)
+
+Messages:
+
+- `....()` is not needed: ...
+- `....()` is not azoL; ...
+- `....()` is not azoL: ...
+- `....(...)` is not azoL; ...
+- `....(i)` is not azoL; ...
+- a text is not gone through as it is; `for b in s.bytes()` gives its bytes as numbers, and `for c in s.chars()` its characters as texts
+- `....(x)` is not azoL; ...
+- `....` is called `....` in azoL
+- `....` is not a field in azoL; the length is the method `.len()`
+- `...` is a function, not a method; it is called `...`
+- a `Map` is not indexed with `[ ]`; read it with `m.get(key)`, an `Option`, and write it with `m.set(key, value)`
+
+## E0224
+
+A number does not become text by itself: `+` joins two texts, and `print` takes one value. A value goes into a text as `"n = {n}"`, or becomes one with `str(n)`.
+
+From JavaScript, Java, Python and C.
+
+Wrong:
+
+    print("n = " + n)
+    print("x", x, "y", y)
+
+Right:
+
+    print("n = {n}")
+    print("x {x} y {y}")
+
+Messages:
+
+- `+` joins two texts and does not turn a number into one; write `str(n)`, or put the value in the text: `...`
+- `print` takes one value; put several into one text: `...`
 
 ## E0301
 

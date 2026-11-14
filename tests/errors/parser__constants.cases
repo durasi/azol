@@ -71,5 +71,5 @@ error[E0111]: a constant is declared outside functions; use `let` for a value in
 ---- run check --json a.azl
 ---- exit 1
 ---- stdout
-{"severity":"error","code":"E0111","message":"a constant is declared outside functions; use `let` for a value inside one","file":"a.azl","line":2,"column":3,"end_line":2,"end_column":8,"source":"  const A = 1","rule":"`const` declares a name for the whole program and is written at the top level of a file."}
+{"severity":"error","code":"E0111","message":"a constant is declared outside functions; use `let` for a value inside one","file":"a.azl","line":2,"column":3,"end_line":2,"end_column":8,"source":"  const A = 1","rule":"`const` declares a name for the whole program and is written at the top level of a file.","fix":{"file":"a.azl","line":2,"column":3,"end_line":2,"end_column":8,"replacement":"let"}}
 {"summary":{"errors":1,"files":1}}

@@ -22,9 +22,9 @@ pub const BASE: u64 = 0x400000;
 pub const TEXT_OFFSET: u64 = 0x100;
 /// The library's code and constant data. The program's code goes right
 /// after it, starting with a jump to the program's `main`.
-pub const TEXT: &[u8; 6128] = include_bytes!("../runtime/linux_arm64/runtime.bin");
+pub const TEXT: &[u8; 6448] = include_bytes!("../runtime/linux_arm64/runtime.bin");
 /// Offset in `TEXT` of the function that stands in for each import.
-pub const IMPORT_OFFSETS: [u32; 22] = [548, 596, 648, 936, 2032, 2112, 2992, 0, 3164, 3212, 3268, 3280, 4512, 4536, 4548, 4560, 4796, 4828, 4840, 4620, 4680, 4740];
+pub const IMPORT_OFFSETS: [u32; 22] = [548, 596, 648, 728, 2108, 2164, 3044, 0, 3216, 3264, 3320, 3332, 4564, 4588, 4600, 4612, 4848, 4880, 4892, 4672, 4732, 4792];
 /// Offset in `TEXT` of the code the system starts the process at.
 pub const START: u32 = 16;
 /// Address and size of the library's writable memory, which must start

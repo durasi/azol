@@ -29,14 +29,14 @@ fn main() {
 ---- exit 1
 ---- stdout (empty)
 ---- stderr
-error[E0203]: unknown type `i32`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`
+error[E0220]: `i32` is not an azoL type; the integer type is `i64`
  --> a.azl:1:9
   |
 1 | fn f(a: i32) {
   |         ^
----- asserted 1:9 unknown type `i32`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`
+---- asserted 1:9 `i32` is not an azoL type; the integer type is `i64`
 ---- run check --json a.azl
 ---- exit 1
 ---- stdout
-{"severity":"error","code":"E0203","message":"unknown type `i32`; the built-in types so far are `i64`, `bool`, `str`, `List`, `Option` and `Result`","file":"a.azl","line":1,"column":9,"end_line":1,"end_column":12,"source":"fn f(a: i32) {","rule":"A type is `i64`, `bool`, `str`, `List[...]`, `Option[...]`, `Result[..., ...]` or a struct or enum of the program."}
+{"severity":"error","code":"E0220","message":"`i32` is not an azoL type; the integer type is `i64`","file":"a.azl","line":1,"column":9,"end_line":1,"end_column":12,"source":"fn f(a: i32) {","rule":"The types are `i64`, `bool`, `str`, `List[T]`, `Option[T]`, `Result[T, E]`, `Map[V]` and the structs and enums of the program.","fix":{"file":"a.azl","line":1,"column":9,"end_line":1,"end_column":12,"replacement":"i64"}}
 {"summary":{"errors":1,"files":1}}

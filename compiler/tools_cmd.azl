@@ -1,0 +1,410 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// Two commands for whoever writes azoL without having seen it before,
+// a person or a model (docs/design/agents.md):
+//
+//     azol fix <files...>      applies every edit the checker offers
+//     azol guide [topic]       prints what there is to know, from inside
+//                              the compiler
+
+// ---- fix ------------------------------------------------------------------
+
+// The most rounds of checking and editing. Each round repairs at least
+// one mistake of each file that has one, so this is reached only by a
+// program whose edits uncover new mistakes again and again.
+const FIX_ROUNDS = 40
+
+// One edit that was made, for the report.
+struct Applied {
+    file: i64
+    code: str
+    message: str
+    line: i64
+    column: i64
+    end_line: i64
+    end_column: i64
+    replacement: str
+}
+
+// The offset in `text` of a line and a column, both counted from 1, the
+// column in characters.
+fn fx_offset(text: str, line: i64, column: i64) -> i64 {
+    var at = 0
+    var seen = 1
+    while seen < line && at < text.len() {
+        if text[at] == '\n' { seen = seen + 1 }
+        at = at + 1
+    }
+    var left = column - 1
+    while left > 0 && at < text.len() && text[at] != '\n' {
+        at = at + 1
+        // The bytes that continue a character do not count.
+        while at < text.len() && text[at] >= 0x80 && text[at] < 0xC0 {
+            at = at + 1
+        }
+        left = left - 1
+    }
+    return at
+}
+
+// What a check of the program found. `state` is 0 for a program without
+// mistakes, 1 for one with mistakes (in `found`), 2 when the library
+// itself is at fault (said on standard error).
+struct Checked {
+    state: i64
+    found: List[Diagnostic]
+    files: List[SourceFile]
+    src: str
+}
+
+// Checks the program whose files hold `texts`, as `azol check` does.
+fn fx_check(paths: List[str], texts: List[str]) -> Checked {
+    var src = ""
+    var files: List[SourceFile] = []
+    for index, text in texts {
+        if index > 0 { src = src + "\n" }
+        files.push(SourceFile { path: paths[index], start: src.len(), len: text.len() })
+        src = src + text
+    }
+    let prelude_start = src.len() + 1
+    src = src + "\n"
+    src = src + PRELUDE
+    var p = new_parser("")
+    p.src = src
+    var problems: List[SemaError] = []
+    for file in files {
+        let problem = parse_part(mut p, file.start, file.len)
+        if problem.message.len() > 0 {
+            problems.push(SemaError { message: problem.message, offset: problem.offset, expr: -1, fix: no_fix() })
+            let text = p.src
+            p = new_parser("")
+            p.src = text
+        }
+    }
+    if problems.len() > 0 {
+        return Checked { state: 1, found: diagnose(problems, files, p.src, p.ast, false), files: files, src: p.src }
+    }
+    let problem = parse_part(mut p, prelude_start, PRELUDE.len())
+    if problem.message.len() > 0 {
+        eprint("error: the standard library does not parse: " + problem.message)
+        return Checked { state: 2, found: [], files: files, src: p.src }
+    }
+    var c = new_checker(p, prelude_start)
+    for file in files {
+        c.file_starts.push(file.start)
+        c.file_paths.push(file.path)
+    }
+    check_program(mut c, p)
+    if c.errors.len() == 0 { return Checked { state: 0, found: [], files: files, src: p.src } }
+    for error in c.errors {
+        if error.offset >= prelude_start {
+            eprint("error: " + error.message + " (inside the standard library; this is a bug in azoL)")
+            return Checked { state: 2, found: [], files: files, src: p.src }
+        }
+    }
+    return Checked { state: 1, found: diagnose(c.errors, files, p.src, p.ast, true), files: files, src: p.src }
+}
+
+fn fx_json(edit: Applied, path: str) -> str {
+    var out = "\{\"fixed\":\{\"code\":"
+    json_string(mut out, edit.code)
+    out = out + ",\"message\":"
+    json_string(mut out, edit.message)
+    out = out + ",\"file\":"
+    json_string(mut out, path)
+    out = out + ",\"line\":" + str(edit.line) + ",\"column\":" + str(edit.column)
+    out = out + ",\"end_line\":" + str(edit.end_line) + ",\"end_column\":" + str(edit.end_column)
+    out = out + ",\"replacement\":"
+    json_string(mut out, edit.replacement)
+    return out + "}}"
+}
+
+// `azol fix [--check] [--json] [--partial] <files...>`
+fn run_fix(arguments: List[str], first: i64) -> i64 {
+    var check = false
+    var json = false
+    var partial = false
+    var paths: List[str] = []
+    var at = first
+    while at < arguments.len() {
+        let one = arguments[at]
+        if one == "--check" {
+            check = true
+        } else if one == "--json" {
+            json = true
+        } else if one == "--partial" {
+            partial = true
+        } else if one.starts_with("-") {
+            return usage()
+        } else {
+            paths.push(one)
+        }
+        at = at + 1
+    }
+    if paths.len() == 0 { return usage() }
+    var before: List[str] = []
+    for path in paths {
+        var unread = false
+        let text = read_source(path, mut unread)
+        if unread { return 1 }
+        before.push(text)
+    }
+    var texts = before
+    var applied: List[Applied] = []
+    var round = 0
+    var last = fx_check(paths, texts)
+    while last.state == 1 && round < FIX_ROUNDS {
+        // The edits of this round, file by file. Within a file they are
+        // made from the last to the first, so that the places of those
+        // still to be made do not move; one that reaches into another
+        // waits for the next round.
+        var made = 0
+        var index = 0
+        while index < texts.len() {
+            let text = texts[index]
+            var starts: List[i64] = []
+            var ends: List[i64] = []
+            var which: List[i64] = []
+            for k, one in last.found {
+                if one.file == index && one.has_fix {
+                    let start = fx_offset(text, one.fix_line, one.fix_column)
+                    let end = fx_offset(text, one.fix_end_line, one.fix_end_column)
+                    var clear = end >= start
+                    for j, other in starts {
+                        if start < ends[j] && other < end { clear = false }
+                        if start == other && end == ends[j] { clear = false }
+                    }
+                    if clear {
+                        starts.push(start)
+                        ends.push(end)
+                        which.push(k)
+                    }
+                }
+            }
+            var changed = text
+            var done: List[bool] = []
+            for start in starts {
+                done.push(false)
+            }
+            var left = starts.len()
+            while left > 0 {
+                var pick = -1
+                for j, start in starts {
+                    if !done[j] && (pick < 0 || start > starts[pick]) { pick = j }
+                }
+                done[pick] = true
+                left = left - 1
+                let one = last.found[which[pick]]
+                changed = changed.slice(0, starts[pick]) + one.replacement + changed.slice(ends[pick], changed.len())
+                applied.push(Applied {
+                    file: index,
+                    code: one.code,
+                    message: one.message,
+                    line: one.fix_line,
+                    column: one.fix_column,
+                    end_line: one.fix_end_line,
+                    end_column: one.fix_end_column,
+                    replacement: one.replacement,
+                })
+                made = made + 1
+            }
+            texts[index] = changed
+            index = index + 1
+        }
+        if made == 0 { break }
+        round = round + 1
+        last = fx_check(paths, texts)
+    }
+    if last.state == 2 { return 1 }
+
+    // A file that still has a mistake without an edit is left as it was,
+    // unless `--partial` asks for what could be done. A file that was
+    // changed is written in the layout of `azol fmt`.
+    var written = 0
+    var held = 0
+    for index, text in texts {
+        if text == before[index] { continue }
+        var has_left = false
+        for one in last.found {
+            if one.file == index { has_left = true }
+        }
+        if has_left && !partial {
+            held = held + 1
+            continue
+        }
+        var out = text
+        let formatted = format_source(text)
+        if formatted.ok { out = formatted.text }
+        written = written + 1
+        if !check {
+            match write_file(paths[index], out) {
+                Ok(_) => {}
+                Err(why) => {
+                    eprint("error: cannot write '" + paths[index] + "': " + os_error(why))
+                    return 1
+                }
+            }
+        }
+    }
+
+    if json {
+        for edit in applied {
+            print(fx_json(edit, paths[edit.file]))
+        }
+        for one in last.found {
+            print(json_line(one, paths[one.file]))
+        }
+        var fixable = 0
+        for one in last.found {
+            if one.has_fix { fixable = fixable + 1 }
+        }
+        print("\{\"summary\":\{\"fixed\":" + str(applied.len()) + ",\"errors\":" + str(last.found.len()) + ",\"files\":" + str(paths.len()) + ",\"written\":" + str(written) + ",\"held\":" + str(held) + ",\"fixable\":" + str(fixable) + "}}")
+    } else {
+        for edit in applied {
+            var verb = "fixed"
+            if check { verb = "would fix" }
+            if !partial {
+                for one in last.found {
+                    if one.file == edit.file { verb = "not written:" }
+                }
+            }
+            print(verb + " " + paths[edit.file] + ":" + str(edit.line) + ":" + str(edit.column) + " " + edit.code + " " + edit.message)
+        }
+        if last.found.len() > 0 { show(last.found, last.files, last.src, false) }
+        // Edits in files that are not written do not count as made.
+        var made = 0
+        for edit in applied {
+            var kept = true
+            if !partial {
+                for one in last.found {
+                    if one.file == edit.file { kept = false }
+                }
+            }
+            if kept { made = made + 1 }
+        }
+        var summary = str(made) + " fixed"
+        if check { summary = str(made) + " to fix" }
+        if made < applied.len() {
+            summary = summary + ", " + str(applied.len() - made) + " not written"
+        }
+        summary = summary + ", " + str(last.found.len()) + " left"
+        if held > 0 {
+            summary = summary + "; " + str(held) + " file"
+            if held > 1 { summary = summary + "s" }
+            summary = summary + " not written because a mistake in it has no edit (`--partial` writes what could be done)"
+        }
+        eprint(summary)
+    }
+    if last.found.len() > 0 { return 1 }
+    if check && applied.len() > 0 { return 1 }
+    return 0
+}
+
+// ---- guide ----------------------------------------------------------------
+
+// The briefing and the reference, read from `docs/` when the compiler
+// is built, so that what `azol guide` prints is what those files say.
+const GUIDE_BRIEFING = embed("../docs/for-agents.md")
+const GUIDE_REFERENCE = embed("../docs/language.md")
+
+// The topics: a name that stays, and the start of the heading of its
+// section in the reference.
+const GUIDE_TOPICS = "lexical=## 1. |literals=## 2. |types=## 3. |declarations=## 4. |statements=## 5. |expressions=## 6. |calls=## 7. |methods=## 8. |builtins=## 9. |library=## 10. |values=## 11. |ownership=## 12. |exclusivity=## 13. |runtime-stops=## 14. |files=## 15. |cli=## 16. |targets=## 17. |limits=## 18. |missing=## 19. "
+
+// Where the section whose heading starts with `head` begins in `text`,
+// or -1.
+fn guide_find(text: str, head: str) -> i64 {
+    var at = 0
+    while at < text.len() {
+        if (at == 0 || text[at - 1] == '\n') && text.len() - at >= head.len() && text.slice(at, at + head.len()) == head {
+            return at
+        }
+        at = at + 1
+    }
+    return -1
+}
+
+// The section that begins at `start`: up to the next `## ` heading.
+fn guide_section(text: str, start: i64) -> str {
+    var end = start + 1
+    while end < text.len() {
+        if text[end - 1] == '\n' && text.len() - end >= 3 && text.slice(end, end + 3) == "## " {
+            break
+        }
+        end = end + 1
+    }
+    return text.slice(start, end)
+}
+
+// The heading line at `start`, without its `## 3. ` part.
+fn guide_title(text: str, start: i64, head: str) -> str {
+    var end = start
+    while end < text.len() && text[end] != '\n' {
+        end = end + 1
+    }
+    return text.slice(start + head.len(), end)
+}
+
+fn guide_list() -> str {
+    var out = "briefing          everything in one page: `azol guide` without a topic\n"
+    for entry in GUIDE_TOPICS.split("|") {
+        let parts = entry.split("=")
+        let start = guide_find(GUIDE_REFERENCE, parts[1])
+        if start >= 0 {
+            out = out + parts[0].pad_right(18, " ") + guide_title(GUIDE_REFERENCE, start, parts[1]) + "\n"
+        }
+    }
+    return out
+}
+
+// `azol guide`, `azol guide --list`, `azol guide --json`, `azol guide <topic>`
+fn run_guide(arguments: List[str], first: i64) -> i64 {
+    let count = arguments.len() - first
+    if count == 0 || (count == 1 && arguments[first] == "briefing") {
+        print(GUIDE_BRIEFING.slice(0, GUIDE_BRIEFING.len() - 1))
+        return 0
+    }
+    if count != 1 { return usage() }
+    let topic = arguments[first]
+    if topic == "--list" {
+        let text = guide_list()
+        print(text.slice(0, text.len() - 1))
+        return 0
+    }
+    if topic == "--json" {
+        var out = "\{\"schema\":1,\"version\":"
+        json_string(mut out, VERSION)
+        out = out + ",\"topics\":[\{\"name\":\"briefing\",\"title\":\"azoL for agents\",\"bytes\":" + str(GUIDE_BRIEFING.len()) + "}"
+        for entry in GUIDE_TOPICS.split("|") {
+            let parts = entry.split("=")
+            let start = guide_find(GUIDE_REFERENCE, parts[1])
+            if start >= 0 {
+                out = out + ",\{\"name\":"
+                json_string(mut out, parts[0])
+                out = out + ",\"title\":"
+                json_string(mut out, guide_title(GUIDE_REFERENCE, start, parts[1]))
+                out = out + ",\"bytes\":" + str(guide_section(GUIDE_REFERENCE, start).len()) + "}"
+            }
+        }
+        print(out + "]}")
+        return 0
+    }
+    for entry in GUIDE_TOPICS.split("|") {
+        let parts = entry.split("=")
+        if parts[0] == topic {
+            let start = guide_find(GUIDE_REFERENCE, parts[1])
+            if start < 0 { break }
+            let text = guide_section(GUIDE_REFERENCE, start)
+            var end = text.len()
+            while end > 0 && text[end - 1] == '\n' {
+                end = end - 1
+            }
+            print(text.slice(0, end))
+            return 0
+        }
+    }
+    eprint("error: there is no guide topic '" + topic + "'; the topics are:\n")
+    let text = guide_list()
+    eprint(text.slice(0, text.len() - 1))
+    return 2
+}

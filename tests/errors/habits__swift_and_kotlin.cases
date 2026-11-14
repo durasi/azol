@@ -1,0 +1,157 @@
+# Habits from Swift and Kotlin (docs/design/agents.md 1.5, compiler/habits.azl): each is answered with an
+# error that names the habit and says the azoL form, and with the edit when it is mechanical.
+==== E0125: `let s = Shape.Circle(2)`
+---- file a.azl
+enum Shape {
+    Circle(i64)
+    Dot
+}
+fn main() {
+    let s = Shape.Circle(2)
+    match s {
+        Circle(r) => print(r)
+        Dot => print(0)
+    }
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0125 6:13
+---- apply-fix
+---- after-has a.azl
+    let s = Circle(2)
+---- run check --json a.azl
+---- exit 0
+==== E0223: `print(p.area())`
+---- file a.azl
+struct P {
+    x: i64
+}
+fn area(p: P) -> i64 {
+    return p.x
+}
+fn main() {
+    let p = P { x: 1 }
+    print(p.area())
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 9:13
+---- apply-fix
+---- after-has a.azl
+    print(area(p))
+---- run check --json a.azl
+---- exit 0
+==== E0130: `let x: i64? = None`
+---- file a.azl
+fn main() {
+    let x: i64? = None
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0130 2:15
+---- apply-fix
+---- after-has a.azl
+    let x: Option[i64] = None
+---- run check --json a.azl
+---- exit 0
+==== E0130: `let p = P(x: 1)`
+---- file a.azl
+struct P {
+    x: i64
+}
+fn main() {
+    let p = P(x: 1)
+    print(p.x)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0130 5:16
+---- apply-fix
+---- after-has a.azl
+    let p = P { x: 1 }
+---- run check --json a.azl
+---- exit 0
+==== E0124: `print(o!)`
+---- file a.azl
+fn main() {
+    let o = Some(1)
+    print(o!)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0124 3:12
+---- no-fix
+==== E0221: `assert(1 == 1)`
+---- file a.azl
+fn main() {
+    assert(1 == 1)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0221 2:5
+---- apply-fix
+---- run check --json a.azl
+---- exit 0
+==== E0126: `trait Shape {`
+---- file a.azl
+trait Shape {
+}
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0126 1:1
+---- no-fix
+==== E0130: `f(x: 1)`
+---- file a.azl
+fn f(x: i64) {
+}
+fn main() {
+    f(x: 1)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0130 4:8
+---- apply-fix
+---- after-has a.azl
+    f(1)
+---- run check --json a.azl
+---- exit 0
+==== E0223: `print(s.len)`
+---- file a.azl
+fn main() {
+    let s = "a"
+    print(s.len)
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0223 3:13
+---- apply-fix
+---- after-has a.azl
+    print(s.len())
+---- run check --json a.azl
+---- exit 0
+==== E0222: `let xs: List[i64] = List.new()`
+---- file a.azl
+fn main() {
+    let xs: List[i64] = List.new()
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0222 2:25
+---- no-fix
+==== E0126: `pub x: i64,`
+---- file a.azl
+struct P {
+    pub x: i64,
+}
+fn main() {
+}
+---- run check --json a.azl
+---- exit 1
+---- reports E0126 2:9
+---- apply-fix
+---- after-has a.azl
+    x: i64,
+---- run check --json a.azl
+---- exit 0

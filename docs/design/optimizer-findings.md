@@ -348,6 +348,138 @@ Geometric means against the default build: 0.62 before, 0.64 after.
 
 The mean went up, and that is `divconst`: a division that was two instructions (`sdiv`, `msub`) is five or six that do not divide (`loops` 0.89 to 1.11, `bfs` 0.67 to 0.79, `particles` 0.55 to 0.67, `bignum` 0.50 to 0.61; 18 of the 28 programs make their data with `% 2147483647`). The instruction ratio against `rustc -O` on x86-64 will rise for the same reason, while the times fall: where the two disagree, the gate is defined in time. `binary_trees`, `tree`, `prefix`, `bits`, `json`, `words` and `append` run fewer instructions (paired copies, `carry`, shifted operands).
 
+## Memory, maps and building text: where the time goes (13 November 2026)
+
+Ten of the 28 programs were behind `rustc -O` on the M5 for reasons the
+instruction counts hid: `map_int` 3.32, `wordfreq` 2.46, `tokenizer` 2.06,
+`words` 2.02, `tree` 1.50, `bfs` 1.41, `json` 1.26, `lru` 1.25,
+`binary_trees` 1.13, `append` 1.06 (times, `azol build -O` against
+`rustc -O`, the M5 run of commit 3578023).
+
+### How it was measured
+
+There is no `perf` in the sandbox. Each program was built with `-O` and
+`--map` and run under `valgrind --tool=callgrind --cache-sim=yes
+--branch-sim=yes --dump-instr=yes`; the cost of every instruction was
+then added up by function through the map, with the usual estimate of
+cycles: instructions + 10 for a first-level miss or a mispredicted
+branch + 100 for a last-level miss. This is a model of an x86-64 machine
+with small caches, not the M5: it ranks causes, it does not predict
+times. Wall times in this section are from the sandbox (x86-64 Linux,
+`bench/gate.py --opt --force`, best of ten).
+
+### What the profiles said (share of estimated cycles, small sizes)
+
+| Program | allocator | copying and building text | map look-ups | the program's own loops | `filled` |
+|---|---|---|---|---|---|
+| `tree` | 26% | | | 71% (build, sum, drop) | |
+| `binary_trees` | 25% | | | 74% | |
+| `lru` | 13% + 5% freeing | 26% (`str(n)`, `+`) | 28% | 23% | |
+| `json` | 14% | 39% (append, push, `str(n)`, slice) | | 33% | |
+| `words` | 17% + 4% freeing | 24% (append, slice) | | 53% (26% of it `split`) | |
+| `wordfreq` | 13% + 4% freeing | 26% | 29% | 27% | |
+| `append` | 10% | 70% | | 15% | |
+| `map_int` | | | 63% (its own table) | 5% | 27% |
+| `tokenizer` | | 9% | | 89% | |
+| `bfs` | | | | 74% | 23% |
+
+Three things follow.
+
+1. **On Linux azoL already had an allocator and was level with Rust on the
+   programs that only allocate** (`binary_trees` 0.69, `lru` 0.90, `tree`
+   1.09 in the sandbox). On macOS it called the system's `malloc` and
+   `free` for every block, and the same programs were at 1.13, 1.25 and
+   1.50 on the M5. The difference between the two machines on these
+   programs is the system allocator, not the generated code.
+2. `map_int` and `bfs` spend a quarter of their time in `0.filled(n)`,
+   a `push` loop; and `map_int`'s table is the program's own, three lists
+   of eight-byte numbers, so every probe touches three places. Neither is
+   the library's `Map`.
+3. `words` and `wordfreq` make one owned text per word (4 and 8 million
+   allocations, copies and frees) where Rust keeps a pointer and a length
+   into the text it split. No allocator makes that free.
+
+### What was done
+
+- **An allocator in the ARM64 runtime** (`runtime/runtime.s`, used on
+  macOS and on Linux ARM64): the design of `runtime/linux_common/memory.h`,
+  written out in assembly. Blocks up to 64 KB come in twelve sizes, powers
+  of two from 32 bytes with a 16-byte header, cut from 1 MB chunks asked of
+  the system and kept on a list per size when freed; larger blocks are the
+  system's. Taking a block that is on a list is 16 instructions, giving
+  one back is 10. Its lists live in a page of memory of the program's own:
+  a `__DATA` segment with a zero-filled `__bss` section in the Mach-O
+  file (no bytes in the file), and after the library's memory on Linux.
+- **Growth in place**, in both allocators: the block that was cut last
+  from the chunk grows by moving the chunk's mark, with nothing copied.
+- **The Linux allocator's short way inlined** into every routine that
+  allocates (it was a call with four saved registers and a loop to find
+  the size), and the size found with one instruction.
+- **`s = s + "literal"`** for a literal of up to eight bytes stores the
+  bytes itself when `s` has room (`-O`); the runtime is called only to
+  make room.
+- **`split` with a one-byte separator** is a plain loop over the bytes.
+
+Sandbox times, `azol build -O` against `rustc -O`, before and after
+(measured on a quiet machine; the second column is before `split` got
+its loop):
+
+| Program | before | after |
+|---|---|---|
+| `append` | 0.93 | 0.84 |
+| `bfs` | 1.27 | 1.28 |
+| `binary_trees` | 0.69 | 0.65 |
+| `json` | 1.00 | 0.90 |
+| `lru` | 0.90 | 0.84 |
+| `map_int` | 1.79 | 1.84 |
+| `tokenizer` | 1.50 | 1.45 |
+| `tree` | 1.09 | 0.95 |
+| `wordfreq` | 2.21 | 2.16 |
+| `words` | 1.62 | 1.58 |
+| geometric mean | 1.23 | 1.17 |
+
+The same ten programs built with `-O` by the compiler before and after
+all of it, runs of the two taken in turn so that the load on the machine
+falls on both (best of six, after / before): `words` 0.93, `wordfreq`
+0.93, `tree` 0.93, `binary_trees` 0.93, `lru` 0.97, `json` 0.97,
+`tokenizer` 0.97, `map_int` 0.98, `append` 1.00, `bfs` 1.00. The compiler
+itself runs 278.8 M instructions on the 44,004-line program against
+280.2 M before: on Linux it was not waiting for the allocator.
+
+These are the Linux numbers, where the allocator was already azoL's. The
+change that matters for the M5, the allocator replacing the system's
+there, cannot be timed here: in the emulators the system's `malloc` costs
+nothing.
+
+### What is left, and why
+
+- **`words`, `wordfreq`: a text per word.** The cure is a piece of text
+  that points into the text it was cut from. Text in the executable is
+  already such a value (capacity 0: not owned, copied when it is changed),
+  but a piece of a text that lives in a buffer needs two things more: a
+  copy of it must become an owned text (a map that keeps the word must
+  not keep a pointer into a text that may go away), and the text it points
+  into may not move or be freed while it is alive. A third state of the
+  capacity word (negative: a view) gives the first; the second is the
+  `view` pass's proof, carried across the call of `split` and through the
+  list. That is a change in both code generators, the runtime's `drop` and
+  `clone` and the effect summaries, and it is not done.
+- **`wordfreq`: two look-ups per word.** The program asks `get` and then
+  `set`; Rust's `entry` looks once. With `counts.add(word, 1)`, which the
+  library has had since the short forms, the sandbox time goes from 0.427 s
+  to 0.375 s. The benchmark was left as it is: whether to change a
+  benchmark's source is not the optimiser's decision.
+- **`map_int`: the table's layout** (three lists, 24 bytes a slot, half
+  full) against Rust's one array of 16-byte entries with a byte of state
+  each, and `filled` (a quarter of the run). One list of a struct per slot
+  would put a probe in one place; packed elements would shrink the state.
+- **`str(n)` into a text**: `text = text + str(n)` makes a text for the
+  number, appends it and frees it. A routine that writes the digits
+  straight into `text` would remove an allocation and a free per number
+  (`lru`, `wordfreq`, `json`, `append`: 6% to 16% of their profiles).
+- **Appending a text that is not a literal** still calls the runtime for
+  every piece (`join`, `text = text + part`).
+- **`tokenizer`** is 89% the program's own loop: not memory.
 ## `sieve` after packed lists (x86-64 Linux, 13 November 2026)
 
 A `List[bool]` now keeps one byte for each element, in both modes, and
@@ -359,3 +491,9 @@ loop of `push` over a doubling buffer and is 0.023 s as one loop of
 byte stores. The details are in `optimizer-notes.md`, "Packed lists".
 Not measured on the M5.
 
+
+## The allocator, verified again on the merged tree (14 November)
+
+On the branch with master merged in, on x86-64 Linux: `sh build.sh` reaches its fixed point; the whole `sh test.sh` passes; `python3 tests/opt/run_opt_tests.py` ends with no failure; the three emulator runners report every program with as many frees as allocations (the stress program: 1465 and 1465 on both ARM64 targets); 300 fuzzed programs on three targets give no finding. Ten programs that allocate a lot, built with `-O` by master and by this branch and timed in turn: 0.96 of master's time as a geometric mean (`tree`, `wordfreq` 0.92; `words`, `binary_trees` 0.94; `bfs`, `append`, `tokenizer` unchanged), and 1.12 of `rustc -O`. The compiler itself on the 44,004-line program: 43 ms before and after. On Linux the allocator was already the runtime's own; the change that matters is on macOS, where every block used to go to the system, and no time has been measured there.
+
+What a real Mac has to show, because only an emulator has run it: the `__DATA` segment with nothing in the file (128 bytes of `__bss` in one page between `__DATA_CONST` and `__LINKEDIT`, the layout `ld` gives a program with only zero-filled data) is accepted by the loader. The compiler is built with the same runtime, so `sh build.sh` is the first test: if the loader refuses the segment, the first stage's output does not start (`Killed: 9`, or a `dyld` message), and the build stops before the fixed point. After it, `sh test.sh` runs `allocator_stress.azl` natively and `sh tests/opt/mac_check.sh` runs it through both builds. `tests/opt/heap/out_of_memory.azl` is for the emulators only: on a real machine it would take all the memory the system is willing to lend before it stops.

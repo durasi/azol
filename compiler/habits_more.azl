@@ -1,0 +1,755 @@
+// Copyright (c) 2026 Seçkin Sefa Durası, github.com/durasi
+
+// More edits for the habits of other languages (docs/design/agents.md, 1.5).
+//
+// `habits.azl` names a habit and gives its edit when the edit is plain.
+// This file adds the edits that need a little more reading of the text:
+// a whole `for ( ; ; )`, a block that Python closes by its depth, an
+// `if let`, a `printf` with its values. Each of them is made only when
+// the place has the one plain shape it knows; anything else keeps the
+// message and gets no edit.
+//
+// `habit_of` is the one function the rest of the compiler calls.
+
+fn habit_of(message: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    if at < lo || at > hi { return hb_none() }
+    if message.starts_with("a character literal holds one") {
+        let life = hbm_lifetime(at, src, lo, hi)
+        if life.message.len() > 0 { return life }
+    }
+    let known = habit_known(message, at, src, lo, hi)
+    if known.fix.kind != FIX_NONE { return known }
+    var say = message
+    if known.message.len() > 0 { say = known.message }
+    let more = hbm_more(say, at, src, lo, hi)
+    if more.message.len() > 0 { return more }
+    return known
+}
+
+// ---- reading -------------------------------------------------------------
+
+// The parts of `text` between its commas, each without the spaces around
+// it. Commas in brackets and in texts do not divide.
+fn hbm_split(text: str, by: i64) -> List[str] {
+    var parts: List[str] = []
+    var depth = 0
+    var from = 0
+    var k = 0
+    while k < text.len() {
+        let b = text[k]
+        if b == '"' {
+            k = k + 1
+            while k < text.len() && text[k] != '"' {
+                if text[k] == '\\' { k = k + 1 }
+                k = k + 1
+            }
+        } else if b == '(' || b == '[' || b == '{' {
+            depth = depth + 1
+        } else if b == ')' || b == ']' || b == '}' {
+            depth = depth - 1
+        } else if b == by && depth == 0 {
+            parts.push(text.slice(from, k).trim())
+            from = k + 1
+        }
+        k = k + 1
+    }
+    if from <= text.len() { parts.push(text.slice(from, text.len()).trim()) }
+    return parts
+}
+
+// Where `needle` first is in `text` at or after `from`; -1 when nowhere.
+fn hbm_find(text: str, needle: str, from: i64) -> i64 {
+    var k = from
+    while k + needle.len() <= text.len() {
+        var same = true
+        var j = 0
+        while j < needle.len() {
+            if text[k + j] != needle[j] {
+                same = false
+                j = needle.len()
+            }
+            j = j + 1
+        }
+        if same { return k }
+        k = k + 1
+    }
+    return -1
+}
+
+// Whether `text` is one text between double quotes and nothing else.
+fn hbm_is_text(text: str) -> bool {
+    if text.len() < 2 || text[0] != '"' { return false }
+    var k = 1
+    while k < text.len() && text[k] != '"' {
+        if text[k] == '\\' { k = k + 1 }
+        k = k + 1
+    }
+    return k == text.len() - 1
+}
+
+fn hbm_all_digits(text: str) -> bool {
+    if text.len() == 0 { return false }
+    var k = 0
+    while k < text.len() {
+        if text[k] < '0' || text[k] > '9' { return false }
+        k = k + 1
+    }
+    return true
+}
+
+fn hbm_hex(b: i64) -> i64 {
+    if b >= '0' && b <= '9' { return b - '0' }
+    if b >= 'a' && b <= 'f' { return b - 'a' + 10 }
+    if b >= 'A' && b <= 'F' { return b - 'A' + 10 }
+    return -1
+}
+
+// The names of the fields of struct `name`, in their order; empty when
+// the struct is not in `src` or has type parameters.
+fn hbm_fields(src: str, name: str) -> List[str] {
+    var fields: List[str] = []
+    let head = hbm_find(src, "struct " + name + " \{", 0)
+    if head < 0 { return fields }
+    let open = head + 8 + name.len()
+    let close = hb_block_end(src, open, src.len())
+    if close < 0 { return fields }
+    for line in src.slice(open + 1, close).split("\n") {
+        for piece in hbm_split(line, ',') {
+            let colon = hbm_find(piece, ":", 0)
+            if colon > 0 && !piece.starts_with("//") { fields.push(piece.slice(0, colon).trim()) }
+        }
+    }
+    return fields
+}
+
+// ---- the edits -----------------------------------------------------------
+
+fn hbm_more(say: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    if say.starts_with("there is no `range`") { return hbm_range(say, at, src, lo, hi) }
+    if say.starts_with("the body of `") && say.contains("` is a block in azoL, even for one statement") {
+        return hbm_one_statement(say, at, src, lo, hi)
+    }
+    if say.starts_with("a block is between `\{` and `}` in azoL; `:`") {
+        return hbm_depth_block(say, at, src, lo, hi)
+    }
+    if say == "expected `\{` but found `:`" {
+        return hbm_depth_block("a block is between `\{` and `}` in azoL; `:` and the depth of the lines do not make one", at, src, lo, hi)
+    }
+    if say == "expected `=` but found `,`" || say == "expected end of line but found `,`" {
+        let word = hb_first_word(src, at, lo, hi)
+        if word == "let" || word == "var" {
+            return hb_say("one name is declared at a time in azoL, and a function gives back one value; a failure is the `Err` of a `Result`, read with `match` or `?`")
+        }
+        return hb_none()
+    }
+    if say.starts_with("azoL has no `for (start; test; step)`") {
+        return hbm_counted(say, at, src, lo, hi)
+    }
+    if say.starts_with("azoL has no `c ? a : b`") { return hbm_choice(say, at, src, lo, hi) }
+    if say.starts_with("an arm of `match` has one pattern") {
+        return hbm_arms(say, at, src, lo, hi)
+    }
+    if say.starts_with("`printf` is not an azoL function") {
+        return hbm_printf(say, at, src, lo, hi)
+    }
+    if say.starts_with("`print` takes one value") { return hbm_print_values(say, at, src, lo, hi) }
+    if say.starts_with("azoL has no `~`") { return hbm_tilde(say, at, src, lo, hi) }
+    if say.starts_with("a `Map` is not indexed with `[ ]`") {
+        return hbm_map_set(say, at, src, lo, hi)
+    }
+    if say.starts_with("`") && say.contains("` is not an azoL type; the map is `Map[V]`") {
+        return hbm_map_type(say, at, src, lo, hi)
+    }
+    if say.starts_with("`panic` is not an azoL function") { return hbm_panic(say, at, src, lo, hi) }
+    if say.starts_with("`assert` is not an azoL function") {
+        return hbm_assert(say, at, src, lo, hi)
+    }
+    if say == "a condition must be `bool` but this is `i64`" {
+        return hbm_truth(say, at, src, lo, hi)
+    }
+    if say.starts_with("a constant is declared outside functions") {
+        if hb_name(src, at, hi) == "const" { return hb_edit(say, at, at + 5, "let") }
+        return hb_none()
+    }
+    if say.starts_with("type arguments are never written at a call in azoL; the type comes from the variable") {
+        if hb_byte(src, at, lo, hi) == ':' && hb_byte(src, at + 1, lo, hi) == ':' && hb_byte(src, at + 2, lo, hi) == '<' {
+            let close = hb_close_angle(src, at + 2, hi)
+            if close > at { return hb_edit(say, at, close + 1, "") }
+        }
+        return hb_none()
+    }
+    if say == "unknown escape sequence in string literal" { return hbm_escape(at, src, lo, hi) }
+    if say == "unterminated string literal" { return hbm_two_lines(at, src, lo, hi) }
+    if say.starts_with("a range exists only in `for i in a..b`; for a part of") {
+        return hbm_part(say, at, src, lo, hi)
+    }
+    if say.starts_with("azoL has no `if let`") { return hbm_if_let(say, at, src, lo, hi) }
+    if say.starts_with("a text is written between double quotes in azoL, and a value goes into it") {
+        return hbm_backquotes(say, at, src, lo, hi)
+    }
+    if say.starts_with("azoL has no `new`; a struct value is written") {
+        return hbm_new(say, at, src, lo, hi)
+    }
+    return hb_none()
+}
+
+// `'a` where a lifetime stands: between `[ ]`, or after `&`.
+fn hbm_lifetime(at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    if hb_byte(src, at, lo, hi) != '\'' { return hb_none() }
+    let end = hb_name_end(src, at + 1, hi)
+    if end == at + 1 { return hb_none() }
+    let before = hb_byte(src, at - 1, lo, hi)
+    let after = hb_byte(src, end, lo, hi)
+    let say = "azoL has no lifetimes such as `'a`: there are no references, so nothing outlives anything"
+    if before == '[' && after == ']' { return hb_edit(say, at - 1, end + 1, "") }
+    if before == '[' && after == ',' { return hb_edit(say, at, hb_after(src, end + 1, hi), "") }
+    if before == '&' && after == ' ' { return hb_edit(say, at, end + 1, "") }
+    return hb_none()
+}
+
+// `range(n)`, `range(a, b)`, `range(a, b, step)`.
+fn hbm_range(say: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let open = at + 5
+    if hb_name(src, at, hi) != "range" || hb_byte(src, open, lo, hi) != '(' { return hb_none() }
+    let close = hb_close(src, open, hi)
+    if close < 0 { return hb_none() }
+    let parts = hbm_split(src.slice(open + 1, close), ',')
+    for part in parts {
+        if part.len() == 0 { return hb_none() }
+    }
+    if parts.len() == 1 { return hb_edit(say, at, close + 1, "0.." + parts[0]) }
+    if parts.len() == 2 { return hb_edit(say, at, close + 1, parts[0] + ".." + parts[1]) }
+    if parts.len() == 3 {
+        return hb_edit(say, at, close + 1, parts[0] + ".." + parts[1] + " step " + parts[2])
+    }
+    return hb_none()
+}
+
+// `if (x > 0) f(x)`: the statement gets its braces.
+fn hbm_one_statement(say: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let end = hb_line_end(src, at, hi)
+    let body = src.slice(at, end).trim()
+    if body.len() == 0 || body.contains("//") || body.contains(" else ") { return hb_none() }
+    if body[body.len() - 1] == '{' || body[0] == '{' { return hb_none() }
+    return hb_edit(say, at, end, "\{ " + body + " }")
+}
+
+// `if x > 0:` and the deeper lines under it.
+fn hbm_depth_block(say: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    if hb_byte(src, at, lo, hi) != ':' { return hb_none() }
+    let eol = hb_line_end(src, at, hi)
+    let rest = src.slice(at + 1, eol).trim()
+    if rest.len() > 0 {
+        if rest.contains("//") { return hb_none() }
+        return hb_edit(say, at, eol, " \{ " + rest + " }")
+    }
+    let head = hb_line_start(src, at, lo)
+    let depth = hb_after(src, head, hi) - head
+    var k = eol + 1
+    var end = eol
+    var going = true
+    while going && k < hi {
+        let line_end = hb_line_end(src, k, hi)
+        let first = hb_after(src, k, hi)
+        if first >= line_end {
+            k = line_end + 1
+        } else if first - k <= depth {
+            going = false
+        } else {
+            end = line_end
+            k = line_end + 1
+        }
+    }
+    if end == eol { return hb_none() }
+    let text = " \{" + src.slice(eol, end) + "\n" + src.slice(head, head + depth) + "}"
+    if k < hi {
+        let first = hb_after(src, k, hi)
+        let word = hb_name(src, first, hi)
+        if first - k == depth && (word == "else" || word == "elif") {
+            return hb_edit(say, at, first, text + " ")
+        }
+    }
+    return hb_edit(say, at, end, text)
+}
+
+// `for (var i = 0; i < n; i++)`.
+fn hbm_counted(say: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let start = hb_after(src, hb_line_start(src, at, lo), hi)
+    if hb_name(src, start, hi) != "for" { return hb_none() }
+    let open = hb_after(src, start + 3, hi)
+    if hb_byte(src, open, lo, hi) != '(' { return hb_none() }
+    let close = hb_close(src, open, hi)
+    if close < 0 { return hb_none() }
+    let parts = hbm_split(src.slice(open + 1, close), ';')
+    if parts.len() != 3 { return hb_none() }
+    let equals = hbm_find(parts[0], "=", 0)
+    if equals <= 0 { return hb_none() }
+    let words = parts[0].slice(0, equals).trim().split(" ")
+    let name = words[words.len() - 1]
+    let first = parts[0].slice(equals + 1, parts[0].len()).trim()
+    if name.len() == 0 || !hb_is_simple(name) || name.contains(".") || first.len() == 0 {
+        return hb_none()
+    }
+    if !parts[1].starts_with(name) { return hb_none() }
+    let test = parts[1].slice(name.len(), parts[1].len()).trim()
+    var dots = ".."
+    var bound = ""
+    if test.starts_with("<=") {
+        dots = "..="
+        bound = test.slice(2, test.len()).trim()
+    } else if test.starts_with("<") {
+        bound = test.slice(1, test.len()).trim()
+    }
+    if bound.len() == 0 { return hb_none() }
+    let step = parts[2]
+    var by = ""
+    if step == name + "++" || step == "++" + name || step == name + " += 1" || step == name + "+=1" || step == name + " = " + name + " + 1" {
+        by = ""
+    } else if step.starts_with(name + " += ") {
+        by = " step " + step.slice(name.len() + 4, step.len()).trim()
+    } else {
+        return hb_none()
+    }
+    return hb_edit(say, start, close + 1, "for " + name + " in " + first + dots + bound + by)
+}
+
+// `let x = c ? a : b`.
+fn hbm_choice(say: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    if hb_byte(src, at, lo, hi) != '?' { return hb_none() }
+    let eol = hb_line_end(src, at, hi)
+    let first = hb_after(src, hb_line_start(src, at, lo), hi)
+    var right = -1
+    if hb_name(src, first, hi) == "return" {
+        right = hb_after(src, first + 6, hi)
+    } else {
+        var k = first
+        while k < at && right < 0 {
+            if src[k] == '=' {
+                let before = hb_byte(src, k - 1, lo, hi)
+                let after = hb_byte(src, k + 1, lo, hi)
+                if after == '=' || before == '=' || before == '!' || before == '<' || before == '>' || before == '+' || before == '-' || before == '*' || before == '/' || before == '%' || before == '&' || before == '|' || before == '^' {
+                    return hb_none()
+                }
+                right = hb_after(src, k + 1, hi)
+            }
+            k = k + 1
+        }
+    }
+    if right < 0 || right >= at { return hb_none() }
+    let test = src.slice(right, at).trim()
+    let rest = src.slice(at + 1, eol)
+    if test.len() == 0 || rest.contains("?") || rest.contains("//") { return hb_none() }
+    let sides = hbm_split(rest, ':')
+    if sides.len() != 2 || sides[0].len() == 0 || sides[1].len() == 0 { return hb_none() }
+    return hb_edit(say, right, eol, "if " + test + " \{ " + sides[0] + " } else \{ " + sides[1] + " }")
+}
+
+// `1 | 2 => f()`: an arm for each.
+fn hbm_arms(say: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let head = hb_line_start(src, at, lo)
+    let first = hb_after(src, head, hi)
+    let eol = hb_line_end(src, at, hi)
+    let line = src.slice(first, eol)
+    let arrow = hbm_find(line, "=>", 0)
+    if arrow < 0 { return hb_none() }
+    let body = line.slice(arrow + 2, line.len()).trim()
+    if body.len() == 0 || body.contains("//") || body[body.len() - 1] == '{' { return hb_none() }
+    let patterns = hbm_split(line.slice(0, arrow), '|')
+    if patterns.len() < 2 || patterns.len() > 12 { return hb_none() }
+    var text = ""
+    for pattern in patterns {
+        if pattern.len() == 0 { return hb_none() }
+        if text.len() > 0 { text = text + "\n" + src.slice(head, first) }
+        text = text + pattern + " => " + body
+    }
+    return hb_edit(say, first, eol, text)
+}
+
+// `printf("n = %d\n", n)`.
+fn hbm_printf(say: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let open = at + 6
+    if hb_name(src, at, hi) != "printf" || hb_byte(src, open, lo, hi) != '(' { return hb_none() }
+    let close = hb_close(src, open, hi)
+    if close < 0 { return hb_none() }
+    let parts = hbm_split(src.slice(open + 1, close), ',')
+    if parts.len() == 0 || !hbm_is_text(parts[0]) { return hb_none() }
+    let form = parts[0]
+    // `print` ends the line, so the form has to.
+    let end = form.len() - 3
+    if end < 1 || form[end] != '\\' || form[end + 1] != 'n' { return hb_none() }
+    var out = "\""
+    var used = 1
+    var k = 1
+    while k < end {
+        let b = form[k]
+        if b == '%' {
+            k = k + 1
+            while k < end && (form[k] == 'l' || form[k] == 'z' || form[k] == 'h') {
+                k = k + 1
+            }
+            if k >= end { return hb_none() }
+            if form[k] == '%' {
+                out.push('%')
+            } else if form[k] == 'd' || form[k] == 'i' || form[k] == 'u' || form[k] == 's' {
+                if used >= parts.len() || !hb_is_simple(parts[used]) { return hb_none() }
+                if hbm_all_digits(parts[used]) {
+                    out = out + parts[used]
+                } else {
+                    out = out + "\{" + parts[used] + "}"
+                }
+                used = used + 1
+            } else {
+                return hb_none()
+            }
+        } else if b == '{' {
+            out = out + "\\\{"
+        } else {
+            if b == '\\' && k + 1 < end {
+                out.push(b)
+                k = k + 1
+            }
+            out.push(form[k])
+        }
+        k = k + 1
+    }
+    if used != parts.len() { return hb_none() }
+    out.push('"')
+    if parts.len() == 2 && (out == "\"\{" + parts[1] + "}\"" || out == "\"" + parts[1] + "\"") {
+        out = parts[1]
+    }
+    return hb_edit(say, at, close + 1, "print(" + out + ")")
+}
+
+// `print("x", x)`: one text with the values in it.
+fn hbm_print_values(say: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let name = hb_name(src, at, hi)
+    let open = at + name.len()
+    if name.len() == 0 || hb_byte(src, open, lo, hi) != '(' { return hb_none() }
+    let close = hb_close(src, open, hi)
+    if close < 0 { return hb_none() }
+    let parts = hbm_split(src.slice(open + 1, close), ',')
+    if parts.len() < 2 { return hb_none() }
+    var out = "\""
+    var count = 0
+    for part in parts {
+        if count > 0 { out.push(' ') }
+        if hbm_is_text(part) {
+            out = out + part.slice(1, part.len() - 1)
+        } else if hbm_all_digits(part) {
+            out = out + part
+        } else if hb_is_simple(part) {
+            out = out + "\{" + part + "}"
+        } else {
+            return hb_none()
+        }
+        count = count + 1
+    }
+    out.push('"')
+    return hb_edit(say, open + 1, close, out)
+}
+
+// `~x`.
+fn hbm_tilde(say: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    if hb_byte(src, at, lo, hi) != '~' { return hb_none() }
+    let end = hb_name_end(src, at + 1, hi)
+    let after = hb_byte(src, end, lo, hi)
+    if end == at + 1 || after == '.' || after == '(' || after == '[' { return hb_none() }
+    return hb_edit(say, at, end, "(" + src.slice(at + 1, end) + " ^ -1)")
+}
+
+// `m["k"] = 1` as a statement.
+fn hbm_map_set(say: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let name_end = hb_name_end(src, at, hi)
+    if name_end == at || hb_byte(src, name_end, lo, hi) != '[' { return hb_none() }
+    if hb_after(src, hb_line_start(src, at, lo), hi) != at { return hb_none() }
+    let close = hb_close(src, name_end, hi)
+    if close < 0 { return hb_none() }
+    let equals = hb_after(src, close + 1, hi)
+    if hb_byte(src, equals, lo, hi) != '=' || hb_byte(src, equals + 1, lo, hi) == '=' {
+        return hb_none()
+    }
+    let eol = hb_line_end(src, at, hi)
+    let key = src.slice(name_end + 1, close).trim()
+    let value = src.slice(equals + 1, eol).trim()
+    if key.len() == 0 || value.len() == 0 || value.contains("//") { return hb_none() }
+    return hb_edit(say, at, eol, src.slice(at, name_end) + ".set(" + key + ", " + value + ")")
+}
+
+// `HashMap[str, V]`.
+fn hbm_map_type(say: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let name_end = hb_name_end(src, at, hi)
+    if name_end == at || hb_byte(src, name_end, lo, hi) != '[' { return hb_none() }
+    let close = hb_close(src, name_end, hi)
+    if close < 0 { return hb_none() }
+    let parts = hbm_split(src.slice(name_end + 1, close), ',')
+    if parts.len() != 2 || parts[1].len() == 0 || !hb_in(parts[0], "str String string &str Str") {
+        return hb_none()
+    }
+    return hb_edit(say, at, close + 1, "Map[" + parts[1] + "]")
+}
+
+// The call that is the whole statement at `at`: where its `)` is, or -1.
+fn hbm_statement_call(at: i64, src: str, lo: i64, hi: i64) -> i64 {
+    if hb_after(src, hb_line_start(src, at, lo), hi) != at { return -1 }
+    let open = hb_name_end(src, at, hi)
+    if hb_byte(src, open, lo, hi) != '(' { return -1 }
+    let close = hb_close(src, open, hi)
+    if close < 0 || hb_after(src, close + 1, hi) < hb_line_end(src, close, hi) { return -1 }
+    return close
+}
+
+// `panic("why")` as a statement.
+fn hbm_panic(say: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    if hb_name(src, at, hi) != "panic" { return hb_none() }
+    let close = hbm_statement_call(at, src, lo, hi)
+    if close < 0 { return hb_none() }
+    let why = src.slice(at + 6, close).trim()
+    if !hbm_is_text(why) { return hb_none() }
+    let indent = src.slice(hb_line_start(src, at, lo), at)
+    return hb_edit(say, at, close + 1, "eprint(" + why + ")\n" + indent + "exit(1)")
+}
+
+// `assert(test)` and `assert(test, "why")` as a statement.
+fn hbm_assert(say: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    if hb_name(src, at, hi) != "assert" { return hb_none() }
+    let close = hbm_statement_call(at, src, lo, hi)
+    if close < 0 { return hb_none() }
+    let parts = hbm_split(src.slice(at + 7, close), ',')
+    if parts.len() == 0 || parts.len() > 2 || parts[0].len() == 0 { return hb_none() }
+    let test = parts[0]
+    var why = ""
+    if parts.len() == 2 {
+        if !hbm_is_text(parts[1]) { return hb_none() }
+        why = parts[1]
+    } else {
+        if test.contains("\"") || test.contains("\\") || test.contains("\{") { return hb_none() }
+        why = "\"assertion failed: " + test + "\""
+    }
+    let indent = src.slice(hb_line_start(src, at, lo), at)
+    let text = "if !(" + test + ") \{\n" + indent + "    eprint(" + why + ")\n" + indent + "    exit(1)\n" + indent + "}"
+    return hb_edit(say, at, close + 1, text)
+}
+
+// `while 1 \{`, `if 0 \{`.
+fn hbm_truth(say: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let end = hb_name_end(src, at, hi)
+    let number = src.slice(at, end)
+    if !hbm_all_digits(number) || hb_byte(src, hb_after(src, end, hi), lo, hi) != '{' {
+        return hb_none()
+    }
+    let word_at = hb_prev_word(src, at, lo)
+    if word_at < 0 { return hb_none() }
+    let word = hb_name(src, word_at, hi)
+    if word != "while" && word != "if" { return hb_none() }
+    var truth = "false"
+    var k = 0
+    while k < number.len() {
+        if number[k] != '0' { truth = "true" }
+        k = k + 1
+    }
+    return hb_edit(say, at, end, truth)
+}
+
+// `\x41`, `\u{41}`, `A` in a text.
+fn hbm_escape(at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    if hb_byte(src, at, lo, hi) != '\\' { return hb_none() }
+    let kind = hb_byte(src, at + 1, lo, hi)
+    var end = -1
+    var value = 0
+    if kind == 'x' {
+        let high = hbm_hex(hb_byte(src, at + 2, lo, hi))
+        let low = hbm_hex(hb_byte(src, at + 3, lo, hi))
+        if high < 0 || low < 0 { return hb_none() }
+        value = high * 16 + low
+        end = at + 4
+    } else if kind == 'u' {
+        var k = at + 2
+        if hb_byte(src, k, lo, hi) == '{' {
+            k = k + 1
+            var digits = 0
+            while digits < 7 && hbm_hex(hb_byte(src, k, lo, hi)) >= 0 {
+                value = value * 16 + hbm_hex(src[k])
+                k = k + 1
+                digits = digits + 1
+            }
+            if digits == 0 || digits > 6 || hb_byte(src, k, lo, hi) != '}' { return hb_none() }
+            end = k + 1
+        } else {
+            var digits = 0
+            while digits < 4 {
+                let digit = hbm_hex(hb_byte(src, k, lo, hi))
+                if digit < 0 { return hb_none() }
+                value = value * 16 + digit
+                k = k + 1
+                digits = digits + 1
+            }
+            end = k
+        }
+    } else {
+        return hb_none()
+    }
+    let say = "azoL has no escapes for a character by its number; write the character itself in the text, or join `chr(n)` for one byte"
+    var text = ""
+    if value == 10 {
+        text = "\\n"
+    } else if value == 9 {
+        text = "\\t"
+    } else if value == 13 {
+        text = "\\r"
+    } else if value == 0 {
+        text = "\\0"
+    } else if value == '"' {
+        text = "\\\""
+    } else if value == '\\' {
+        text = "\\\\"
+    } else if value == '{' {
+        text = "\\\{"
+    } else if value >= 32 && value <= 126 {
+        text.push(value)
+    } else if kind == 'u' && value >= 160 && value <= 1114111 && (value < 55296 || value > 57343) {
+        if value < 2048 {
+            text.push(192 + value / 64)
+            text.push(128 + value % 64)
+        } else if value < 65536 {
+            text.push(224 + value / 4096)
+            text.push(128 + value / 64 % 64)
+            text.push(128 + value % 64)
+        } else {
+            text.push(240 + value / 262144)
+            text.push(128 + value / 4096 % 64)
+            text.push(128 + value / 64 % 64)
+            text.push(128 + value % 64)
+        }
+    } else {
+        return hb_say(say)
+    }
+    return hb_edit(say, at, end, text)
+}
+
+// A text that goes on in the next line.
+fn hbm_two_lines(at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let eol = hb_line_end(src, at, hi)
+    if eol >= hi { return hb_none() }
+    let next_end = hb_line_end(src, eol + 1, hi)
+    var quotes = 0
+    var k = eol + 1
+    while k < next_end {
+        if src[k] == '"' && src[k - 1] != '\\' { quotes = quotes + 1 }
+        k = k + 1
+    }
+    if quotes % 2 == 0 { return hb_none() }
+    return hb_say("a text is on one line in azoL; write `\\n` where a line ends inside it, or join the lines with `+`")
+}
+
+// `s[a..b]`.
+fn hbm_part(say: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let head = hb_line_start(src, at, lo)
+    var open = -1
+    var depth = 0
+    var k = at
+    while k > head && open < 0 {
+        k = k - 1
+        if src[k] == ']' {
+            depth = depth + 1
+        } else if src[k] == '[' {
+            if depth == 0 {
+                open = k
+            } else {
+                depth = depth - 1
+            }
+        }
+    }
+    if open < 0 { return hb_none() }
+    let close = hb_close(src, open, hi)
+    if close < 0 { return hb_none() }
+    let inner = src.slice(open + 1, close)
+    let dots = hbm_find(inner, "..", 0)
+    if dots < 0 { return hb_none() }
+    var from = inner.slice(0, dots).trim()
+    var to = inner.slice(dots + 2, inner.len()).trim()
+    let owner_at = hb_operand_start(src, open, lo)
+    if owner_at >= open { return hb_none() }
+    if from.len() == 0 { from = "0" }
+    if to.starts_with("=") {
+        to = to.slice(1, to.len()).trim()
+        if to.len() == 0 { return hb_none() }
+        to = to + " + 1"
+    } else if to.len() == 0 {
+        to = src.slice(owner_at, open) + ".len()"
+    }
+    return hb_edit(say, open, close + 1, ".slice(" + from + ", " + to + ")")
+}
+
+// `if let Some(x) = value \{ ... }` without an `else`.
+fn hbm_if_let(say: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let head = hb_line_start(src, at, lo)
+    let first = hb_after(src, head, hi)
+    if hb_name(src, first, hi) != "if" || hb_after(src, first + 2, hi) != at || hb_name(src, at, hi) != "let" {
+        return hb_none()
+    }
+    let eol = hb_line_end(src, at, hi)
+    let brace = hb_before(src, eol, lo)
+    if brace <= at || src[brace] != '{' { return hb_none() }
+    let sides = hbm_split(src.slice(at + 3, brace), '=')
+    if sides.len() != 2 || sides[0].len() == 0 || sides[1].len() == 0 { return hb_none() }
+    let end = hb_block_end(src, brace, hi)
+    if end < 0 { return hb_none() }
+    if hb_name(src, hb_after(src, end + 1, hi), hi) == "else" { return hb_none() }
+    let indent = src.slice(head, first)
+    let text = "match " + sides[1] + " \{\n" + indent + "    " + sides[0] + " => \{" + src.slice(brace + 1, end) + "}\n" + indent + "    _ => \{}\n" + indent + "}"
+    return hb_edit(say, first, end + 1, text)
+}
+
+// A text between backquotes, with `$\{value}` in it.
+fn hbm_backquotes(say: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    if hb_byte(src, at, lo, hi) != '`' { return hb_none() }
+    let eol = hb_line_end(src, at, hi)
+    var close = at + 1
+    while close < eol && src[close] != '`' {
+        close = close + 1
+    }
+    if close >= eol { return hb_none() }
+    var out = "\""
+    var k = at + 1
+    while k < close {
+        let b = src[k]
+        if b == '"' || b == '\\' { return hb_none() }
+        if b == '$' && k + 1 < close && src[k + 1] == '{' {
+            out.push('{')
+            k = k + 1
+        } else if b == '{' {
+            out = out + "\\\{"
+        } else {
+            out.push(b)
+        }
+        k = k + 1
+    }
+    out.push('"')
+    return hb_edit(say, at, close + 1, out)
+}
+
+// `new P \{ ... }` and `new P(1, 2)`.
+fn hbm_new(say: str, at: i64, src: str, lo: i64, hi: i64) -> Habit {
+    let new_at = hb_prev_word(src, at, lo)
+    if new_at < 0 || hb_name(src, new_at, hi) != "new" { return hb_none() }
+    let name_end = hb_name_end(src, at, hi)
+    let name = src.slice(at, name_end)
+    let next = hb_after(src, name_end, hi)
+    if name.len() == 0 { return hb_none() }
+    if hb_byte(src, next, lo, hi) == '{' { return hb_edit(say, new_at, at, "") }
+    if hb_byte(src, next, lo, hi) != '(' { return hb_none() }
+    let close = hb_close(src, next, hi)
+    if close < 0 { return hb_none() }
+    let values = hbm_split(src.slice(next + 1, close), ',')
+    let fields = hbm_fields(src, name)
+    if fields.len() == 0 || fields.len() != values.len() { return hb_none() }
+    var text = name + " \{ "
+    var k = 0
+    while k < fields.len() {
+        if values[k].len() == 0 { return hb_none() }
+        if k > 0 { text = text + ", " }
+        text = text + fields[k] + ": " + values[k]
+        k = k + 1
+    }
+    return hb_edit(say, new_at, close + 1, text + " }")
+}
